@@ -1,0 +1,105 @@
+# ebpf-socks DaemonSet — runs one relay per node, covers all pods transparently.
+#
+# Requirements:
+#   - privileged: true          (eBPF program loading requires CAP_BPF / CAP_SYS_ADMIN)
+#   - hostPID: true             (needed to access host cgroup hierarchy)
+#   - /sys/fs/cgroup mounted    (eBPF programs attach to cgroups here)
+#
+# The eBPF hooks attach to the root cgroup (/sys/fs/cgroup), which means
+# ALL processes on the node — including every pod — have their outbound TCP
+# connections transparently redirected through the SOCKS5 server.
+#
+# To limit scope to specific pods, mount a narrower cgroup path and set
+# CGROUP_PATH accordingly.
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ebpf-socks
+  namespace: kube-system
+  labels:
+    app: ebpf-socks
+spec:
+  selector:
+    matchLabels:
+      app: ebpf-socks
+  template:
+    metadata:
+      labels:
+        app: ebpf-socks
+    spec:
+      # Required to access the host cgroup hierarchy
+      hostPID: true
+      hostNetwork: true
+
+      tolerations:
+        - operator: Exists  # run on every node including control-plane
+
+      containers:
+        - name: ebpf-socks
+          image: ghcr.io/your-org/ebpf-socks:latest
+          imagePullPolicy: Always
+
+          args:
+            - --socks5=$(SOCKS5_ADDR)
+            - --cgroup=/host-cgroup
+
+          env:
+            # SOCKS5 server address — set via Secret or ConfigMap
+            - name: SOCKS5_ADDR
+              valueFrom:
+                secretKeyRef:
+                  name: ebpf-socks-config
+                  key: socks5-addr
+
+            # Tune log verbosity: error | warn | info | debug | trace
+            - name: RUST_LOG
+              value: "ebpf_socks=info"
+
+          securityContext:
+            privileged: true          # needed for eBPF program loading
+            capabilities:
+              add:
+                - NET_ADMIN           # iptables / network config if needed
+                - SYS_ADMIN           # BPF program loading
+                - BPF                 # kernel 5.8+: fine-grained BPF cap
+
+          volumeMounts:
+            - name: host-cgroup
+              mountPath: /host-cgroup
+              readOnly: false
+
+          # Readiness: check the relay listener is up
+          readinessProbe:
+            tcpSocket:
+              port: 12345
+              host: 127.0.0.1
+            initialDelaySeconds: 2
+            periodSeconds: 5
+
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+
+      volumes:
+        - name: host-cgroup
+          hostPath:
+            path: /sys/fs/cgroup
+            type: Directory
+
+---
+# Secret: set the SOCKS5 server address here.
+# kubectl create secret generic ebpf-socks-config \
+#   --from-literal=socks5-addr=127.0.0.1:20170 -n kube-system
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ebpf-socks-config
+  namespace: kube-system
+type: Opaque
+stringData:
+  socks5-addr: "127.0.0.1:20170"  # replace with your SOCKS5 endpoint

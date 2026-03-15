@@ -1,0 +1,15 @@
+[package]
+name = "ebpf-socks-common"
+version = "0.1.0"
+edition = "2021"
+
+# no_std for eBPF side; "user" enables std + aya::Pod
+[features]
+default = ["user"]
+user = []
+
+[dependencies]
+aya = { version = "0.13", optional = true }
+
+[target.'cfg(feature = "user")'.dependencies]
+aya = "0.13"

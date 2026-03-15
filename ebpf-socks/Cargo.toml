@@ -1,5 +1,5 @@
 [package]
-name = "kube-tproxy"
+name = "ebpf-socks"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,22 +9,24 @@ aya = { version = "0.13", features = ["async_tokio"] }
 aya-log = "0.2"
 
 # Shared data types with the eBPF programs
-kube-tproxy-common = { path = "../kube-tproxy-common" }
+ebpf-socks-common = { path = "../ebpf-socks-common" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
+# CLI argument parsing
+clap = { version = "4", features = ["derive", "env"] }
+
 # Error handling
 anyhow = "1"
-thiserror = "1"
 
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Low-level socket operations (SO_COOKIE, IP_TRANSPARENT)
+# Low-level socket options
 libc = "0.2"
 
 [[bin]]
-name = "kube-tproxy"
+name = "ebpf-socks"
 path = "src/main.rs"

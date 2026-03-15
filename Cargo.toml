@@ -1,7 +1,7 @@
 [workspace]
 members = [
-    "kube-tproxy",
-    "kube-tproxy-common",
-    # kube-tproxy-ebpf is compiled separately with bpfel-unknown-none target
+    "ebpf-socks",
+    "ebpf-socks-common",
+    # ebpf-socks-ebpf is compiled separately targeting bpfel-unknown-none
 ]
 resolver = "2"
