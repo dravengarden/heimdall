@@ -1,0 +1,30 @@
+[package]
+name = "kube-tproxy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# eBPF userspace management: load programs, attach to cgroups, read/write maps
+aya = { version = "0.13", features = ["async_tokio"] }
+aya-log = "0.2"
+
+# Shared data types with the eBPF programs
+kube-tproxy-common = { path = "../kube-tproxy-common" }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Low-level socket operations (SO_COOKIE, IP_TRANSPARENT)
+libc = "0.2"
+
+[[bin]]
+name = "kube-tproxy"
+path = "src/main.rs"

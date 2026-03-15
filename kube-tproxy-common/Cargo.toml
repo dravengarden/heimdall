@@ -1,0 +1,11 @@
+[package]
+name = "kube-tproxy-common"
+version = "0.1.0"
+edition = "2021"
+
+# no_std for eBPF side, std for userspace
+[features]
+default = ["user"]
+user = []
+
+[dependencies]

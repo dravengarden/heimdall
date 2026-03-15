@@ -1,0 +1,6 @@
+# eBPF programs must be compiled for the BPF virtual machine, not the host CPU.
+[build]
+target = "bpfel-unknown-none"
+
+[unstable]
+build-std = ["core"]
