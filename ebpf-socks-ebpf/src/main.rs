@@ -1,4 +1,4 @@
-//! eBPF kernel programs for kube-tproxy.
+//! eBPF kernel programs for ebpf-socks.
 //!
 //! Two programs work together:
 //!
@@ -22,7 +22,7 @@ use aya_bpf::{
     maps::HashMap,
     programs::{SockAddrContext, SockOpsContext},
 };
-use kube_tproxy_common::{is_bypass, OrigDst};
+use ebpf_socks_common::{is_default_bypass, OrigDst};
 
 // Proxy listen port (must match userspace PROXY_LISTEN_PORT)
 const PROXY_PORT: u32 = 12345;
@@ -55,7 +55,7 @@ fn try_connect4(ctx: SockAddrContext) -> Result<(), ()> {
     let dst_ip_be = unsafe { (*sa).user_ip4 };
 
     // Let LAN / cluster-internal traffic pass through unchanged.
-    if is_bypass(dst_ip_be) {
+    if is_default_bypass(dst_ip_be) {
         return Ok(());
     }
 

@@ -1,15 +1,15 @@
 [package]
-name = "kube-tproxy-ebpf"
+name = "ebpf-socks-ebpf"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 aya-bpf = { version = "0.1", features = ["macros"] }
 aya-log-ebpf = "0.1"
-kube-tproxy-common = { path = "../kube-tproxy-common", default-features = false }
+ebpf-socks-common = { path = "../ebpf-socks-common", default-features = false }
 
 [[bin]]
-name = "kube-tproxy-ebpf"
+name = "ebpf-socks-ebpf"
 path = "src/main.rs"
 
 [profile.release]
