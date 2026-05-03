@@ -6,10 +6,7 @@ edition = "2021"
 # no_std for eBPF side; "user" enables std + aya::Pod
 [features]
 default = ["user"]
-user = []
+user = ["aya"]
 
 [dependencies]
 aya = { version = "0.13", optional = true }
-
-[target.'cfg(feature = "user")'.dependencies]
-aya = "0.13"
