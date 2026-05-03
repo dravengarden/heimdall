@@ -1,18 +1,23 @@
 import { useEffect, useState } from "react";
 import {
+  Alert,
   Box,
   Chip,
   Drawer,
   IconButton,
+  Snackbar,
   Tab,
   Tabs,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
+import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import dayjs from "dayjs";
 import type { Flow } from "../types";
 import { fetchFlow } from "../api/client";
 import { connectionColor } from "../theme";
+import { copyText } from "../util/clipboard";
 
 interface Props {
   flowId: number | null;
@@ -20,11 +25,12 @@ interface Props {
   fallback?: Flow | undefined;
 }
 
-const DRAWER_WIDTH = 540;
+const DRAWER_WIDTH = 560;
 
 export function FlowDetail({ flowId, onClose, fallback }: Props) {
   const [flow, setFlow] = useState<Flow | null>(null);
   const [tab, setTab] = useState<"overview" | "raw">("overview");
+  const [toast, setToast] = useState<string | null>(null);
 
   useEffect(() => {
     if (flowId == null) {
@@ -45,88 +51,147 @@ export function FlowDetail({ flowId, onClose, fallback }: Props) {
     };
   }, [flowId, fallback]);
 
+  const showToast = async (text: string, label: string): Promise<void> => {
+    const ok = await copyText(text);
+    setToast(ok ? `copied ${label}` : `failed to copy ${label}`);
+  };
+
   return (
-    <Drawer
-      anchor="right"
-      open={flowId != null}
-      onClose={onClose}
-      slotProps={{
-        paper: {
-          sx: {
-            width: DRAWER_WIDTH,
-            maxWidth: "90vw",
-            background: (t) => t.palette.background.paper,
-            borderLeft: 1,
-            borderColor: "divider",
+    <>
+      <Drawer
+        anchor="right"
+        open={flowId != null}
+        onClose={onClose}
+        slotProps={{
+          paper: {
+            sx: {
+              width: DRAWER_WIDTH,
+              maxWidth: "90vw",
+              background: (t) => t.palette.background.paper,
+              borderLeft: 1,
+              borderColor: "divider",
+            },
           },
-        },
-      }}
-    >
-      <Box sx={{ display: "flex", alignItems: "center", px: 2, py: 1 }}>
-        <Typography variant="h6">
-          {flow ? `flow #${flow.id}` : "flow"}
-        </Typography>
-        {flow && (
-          <Chip
-            label={flow.connection_name}
-            size="small"
-            color={connectionColor(flow.connection_name)}
-            sx={{ ml: 1.5 }}
-          />
-        )}
-        <Box sx={{ flex: 1 }} />
-        <IconButton size="small" onClick={onClose}>
-          <CloseIcon />
-        </IconButton>
-      </Box>
-
-      <Tabs
-        value={tab}
-        onChange={(_, v: "overview" | "raw") => setTab(v)}
-        sx={{ borderBottom: 1, borderColor: "divider", px: 1 }}
+        }}
       >
-        <Tab value="overview" label="Overview" />
-        <Tab value="raw" label="Raw JSON" />
-      </Tabs>
+        <Box sx={{ display: "flex", alignItems: "center", px: 2, py: 1 }}>
+          <Typography variant="h6">
+            {flow ? `flow #${flow.id}` : "flow"}
+          </Typography>
+          {flow && (
+            <Chip
+              label={flow.connection_name}
+              size="small"
+              color={connectionColor(flow.connection_name)}
+              sx={{ ml: 1.5 }}
+            />
+          )}
+          <Box sx={{ flex: 1 }} />
+          {flow && (
+            <Tooltip title="Copy flow as JSON">
+              <IconButton
+                size="small"
+                onClick={() => void showToast(JSON.stringify(flow, null, 2), "JSON")}
+                aria-label="copy json"
+              >
+                <ContentCopyIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          )}
+          <IconButton size="small" onClick={onClose} aria-label="close">
+            <CloseIcon />
+          </IconButton>
+        </Box>
 
-      <Box sx={{ flex: 1, overflow: "auto", px: 2, py: 2 }}>
-        {flow == null ? (
-          <Typography color="text.secondary">loading…</Typography>
-        ) : tab === "overview" ? (
-          <Overview flow={flow} />
-        ) : (
-          <RawJson flow={flow} />
-        )}
-      </Box>
-    </Drawer>
+        <Tabs
+          value={tab}
+          onChange={(_, v: "overview" | "raw") => setTab(v)}
+          sx={{ borderBottom: 1, borderColor: "divider", px: 1 }}
+        >
+          <Tab value="overview" label="Overview" />
+          <Tab value="raw" label="Raw JSON" />
+        </Tabs>
+
+        <Box sx={{ flex: 1, overflow: "auto", px: 2, py: 2 }}>
+          {flow == null ? (
+            <Typography color="text.secondary">loading…</Typography>
+          ) : tab === "overview" ? (
+            <Overview flow={flow} onCopy={(text, label) => void showToast(text, label)} />
+          ) : (
+            <RawJson flow={flow} />
+          )}
+        </Box>
+      </Drawer>
+
+      <Snackbar
+        open={toast != null}
+        autoHideDuration={2000}
+        onClose={() => setToast(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+      >
+        <Alert
+          severity="success"
+          variant="filled"
+          onClose={() => setToast(null)}
+          sx={{ alignItems: "center" }}
+        >
+          {toast}
+        </Alert>
+      </Snackbar>
+    </>
   );
 }
 
-function Overview({ flow }: { flow: Flow }) {
+interface OverviewProps {
+  flow: Flow;
+  onCopy: (text: string, label: string) => void;
+}
+
+function Overview({ flow, onCopy }: OverviewProps) {
   const dur =
     flow.ts_end_us != null
       ? `${Math.max(0, Math.round((flow.ts_end_us - flow.ts_start_us) / 1000))} ms`
       : "(open)";
-  const fields: ReadonlyArray<readonly [string, string | null]> = [
-    ["pod", podLabel(flow)],
-    ["pod_uid", flow.pod_uid],
-    ["connection", flow.connection_name],
-    ["dst host", flow.dst_host],
-    ["dst", `${flow.dst_ip}:${flow.dst_port}`],
-    ["upstream", flow.upstream_addr],
-    ["socks5 atyp", flow.atyp],
-    ["bytes ↑", `${flow.bytes_up}`],
-    ["bytes ↓", `${flow.bytes_down}`],
-    ["duration", dur],
-    ["ts_start", dayjs(flow.ts_start_us / 1000).format("YYYY-MM-DD HH:mm:ss.SSS")],
-    [
-      "ts_end",
-      flow.ts_end_us != null
-        ? dayjs(flow.ts_end_us / 1000).format("YYYY-MM-DD HH:mm:ss.SSS")
-        : "(open)",
-    ],
-    ["cgroup_id", flow.cgroup_id != null ? String(flow.cgroup_id) : null],
-  ] as const;
+  const fields: ReadonlyArray<{
+    k: string;
+    v: string | null;
+    copyValue?: string;
+    copyLabel?: string;
+  }> = [
+    { k: "pod", v: podLabel(flow), copyLabel: "pod" },
+    { k: "pod_uid", v: flow.pod_uid, copyLabel: "pod_uid" },
+    { k: "connection", v: flow.connection_name },
+    {
+      k: "dst host",
+      v: flow.dst_host,
+      copyLabel: "hostname",
+    },
+    {
+      k: "dst",
+      v: `${flow.dst_ip}:${flow.dst_port}`,
+      copyLabel: "ip:port",
+    },
+    { k: "upstream", v: flow.upstream_addr, copyLabel: "upstream" },
+    { k: "socks5 atyp", v: flow.atyp },
+    { k: "bytes ↑", v: `${flow.bytes_up}` },
+    { k: "bytes ↓", v: `${flow.bytes_down}` },
+    { k: "duration", v: dur },
+    {
+      k: "ts_start",
+      v: dayjs(flow.ts_start_us / 1000).format("YYYY-MM-DD HH:mm:ss.SSS"),
+    },
+    {
+      k: "ts_end",
+      v:
+        flow.ts_end_us != null
+          ? dayjs(flow.ts_end_us / 1000).format("YYYY-MM-DD HH:mm:ss.SSS")
+          : "(open)",
+    },
+    {
+      k: "cgroup_id",
+      v: flow.cgroup_id != null ? String(flow.cgroup_id) : null,
+    },
+  ];
 
   return (
     <>
@@ -144,35 +209,130 @@ function Overview({ flow }: { flow: Flow }) {
           <Typography variant="caption" color="error">
             error
           </Typography>
-          <Typography variant="body2" sx={{ fontFamily: "ui-monospace, monospace" }}>
+          <Typography
+            variant="body2"
+            sx={{ fontFamily: "ui-monospace, monospace" }}
+          >
             {flow.error}
           </Typography>
         </Box>
       )}
-      <Box sx={{ display: "grid", gridTemplateColumns: "120px 1fr", rowGap: 1 }}>
-        {fields.map(([k, v]) => (
-          <Row key={k} k={k} v={v ?? "—"} />
+
+      <SectionHeader>Identity</SectionHeader>
+      <Grid>
+        {fields.slice(0, 3).map((f) => (
+          <Row key={f.k} field={f} onCopy={onCopy} />
         ))}
-      </Box>
+      </Grid>
+
+      <SectionHeader>Destination</SectionHeader>
+      <Grid>
+        {fields.slice(3, 7).map((f) => (
+          <Row key={f.k} field={f} onCopy={onCopy} />
+        ))}
+      </Grid>
+
+      <SectionHeader>Traffic</SectionHeader>
+      <Grid>
+        {fields.slice(7, 10).map((f) => (
+          <Row key={f.k} field={f} onCopy={onCopy} />
+        ))}
+      </Grid>
+
+      <SectionHeader>Timing</SectionHeader>
+      <Grid>
+        {fields.slice(10, 12).map((f) => (
+          <Row key={f.k} field={f} onCopy={onCopy} />
+        ))}
+      </Grid>
+
+      <SectionHeader>Internals</SectionHeader>
+      <Grid>
+        <Row
+          field={{
+            k: "cgroup_id",
+            v: fields[12]?.v ?? null,
+          }}
+          onCopy={onCopy}
+        />
+      </Grid>
     </>
   );
 }
 
-function Row({ k, v }: { k: string; v: string }) {
+function SectionHeader({ children }: { children: string }) {
+  return (
+    <Typography
+      variant="caption"
+      sx={{
+        display: "block",
+        mt: 2,
+        mb: 0.5,
+        textTransform: "uppercase",
+        letterSpacing: 0.5,
+        color: "text.disabled",
+      }}
+    >
+      {children}
+    </Typography>
+  );
+}
+
+function Grid({ children }: { children: React.ReactNode }) {
+  return (
+    <Box
+      sx={{
+        display: "grid",
+        gridTemplateColumns: "120px 1fr auto",
+        rowGap: 0.5,
+        alignItems: "center",
+      }}
+    >
+      {children}
+    </Box>
+  );
+}
+
+function Row({
+  field,
+  onCopy,
+}: {
+  field: { k: string; v: string | null; copyValue?: string; copyLabel?: string };
+  onCopy: (text: string, label: string) => void;
+}) {
+  const display = field.v ?? "—";
+  const empty = field.v == null;
   return (
     <>
       <Typography variant="caption" color="text.secondary" sx={{ pt: 0.25 }}>
-        {k}
+        {field.k}
       </Typography>
       <Typography
         variant="body2"
         sx={{
           fontFamily: "ui-monospace, monospace",
           wordBreak: "break-all",
+          color: empty ? "text.disabled" : "text.primary",
         }}
       >
-        {v}
+        {display}
       </Typography>
+      {!empty && field.copyLabel ? (
+        <Tooltip title={`Copy ${field.copyLabel}`}>
+          <IconButton
+            size="small"
+            sx={{ ml: 0.5 }}
+            onClick={() =>
+              onCopy(field.copyValue ?? (field.v as string), field.copyLabel as string)
+            }
+            aria-label={`copy ${field.copyLabel}`}
+          >
+            <ContentCopyIcon sx={{ fontSize: 14 }} />
+          </IconButton>
+        </Tooltip>
+      ) : (
+        <Box />
+      )}
     </>
   );
 }
@@ -197,6 +357,7 @@ function RawJson({ flow }: { flow: Flow }) {
 }
 
 function podLabel(flow: Flow): string | null {
-  if (flow.namespace && flow.pod_name) return `${flow.namespace}/${flow.pod_name}`;
+  if (flow.namespace && flow.pod_name)
+    return `${flow.namespace}/${flow.pod_name}`;
   return null;
 }

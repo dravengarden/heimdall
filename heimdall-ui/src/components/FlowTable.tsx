@@ -5,8 +5,9 @@ import {
   type GridRowParams,
   type GridSortDirection,
 } from "@mui/x-data-grid";
-import { Box, Chip, Tooltip } from "@mui/material";
+import { Box, Chip, Stack, Tooltip, Typography } from "@mui/material";
 import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
+import RouterOutlinedIcon from "@mui/icons-material/RouterOutlined";
 import dayjs from "dayjs";
 import type { Flow } from "../types";
 import { connectionColor } from "../theme";
@@ -207,6 +208,7 @@ export function FlowTable({ flows, selectedId, onSelect }: Props) {
       rows={flows as Flow[]}
       columns={columns}
       density="compact"
+      slots={{ noRowsOverlay: NoRowsOverlay }}
       disableRowSelectionOnClick={false}
       onRowClick={(params: GridRowParams<Flow>) =>
         onSelect(params.row.id === selectedId ? null : params.row.id)
@@ -258,4 +260,23 @@ function humanBytes(n: number): string {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function NoRowsOverlay() {
+  return (
+    <Stack
+      sx={{ height: "100%" }}
+      alignItems="center"
+      justifyContent="center"
+      spacing={1}
+    >
+      <RouterOutlinedIcon sx={{ fontSize: 40, color: "text.disabled" }} />
+      <Typography variant="body2" color="text.secondary">
+        no flows match the current filter
+      </Typography>
+      <Typography variant="caption" color="text.disabled">
+        triggered traffic from a pod will appear here automatically
+      </Typography>
+    </Stack>
+  );
 }
