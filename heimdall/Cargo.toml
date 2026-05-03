@@ -11,6 +11,9 @@ aya-log = "0.2"
 # Shared data types with the eBPF programs
 heimdall-common = { path = "../heimdall-common" }
 
+# Config schema (YAML at /etc/heimdall/config.yaml)
+heimdall-config = { path = "../heimdall-config" }
+
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 

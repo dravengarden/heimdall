@@ -15,25 +15,25 @@
 //!       │  Moves COOKIE_MAP[cookie] → PORT_MAP[src_port]
 //!       │
 //!       ▼
-//!   heimdall daemon (listens on --listen, defaults to 0.0.0.0:12345)
+//!   heimdall daemon (listens on runtime.listen, default 0.0.0.0:12345)
 //!       │  accept() → getpeername().port → lookup PORT_MAP
+//!       │  resolve which "connection" (upstream proxy) to use for this pod
 //!       │
 //!       ▼
-//!   SOCKS5 server (--socks5)
+//!   Upstream (SOCKS5 with optional auth, or direct splice)
 //!       │  CONNECT original_ip:original_port
 //!       │
 //!       ▼
 //!   External network
 //!
-//! ## Kubernetes deployment
+//! ## Configuration
 //!
-//! Run as a privileged DaemonSet with hostPID and access to /sys/fs/cgroup.
-//! Set SOCKS5_ADDR env var (or --socks5) to your cluster's SOCKS5 endpoint.
-//! The eBPF hooks attach to the kubepods cgroup and cover every pod on the node.
-//! Use --relay-ip to set the host IP reachable from pods (e.g., cilium_host 10.244.0.41),
-//! so the eBPF hook redirects pods to the right address.
+//! Driven by `/etc/heimdall/config.yaml` (see `heimdall-config` crate). The
+//! schema documents `runtime`, `connections`, and `routing`. Today only
+//! `runtime` and `routing.default` are honored — per-pod selection (M3+M4)
+//! lands later but the config is forward-compatible.
 
-use std::{net::Ipv4Addr, sync::Arc};
+use std::{net::Ipv4Addr, path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result};
 use aya::{
@@ -43,6 +43,7 @@ use aya::{
 };
 use clap::Parser;
 use heimdall_common::OrigDst;
+use heimdall_config::{Connection, HeimdallConfig, Socks5Auth, Socks5Connection};
 use tokio::{
     io::copy_bidirectional,
     net::{TcpListener, TcpStream},
@@ -73,41 +74,47 @@ type PortMap = Arc<RwLock<HashMap<aya::maps::MapData, u32, OrigDst>>>;
 // ---------------------------------------------------------------------------
 
 /// Transparent SOCKS5 egress proxy using eBPF cgroup hooks.
-///
-/// Intercepts all outbound TCP connections from processes in the attached
-/// cgroup and tunnels them through a SOCKS5 server — no per-app config needed.
 #[derive(Parser, Debug)]
 #[command(name = "heimdall", version, about, long_about = None)]
 struct Cli {
-    /// SOCKS5 server address.
-    #[arg(long, env = "SOCKS5_ADDR")]
-    socks5: String,
+    /// Path to YAML config (see /etc/nixos/docs/heimdall.md for schema).
+    #[arg(long, default_value = heimdall_config::DEFAULT_PATH, env = "HEIMDALL_CONFIG")]
+    config: PathBuf,
+}
 
-    /// Local address for the relay listener.
-    ///
-    /// Use 0.0.0.0:12345 when serving Kubernetes pods (pods cannot reach
-    /// the host's 127.0.0.1 from a different network namespace).
-    #[arg(long, default_value = "0.0.0.0:12345", env = "LISTEN_ADDR")]
-    listen: String,
+// ---------------------------------------------------------------------------
+// Resolved upstream — produced from the chosen Connection
+// ---------------------------------------------------------------------------
 
-    /// IPv4 address to redirect intercepted connections to.
-    ///
-    /// Written into the RELAY_ADDR BPF map so the eBPF hook knows where to
-    /// redirect connect() calls. Must be reachable by cgroup processes.
-    ///
-    /// For host-only: 127.0.0.1 (default).
-    /// For Kubernetes pods: use the host's cilium_host IP (e.g., 10.244.0.41)
-    /// or node IP reachable from pods.
-    #[arg(long, default_value = "127.0.0.1", env = "RELAY_IP")]
-    relay_ip: Ipv4Addr,
+#[derive(Clone, Debug)]
+enum Upstream {
+    Socks5 { addr: String, auth: Option<ResolvedAuth> },
+    Direct,
+}
 
-    /// cgroup v2 mount point to attach the eBPF programs to.
-    #[arg(long, default_value = "/sys/fs/cgroup", env = "CGROUP_PATH")]
-    cgroup: String,
+#[derive(Clone, Debug)]
+struct ResolvedAuth {
+    username: String,
+    password: String,
+}
 
-    /// Additional CIDR ranges that bypass the proxy (comma-separated).
-    #[arg(long, value_delimiter = ',', env = "BYPASS_CIDRS")]
-    bypass: Vec<String>,
+impl Upstream {
+    fn from_connection(conn: &Connection) -> Result<Self> {
+        match conn {
+            Connection::Socks5(Socks5Connection { addr, auth, .. }) => {
+                let resolved = auth.as_ref().map(resolve_auth).transpose()?;
+                Ok(Upstream::Socks5 { addr: addr.clone(), auth: resolved })
+            }
+            Connection::Direct(_) => Ok(Upstream::Direct),
+        }
+    }
+}
+
+fn resolve_auth(a: &Socks5Auth) -> Result<ResolvedAuth> {
+    let password = a
+        .read_password()
+        .with_context(|| format!("read password file {}", a.password_file.display()))?;
+    Ok(ResolvedAuth { username: a.username.clone(), password })
 }
 
 // ---------------------------------------------------------------------------
@@ -125,22 +132,45 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    // Load eBPF object and attach programs ------------------------------------
+    // ─── Load config ──────────────────────────────────────────────────────
+    let cfg = HeimdallConfig::load(&cli.config)
+        .with_context(|| format!("loading config from {}", cli.config.display()))?;
+    info!(
+        path = %cli.config.display(),
+        connections = cfg.connections.len(),
+        rules = cfg.routing.rules.len(),
+        default = %cfg.routing.default,
+        "config loaded"
+    );
+
+    // For M2/today: every connection uses the routing.default connection.
+    // M3+M4 will replace this with per-pod resolution.
+    let default_conn = cfg.default_connection();
+    let upstream = Upstream::from_connection(default_conn)
+        .with_context(|| format!("resolving default connection `{}`", cfg.routing.default))?;
+    info!(
+        connection = %cfg.routing.default,
+        kind = default_conn.type_str(),
+        "active upstream"
+    );
+    let upstream = Arc::new(upstream);
+
+    // ─── Load eBPF object and attach programs ─────────────────────────────
     let mut bpf = Ebpf::load(EBPF_BYTES).context("failed to load eBPF object")?;
 
     // Write relay IP into the BPF map BEFORE attaching hooks.
     // The eBPF connect4 hook reads this to know where to redirect connections
     // and to avoid re-intercepting connections already going to the relay.
     {
-        let relay_ip_be = u32::from(cli.relay_ip).to_be();
+        let relay_ip_be = u32::from(cfg.runtime.relay_ip).to_be();
         let mut relay_map: Array<&mut aya::maps::MapData, u32> =
             Array::try_from(bpf.map_mut("RELAY_ADDR").context("RELAY_ADDR not found")?)?;
         relay_map.set(0, relay_ip_be, 0).context("failed to set relay IP in BPF map")?;
-        info!(relay_ip = %cli.relay_ip, "relay IP written to BPF map");
+        info!(relay_ip = %cfg.runtime.relay_ip, "relay IP written to BPF map");
     }
 
-    let cgroup = std::fs::File::open(&cli.cgroup)
-        .with_context(|| format!("failed to open cgroup path: {}", cli.cgroup))?;
+    let cgroup = std::fs::File::open(&cfg.runtime.cgroup)
+        .with_context(|| format!("failed to open cgroup path: {}", cfg.runtime.cgroup))?;
 
     // Hook 1: intercept connect() and rewrite destination
     let connect4: &mut CgroupSockAddr = bpf
@@ -151,7 +181,7 @@ async fn main() -> Result<()> {
     connect4
         .attach(&cgroup, CgroupAttachMode::default())
         .context("failed to attach connect4")?;
-    info!(cgroup = %cli.cgroup, relay_ip = %cli.relay_ip, "eBPF connect4 hook attached");
+    info!(cgroup = %cfg.runtime.cgroup, relay_ip = %cfg.runtime.relay_ip, "eBPF connect4 hook attached");
 
     // Hook 2: on first SYN to relay, move cookie_map → port_map by src_port.
     // Runs at cgroup_skb egress time, after inet_hash_connect assigns src port.
@@ -163,38 +193,32 @@ async fn main() -> Result<()> {
     skb_egress
         .attach(&cgroup, CgroupSkbAttachType::Egress, CgroupAttachMode::default())
         .context("failed to attach skb_egress")?;
-    info!(cgroup = %cli.cgroup, "eBPF skb_egress hook attached");
+    info!(cgroup = %cfg.runtime.cgroup, "eBPF skb_egress hook attached");
 
-    // Shared BPF map: client ephemeral port → original destination ------------
+    // Shared BPF map: client ephemeral port → original destination
     let port_map: PortMap = Arc::new(RwLock::new(
         HashMap::try_from(
             bpf.take_map("PORT_MAP").context("PORT_MAP not found")?,
         )?,
     ));
 
-    // Start relay listener ----------------------------------------------------
-    let listener = TcpListener::bind(&cli.listen)
+    // ─── Start relay listener ─────────────────────────────────────────────
+    let listener = TcpListener::bind(&cfg.runtime.listen)
         .await
-        .with_context(|| format!("failed to bind relay listener on {}", cli.listen))?;
+        .with_context(|| format!("failed to bind relay listener on {}", cfg.runtime.listen))?;
 
-    info!(
-        listen = %cli.listen,
-        socks5 = %cli.socks5,
-        "heimdall ready"
-    );
-
-    let socks5_addr = Arc::new(cli.socks5);
+    info!(listen = %cfg.runtime.listen, "heimdall ready");
 
     loop {
         let (stream, peer) = listener.accept().await?;
         let map = port_map.clone();
-        let socks5 = socks5_addr.clone();
+        let upstream = upstream.clone();
 
         tokio::spawn(async move {
             let client_port = peer.port() as u32;
             debug!(client_port, "accepted redirected connection");
 
-            if let Err(e) = relay(stream, client_port, map, &socks5).await {
+            if let Err(e) = relay(stream, client_port, map, upstream).await {
                 warn!(client_port, "relay error: {e:#}");
             }
         });
@@ -209,7 +233,7 @@ async fn relay(
     mut client: TcpStream,
     client_port: u32,
     map: PortMap,
-    socks5_addr: &str,
+    upstream: Arc<Upstream>,
 ) -> Result<()> {
     // Retrieve and immediately remove the original destination from the BPF map.
     let orig = {
@@ -223,42 +247,78 @@ async fn relay(
     let dst_port = u16::from_be(orig.port);
     debug!(%dst_ip, dst_port, "original destination resolved");
 
-    // Open a connection to the SOCKS5 server and request a tunnel.
-    let mut upstream = TcpStream::connect(socks5_addr)
-        .await
-        .with_context(|| format!("failed to connect to SOCKS5 server {socks5_addr}"))?;
-
-    socks5_connect(&mut upstream, dst_ip, dst_port)
-        .await
-        .with_context(|| format!("SOCKS5 CONNECT {dst_ip}:{dst_port} failed"))?;
-
-    info!(%dst_ip, dst_port, "tunnel established");
-
-    // Transparent bidirectional relay.
-    copy_bidirectional(&mut client, &mut upstream).await?;
+    match upstream.as_ref() {
+        Upstream::Socks5 { addr, auth } => {
+            let mut up = TcpStream::connect(addr)
+                .await
+                .with_context(|| format!("failed to connect to SOCKS5 {addr}"))?;
+            socks5_connect(&mut up, dst_ip, dst_port, auth.as_ref())
+                .await
+                .with_context(|| format!("SOCKS5 CONNECT {dst_ip}:{dst_port} via {addr}"))?;
+            info!(%dst_ip, dst_port, via = %addr, "tunnel established");
+            copy_bidirectional(&mut client, &mut up).await?;
+        }
+        Upstream::Direct => {
+            let dst = format!("{dst_ip}:{dst_port}");
+            let mut up = TcpStream::connect(&dst)
+                .await
+                .with_context(|| format!("direct connect to {dst}"))?;
+            info!(%dst_ip, dst_port, "tunnel established (direct)");
+            copy_bidirectional(&mut client, &mut up).await?;
+        }
+    }
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// SOCKS5 handshake (RFC 1928, no-auth, IPv4 CONNECT)
+// SOCKS5 handshake (RFC 1928 + RFC 1929 user/pass auth)
 // ---------------------------------------------------------------------------
 
-async fn socks5_connect(s: &mut TcpStream, ip: Ipv4Addr, port: u16) -> Result<()> {
+const M_NO_AUTH: u8 = 0x00;
+const M_USER_PASS: u8 = 0x02;
+const M_NO_ACCEPTABLE: u8 = 0xFF;
+
+async fn socks5_connect(
+    s: &mut TcpStream,
+    ip: Ipv4Addr,
+    port: u16,
+    auth: Option<&ResolvedAuth>,
+) -> Result<()> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    // Method negotiation: offer "no authentication"
-    s.write_all(&[0x05, 0x01, 0x00]).await?;
-    let mut buf = [0u8; 2];
-    s.read_exact(&mut buf).await?;
-    anyhow::ensure!(buf == [0x05, 0x00], "SOCKS5 method negotiation failed: {buf:?}");
+    // Method negotiation. Offer methods we support.
+    let methods: &[u8] = if auth.is_some() {
+        &[M_NO_AUTH, M_USER_PASS]
+    } else {
+        &[M_NO_AUTH]
+    };
+    let mut greeting = Vec::with_capacity(2 + methods.len());
+    greeting.push(0x05);
+    greeting.push(methods.len() as u8);
+    greeting.extend_from_slice(methods);
+    s.write_all(&greeting).await?;
+
+    let mut sel = [0u8; 2];
+    s.read_exact(&mut sel).await?;
+    anyhow::ensure!(sel[0] == 0x05, "SOCKS5: bad version in method reply: {sel:?}");
+
+    match sel[1] {
+        M_NO_AUTH => { /* proceed without auth */ }
+        M_USER_PASS => {
+            let auth = auth.context("server demands user/pass but no credentials configured")?;
+            socks5_userpass(s, &auth.username, &auth.password).await?;
+        }
+        M_NO_ACCEPTABLE => anyhow::bail!("SOCKS5: server rejected all offered methods"),
+        other => anyhow::bail!("SOCKS5: unsupported method 0x{other:02x}"),
+    }
 
     // CONNECT request with IPv4 address
     let ip = ip.octets();
-    let port = port.to_be_bytes();
+    let port_be = port.to_be_bytes();
     s.write_all(&[
         0x05, 0x01, 0x00, 0x01, // VER, CMD=CONNECT, RSV, ATYP=IPv4
         ip[0], ip[1], ip[2], ip[3],
-        port[0], port[1],
+        port_be[0], port_be[1],
     ])
     .await?;
 
@@ -271,5 +331,27 @@ async fn socks5_connect(s: &mut TcpStream, ip: Ipv4Addr, port: u16) -> Result<()
         resp[1]
     );
 
+    Ok(())
+}
+
+/// RFC 1929 username/password sub-negotiation.
+async fn socks5_userpass(s: &mut TcpStream, user: &str, pass: &str) -> Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    anyhow::ensure!(user.len() <= 255, "SOCKS5 user/pass: username > 255 bytes");
+    anyhow::ensure!(pass.len() <= 255, "SOCKS5 user/pass: password > 255 bytes");
+
+    let mut req = Vec::with_capacity(3 + user.len() + pass.len());
+    req.push(0x01); // sub-version
+    req.push(user.len() as u8);
+    req.extend_from_slice(user.as_bytes());
+    req.push(pass.len() as u8);
+    req.extend_from_slice(pass.as_bytes());
+    s.write_all(&req).await?;
+
+    let mut resp = [0u8; 2];
+    s.read_exact(&mut resp).await?;
+    anyhow::ensure!(resp[0] == 0x01, "SOCKS5 user/pass: bad sub-version: {resp:?}");
+    anyhow::ensure!(resp[1] == 0x00, "SOCKS5 user/pass: auth failed (status=0x{:02x})", resp[1]);
     Ok(())
 }
