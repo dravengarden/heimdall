@@ -1,5 +1,6 @@
 import { Box, Tooltip } from "@mui/material";
 import type { WsStatus } from "../api/ws";
+import { useI18n } from "../i18n";
 
 interface Props {
   status: WsStatus;
@@ -11,18 +12,25 @@ const COLOR: Record<WsStatus, string> = {
   reconnecting: "#ef4444",
 };
 
-const LABEL: Record<WsStatus, string> = {
-  open: "Live updates connected",
-  connecting: "Connecting to daemon…",
-  reconnecting: "Reconnecting to daemon…",
+const TOOLTIP_KEY: Record<WsStatus, string> = {
+  open: "ws.open",
+  connecting: "ws.connecting",
+  reconnecting: "ws.reconnecting",
+};
+
+const LABEL_KEY: Record<WsStatus, string> = {
+  open: "app.live",
+  connecting: "app.connecting",
+  reconnecting: "app.reconnecting",
 };
 
 export function WsStatusBadge({ status }: Props) {
+  const { t } = useI18n();
   const color = COLOR[status];
   const breathing = status !== "open";
 
   return (
-    <Tooltip title={LABEL[status]} placement="bottom">
+    <Tooltip title={t(TOOLTIP_KEY[status])} placement="bottom">
       <Box
         sx={{
           display: "inline-flex",
@@ -31,7 +39,10 @@ export function WsStatusBadge({ status }: Props) {
           px: 1,
           py: 0.25,
           borderRadius: 1,
-          background: "rgba(255,255,255,0.04)",
+          background: (theme) =>
+            theme.palette.mode === "dark"
+              ? "rgba(255,255,255,0.04)"
+              : "rgba(0,0,0,0.03)",
           border: 1,
           borderColor: "divider",
           fontSize: 11,
@@ -56,7 +67,7 @@ export function WsStatusBadge({ status }: Props) {
             },
           }}
         />
-        {status === "open" ? "live" : status}
+        {t(LABEL_KEY[status])}
       </Box>
     </Tooltip>
   );
