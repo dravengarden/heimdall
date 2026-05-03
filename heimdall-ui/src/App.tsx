@@ -1,21 +1,26 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Box } from "@mui/material";
 import { AppShell } from "./components/AppShell";
 import { FilterBar } from "./components/FilterBar";
+import { ActiveFilterChips } from "./components/ActiveFilterChips";
 import { FlowTable } from "./components/FlowTable";
 import { FlowDetail } from "./components/FlowDetail";
 import { useLiveFlows } from "./hooks/useLiveFlows";
+import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import type { FlowFilters } from "./types";
 
 export function App() {
-  const { flows, paused, setPaused, refetch } = useLiveFlows(300);
+  const { flows, paused, setPaused, refetch, wsStatus } = useLiveFlows(300);
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   const [filters, setFilters] = useState<FlowFilters>({
     query: "",
     connection: null,
     hideErrors: false,
   });
+
+  useKeyboardShortcuts({ searchInputRef, selectedId, setSelectedId });
 
   const connections = useMemo(() => {
     const set = new Set<string>();
@@ -58,7 +63,11 @@ export function App() {
         onTogglePause={() => setPaused(!paused)}
         onRefresh={refetch}
         connections={connections}
+        visibleFlows={visible}
+        wsStatus={wsStatus}
+        searchInputRef={searchInputRef}
       />
+      <ActiveFilterChips filters={filters} onChange={setFilters} />
       <Box sx={{ flex: 1, minHeight: 0 }}>
         <FlowTable
           flows={visible}

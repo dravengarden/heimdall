@@ -2,6 +2,7 @@ import { useId } from "react";
 import {
   Box,
   Chip,
+  Divider,
   IconButton,
   InputAdornment,
   MenuItem,
@@ -17,7 +18,11 @@ import PauseIcon from "@mui/icons-material/PauseCircleOutline";
 import PlayArrowIcon from "@mui/icons-material/PlayCircleOutline";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
-import type { FlowFilters } from "../types";
+import DownloadIcon from "@mui/icons-material/FileDownload";
+import type { FlowFilters, Flow } from "../types";
+import { downloadJson } from "../util/clipboard";
+import { WsStatusBadge } from "./WsStatusBadge";
+import type { WsStatus } from "../api/ws";
 
 interface Props {
   filters: FlowFilters;
@@ -28,6 +33,9 @@ interface Props {
   onTogglePause: () => void;
   onRefresh: () => void;
   connections: readonly string[];
+  visibleFlows: readonly Flow[];
+  wsStatus: WsStatus;
+  searchInputRef: React.Ref<HTMLInputElement>;
 }
 
 export function FilterBar({
@@ -39,14 +47,22 @@ export function FilterBar({
   onTogglePause,
   onRefresh,
   connections,
+  visibleFlows,
+  wsStatus,
+  searchInputRef,
 }: Props) {
   const searchId = useId();
+
+  const exportJson = (): void => {
+    const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, -5);
+    downloadJson(`heimdall-flows-${ts}.json`, visibleFlows);
+  };
 
   return (
     <Box
       sx={{
         display: "flex",
-        gap: 1.5,
+        gap: 1.25,
         alignItems: "center",
         px: 2,
         py: 1,
@@ -57,7 +73,8 @@ export function FilterBar({
     >
       <TextField
         id={searchId}
-        placeholder="filter by host / pod / IP / connection…"
+        inputRef={searchInputRef}
+        placeholder="filter by host / pod / IP / connection…  (press /)"
         size="small"
         variant="outlined"
         value={filters.query}
@@ -75,6 +92,7 @@ export function FilterBar({
                 <IconButton
                   size="small"
                   onClick={() => onChange({ ...filters, query: "" })}
+                  aria-label="clear search"
                 >
                   <ClearIcon fontSize="small" />
                 </IconButton>
@@ -109,9 +127,10 @@ export function FilterBar({
         size="small"
         exclusive
         value={filters.hideErrors ? "ok" : "all"}
-        onChange={(_, v: string | null) =>
-          onChange({ ...filters, hideErrors: v === "ok" })
-        }
+        onChange={(_, v: string | null) => {
+          if (v == null) return;
+          onChange({ ...filters, hideErrors: v === "ok" });
+        }}
       >
         <ToggleButton value="all">all</ToggleButton>
         <ToggleButton value="ok">
@@ -128,8 +147,10 @@ export function FilterBar({
           variant="outlined"
           sx={{ fontFamily: "ui-monospace, monospace" }}
         />
+        <Divider orientation="vertical" flexItem sx={{ mx: 0.5, my: 0.5 }} />
+        <WsStatusBadge status={wsStatus} />
         <Tooltip title={paused ? "Resume live updates" : "Pause live updates"}>
-          <IconButton size="small" onClick={onTogglePause}>
+          <IconButton size="small" onClick={onTogglePause} aria-label="pause">
             {paused ? (
               <PlayArrowIcon fontSize="small" color="warning" />
             ) : (
@@ -138,9 +159,21 @@ export function FilterBar({
           </IconButton>
         </Tooltip>
         <Tooltip title="Refetch">
-          <IconButton size="small" onClick={onRefresh}>
+          <IconButton size="small" onClick={onRefresh} aria-label="refresh">
             <RefreshIcon fontSize="small" />
           </IconButton>
+        </Tooltip>
+        <Tooltip title="Download visible flows as JSON">
+          <span>
+            <IconButton
+              size="small"
+              onClick={exportJson}
+              disabled={visibleFlows.length === 0}
+              aria-label="export"
+            >
+              <DownloadIcon fontSize="small" />
+            </IconButton>
+          </span>
         </Tooltip>
       </Stack>
     </Box>
