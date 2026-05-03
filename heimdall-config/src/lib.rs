@@ -95,6 +95,15 @@ pub struct Runtime {
     /// in real routing.
     #[serde(default = "default_fake_ip_cidr", rename = "fakeIpCidr")]
     pub fake_ip_cidr: String,
+
+    /// State directory: sqlite flow store, blob storage, IPC socket.
+    #[serde(default = "default_state_dir", rename = "stateDir")]
+    pub state_dir: PathBuf,
+
+    /// Flow retention in seconds. Default 3 days. The cleanup task
+    /// runs every 6 hours and deletes rows older than this.
+    #[serde(default = "default_flow_retention_secs", rename = "flowRetentionSecs")]
+    pub flow_retention_secs: i64,
 }
 
 impl Default for Runtime {
@@ -106,6 +115,8 @@ impl Default for Runtime {
             bypass_cidrs: Vec::new(),
             dns_listen: default_dns_listen(),
             fake_ip_cidr: default_fake_ip_cidr(),
+            state_dir: default_state_dir(),
+            flow_retention_secs: default_flow_retention_secs(),
         }
     }
 }
@@ -115,6 +126,8 @@ fn default_listen() -> String { "0.0.0.0:12345".to_string() }
 fn default_relay_ip() -> Ipv4Addr { Ipv4Addr::new(127, 0, 0, 1) }
 fn default_dns_listen() -> String { "0.0.0.0:5358".to_string() }
 fn default_fake_ip_cidr() -> String { "198.19.0.0/16".to_string() }
+fn default_state_dir() -> PathBuf { PathBuf::from("/var/lib/heimdall") }
+fn default_flow_retention_secs() -> i64 { 3 * 86400 } // 3 days
 
 // ---------------------------------------------------------------------------
 // connections: registry of named upstreams
