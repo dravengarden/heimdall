@@ -30,7 +30,8 @@ unsafe impl aya::Pod for OrigDst {}
 /// Callers can add extra CIDRs via `--bypass` CLI flags (userspace only).
 pub fn is_default_bypass(ip_be: u32) -> bool {
     let ip = u32::from_be(ip_be);
-    ip >> 24 == 127              // 127.0.0.0/8
+    ip == 0                      // 0.0.0.0
+    || ip >> 24 == 127           // 127.0.0.0/8
     || ip >> 24 == 10            // 10.0.0.0/8
     || ip >> 20 == 0xAC1         // 172.16.0.0/12
     || ip >> 16 == 0xC0A8        // 192.168.0.0/16

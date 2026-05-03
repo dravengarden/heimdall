@@ -2,5 +2,14 @@
 [build]
 target = "bpfel-unknown-none"
 
+[target.bpfel-unknown-none]
+# debuginfo=2 generates DWARF; link-arg=--btf tells bpf-linker to convert
+# DWARF into BTF (BPF Type Format) and embed it in the output ELF.
+# aya requires BTF to determine map key/value types at load time.
+rustflags = [
+    "-C", "debuginfo=2",
+    "-C", "link-arg=--btf",
+]
+
 [unstable]
 build-std = ["core"]

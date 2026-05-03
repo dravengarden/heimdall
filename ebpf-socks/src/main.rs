@@ -7,15 +7,15 @@
 //!   Any process connect(external_ip:port)
 //!       │
 //!       │  [eBPF BPF_CGROUP_INET4_CONNECT hook]
-//!       │  Rewrites dst → 127.0.0.1:<listen-port>
+//!       │  Rewrites dst → relay_ip:12345
 //!       │  Saves original dst in COOKIE_MAP[socket_cookie]
 //!       │
-//!       │  [eBPF BPF_CGROUP_SOCK_OPS / ACTIVE_ESTABLISHED_CB]
-//!       │  After TCP handshake the kernel knows the ephemeral src port.
+//!       │  [eBPF BPF_CGROUP_INET_EGRESS hook on first SYN]
+//!       │  inet_hash_connect already ran → ephemeral src port is assigned.
 //!       │  Moves COOKIE_MAP[cookie] → PORT_MAP[src_port]
 //!       │
 //!       ▼
-//!   ebpf-socks daemon (listens on --listen)
+//!   ebpf-socks daemon (listens on --listen, defaults to 0.0.0.0:12345)
 //!       │  accept() → getpeername().port → lookup PORT_MAP
 //!       │
 //!       ▼
@@ -29,15 +29,17 @@
 //!
 //! Run as a privileged DaemonSet with hostPID and access to /sys/fs/cgroup.
 //! Set SOCKS5_ADDR env var (or --socks5) to your cluster's SOCKS5 endpoint.
-//! The eBPF hooks attach to the root cgroup and cover every pod on the node.
+//! The eBPF hooks attach to the kubepods cgroup and cover every pod on the node.
+//! Use --relay-ip to set the host IP reachable from pods (e.g., cilium_host 10.244.0.41),
+//! so the eBPF hook redirects pods to the right address.
 
 use std::{net::Ipv4Addr, sync::Arc};
 
 use anyhow::{Context, Result};
 use aya::{
-    maps::HashMap,
-    programs::{CgroupAttachMode, CgroupSockAddr, SockOps},
-    Bpf,
+    maps::{Array, HashMap},
+    programs::{CgroupAttachMode, CgroupSkb, CgroupSkbAttachType, CgroupSockAddr},
+    Ebpf,
 };
 use clap::Parser;
 use ebpf_socks_common::OrigDst;
@@ -49,10 +51,20 @@ use tokio::{
 use tracing::{debug, info, warn};
 
 // eBPF object compiled from ebpf-socks-ebpf, embedded at build time.
-// Build first: cargo build -p ebpf-socks-ebpf --target bpfel-unknown-none -Z build-std=core
-const EBPF_BYTES: &[u8] = include_bytes!(
-    "../../target/bpfel-unknown-none/release/ebpf-socks-ebpf"
-);
+// Build first: cargo +nightly build (from ebpf-socks-ebpf dir)
+//
+// The wrapper ensures 8-byte alignment, which the ELF parser requires when
+// parsing 64-bit ELF from a static byte slice.
+#[repr(C, align(8))]
+struct AlignedBytes<const N: usize>([u8; N]);
+
+static EBPF_OBJ: AlignedBytes<{ include_bytes!(
+    "../../ebpf-socks-ebpf/target/bpfel-unknown-none/release/ebpf-socks-ebpf"
+).len() }> = AlignedBytes(*include_bytes!(
+    "../../ebpf-socks-ebpf/target/bpfel-unknown-none/release/ebpf-socks-ebpf"
+));
+
+const EBPF_BYTES: &[u8] = &EBPF_OBJ.0;
 
 type PortMap = Arc<RwLock<HashMap<aya::maps::MapData, u32, OrigDst>>>;
 
@@ -68,32 +80,32 @@ type PortMap = Arc<RwLock<HashMap<aya::maps::MapData, u32, OrigDst>>>;
 #[command(name = "ebpf-socks", version, about, long_about = None)]
 struct Cli {
     /// SOCKS5 server address.
-    ///
-    /// The upstream proxy that all intercepted connections are forwarded to.
-    /// Supports env var SOCKS5_ADDR.
-    ///
-    /// Examples: 127.0.0.1:1080  socks5-proxy.default.svc:1080
     #[arg(long, env = "SOCKS5_ADDR")]
     socks5: String,
 
     /// Local address for the relay listener.
     ///
-    /// The eBPF hook rewrites connect() targets to this address.
-    /// Change only if port 12345 is already in use on the host.
-    #[arg(long, default_value = "127.0.0.1:12345", env = "LISTEN_ADDR")]
+    /// Use 0.0.0.0:12345 when serving Kubernetes pods (pods cannot reach
+    /// the host's 127.0.0.1 from a different network namespace).
+    #[arg(long, default_value = "0.0.0.0:12345", env = "LISTEN_ADDR")]
     listen: String,
 
-    /// cgroup v2 mount point to attach the eBPF programs to.
+    /// IPv4 address to redirect intercepted connections to.
     ///
-    /// Attaching to the root cgroup covers all processes on the host/node.
-    /// Narrow this to a specific pod cgroup for finer-grained control.
+    /// Written into the RELAY_ADDR BPF map so the eBPF hook knows where to
+    /// redirect connect() calls. Must be reachable by cgroup processes.
+    ///
+    /// For host-only: 127.0.0.1 (default).
+    /// For Kubernetes pods: use the host's cilium_host IP (e.g., 10.244.0.41)
+    /// or node IP reachable from pods.
+    #[arg(long, default_value = "127.0.0.1", env = "RELAY_IP")]
+    relay_ip: Ipv4Addr,
+
+    /// cgroup v2 mount point to attach the eBPF programs to.
     #[arg(long, default_value = "/sys/fs/cgroup", env = "CGROUP_PATH")]
     cgroup: String,
 
     /// Additional CIDR ranges that bypass the proxy (comma-separated).
-    ///
-    /// Default bypass list already includes RFC-1918, loopback, and link-local.
-    /// Use this to add cluster-specific ranges, e.g. 100.64.0.0/10.
     #[arg(long, value_delimiter = ',', env = "BYPASS_CIDRS")]
     bypass: Vec<String>,
 }
@@ -114,7 +126,18 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Load eBPF object and attach programs ------------------------------------
-    let mut bpf = Bpf::load(EBPF_BYTES).context("failed to load eBPF object")?;
+    let mut bpf = Ebpf::load(EBPF_BYTES).context("failed to load eBPF object")?;
+
+    // Write relay IP into the BPF map BEFORE attaching hooks.
+    // The eBPF connect4 hook reads this to know where to redirect connections
+    // and to avoid re-intercepting connections already going to the relay.
+    {
+        let relay_ip_be = u32::from(cli.relay_ip).to_be();
+        let mut relay_map: Array<&mut aya::maps::MapData, u32> =
+            Array::try_from(bpf.map_mut("RELAY_ADDR").context("RELAY_ADDR not found")?)?;
+        relay_map.set(0, relay_ip_be, 0).context("failed to set relay IP in BPF map")?;
+        info!(relay_ip = %cli.relay_ip, "relay IP written to BPF map");
+    }
 
     let cgroup = std::fs::File::open(&cli.cgroup)
         .with_context(|| format!("failed to open cgroup path: {}", cli.cgroup))?;
@@ -128,22 +151,25 @@ async fn main() -> Result<()> {
     connect4
         .attach(&cgroup, CgroupAttachMode::default())
         .context("failed to attach connect4")?;
-    info!(cgroup = %cli.cgroup, "eBPF connect4 hook attached");
+    info!(cgroup = %cli.cgroup, relay_ip = %cli.relay_ip, "eBPF connect4 hook attached");
 
-    // Hook 2: after TCP handshake, move cookie_map → port_map
-    let sock_ops: &mut SockOps = bpf
-        .program_mut("sock_ops_handler")
-        .context("sock_ops_handler eBPF program not found")?
+    // Hook 2: on first SYN to relay, move cookie_map → port_map by src_port.
+    // Runs at cgroup_skb egress time, after inet_hash_connect assigns src port.
+    let skb_egress: &mut CgroupSkb = bpf
+        .program_mut("skb_egress")
+        .context("skb_egress eBPF program not found")?
         .try_into()?;
-    sock_ops.load().context("failed to load sock_ops_handler")?;
-    sock_ops
-        .attach(&cgroup, CgroupAttachMode::default())
-        .context("failed to attach sock_ops_handler")?;
-    info!(cgroup = %cli.cgroup, "eBPF sock_ops hook attached");
+    skb_egress.load().context("failed to load skb_egress")?;
+    skb_egress
+        .attach(&cgroup, CgroupSkbAttachType::Egress, CgroupAttachMode::default())
+        .context("failed to attach skb_egress")?;
+    info!(cgroup = %cli.cgroup, "eBPF skb_egress hook attached");
 
     // Shared BPF map: client ephemeral port → original destination ------------
     let port_map: PortMap = Arc::new(RwLock::new(
-        HashMap::try_from(bpf.map_mut("PORT_MAP").context("PORT_MAP not found")?)?,
+        HashMap::try_from(
+            bpf.take_map("PORT_MAP").context("PORT_MAP not found")?,
+        )?,
     ));
 
     // Start relay listener ----------------------------------------------------
