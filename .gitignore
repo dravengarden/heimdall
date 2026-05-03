@@ -1,4 +1,5 @@
 target/
 .cargo/registry/
 heimdall-ui/dist/
-heimdall-ui/target/
+heimdall-ui/node_modules/
+heimdall-ui/.vite/
