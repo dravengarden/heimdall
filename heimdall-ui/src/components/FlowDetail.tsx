@@ -13,11 +13,13 @@ import {
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
+import ReplayIcon from "@mui/icons-material/Replay";
 import dayjs from "dayjs";
 import type { Flow } from "../types";
 import { fetchFlow } from "../api/client";
 import { connectionColor } from "../theme";
 import { copyText } from "../util/clipboard";
+import { useI18n } from "../i18n";
 
 interface Props {
   flowId: number | null;
@@ -31,6 +33,7 @@ export function FlowDetail({ flowId, onClose, fallback }: Props) {
   const [flow, setFlow] = useState<Flow | null>(null);
   const [tab, setTab] = useState<"overview" | "raw">("overview");
   const [toast, setToast] = useState<string | null>(null);
+  const { t } = useI18n();
 
   useEffect(() => {
     if (flowId == null) {
@@ -53,7 +56,13 @@ export function FlowDetail({ flowId, onClose, fallback }: Props) {
 
   const showToast = async (text: string, label: string): Promise<void> => {
     const ok = await copyText(text);
-    setToast(ok ? `copied ${label}` : `failed to copy ${label}`);
+    setToast(ok ? t("toast.copied", label) : t("toast.copyFailed", label));
+  };
+
+  const onReplay = (): void => {
+    // Phase B will hook this up to POST /api/flows/:id/replay once we
+    // have plaintext from the uprobe layer.
+    setToast(t("detail.replay.todo"));
   };
 
   return (
@@ -88,15 +97,28 @@ export function FlowDetail({ flowId, onClose, fallback }: Props) {
           )}
           <Box sx={{ flex: 1 }} />
           {flow && (
-            <Tooltip title="Copy flow as JSON">
-              <IconButton
-                size="small"
-                onClick={() => void showToast(JSON.stringify(flow, null, 2), "JSON")}
-                aria-label="copy json"
-              >
-                <ContentCopyIcon fontSize="small" />
-              </IconButton>
-            </Tooltip>
+            <>
+              <Tooltip title={t("detail.replay")}>
+                <IconButton
+                  size="small"
+                  onClick={onReplay}
+                  aria-label="replay"
+                >
+                  <ReplayIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+              <Tooltip title={t("detail.copyJson")}>
+                <IconButton
+                  size="small"
+                  onClick={() =>
+                    void showToast(JSON.stringify(flow, null, 2), "JSON")
+                  }
+                  aria-label="copy json"
+                >
+                  <ContentCopyIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+            </>
           )}
           <IconButton size="small" onClick={onClose} aria-label="close">
             <CloseIcon />
@@ -108,15 +130,18 @@ export function FlowDetail({ flowId, onClose, fallback }: Props) {
           onChange={(_, v: "overview" | "raw") => setTab(v)}
           sx={{ borderBottom: 1, borderColor: "divider", px: 1 }}
         >
-          <Tab value="overview" label="Overview" />
-          <Tab value="raw" label="Raw JSON" />
+          <Tab value="overview" label={t("detail.tabs.overview")} />
+          <Tab value="raw" label={t("detail.tabs.raw")} />
         </Tabs>
 
         <Box sx={{ flex: 1, overflow: "auto", px: 2, py: 2 }}>
           {flow == null ? (
             <Typography color="text.secondary">loading…</Typography>
           ) : tab === "overview" ? (
-            <Overview flow={flow} onCopy={(text, label) => void showToast(text, label)} />
+            <Overview
+              flow={flow}
+              onCopy={(text, label) => void showToast(text, label)}
+            />
           ) : (
             <RawJson flow={flow} />
           )}
@@ -148,6 +173,7 @@ interface OverviewProps {
 }
 
 function Overview({ flow, onCopy }: OverviewProps) {
+  const { t } = useI18n();
   const dur =
     flow.ts_end_us != null
       ? `${Math.max(0, Math.round((flow.ts_end_us - flow.ts_start_us) / 1000))} ms`
@@ -218,35 +244,35 @@ function Overview({ flow, onCopy }: OverviewProps) {
         </Box>
       )}
 
-      <SectionHeader>Identity</SectionHeader>
+      <SectionHeader>{t("detail.section.identity")}</SectionHeader>
       <Grid>
         {fields.slice(0, 3).map((f) => (
           <Row key={f.k} field={f} onCopy={onCopy} />
         ))}
       </Grid>
 
-      <SectionHeader>Destination</SectionHeader>
+      <SectionHeader>{t("detail.section.dst")}</SectionHeader>
       <Grid>
         {fields.slice(3, 7).map((f) => (
           <Row key={f.k} field={f} onCopy={onCopy} />
         ))}
       </Grid>
 
-      <SectionHeader>Traffic</SectionHeader>
+      <SectionHeader>{t("detail.section.traffic")}</SectionHeader>
       <Grid>
         {fields.slice(7, 10).map((f) => (
           <Row key={f.k} field={f} onCopy={onCopy} />
         ))}
       </Grid>
 
-      <SectionHeader>Timing</SectionHeader>
+      <SectionHeader>{t("detail.section.timing")}</SectionHeader>
       <Grid>
         {fields.slice(10, 12).map((f) => (
           <Row key={f.k} field={f} onCopy={onCopy} />
         ))}
       </Grid>
 
-      <SectionHeader>Internals</SectionHeader>
+      <SectionHeader>{t("detail.section.internals")}</SectionHeader>
       <Grid>
         <Row
           field={{

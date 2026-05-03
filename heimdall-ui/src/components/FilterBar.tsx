@@ -23,6 +23,7 @@ import type { FlowFilters, Flow } from "../types";
 import { downloadJson } from "../util/clipboard";
 import { WsStatusBadge } from "./WsStatusBadge";
 import type { WsStatus } from "../api/ws";
+import { useI18n } from "../i18n";
 
 interface Props {
   filters: FlowFilters;
@@ -52,6 +53,7 @@ export function FilterBar({
   searchInputRef,
 }: Props) {
   const searchId = useId();
+  const { t } = useI18n();
 
   const exportJson = (): void => {
     const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, -5);
@@ -74,7 +76,7 @@ export function FilterBar({
       <TextField
         id={searchId}
         inputRef={searchInputRef}
-        placeholder="filter by host / pod / IP / connection…  (press /)"
+        placeholder={t("filter.placeholder")}
         size="small"
         variant="outlined"
         value={filters.query}
@@ -115,7 +117,7 @@ export function FilterBar({
         }
         sx={{ minWidth: 160 }}
       >
-        <MenuItem value="">all connections</MenuItem>
+        <MenuItem value="">{t("filter.allConnections")}</MenuItem>
         {connections.map((c) => (
           <MenuItem key={c} value={c}>
             {c}
@@ -132,9 +134,9 @@ export function FilterBar({
           onChange({ ...filters, hideErrors: v === "ok" });
         }}
       >
-        <ToggleButton value="all">all</ToggleButton>
+        <ToggleButton value="all">{t("filter.all")}</ToggleButton>
         <ToggleButton value="ok">
-          <Tooltip title="Hide flows with errors">
+          <Tooltip title={t("filter.hideErrors")}>
             <ErrorOutlineIcon fontSize="small" />
           </Tooltip>
         </ToggleButton>
@@ -149,7 +151,7 @@ export function FilterBar({
         />
         <Divider orientation="vertical" flexItem sx={{ mx: 0.5, my: 0.5 }} />
         <WsStatusBadge status={wsStatus} />
-        <Tooltip title={paused ? "Resume live updates" : "Pause live updates"}>
+        <Tooltip title={paused ? t("filter.resume") : t("filter.pause")}>
           <IconButton size="small" onClick={onTogglePause} aria-label="pause">
             {paused ? (
               <PlayArrowIcon fontSize="small" color="warning" />
@@ -158,12 +160,12 @@ export function FilterBar({
             )}
           </IconButton>
         </Tooltip>
-        <Tooltip title="Refetch">
+        <Tooltip title={t("filter.refetch")}>
           <IconButton size="small" onClick={onRefresh} aria-label="refresh">
             <RefreshIcon fontSize="small" />
           </IconButton>
         </Tooltip>
-        <Tooltip title="Download visible flows as JSON">
+        <Tooltip title={t("filter.export")}>
           <span>
             <IconButton
               size="small"

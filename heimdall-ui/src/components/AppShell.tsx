@@ -3,6 +3,7 @@ import {
   AppBar,
   Box,
   Chip,
+  IconButton,
   Stack,
   Toolbar,
   Tooltip,
@@ -11,14 +12,18 @@ import {
 import ShieldOutlinedIcon from "@mui/icons-material/ShieldOutlined";
 import GitHubIcon from "@mui/icons-material/GitHub";
 import LinkIcon from "@mui/icons-material/Link";
+import SettingsIcon from "@mui/icons-material/SettingsOutlined";
 import { useStatus } from "../hooks/useStatus";
+import { useI18n } from "../i18n";
 
 interface Props {
   children: ReactNode;
+  onOpenSettings: () => void;
 }
 
-export function AppShell({ children }: Props) {
+export function AppShell({ children, onOpenSettings }: Props) {
   const status = useStatus();
+  const { t } = useI18n();
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100vh" }}>
@@ -26,7 +31,7 @@ export function AppShell({ children }: Props) {
         <Toolbar variant="dense" sx={{ gap: 2 }}>
           <ShieldOutlinedIcon color="primary" />
           <Typography variant="h6" sx={{ flex: 0 }}>
-            Heimdall
+            {t("app.title")}
           </Typography>
           {status && (
             <Stack direction="row" spacing={1} alignItems="center">
@@ -64,6 +69,11 @@ export function AppShell({ children }: Props) {
             </Stack>
           )}
           <Box sx={{ flex: 1 }} />
+          <Tooltip title={t("settings.title")}>
+            <IconButton size="small" onClick={onOpenSettings} aria-label="settings">
+              <SettingsIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
           <Tooltip title="GitHub">
             <a
               href="https://github.com/dravengarden/heimdall"

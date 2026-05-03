@@ -1,6 +1,9 @@
 import { useMemo } from "react";
 import {
   DataGrid,
+  GridToolbarColumnsButton,
+  GridToolbarContainer,
+  GridToolbarDensitySelector,
   type GridColDef,
   type GridRowParams,
   type GridSortDirection,
@@ -11,6 +14,7 @@ import RouterOutlinedIcon from "@mui/icons-material/RouterOutlined";
 import dayjs from "dayjs";
 import type { Flow } from "../types";
 import { connectionColor } from "../theme";
+import { useI18n } from "../i18n";
 
 interface Props {
   flows: readonly Flow[];
@@ -33,11 +37,12 @@ const truncateSx = {
 } as const;
 
 export function FlowTable({ flows, selectedId, onSelect }: Props) {
+  const { t } = useI18n();
   const columns: GridColDef<Flow>[] = useMemo(
     () => [
       {
         field: "id",
-        headerName: "id",
+        headerName: t("table.cols.id"),
         width: 64,
         align: "right",
         headerAlign: "right",
@@ -66,7 +71,7 @@ export function FlowTable({ flows, selectedId, onSelect }: Props) {
       },
       {
         field: "ts_start_us",
-        headerName: "time",
+        headerName: t("table.cols.time"),
         width: 110,
         sortable: true,
         valueGetter: (_v, row) => row.ts_start_us,
@@ -78,7 +83,7 @@ export function FlowTable({ flows, selectedId, onSelect }: Props) {
       },
       {
         field: "pod",
-        headerName: "pod",
+        headerName: t("table.cols.pod"),
         flex: 1,
         minWidth: 220,
         sortable: true,
@@ -97,7 +102,7 @@ export function FlowTable({ flows, selectedId, onSelect }: Props) {
       },
       {
         field: "connection_name",
-        headerName: "conn",
+        headerName: t("table.cols.conn"),
         width: 96,
         sortable: true,
         renderCell: (params) => (
@@ -112,7 +117,7 @@ export function FlowTable({ flows, selectedId, onSelect }: Props) {
       },
       {
         field: "dst_host",
-        headerName: "dst",
+        headerName: t("table.cols.dst"),
         flex: 1.6,
         minWidth: 220,
         sortable: true,
@@ -130,7 +135,7 @@ export function FlowTable({ flows, selectedId, onSelect }: Props) {
       },
       {
         field: "dst_port",
-        headerName: "port",
+        headerName: t("table.cols.port"),
         width: 64,
         align: "right",
         headerAlign: "right",
@@ -171,7 +176,7 @@ export function FlowTable({ flows, selectedId, onSelect }: Props) {
       },
       {
         field: "duration",
-        headerName: "dur",
+        headerName: t("table.cols.dur"),
         width: 76,
         align: "right",
         headerAlign: "right",
@@ -189,7 +194,7 @@ export function FlowTable({ flows, selectedId, onSelect }: Props) {
       },
       {
         field: "upstream_addr",
-        headerName: "via",
+        headerName: t("table.cols.via"),
         width: 168,
         sortable: true,
         valueGetter: (_v, row) => row.upstream_addr ?? "",
@@ -200,7 +205,7 @@ export function FlowTable({ flows, selectedId, onSelect }: Props) {
         ),
       },
     ],
-    [],
+    [t],
   );
 
   return (
@@ -208,7 +213,7 @@ export function FlowTable({ flows, selectedId, onSelect }: Props) {
       rows={flows as Flow[]}
       columns={columns}
       density="compact"
-      slots={{ noRowsOverlay: NoRowsOverlay }}
+      slots={{ toolbar: GridToolbar, noRowsOverlay: NoRowsOverlay }}
       disableRowSelectionOnClick={false}
       onRowClick={(params: GridRowParams<Flow>) =>
         onSelect(params.row.id === selectedId ? null : params.row.id)
@@ -263,6 +268,9 @@ function humanBytes(n: number): string {
 }
 
 function NoRowsOverlay() {
+  // useI18n is fine here — DataGrid renders this slot inside the same
+  // React tree as the rest of the app.
+  const { t } = useI18n();
   return (
     <Stack
       sx={{ height: "100%" }}
@@ -272,11 +280,20 @@ function NoRowsOverlay() {
     >
       <RouterOutlinedIcon sx={{ fontSize: 40, color: "text.disabled" }} />
       <Typography variant="body2" color="text.secondary">
-        no flows match the current filter
+        {t("table.empty.title")}
       </Typography>
       <Typography variant="caption" color="text.disabled">
-        triggered traffic from a pod will appear here automatically
+        {t("table.empty.hint")}
       </Typography>
     </Stack>
+  );
+}
+
+function GridToolbar() {
+  return (
+    <GridToolbarContainer sx={{ px: 1, py: 0.5, gap: 0.5 }}>
+      <GridToolbarColumnsButton />
+      <GridToolbarDensitySelector />
+    </GridToolbarContainer>
   );
 }

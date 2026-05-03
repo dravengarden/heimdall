@@ -5,13 +5,28 @@ import { FilterBar } from "./components/FilterBar";
 import { ActiveFilterChips } from "./components/ActiveFilterChips";
 import { FlowTable } from "./components/FlowTable";
 import { FlowDetail } from "./components/FlowDetail";
+import { SettingsDrawer } from "./components/SettingsDrawer";
 import { useLiveFlows } from "./hooks/useLiveFlows";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import type { FlowFilters } from "./types";
+import type { ThemeMode } from "./theme";
 
-export function App() {
+interface Props {
+  themeMode: ThemeMode;
+  onThemeModeChange: (m: ThemeMode) => void;
+  fontSize: number;
+  onFontSizeChange: (px: number) => void;
+}
+
+export function App({
+  themeMode,
+  onThemeModeChange,
+  fontSize,
+  onFontSizeChange,
+}: Props) {
   const { flows, paused, setPaused, refetch, wsStatus } = useLiveFlows(300);
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   const [filters, setFilters] = useState<FlowFilters>({
@@ -53,7 +68,7 @@ export function App() {
   );
 
   return (
-    <AppShell>
+    <AppShell onOpenSettings={() => setSettingsOpen(true)}>
       <FilterBar
         filters={filters}
         onChange={setFilters}
@@ -79,6 +94,14 @@ export function App() {
         flowId={selectedId}
         onClose={() => setSelectedId(null)}
         fallback={selectedFlow}
+      />
+      <SettingsDrawer
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        mode={themeMode}
+        onModeChange={onThemeModeChange}
+        fontSize={fontSize}
+        onFontSizeChange={onFontSizeChange}
       />
     </AppShell>
   );

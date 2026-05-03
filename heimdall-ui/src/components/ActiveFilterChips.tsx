@@ -1,5 +1,6 @@
 import { Box, Chip, Typography } from "@mui/material";
 import type { FlowFilters } from "../types";
+import { useI18n } from "../i18n";
 
 interface Props {
   filters: FlowFilters;
@@ -7,12 +8,13 @@ interface Props {
 }
 
 export function ActiveFilterChips({ filters, onChange }: Props) {
+  const { t } = useI18n();
   const chips: { key: string; label: string; clear: () => void }[] = [];
 
   if (filters.query.trim().length > 0) {
     chips.push({
       key: "q",
-      label: `query: "${filters.query.trim()}"`,
+      label: `${filters.query.trim()}`,
       clear: () => onChange({ ...filters, query: "" }),
     });
   }
@@ -26,7 +28,7 @@ export function ActiveFilterChips({ filters, onChange }: Props) {
   if (filters.hideErrors) {
     chips.push({
       key: "hide",
-      label: "hide errors",
+      label: t("filter.hideErrors"),
       clear: () => onChange({ ...filters, hideErrors: false }),
     });
   }
@@ -43,7 +45,7 @@ export function ActiveFilterChips({ filters, onChange }: Props) {
         py: 0.75,
         borderBottom: 1,
         borderColor: "divider",
-        background: (t) => t.palette.background.paper,
+        background: (theme) => theme.palette.background.paper,
       }}
     >
       <Typography
@@ -51,7 +53,7 @@ export function ActiveFilterChips({ filters, onChange }: Props) {
         color="text.secondary"
         sx={{ alignSelf: "center", letterSpacing: 0.4, textTransform: "uppercase" }}
       >
-        filters
+        {t("filter.filtersLabel")}
       </Typography>
       {chips.map((c) => (
         <Chip
@@ -64,7 +66,7 @@ export function ActiveFilterChips({ filters, onChange }: Props) {
       ))}
       <Chip
         size="small"
-        label="clear all"
+        label={t("filter.clearAll")}
         variant="filled"
         onClick={() =>
           onChange({ query: "", connection: null, hideErrors: false })
