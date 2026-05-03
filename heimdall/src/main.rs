@@ -4,36 +4,31 @@
 //!
 //! ## How it works
 //!
-//!   Any process connect(external_ip:port)
+//!   Pod connect(external_ip:port)
 //!       │
-//!       │  [eBPF BPF_CGROUP_INET4_CONNECT hook]
+//!       │  [eBPF BPF_CGROUP_INET4_CONNECT]
 //!       │  Rewrites dst → relay_ip:12345
-//!       │  Saves original dst in COOKIE_MAP[socket_cookie]
+//!       │  Saves (orig, cgroup_id) in COOKIE_MAP[socket_cookie]
 //!       │
-//!       │  [eBPF BPF_CGROUP_INET_EGRESS hook on first SYN]
-//!       │  inet_hash_connect already ran → ephemeral src port is assigned.
+//!       │  [eBPF BPF_CGROUP_INET_EGRESS on first SYN]
 //!       │  Moves COOKIE_MAP[cookie] → PORT_MAP[src_port]
 //!       │
 //!       ▼
-//!   heimdall daemon (listens on runtime.listen, default 0.0.0.0:12345)
-//!       │  accept() → getpeername().port → lookup PORT_MAP
-//!       │  resolve which "connection" (upstream proxy) to use for this pod
-//!       │
-//!       ▼
-//!   Upstream (SOCKS5 with optional auth, or direct splice)
-//!       │  CONNECT original_ip:original_port
-//!       │
-//!       ▼
-//!   External network
+//!   heimdall daemon
+//!     1. accept() → src_port → PORT_MAP → (orig_ip, orig_port, cgroup_id)
+//!     2. cgroup_id → pod_uid → PodInfo (labels + annotations)
+//!     3. PodInfo → connection name (annotation > rules > default)
+//!     4. SOCKS5 CONNECT orig_ip:orig_port via chosen connection's upstream
 //!
 //! ## Configuration
 //!
-//! Driven by `/etc/heimdall/config.yaml` (see `heimdall-config` crate). The
-//! schema documents `runtime`, `connections`, and `routing`. Today only
-//! `runtime` and `routing.default` are honored — per-pod selection (M3+M4)
-//! lands later but the config is forward-compatible.
+//! Driven by `/etc/heimdall/config.yaml`. See heimdall-config crate
+//! for schema, /etc/<host-config>/docs/heimdall.md for the operator's view.
 
-use std::{net::Ipv4Addr, path::PathBuf, sync::Arc};
+mod pod;
+mod router;
+
+use std::{collections::HashMap as StdHashMap, net::Ipv4Addr, path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result};
 use aya::{
@@ -51,8 +46,9 @@ use tokio::{
 };
 use tracing::{debug, info, warn};
 
+use crate::pod::{CgroupResolver, PodInformer};
+
 // eBPF object compiled from heimdall-ebpf, embedded at build time.
-// Build first: cargo +nightly build (from heimdall-ebpf dir)
 //
 // The wrapper ensures 8-byte alignment, which the ELF parser requires when
 // parsing 64-bit ELF from a static byte slice.
@@ -80,10 +76,15 @@ struct Cli {
     /// Path to YAML config (see /etc/<host-config>/docs/heimdall.md for schema).
     #[arg(long, default_value = heimdall_config::DEFAULT_PATH, env = "HEIMDALL_CONFIG")]
     config: PathBuf,
+
+    /// Disable Kubernetes API integration entirely.
+    /// All connections will use `routing.default`.
+    #[arg(long, env = "HEIMDALL_NO_K8S")]
+    no_k8s: bool,
 }
 
 // ---------------------------------------------------------------------------
-// Resolved upstream — produced from the chosen Connection
+// Resolved upstream — produced from a Connection at startup
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug)]
@@ -117,6 +118,31 @@ fn resolve_auth(a: &Socks5Auth) -> Result<ResolvedAuth> {
     Ok(ResolvedAuth { username: a.username.clone(), password })
 }
 
+/// Pre-resolve every connection in the config so the relay path doesn't
+/// re-read password files per connection.
+fn resolve_all(cfg: &HeimdallConfig) -> Result<StdHashMap<String, Arc<Upstream>>> {
+    let mut out = StdHashMap::with_capacity(cfg.connections.len());
+    for (name, conn) in &cfg.connections {
+        let up = Upstream::from_connection(conn)
+            .with_context(|| format!("resolving connection `{name}`"))?;
+        out.insert(name.clone(), Arc::new(up));
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Shared state
+// ---------------------------------------------------------------------------
+
+struct Shared {
+    cfg: HeimdallConfig,
+    upstreams: StdHashMap<String, Arc<Upstream>>,
+    /// None when --no-k8s or informer init failed.
+    informer: Option<PodInformer>,
+    /// None when running outside k8s.
+    cgroup_resolver: Option<CgroupResolver>,
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -143,36 +169,46 @@ async fn main() -> Result<()> {
         "config loaded"
     );
 
-    // For M2/today: every connection uses the routing.default connection.
-    // M3+M4 will replace this with per-pod resolution.
-    let default_conn = cfg.default_connection();
-    let upstream = Upstream::from_connection(default_conn)
-        .with_context(|| format!("resolving default connection `{}`", cfg.routing.default))?;
-    info!(
-        connection = %cfg.routing.default,
-        kind = default_conn.type_str(),
-        "active upstream"
-    );
-    let upstream = Arc::new(upstream);
+    let upstreams = resolve_all(&cfg)?;
+    info!(connections = upstreams.len(), "all connections resolved");
+
+    // ─── Pod identity (cgroup → uid → labels) ─────────────────────────────
+    let cgroup_resolver = if cli.no_k8s {
+        None
+    } else {
+        Some(CgroupResolver::new(&cfg.runtime.cgroup))
+    };
+    let informer = if cli.no_k8s {
+        None
+    } else {
+        match PodInformer::spawn().await {
+            Ok(i) => {
+                info!("pod informer started");
+                Some(i)
+            }
+            Err(e) => {
+                warn!(error = %e, "pod informer failed to start; routing falls back to default");
+                None
+            }
+        }
+    };
+
+    let shared = Arc::new(Shared { cfg, upstreams, informer, cgroup_resolver });
 
     // ─── Load eBPF object and attach programs ─────────────────────────────
     let mut bpf = Ebpf::load(EBPF_BYTES).context("failed to load eBPF object")?;
 
-    // Write relay IP into the BPF map BEFORE attaching hooks.
-    // The eBPF connect4 hook reads this to know where to redirect connections
-    // and to avoid re-intercepting connections already going to the relay.
     {
-        let relay_ip_be = u32::from(cfg.runtime.relay_ip).to_be();
+        let relay_ip_be = u32::from(shared.cfg.runtime.relay_ip).to_be();
         let mut relay_map: Array<&mut aya::maps::MapData, u32> =
             Array::try_from(bpf.map_mut("RELAY_ADDR").context("RELAY_ADDR not found")?)?;
         relay_map.set(0, relay_ip_be, 0).context("failed to set relay IP in BPF map")?;
-        info!(relay_ip = %cfg.runtime.relay_ip, "relay IP written to BPF map");
+        info!(relay_ip = %shared.cfg.runtime.relay_ip, "relay IP written to BPF map");
     }
 
-    let cgroup = std::fs::File::open(&cfg.runtime.cgroup)
-        .with_context(|| format!("failed to open cgroup path: {}", cfg.runtime.cgroup))?;
+    let cgroup = std::fs::File::open(&shared.cfg.runtime.cgroup)
+        .with_context(|| format!("failed to open cgroup path: {}", shared.cfg.runtime.cgroup))?;
 
-    // Hook 1: intercept connect() and rewrite destination
     let connect4: &mut CgroupSockAddr = bpf
         .program_mut("connect4")
         .context("connect4 eBPF program not found")?
@@ -181,10 +217,8 @@ async fn main() -> Result<()> {
     connect4
         .attach(&cgroup, CgroupAttachMode::default())
         .context("failed to attach connect4")?;
-    info!(cgroup = %cfg.runtime.cgroup, relay_ip = %cfg.runtime.relay_ip, "eBPF connect4 hook attached");
+    info!(cgroup = %shared.cfg.runtime.cgroup, "eBPF connect4 attached");
 
-    // Hook 2: on first SYN to relay, move cookie_map → port_map by src_port.
-    // Runs at cgroup_skb egress time, after inet_hash_connect assigns src port.
     let skb_egress: &mut CgroupSkb = bpf
         .program_mut("skb_egress")
         .context("skb_egress eBPF program not found")?
@@ -193,32 +227,27 @@ async fn main() -> Result<()> {
     skb_egress
         .attach(&cgroup, CgroupSkbAttachType::Egress, CgroupAttachMode::default())
         .context("failed to attach skb_egress")?;
-    info!(cgroup = %cfg.runtime.cgroup, "eBPF skb_egress hook attached");
+    info!(cgroup = %shared.cfg.runtime.cgroup, "eBPF skb_egress attached");
 
-    // Shared BPF map: client ephemeral port → original destination
     let port_map: PortMap = Arc::new(RwLock::new(
-        HashMap::try_from(
-            bpf.take_map("PORT_MAP").context("PORT_MAP not found")?,
-        )?,
+        HashMap::try_from(bpf.take_map("PORT_MAP").context("PORT_MAP not found")?)?,
     ));
 
-    // ─── Start relay listener ─────────────────────────────────────────────
-    let listener = TcpListener::bind(&cfg.runtime.listen)
+    // ─── Relay listener ────────────────────────────────────────────────────
+    let listener = TcpListener::bind(&shared.cfg.runtime.listen)
         .await
-        .with_context(|| format!("failed to bind relay listener on {}", cfg.runtime.listen))?;
-
-    info!(listen = %cfg.runtime.listen, "heimdall ready");
+        .with_context(|| format!("failed to bind relay listener on {}", shared.cfg.runtime.listen))?;
+    info!(listen = %shared.cfg.runtime.listen, "heimdall ready");
 
     loop {
         let (stream, peer) = listener.accept().await?;
         let map = port_map.clone();
-        let upstream = upstream.clone();
+        let shared = shared.clone();
 
         tokio::spawn(async move {
             let client_port = peer.port() as u32;
             debug!(client_port, "accepted redirected connection");
-
-            if let Err(e) = relay(stream, client_port, map, upstream).await {
+            if let Err(e) = relay(stream, client_port, map, shared).await {
                 warn!(client_port, "relay error: {e:#}");
             }
         });
@@ -226,16 +255,16 @@ async fn main() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Per-connection relay
+// Per-connection relay: pod identity → routing → upstream
 // ---------------------------------------------------------------------------
 
 async fn relay(
     mut client: TcpStream,
     client_port: u32,
     map: PortMap,
-    upstream: Arc<Upstream>,
+    shared: Arc<Shared>,
 ) -> Result<()> {
-    // Retrieve and immediately remove the original destination from the BPF map.
+    // Pop the original destination (and cgroup_id) from the BPF map.
     let orig = {
         let m = map.read().await;
         m.get(&client_port, 0)
@@ -245,17 +274,45 @@ async fn relay(
 
     let dst_ip = Ipv4Addr::from(u32::from_be(orig.ip));
     let dst_port = u16::from_be(orig.port);
-    debug!(%dst_ip, dst_port, "original destination resolved");
 
+    // ─── Resolve pod identity ──────────────────────────────────────────────
+    let pod_info = match (&shared.cgroup_resolver, &shared.informer) {
+        (Some(cr), Some(inf)) => cr
+            .resolve(orig.cgroup_id)
+            .and_then(|uid| inf.lookup(&uid)),
+        _ => None,
+    };
+
+    // ─── Pick connection ───────────────────────────────────────────────────
+    let conn_name = router::resolve_connection(&shared.cfg, pod_info.as_ref());
+    let upstream = shared
+        .upstreams
+        .get(&conn_name)
+        .with_context(|| format!("resolved connection `{conn_name}` not in registry"))?
+        .clone();
+
+    let pod_label = pod_info
+        .as_ref()
+        .map(|p| format!("{}/{}", p.namespace, p.name))
+        .unwrap_or_else(|| "unknown".to_string());
+
+    // ─── Open the chosen upstream ──────────────────────────────────────────
     match upstream.as_ref() {
         Upstream::Socks5 { addr, auth } => {
             let mut up = TcpStream::connect(addr)
                 .await
-                .with_context(|| format!("failed to connect to SOCKS5 {addr}"))?;
+                .with_context(|| format!("connect to SOCKS5 {addr}"))?;
             socks5_connect(&mut up, dst_ip, dst_port, auth.as_ref())
                 .await
                 .with_context(|| format!("SOCKS5 CONNECT {dst_ip}:{dst_port} via {addr}"))?;
-            info!(%dst_ip, dst_port, via = %addr, "tunnel established");
+            info!(
+                pod = %pod_label,
+                connection = %conn_name,
+                %dst_ip,
+                dst_port,
+                via = %addr,
+                "tunnel established"
+            );
             copy_bidirectional(&mut client, &mut up).await?;
         }
         Upstream::Direct => {
@@ -263,7 +320,13 @@ async fn relay(
             let mut up = TcpStream::connect(&dst)
                 .await
                 .with_context(|| format!("direct connect to {dst}"))?;
-            info!(%dst_ip, dst_port, "tunnel established (direct)");
+            info!(
+                pod = %pod_label,
+                connection = %conn_name,
+                %dst_ip,
+                dst_port,
+                "tunnel established (direct)"
+            );
             copy_bidirectional(&mut client, &mut up).await?;
         }
     }
@@ -271,7 +334,7 @@ async fn relay(
 }
 
 // ---------------------------------------------------------------------------
-// SOCKS5 handshake (RFC 1928 + RFC 1929 user/pass auth)
+// SOCKS5 handshake (RFC 1928 + RFC 1929 user/pass)
 // ---------------------------------------------------------------------------
 
 const M_NO_AUTH: u8 = 0x00;
@@ -286,7 +349,6 @@ async fn socks5_connect(
 ) -> Result<()> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    // Method negotiation. Offer methods we support.
     let methods: &[u8] = if auth.is_some() {
         &[M_NO_AUTH, M_USER_PASS]
     } else {
@@ -303,7 +365,7 @@ async fn socks5_connect(
     anyhow::ensure!(sel[0] == 0x05, "SOCKS5: bad version in method reply: {sel:?}");
 
     match sel[1] {
-        M_NO_AUTH => { /* proceed without auth */ }
+        M_NO_AUTH => {}
         M_USER_PASS => {
             let auth = auth.context("server demands user/pass but no credentials configured")?;
             socks5_userpass(s, &auth.username, &auth.password).await?;
@@ -312,17 +374,15 @@ async fn socks5_connect(
         other => anyhow::bail!("SOCKS5: unsupported method 0x{other:02x}"),
     }
 
-    // CONNECT request with IPv4 address
     let ip = ip.octets();
     let port_be = port.to_be_bytes();
     s.write_all(&[
-        0x05, 0x01, 0x00, 0x01, // VER, CMD=CONNECT, RSV, ATYP=IPv4
+        0x05, 0x01, 0x00, 0x01,
         ip[0], ip[1], ip[2], ip[3],
         port_be[0], port_be[1],
     ])
     .await?;
 
-    // Read reply (fixed 10 bytes for IPv4 BND.ADDR)
     let mut resp = [0u8; 10];
     s.read_exact(&mut resp).await?;
     anyhow::ensure!(
@@ -334,7 +394,6 @@ async fn socks5_connect(
     Ok(())
 }
 
-/// RFC 1929 username/password sub-negotiation.
 async fn socks5_userpass(s: &mut TcpStream, user: &str, pass: &str) -> Result<()> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -342,7 +401,7 @@ async fn socks5_userpass(s: &mut TcpStream, user: &str, pass: &str) -> Result<()
     anyhow::ensure!(pass.len() <= 255, "SOCKS5 user/pass: password > 255 bytes");
 
     let mut req = Vec::with_capacity(3 + user.len() + pass.len());
-    req.push(0x01); // sub-version
+    req.push(0x01);
     req.push(user.len() as u8);
     req.extend_from_slice(user.as_bytes());
     req.push(pass.len() as u8);
