@@ -107,7 +107,7 @@ pub fn router(state: AppState) -> Router {
 // ---------------------------------------------------------------------------
 
 #[derive(Embed)]
-#[folder = "../heimdall-ui/target/dx/heimdall-ui/release/web/public/"]
+#[folder = "../heimdall-ui/dist/"]
 struct UiAssets;
 
 async fn serve_index() -> Response {
