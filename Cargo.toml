@@ -2,6 +2,7 @@
 members = [
     "heimdall",
     "heimdall-common",
+    "heimdall-config",
     # heimdall-ebpf is compiled separately targeting bpfel-unknown-none
 ]
 resolver = "2"
