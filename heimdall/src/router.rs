@@ -1,52 +1,61 @@
 //! Routing engine: pick a connection name for each pod.
 //!
-//! Resolution order (matches the doc at /etc/nixos/docs/heimdall.md):
+//! Resolution order (matches /etc/nixos/docs/heimdall.md):
 //!
-//!   1. Pod annotation (`routing.annotationKey`, default `heimdall.io/connection`)
-//!      — if set and points to a known connection, wins outright.
-//!   2. `routing.rules` — first label/expression match wins.
-//!   3. `routing.default`.
+//!   1. Pod **annotation** at `routing.selectorKey`
+//!      (default `heimdall.io/connection`) → use that connection.
+//!   2. Pod **label** at the same `routing.selectorKey` → use that connection.
+//!   3. `routing.rules` first match wins
+//!      (admin-defined; for pods that can't set the selectorKey themselves).
+//!   4. `routing.default`.
+//!
+//! Annotation wins over label if both are set, because annotations are
+//! generally harder to set accidentally via templating.
 
 use heimdall_config::{HeimdallConfig, Match, MatchExpression, MatchOperator, Rule};
 
 use crate::pod::PodInfo;
 
 /// Decide which connection name to use for a pod.
-/// Falls back to `cfg.routing.default` if no annotation or rule matches.
+/// Falls back to `cfg.routing.default` if nothing matches.
 ///
 /// Returns `String` (not `&str`) because the chosen name might come from
-/// either `cfg` (rule / default) or from `pod` (annotation value), and
-/// those have unrelated lifetimes at the call site.
+/// either `cfg` (rule / default) or from `pod` (annotation/label value),
+/// which have unrelated lifetimes at the call site.
 pub fn resolve_connection(cfg: &HeimdallConfig, pod: Option<&PodInfo>) -> String {
-    // No pod identity → default. (Connections from outside k8s, or cgroup
-    // resolver missed, or informer hasn't synced yet.)
     let Some(pod) = pod else {
         return cfg.routing.default.clone();
     };
 
-    // 1. Annotation override.
-    if let Some(name) = pod.annotations.get(&cfg.routing.annotation_key) {
+    let key = &cfg.routing.selector_key;
+
+    // 1. Annotation override (chart-author explicit, hardest to set by accident).
+    if let Some(name) = pod.annotations.get(key) {
         if cfg.connections.contains_key(name) {
             return name.clone();
         }
-        // Annotation present but unknown connection: fall through to rules.
     }
 
-    // 2. Rules — first match wins.
+    // 2. Label (chart-author declarative; also queryable by other tools).
+    if let Some(name) = pod.labels.get(key) {
+        if cfg.connections.contains_key(name) {
+            return name.clone();
+        }
+    }
+
+    // 3. Admin-defined rules — first match wins.
     for rule in &cfg.routing.rules {
         if rule_matches(rule, pod) {
             return rule.use_.clone();
         }
     }
 
-    // 3. Default.
+    // 4. Default.
     cfg.routing.default.clone()
 }
 
 fn rule_matches(rule: &Rule, pod: &PodInfo) -> bool {
     let m = &rule.r#match;
-
-    // Empty match block matches everything (unusual but legal).
     if !match_namespaces(m, pod) {
         return false;
     }
@@ -126,13 +135,14 @@ mod tests {
             Connection::Direct(DirectConnection { description: None, owner: None }),
         );
 
-        let mut conviva_labels = BTreeMap::new();
-        conviva_labels.insert("family".to_string(), "conviva".to_string());
+        // Admin-defined fallback rule for pods that can't set selectorKey.
+        let mut legacy_labels = BTreeMap::new();
+        legacy_labels.insert("app.kubernetes.io/part-of".into(), "conviva".into());
 
         let rules = vec![Rule {
-            name: "conviva-family".into(),
+            name: "legacy-conviva".into(),
             r#match: Match {
-                match_labels: conviva_labels,
+                match_labels: legacy_labels,
                 match_expressions: vec![],
                 namespaces: vec![],
             },
@@ -145,14 +155,14 @@ mod tests {
             runtime: Runtime::default(),
             connections,
             routing: Routing {
-                annotation_key: "heimdall.io/connection".into(),
+                selector_key: "heimdall.io/connection".into(),
                 rules,
                 default: "default".into(),
             },
         }
     }
 
-    fn make_pod(labels: &[(&str, &str)], annotations: &[(&str, &str)]) -> PodInfo {
+    fn pod_with(labels: &[(&str, &str)], annotations: &[(&str, &str)]) -> PodInfo {
         PodInfo {
             uid: "u".into(),
             namespace: "ns".into(),
@@ -169,36 +179,65 @@ mod tests {
     }
 
     #[test]
-    fn no_match_returns_default() {
+    fn nothing_matches_returns_default() {
         let cfg = make_cfg();
-        let pod = make_pod(&[("env", "prod")], &[]);
+        let pod = pod_with(&[("env", "prod")], &[]);
         assert_eq!(resolve_connection(&cfg, Some(&pod)), "default");
     }
 
     #[test]
-    fn label_match_wins() {
+    fn label_selector_key_picks_connection() {
         let cfg = make_cfg();
-        let pod = make_pod(&[("family", "conviva")], &[]);
+        let pod = pod_with(&[("heimdall.io/connection", "conviva")], &[]);
         assert_eq!(resolve_connection(&cfg, Some(&pod)), "conviva");
     }
 
     #[test]
-    fn annotation_overrides_rule() {
+    fn annotation_selector_key_picks_connection() {
         let cfg = make_cfg();
-        let pod = make_pod(
-            &[("family", "conviva")],
+        let pod = pod_with(&[], &[("heimdall.io/connection", "bypass")]);
+        assert_eq!(resolve_connection(&cfg, Some(&pod)), "bypass");
+    }
+
+    #[test]
+    fn annotation_wins_over_label_when_both_set() {
+        let cfg = make_cfg();
+        let pod = pod_with(
+            &[("heimdall.io/connection", "conviva")],
             &[("heimdall.io/connection", "bypass")],
         );
         assert_eq!(resolve_connection(&cfg, Some(&pod)), "bypass");
     }
 
     #[test]
-    fn unknown_annotation_falls_through_to_rule() {
+    fn unknown_connection_in_annotation_falls_through() {
         let cfg = make_cfg();
-        let pod = make_pod(
-            &[("family", "conviva")],
+        let pod = pod_with(
+            &[("heimdall.io/connection", "conviva")],
             &[("heimdall.io/connection", "ghost")],
         );
+        // annotation = ghost (unknown) → fall through to label = conviva
+        assert_eq!(resolve_connection(&cfg, Some(&pod)), "conviva");
+    }
+
+    #[test]
+    fn unknown_connection_in_label_falls_through_to_rules() {
+        let cfg = make_cfg();
+        let pod = pod_with(
+            &[
+                ("heimdall.io/connection", "ghost"),
+                ("app.kubernetes.io/part-of", "conviva"),
+            ],
+            &[],
+        );
+        // label says ghost (unknown) → falls to rule matching part-of=conviva → conviva
+        assert_eq!(resolve_connection(&cfg, Some(&pod)), "conviva");
+    }
+
+    #[test]
+    fn rule_matches_when_no_selector_key() {
+        let cfg = make_cfg();
+        let pod = pod_with(&[("app.kubernetes.io/part-of", "conviva")], &[]);
         assert_eq!(resolve_connection(&cfg, Some(&pod)), "conviva");
     }
 
@@ -212,8 +251,8 @@ mod tests {
             values: vec!["prod".into(), "stg".into()],
         }];
 
-        let p_prod = make_pod(&[("env", "prod")], &[]);
-        let p_dev = make_pod(&[("env", "dev")], &[]);
+        let p_prod = pod_with(&[("env", "prod")], &[]);
+        let p_dev = pod_with(&[("env", "dev")], &[]);
         assert_eq!(resolve_connection(&cfg, Some(&p_prod)), "conviva");
         assert_eq!(resolve_connection(&cfg, Some(&p_dev)), "default");
     }
@@ -225,12 +264,12 @@ mod tests {
 
         let p_in = PodInfo {
             namespace: "conviva-prod".into(),
-            labels: [("family".to_string(), "conviva".to_string())].into(),
+            labels: [("app.kubernetes.io/part-of".into(), "conviva".into())].into(),
             ..Default::default()
         };
         let p_out = PodInfo {
             namespace: "default".into(),
-            labels: [("family".to_string(), "conviva".to_string())].into(),
+            labels: [("app.kubernetes.io/part-of".into(), "conviva".into())].into(),
             ..Default::default()
         };
         assert_eq!(resolve_connection(&cfg, Some(&p_in)), "conviva");
