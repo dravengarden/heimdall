@@ -20,11 +20,12 @@ use axum::{
         ws::{Message, WebSocket},
         Path, Query, State, WebSocketUpgrade,
     },
-    http::StatusCode,
+    http::{header, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::get,
     Json, Router,
 };
+use rust_embed::Embed;
 use heimdall_config::HeimdallConfig;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -87,6 +88,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/flows", get(list_flows))
         .route("/api/flows/{id}", get(show_flow))
         .route("/api/ws/flows", get(ws_flows))
+        // Embedded Dioxus UI bundle. Order matters: API first, then the
+        // catch-all static handler so it doesn't shadow API paths.
+        .route("/", get(serve_index))
+        .route("/{*path}", get(serve_static))
         .layer(
             // Allow any origin while we develop the Dioxus UI side-by-side.
             // Once the UI is bundled into the same binary at `/`, same-origin
@@ -94,6 +99,56 @@ pub fn router(state: AppState) -> Router {
             CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any),
         )
         .with_state(state)
+}
+
+// ---------------------------------------------------------------------------
+// Embedded UI bundle — populated by `dx build --platform web --release`
+// in heimdall-ui, plus DaisyUI vendored CSS copied in by build.rs.
+// ---------------------------------------------------------------------------
+
+#[derive(Embed)]
+#[folder = "../heimdall-ui/target/dx/heimdall-ui/release/web/public/"]
+struct UiAssets;
+
+async fn serve_index() -> Response {
+    embedded_response("index.html")
+}
+
+async fn serve_static(uri: Uri) -> Response {
+    let path = uri.path().trim_start_matches('/');
+    if path.is_empty() {
+        return embedded_response("index.html");
+    }
+    // Try exact match first.
+    if let Some(file) = UiAssets::get(path) {
+        return file_response(path, file);
+    }
+    // SPA fallback: client-side routes (no extension) get index.html so
+    // Dioxus router can take over. File-like requests get a real 404.
+    if !path.contains('.') {
+        return embedded_response("index.html");
+    }
+    (StatusCode::NOT_FOUND, format!("not found: /{path}")).into_response()
+}
+
+fn embedded_response(path: &str) -> Response {
+    match UiAssets::get(path) {
+        Some(file) => file_response(path, file),
+        None => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("UI bundle missing ({path}). Run: cd heimdall-ui && dx build --platform web --release"),
+        )
+            .into_response(),
+    }
+}
+
+fn file_response(path: &str, file: rust_embed::EmbeddedFile) -> Response {
+    let mime = mime_guess::from_path(path).first_or_octet_stream();
+    (
+        [(header::CONTENT_TYPE, mime.essence_str())],
+        file.data.into_owned(),
+    )
+        .into_response()
 }
 
 pub async fn serve(state: AppState, addr: SocketAddr) -> Result<()> {
