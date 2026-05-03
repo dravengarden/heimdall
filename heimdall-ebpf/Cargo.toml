@@ -1,15 +1,15 @@
 [package]
-name = "ebpf-socks-ebpf"
+name = "heimdall-ebpf"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 aya-ebpf = "0.1"
 aya-log-ebpf = "0.1"
-ebpf-socks-common = { path = "../ebpf-socks-common", default-features = false }
+heimdall-common = { path = "../heimdall-common", default-features = false }
 
 [[bin]]
-name = "ebpf-socks-ebpf"
+name = "heimdall-ebpf"
 path = "src/main.rs"
 
 [workspace]

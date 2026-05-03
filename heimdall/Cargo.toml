@@ -1,5 +1,5 @@
 [package]
-name = "ebpf-socks"
+name = "heimdall"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,7 +9,7 @@ aya = { version = "0.13", features = ["async_tokio"] }
 aya-log = "0.2"
 
 # Shared data types with the eBPF programs
-ebpf-socks-common = { path = "../ebpf-socks-common" }
+heimdall-common = { path = "../heimdall-common" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -28,5 +28,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 libc = "0.2"
 
 [[bin]]
-name = "ebpf-socks"
+name = "heimdall"
 path = "src/main.rs"

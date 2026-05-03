@@ -1,4 +1,4 @@
-# ebpf-socks DaemonSet — runs one relay per node, covers all pods transparently.
+# heimdall DaemonSet — runs one relay per node, covers all pods transparently.
 #
 # Requirements:
 #   - privileged: true          (eBPF program loading requires CAP_BPF / CAP_SYS_ADMIN)
@@ -15,18 +15,18 @@
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: ebpf-socks
+  name: heimdall
   namespace: kube-system
   labels:
-    app: ebpf-socks
+    app: heimdall
 spec:
   selector:
     matchLabels:
-      app: ebpf-socks
+      app: heimdall
   template:
     metadata:
       labels:
-        app: ebpf-socks
+        app: heimdall
     spec:
       # Required to access the host cgroup hierarchy
       hostPID: true
@@ -36,8 +36,8 @@ spec:
         - operator: Exists  # run on every node including control-plane
 
       containers:
-        - name: ebpf-socks
-          image: ghcr.io/your-org/ebpf-socks:latest
+        - name: heimdall
+          image: ghcr.io/your-org/heimdall:latest
           imagePullPolicy: Always
 
           args:
@@ -49,12 +49,12 @@ spec:
             - name: SOCKS5_ADDR
               valueFrom:
                 secretKeyRef:
-                  name: ebpf-socks-config
+                  name: heimdall-config
                   key: socks5-addr
 
             # Tune log verbosity: error | warn | info | debug | trace
             - name: RUST_LOG
-              value: "ebpf_socks=info"
+              value: "heimdall=info"
 
           securityContext:
             privileged: true          # needed for eBPF program loading
@@ -93,12 +93,12 @@ spec:
 
 ---
 # Secret: set the SOCKS5 server address here.
-# kubectl create secret generic ebpf-socks-config \
+# kubectl create secret generic heimdall-config \
 #   --from-literal=socks5-addr=127.0.0.1:20170 -n kube-system
 apiVersion: v1
 kind: Secret
 metadata:
-  name: ebpf-socks-config
+  name: heimdall-config
   namespace: kube-system
 type: Opaque
 stringData:

@@ -1,4 +1,4 @@
-//! ebpf-socks — transparent SOCKS5 egress proxy driven by eBPF.
+//! heimdall — transparent SOCKS5 egress proxy driven by eBPF.
 //!
 //! Works as a standalone CLI tool or as a Kubernetes DaemonSet.
 //!
@@ -15,7 +15,7 @@
 //!       │  Moves COOKIE_MAP[cookie] → PORT_MAP[src_port]
 //!       │
 //!       ▼
-//!   ebpf-socks daemon (listens on --listen, defaults to 0.0.0.0:12345)
+//!   heimdall daemon (listens on --listen, defaults to 0.0.0.0:12345)
 //!       │  accept() → getpeername().port → lookup PORT_MAP
 //!       │
 //!       ▼
@@ -42,7 +42,7 @@ use aya::{
     Ebpf,
 };
 use clap::Parser;
-use ebpf_socks_common::OrigDst;
+use heimdall_common::OrigDst;
 use tokio::{
     io::copy_bidirectional,
     net::{TcpListener, TcpStream},
@@ -50,8 +50,8 @@ use tokio::{
 };
 use tracing::{debug, info, warn};
 
-// eBPF object compiled from ebpf-socks-ebpf, embedded at build time.
-// Build first: cargo +nightly build (from ebpf-socks-ebpf dir)
+// eBPF object compiled from heimdall-ebpf, embedded at build time.
+// Build first: cargo +nightly build (from heimdall-ebpf dir)
 //
 // The wrapper ensures 8-byte alignment, which the ELF parser requires when
 // parsing 64-bit ELF from a static byte slice.
@@ -59,9 +59,9 @@ use tracing::{debug, info, warn};
 struct AlignedBytes<const N: usize>([u8; N]);
 
 static EBPF_OBJ: AlignedBytes<{ include_bytes!(
-    "../../ebpf-socks-ebpf/target/bpfel-unknown-none/release/ebpf-socks-ebpf"
+    "../../heimdall-ebpf/target/bpfel-unknown-none/release/heimdall-ebpf"
 ).len() }> = AlignedBytes(*include_bytes!(
-    "../../ebpf-socks-ebpf/target/bpfel-unknown-none/release/ebpf-socks-ebpf"
+    "../../heimdall-ebpf/target/bpfel-unknown-none/release/heimdall-ebpf"
 ));
 
 const EBPF_BYTES: &[u8] = &EBPF_OBJ.0;
@@ -77,7 +77,7 @@ type PortMap = Arc<RwLock<HashMap<aya::maps::MapData, u32, OrigDst>>>;
 /// Intercepts all outbound TCP connections from processes in the attached
 /// cgroup and tunnels them through a SOCKS5 server — no per-app config needed.
 #[derive(Parser, Debug)]
-#[command(name = "ebpf-socks", version, about, long_about = None)]
+#[command(name = "heimdall", version, about, long_about = None)]
 struct Cli {
     /// SOCKS5 server address.
     #[arg(long, env = "SOCKS5_ADDR")]
@@ -119,7 +119,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("ebpf_socks=info".parse()?),
+                .add_directive("heimdall=info".parse()?),
         )
         .init();
 
@@ -180,7 +180,7 @@ async fn main() -> Result<()> {
     info!(
         listen = %cli.listen,
         socks5 = %cli.socks5,
-        "ebpf-socks ready"
+        "heimdall ready"
     );
 
     let socks5_addr = Arc::new(cli.socks5);

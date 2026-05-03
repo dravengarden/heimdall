@@ -1,7 +1,7 @@
 [workspace]
 members = [
-    "ebpf-socks",
-    "ebpf-socks-common",
-    # ebpf-socks-ebpf is compiled separately targeting bpfel-unknown-none
+    "heimdall",
+    "heimdall-common",
+    # heimdall-ebpf is compiled separately targeting bpfel-unknown-none
 ]
 resolver = "2"

@@ -2,9 +2,9 @@
 struct AlignedBytes<const N: usize>([u8; N]);
 
 static EBPF_OBJ: AlignedBytes<{ include_bytes!(
-    "../../../ebpf-socks-ebpf/target/bpfel-unknown-none/release/ebpf-socks-ebpf"
+    "../../../heimdall-ebpf/target/bpfel-unknown-none/release/heimdall-ebpf"
 ).len() }> = AlignedBytes(*include_bytes!(
-    "../../../ebpf-socks-ebpf/target/bpfel-unknown-none/release/ebpf-socks-ebpf"
+    "../../../heimdall-ebpf/target/bpfel-unknown-none/release/heimdall-ebpf"
 ));
 
 fn main() {
