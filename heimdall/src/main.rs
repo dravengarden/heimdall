@@ -25,6 +25,7 @@
 //! Driven by `/etc/heimdall/config.yaml`. See heimdall-config crate
 //! for schema, /etc/<host-config>/docs/heimdall.md for the operator's view.
 
+mod api;
 mod cli;
 mod dns;
 mod pod;
@@ -174,6 +175,9 @@ struct Shared {
     dns: Option<Arc<DnsResolver>>,
     /// Flow store (sqlite). None when init failed (relay still runs).
     store: Option<Arc<store::Store>>,
+    /// Live flow event bus — relay publishes finish events,
+    /// API WebSocket subscribers consume.
+    events: api::EventBus,
 }
 
 /// SOCKS5 destination — either an IP literal (ATYP=0x01) or a hostname
@@ -291,7 +295,38 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
         }
     };
 
-    let shared = Arc::new(Shared { cfg, upstreams, informer, cgroup_resolver, dns, store });
+    // ─── HTTP API (REST + WebSocket) ──────────────────────────────────────
+    let events = api::EventBus::new(1024);
+
+    if let Some(s) = store.as_ref() {
+        let api_listen: SocketAddr = cfg
+            .runtime
+            .api_listen
+            .parse()
+            .with_context(|| format!("parse runtime.apiListen `{}`", cfg.runtime.api_listen))?;
+        let app_state = api::AppState {
+            store: s.clone(),
+            events: events.clone(),
+            cfg_path: config_path.clone(),
+        };
+        tokio::spawn(async move {
+            if let Err(e) = api::serve(app_state, api_listen).await {
+                warn!(error = %e, "HTTP API exited");
+            }
+        });
+    } else {
+        warn!("flow store unavailable; HTTP API not started");
+    }
+
+    let shared = Arc::new(Shared {
+        cfg,
+        upstreams,
+        informer,
+        cgroup_resolver,
+        dns,
+        store,
+        events,
+    });
 
     // ─── Load eBPF object and attach programs ─────────────────────────────
     let mut bpf = Ebpf::load(EBPF_BYTES).context("failed to load eBPF object")?;
@@ -486,7 +521,7 @@ async fn relay(
     }
     .await;
 
-    // ─── Record flow finish (best-effort) ─────────────────────────────────
+    // ─── Record flow finish (best-effort) + publish to live bus ──────────
     if let (Some(s), Some(id)) = (shared.store.as_ref(), flow_id) {
         let finish = match &result {
             Ok((u, d)) => store::FlowFinish {
@@ -502,6 +537,8 @@ async fn relay(
         };
         if let Err(e) = s.finish_flow(id, finish).await {
             warn!(error = %e, "store: finish_flow failed");
+        } else {
+            shared.events.publish(api::FlowEvent { flow_id: id });
         }
     }
 

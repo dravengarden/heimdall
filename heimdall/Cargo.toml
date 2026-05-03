@@ -49,8 +49,14 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 
 # Pretty CLI table output
 comfy-table = "7"
-serde = "1.0.228"
+serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+
+# HTTP API + future Web UI
+axum = { version = "0.8", features = ["ws", "macros"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
 
 [[bin]]
 name = "heimdall"

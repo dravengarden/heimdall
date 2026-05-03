@@ -104,6 +104,12 @@ pub struct Runtime {
     /// runs every 6 hours and deletes rows older than this.
     #[serde(default = "default_flow_retention_secs", rename = "flowRetentionSecs")]
     pub flow_retention_secs: i64,
+
+    /// HTTP API + future Web UI listen address.
+    /// Default `127.0.0.1:9999` keeps it loopback-only; set
+    /// to `0.0.0.0:9999` for LAN browser access.
+    #[serde(default = "default_api_listen", rename = "apiListen")]
+    pub api_listen: String,
 }
 
 impl Default for Runtime {
@@ -117,6 +123,7 @@ impl Default for Runtime {
             fake_ip_cidr: default_fake_ip_cidr(),
             state_dir: default_state_dir(),
             flow_retention_secs: default_flow_retention_secs(),
+            api_listen: default_api_listen(),
         }
     }
 }
@@ -128,6 +135,7 @@ fn default_dns_listen() -> String { "0.0.0.0:5358".to_string() }
 fn default_fake_ip_cidr() -> String { "198.19.0.0/16".to_string() }
 fn default_state_dir() -> PathBuf { PathBuf::from("/var/lib/heimdall") }
 fn default_flow_retention_secs() -> i64 { 3 * 86400 } // 3 days
+fn default_api_listen() -> String { "127.0.0.1:9999".to_string() }
 
 // ---------------------------------------------------------------------------
 // connections: registry of named upstreams
