@@ -25,9 +25,11 @@
 //! Driven by `/etc/heimdall/config.yaml`. See heimdall-config crate
 //! for schema, /etc/nixos/docs/heimdall.md for the operator's view.
 
+mod cli;
 mod dns;
 mod pod;
 mod router;
+mod store;
 
 use std::{
     collections::HashMap as StdHashMap,
@@ -73,17 +75,36 @@ const EBPF_BYTES: &[u8] = &EBPF_OBJ.0;
 type PortMap = Arc<RwLock<HashMap<aya::maps::MapData, u32, OrigDst>>>;
 
 // ---------------------------------------------------------------------------
-// CLI
+// CLI — top level
 // ---------------------------------------------------------------------------
 
-/// Transparent SOCKS5 egress proxy using eBPF cgroup hooks.
+/// heimdall — transparent SOCKS5 egress proxy + observability for k8s pods.
 #[derive(Parser, Debug)]
 #[command(name = "heimdall", version, about, long_about = None)]
 struct Cli {
-    /// Path to YAML config (see /etc/nixos/docs/heimdall.md for schema).
-    #[arg(long, default_value = heimdall_config::DEFAULT_PATH, env = "HEIMDALL_CONFIG")]
+    /// Path to YAML config.
+    #[arg(long, default_value = heimdall_config::DEFAULT_PATH, env = "HEIMDALL_CONFIG", global = true)]
     config: PathBuf,
 
+    #[command(subcommand)]
+    cmd: Cmd,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum Cmd {
+    /// Run the heimdall daemon (used by systemd).
+    Serve(ServeArgs),
+
+    /// List, search, and inspect recorded flows.
+    #[command(subcommand)]
+    Flows(cli::flows::FlowsCmd),
+
+    /// Daemon health and counts.
+    Status,
+}
+
+#[derive(clap::Args, Debug)]
+struct ServeArgs {
     /// Disable Kubernetes API integration entirely.
     /// All connections will use `routing.default`.
     #[arg(long, env = "HEIMDALL_NO_K8S")]
@@ -151,6 +172,8 @@ struct Shared {
     /// Fake-IP DNS resolver. None when DNS server failed to bind
     /// (relay degrades to plain IP-mode SOCKS5 in that case).
     dns: Option<Arc<DnsResolver>>,
+    /// Flow store (sqlite). None when init failed (relay still runs).
+    store: Option<Arc<store::Store>>,
 }
 
 /// SOCKS5 destination — either an IP literal (ATYP=0x01) or a hostname
@@ -167,20 +190,35 @@ enum Dst {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("heimdall=info".parse()?),
-        )
-        .init();
-
     let cli = Cli::parse();
 
+    // Only the daemon prints structured logs by default. CLI subcommands
+    // stay quiet unless `RUST_LOG` overrides — they're meant to feed
+    // stdout into pipes / `jq` / human eyes.
+    let default_level = match &cli.cmd {
+        Cmd::Serve(_) => "heimdall=info",
+        _ => "heimdall=warn",
+    };
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env().add_directive(default_level.parse()?),
+        )
+        .with_writer(std::io::stderr)
+        .init();
+
+    match cli.cmd {
+        Cmd::Serve(args) => daemon_run(&cli.config, args).await,
+        Cmd::Flows(sub) => cli::flows::run(&cli.config, sub).await,
+        Cmd::Status => cli::status::run(&cli.config).await,
+    }
+}
+
+async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
     // ─── Load config ──────────────────────────────────────────────────────
-    let cfg = HeimdallConfig::load(&cli.config)
-        .with_context(|| format!("loading config from {}", cli.config.display()))?;
+    let cfg = HeimdallConfig::load(config_path)
+        .with_context(|| format!("loading config from {}", config_path.display()))?;
     info!(
-        path = %cli.config.display(),
+        path = %config_path.display(),
         connections = cfg.connections.len(),
         rules = cfg.routing.rules.len(),
         default = %cfg.routing.default,
@@ -190,13 +228,32 @@ async fn main() -> Result<()> {
     let upstreams = resolve_all(&cfg)?;
     info!(connections = upstreams.len(), "all connections resolved");
 
+    // ─── Flow store (sqlite) ──────────────────────────────────────────────
+    let store_path = cfg.runtime.state_dir.join("flows.db");
+    let store = match store::Store::open(&store_path).await {
+        Ok(s) => {
+            info!(
+                path = %store_path.display(),
+                retention_secs = cfg.runtime.flow_retention_secs,
+                "flow store ready"
+            );
+            let s = Arc::new(s);
+            store::spawn_cleanup(s.clone(), cfg.runtime.flow_retention_secs);
+            Some(s)
+        }
+        Err(e) => {
+            warn!(error = %e, path = %store_path.display(), "flow store failed; continuing without recording");
+            None
+        }
+    };
+
     // ─── Pod identity (cgroup → uid → labels) ─────────────────────────────
-    let cgroup_resolver = if cli.no_k8s {
+    let cgroup_resolver = if args.no_k8s {
         None
     } else {
         Some(CgroupResolver::new(&cfg.runtime.cgroup))
     };
-    let informer = if cli.no_k8s {
+    let informer = if args.no_k8s {
         None
     } else {
         match PodInformer::spawn().await {
@@ -234,7 +291,7 @@ async fn main() -> Result<()> {
         }
     };
 
-    let shared = Arc::new(Shared { cfg, upstreams, informer, cgroup_resolver, dns });
+    let shared = Arc::new(Shared { cfg, upstreams, informer, cgroup_resolver, dns, store });
 
     // ─── Load eBPF object and attach programs ─────────────────────────────
     let mut bpf = Ebpf::load(EBPF_BYTES).context("failed to load eBPF object")?;
@@ -349,51 +406,106 @@ async fn relay(
         .map(|p| format!("{}/{}", p.namespace, p.name))
         .unwrap_or_else(|| "unknown".to_string());
 
-    let dst_label = match &dst {
-        Dst::Ip(ip) => ip.to_string(),
-        Dst::Domain(d) => d.clone(),
+    let (dst_label, dst_host_for_store, atyp) = match &dst {
+        Dst::Ip(ip) => (ip.to_string(), None, "ip"),
+        Dst::Domain(d) => (d.clone(), Some(d.clone()), "domain"),
+    };
+
+    // ─── Record flow start to store (best-effort) ─────────────────────────
+    let flow_id = if let Some(s) = shared.store.as_ref() {
+        let upstream_addr = match upstream.as_ref() {
+            Upstream::Socks5 { addr, .. } => Some(addr.clone()),
+            Upstream::Direct => None,
+        };
+        match s
+            .insert_flow_start(store::FlowStart {
+                socket_cookie: None, // Phase B will plumb from eBPF
+                cgroup_id: Some(orig.cgroup_id),
+                pod_uid: pod_info.as_ref().map(|p| p.uid.clone()),
+                namespace: pod_info.as_ref().map(|p| p.namespace.clone()),
+                pod_name: pod_info.as_ref().map(|p| p.name.clone()),
+                connection_name: conn_name.clone(),
+                dst_host: dst_host_for_store,
+                dst_ip: dst_ip.to_string(),
+                dst_port,
+                upstream_addr,
+                atyp: Some(atyp),
+            })
+            .await
+        {
+            Ok(id) => Some(id),
+            Err(e) => {
+                warn!(error = %e, "store: insert_flow_start failed");
+                None
+            }
+        }
+    } else {
+        None
     };
 
     // ─── Open the chosen upstream ──────────────────────────────────────────
-    match upstream.as_ref() {
-        Upstream::Socks5 { addr, auth } => {
-            let mut up = TcpStream::connect(addr)
-                .await
-                .with_context(|| format!("connect to SOCKS5 {addr}"))?;
-            socks5_connect(&mut up, &dst, dst_port, auth.as_ref())
-                .await
-                .with_context(|| format!("SOCKS5 CONNECT {dst_label}:{dst_port} via {addr}"))?;
-            info!(
-                pod = %pod_label,
-                connection = %conn_name,
-                dst = %dst_label,
-                dst_port,
-                via = %addr,
-                "tunnel established"
-            );
-            copy_bidirectional(&mut client, &mut up).await?;
-        }
-        Upstream::Direct => {
-            // Direct mode: if we only have a fake IP (no real one), the
-            // hostname needs local DNS resolution. tokio's resolver handles it.
-            let target = match &dst {
-                Dst::Ip(ip) => format!("{ip}:{dst_port}"),
-                Dst::Domain(d) => format!("{d}:{dst_port}"),
-            };
-            let mut up = TcpStream::connect(&target)
-                .await
-                .with_context(|| format!("direct connect to {target}"))?;
-            info!(
-                pod = %pod_label,
-                connection = %conn_name,
-                dst = %dst_label,
-                dst_port,
-                "tunnel established (direct)"
-            );
-            copy_bidirectional(&mut client, &mut up).await?;
+    let result: Result<(u64, u64)> = async {
+        match upstream.as_ref() {
+            Upstream::Socks5 { addr, auth } => {
+                let mut up = TcpStream::connect(addr)
+                    .await
+                    .with_context(|| format!("connect to SOCKS5 {addr}"))?;
+                socks5_connect(&mut up, &dst, dst_port, auth.as_ref())
+                    .await
+                    .with_context(|| format!("SOCKS5 CONNECT {dst_label}:{dst_port} via {addr}"))?;
+                info!(
+                    pod = %pod_label,
+                    connection = %conn_name,
+                    dst = %dst_label,
+                    dst_port,
+                    via = %addr,
+                    "tunnel established"
+                );
+                let (u, d) = copy_bidirectional(&mut client, &mut up).await?;
+                Ok((u, d))
+            }
+            Upstream::Direct => {
+                let target = match &dst {
+                    Dst::Ip(ip) => format!("{ip}:{dst_port}"),
+                    Dst::Domain(d) => format!("{d}:{dst_port}"),
+                };
+                let mut up = TcpStream::connect(&target)
+                    .await
+                    .with_context(|| format!("direct connect to {target}"))?;
+                info!(
+                    pod = %pod_label,
+                    connection = %conn_name,
+                    dst = %dst_label,
+                    dst_port,
+                    "tunnel established (direct)"
+                );
+                let (u, d) = copy_bidirectional(&mut client, &mut up).await?;
+                Ok((u, d))
+            }
         }
     }
-    Ok(())
+    .await;
+
+    // ─── Record flow finish (best-effort) ─────────────────────────────────
+    if let (Some(s), Some(id)) = (shared.store.as_ref(), flow_id) {
+        let finish = match &result {
+            Ok((u, d)) => store::FlowFinish {
+                bytes_up: *u as i64,
+                bytes_down: *d as i64,
+                error: None,
+            },
+            Err(e) => store::FlowFinish {
+                bytes_up: 0,
+                bytes_down: 0,
+                error: Some(format!("{e:#}")),
+            },
+        };
+        if let Err(e) = s.finish_flow(id, finish).await {
+            warn!(error = %e, "store: finish_flow failed");
+        }
+    }
+
+    result.map(|_| ())
 }
 
 // ---------------------------------------------------------------------------
