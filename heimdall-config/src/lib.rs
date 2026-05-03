@@ -83,6 +83,18 @@ pub struct Runtime {
 
     #[serde(default, rename = "bypassCidrs")]
     pub bypass_cidrs: Vec<String>,
+
+    /// Address the fake-IP DNS server listens on (UDP). CoreDNS is expected
+    /// to forward non-cluster zones here so heimdall can return synthetic
+    /// fake IPs that the relay later resolves back to hostnames.
+    #[serde(default = "default_dns_listen", rename = "dnsListen")]
+    pub dns_listen: String,
+
+    /// IPv4 CIDR pool to draw fake IPs from. `198.19.0.0/16` (IETF
+    /// benchmark range, RFC 2544/6815) is reserved and will not appear
+    /// in real routing.
+    #[serde(default = "default_fake_ip_cidr", rename = "fakeIpCidr")]
+    pub fake_ip_cidr: String,
 }
 
 impl Default for Runtime {
@@ -92,6 +104,8 @@ impl Default for Runtime {
             listen: default_listen(),
             relay_ip: default_relay_ip(),
             bypass_cidrs: Vec::new(),
+            dns_listen: default_dns_listen(),
+            fake_ip_cidr: default_fake_ip_cidr(),
         }
     }
 }
@@ -99,6 +113,8 @@ impl Default for Runtime {
 fn default_cgroup() -> String { "/sys/fs/cgroup".to_string() }
 fn default_listen() -> String { "0.0.0.0:12345".to_string() }
 fn default_relay_ip() -> Ipv4Addr { Ipv4Addr::new(127, 0, 0, 1) }
+fn default_dns_listen() -> String { "0.0.0.0:5358".to_string() }
+fn default_fake_ip_cidr() -> String { "198.19.0.0/16".to_string() }
 
 // ---------------------------------------------------------------------------
 // connections: registry of named upstreams
