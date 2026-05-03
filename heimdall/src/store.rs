@@ -79,7 +79,7 @@ pub struct FlowFinish {
 /// only consumed when serialising to JSON or the table view; the dead-code
 /// lint can't see across the FromRow boundary.
 #[allow(dead_code)]
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
 pub struct Flow {
     pub id: i64,
     pub socket_cookie: Option<i64>,
