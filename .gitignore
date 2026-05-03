@@ -1,2 +1,4 @@
 target/
 .cargo/registry/
+heimdall-ui/dist/
+heimdall-ui/target/

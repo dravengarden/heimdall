@@ -58,6 +58,10 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 
+# Bundle the Dioxus UI build output into the daemon binary.
+rust-embed = { version = "8", features = ["debug-embed"] }
+mime_guess = "2"
+
 [[bin]]
 name = "heimdall"
 path = "src/main.rs"

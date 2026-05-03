@@ -1,0 +1,19 @@
+[application]
+name = "heimdall-ui"
+
+[web.app]
+title = "Heimdall"
+
+[web.watcher]
+reload_html = true
+watch_path = ["src", "assets"]
+
+[web.resource]
+# Vendored DaisyUI v4.12.14 + theme bundle (no external CDN).
+style = [
+    "/assets/daisyui-full.min.css",
+    "/assets/daisyui-themes.min.css",
+]
+script = []
+dev.style = []
+dev.script = []
