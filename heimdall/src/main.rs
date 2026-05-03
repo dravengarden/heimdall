@@ -25,10 +25,16 @@
 //! Driven by `/etc/heimdall/config.yaml`. See heimdall-config crate
 //! for schema, /etc/nixos/docs/heimdall.md for the operator's view.
 
+mod dns;
 mod pod;
 mod router;
 
-use std::{collections::HashMap as StdHashMap, net::Ipv4Addr, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap as StdHashMap,
+    net::{Ipv4Addr, SocketAddr},
+    path::PathBuf,
+    sync::Arc,
+};
 
 use anyhow::{Context, Result};
 use aya::{
@@ -46,6 +52,7 @@ use tokio::{
 };
 use tracing::{debug, info, warn};
 
+use crate::dns::DnsResolver;
 use crate::pod::{CgroupResolver, PodInformer};
 
 // eBPF object compiled from heimdall-ebpf, embedded at build time.
@@ -141,6 +148,17 @@ struct Shared {
     informer: Option<PodInformer>,
     /// None when running outside k8s.
     cgroup_resolver: Option<CgroupResolver>,
+    /// Fake-IP DNS resolver. None when DNS server failed to bind
+    /// (relay degrades to plain IP-mode SOCKS5 in that case).
+    dns: Option<Arc<DnsResolver>>,
+}
+
+/// SOCKS5 destination — either an IP literal (ATYP=0x01) or a hostname
+/// recovered via fake-IP lookup (ATYP=0x03, RFC 1928).
+#[derive(Debug, Clone)]
+enum Dst {
+    Ip(Ipv4Addr),
+    Domain(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -193,7 +211,30 @@ async fn main() -> Result<()> {
         }
     };
 
-    let shared = Arc::new(Shared { cfg, upstreams, informer, cgroup_resolver });
+    // ─── Fake-IP DNS server ──────────────────────────────────────────────
+    let dns = match DnsResolver::new(&cfg.runtime.fake_ip_cidr) {
+        Ok(r) => {
+            let r = Arc::new(r);
+            let listen: SocketAddr = cfg
+                .runtime
+                .dns_listen
+                .parse()
+                .with_context(|| format!("parse runtime.dnsListen `{}`", cfg.runtime.dns_listen))?;
+            let r_for_task = r.clone();
+            tokio::spawn(async move {
+                if let Err(e) = r_for_task.serve(listen).await {
+                    warn!(error = %e, "DNS server exited");
+                }
+            });
+            Some(r)
+        }
+        Err(e) => {
+            warn!(error = %e, "DNS resolver init failed; relay will run in IP-only mode");
+            None
+        }
+    };
+
+    let shared = Arc::new(Shared { cfg, upstreams, informer, cgroup_resolver, dns });
 
     // ─── Load eBPF object and attach programs ─────────────────────────────
     let mut bpf = Ebpf::load(EBPF_BYTES).context("failed to load eBPF object")?;
@@ -275,6 +316,18 @@ async fn relay(
     let dst_ip = Ipv4Addr::from(u32::from_be(orig.ip));
     let dst_port = u16::from_be(orig.port);
 
+    // ─── Fake-IP reverse lookup ────────────────────────────────────────────
+    // If the dst falls in heimdall's fake-IP pool we have a hostname for it
+    // and prefer SOCKS5 ATYP=0x03 so the upstream proxy resolves it via
+    // its own resolver (which knows internal / VPN-pushed DNS we don't).
+    let dst = match shared.dns.as_ref().and_then(|d| d.lookup_be(orig.ip)) {
+        Some(host) => {
+            debug!(%dst_ip, %host, "fake-IP reverse lookup hit");
+            Dst::Domain(host)
+        }
+        None => Dst::Ip(dst_ip),
+    };
+
     // ─── Resolve pod identity ──────────────────────────────────────────────
     let pod_info = match (&shared.cgroup_resolver, &shared.informer) {
         (Some(cr), Some(inf)) => cr
@@ -296,19 +349,24 @@ async fn relay(
         .map(|p| format!("{}/{}", p.namespace, p.name))
         .unwrap_or_else(|| "unknown".to_string());
 
+    let dst_label = match &dst {
+        Dst::Ip(ip) => ip.to_string(),
+        Dst::Domain(d) => d.clone(),
+    };
+
     // ─── Open the chosen upstream ──────────────────────────────────────────
     match upstream.as_ref() {
         Upstream::Socks5 { addr, auth } => {
             let mut up = TcpStream::connect(addr)
                 .await
                 .with_context(|| format!("connect to SOCKS5 {addr}"))?;
-            socks5_connect(&mut up, dst_ip, dst_port, auth.as_ref())
+            socks5_connect(&mut up, &dst, dst_port, auth.as_ref())
                 .await
-                .with_context(|| format!("SOCKS5 CONNECT {dst_ip}:{dst_port} via {addr}"))?;
+                .with_context(|| format!("SOCKS5 CONNECT {dst_label}:{dst_port} via {addr}"))?;
             info!(
                 pod = %pod_label,
                 connection = %conn_name,
-                %dst_ip,
+                dst = %dst_label,
                 dst_port,
                 via = %addr,
                 "tunnel established"
@@ -316,14 +374,19 @@ async fn relay(
             copy_bidirectional(&mut client, &mut up).await?;
         }
         Upstream::Direct => {
-            let dst = format!("{dst_ip}:{dst_port}");
-            let mut up = TcpStream::connect(&dst)
+            // Direct mode: if we only have a fake IP (no real one), the
+            // hostname needs local DNS resolution. tokio's resolver handles it.
+            let target = match &dst {
+                Dst::Ip(ip) => format!("{ip}:{dst_port}"),
+                Dst::Domain(d) => format!("{d}:{dst_port}"),
+            };
+            let mut up = TcpStream::connect(&target)
                 .await
-                .with_context(|| format!("direct connect to {dst}"))?;
+                .with_context(|| format!("direct connect to {target}"))?;
             info!(
                 pod = %pod_label,
                 connection = %conn_name,
-                %dst_ip,
+                dst = %dst_label,
                 dst_port,
                 "tunnel established (direct)"
             );
@@ -343,12 +406,13 @@ const M_NO_ACCEPTABLE: u8 = 0xFF;
 
 async fn socks5_connect(
     s: &mut TcpStream,
-    ip: Ipv4Addr,
+    dst: &Dst,
     port: u16,
     auth: Option<&ResolvedAuth>,
 ) -> Result<()> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+    // ─── Method negotiation (RFC 1928 §3) ────────────────────────────────
     let methods: &[u8] = if auth.is_some() {
         &[M_NO_AUTH, M_USER_PASS]
     } else {
@@ -374,23 +438,57 @@ async fn socks5_connect(
         other => anyhow::bail!("SOCKS5: unsupported method 0x{other:02x}"),
     }
 
-    let ip = ip.octets();
+    // ─── CONNECT request (RFC 1928 §4) ───────────────────────────────────
     let port_be = port.to_be_bytes();
-    s.write_all(&[
-        0x05, 0x01, 0x00, 0x01,
-        ip[0], ip[1], ip[2], ip[3],
-        port_be[0], port_be[1],
-    ])
-    .await?;
+    let mut req = Vec::with_capacity(8 + 256);
+    req.extend_from_slice(&[0x05, 0x01, 0x00]); // VER, CMD=CONNECT, RSV
+    match dst {
+        Dst::Ip(ip) => {
+            req.push(0x01); // ATYP=IPv4
+            req.extend_from_slice(&ip.octets());
+        }
+        Dst::Domain(host) => {
+            anyhow::ensure!(
+                host.len() <= 255,
+                "SOCKS5: domain name too long ({} bytes)",
+                host.len()
+            );
+            req.push(0x03); // ATYP=DOMAINNAME
+            req.push(host.len() as u8);
+            req.extend_from_slice(host.as_bytes());
+        }
+    }
+    req.extend_from_slice(&port_be);
+    s.write_all(&req).await?;
 
-    let mut resp = [0u8; 10];
-    s.read_exact(&mut resp).await?;
+    // ─── CONNECT reply (RFC 1928 §6) — variable length ───────────────────
+    // VER REP RSV ATYP BND.ADDR BND.PORT
+    let mut hdr = [0u8; 4];
+    s.read_exact(&mut hdr).await?;
+    anyhow::ensure!(hdr[0] == 0x05, "SOCKS5: bad version in CONNECT reply: {hdr:?}");
     anyhow::ensure!(
-        resp[1] == 0x00,
+        hdr[1] == 0x00,
         "SOCKS5 CONNECT rejected by server: code=0x{:02x}",
-        resp[1]
+        hdr[1]
     );
-
+    // Drain BND.ADDR + BND.PORT based on the reply ATYP (independent of request).
+    match hdr[3] {
+        0x01 => {
+            let mut tail = [0u8; 4 + 2];
+            s.read_exact(&mut tail).await?;
+        }
+        0x03 => {
+            let mut len_buf = [0u8; 1];
+            s.read_exact(&mut len_buf).await?;
+            let mut tail = vec![0u8; len_buf[0] as usize + 2];
+            s.read_exact(&mut tail).await?;
+        }
+        0x04 => {
+            let mut tail = [0u8; 16 + 2];
+            s.read_exact(&mut tail).await?;
+        }
+        other => anyhow::bail!("SOCKS5: unknown reply ATYP 0x{other:02x}"),
+    }
     Ok(())
 }
 

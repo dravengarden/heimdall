@@ -38,6 +38,9 @@ futures = "0.3"
 # Cache types for resolver maps
 parking_lot = "0.12"
 
+# DNS message parsing/serialization for heimdall's fake-IP DNS server.
+hickory-proto = { version = "0.24", default-features = false }
+
 [[bin]]
 name = "heimdall"
 path = "src/main.rs"
