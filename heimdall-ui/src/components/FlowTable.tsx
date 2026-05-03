@@ -5,7 +5,7 @@ import {
   type GridRowParams,
   type GridSortDirection,
 } from "@mui/x-data-grid";
-import { Box, Chip, Tooltip, Typography } from "@mui/material";
+import { Box, Chip, Tooltip } from "@mui/material";
 import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
 import dayjs from "dayjs";
 import type { Flow } from "../types";
@@ -21,171 +21,181 @@ const sortModel: { field: string; sort: GridSortDirection }[] = [
   { field: "id", sort: "desc" },
 ];
 
+const MONO =
+  'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace';
+
+const truncateSx = {
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  width: "100%",
+} as const;
+
 export function FlowTable({ flows, selectedId, onSelect }: Props) {
   const columns: GridColDef<Flow>[] = useMemo(
     () => [
       {
         field: "id",
         headerName: "id",
-        width: 70,
-        type: "number",
+        width: 64,
+        align: "right",
+        headerAlign: "right",
+        sortable: true,
         renderCell: (params) =>
           params.row.error ? (
-            <Tooltip title={params.row.error}>
+            <Tooltip title={params.row.error} placement="right">
               <Box
-                sx={{ display: "inline-flex", alignItems: "center", gap: 0.5 }}
+                sx={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 0.5,
+                  fontFamily: MONO,
+                  color: "error.main",
+                }}
               >
-                <ErrorOutlineIcon
-                  fontSize="small"
-                  color="error"
-                  sx={{ fontSize: 14 }}
-                />
-                <Typography
-                  variant="body2"
-                  color="error"
-                  sx={{ fontFamily: "ui-monospace, monospace" }}
-                >
-                  {params.row.id}
-                </Typography>
+                <ErrorOutlineIcon sx={{ fontSize: 14 }} />
+                {params.row.id}
               </Box>
             </Tooltip>
           ) : (
-            <Typography
-              variant="body2"
-              sx={{ fontFamily: "ui-monospace, monospace" }}
-            >
+            <Box sx={{ fontFamily: MONO, color: "text.secondary" }}>
               {params.row.id}
-            </Typography>
+            </Box>
           ),
       },
       {
         field: "ts_start_us",
         headerName: "time",
-        width: 105,
+        width: 110,
+        sortable: true,
         valueGetter: (_v, row) => row.ts_start_us,
         renderCell: (params) => (
-          <Typography
-            variant="body2"
-            sx={{ fontFamily: "ui-monospace, monospace" }}
-          >
+          <Box sx={{ fontFamily: MONO }}>
             {dayjs(params.row.ts_start_us / 1000).format("HH:mm:ss.SSS")}
-          </Typography>
+          </Box>
         ),
       },
       {
         field: "pod",
         headerName: "pod",
-        flex: 1.2,
+        flex: 1,
         minWidth: 220,
+        sortable: true,
         valueGetter: (_v, row) =>
           row.pod_name && row.namespace
             ? `${row.namespace}/${row.pod_name}`
-            : "—",
+            : "",
+        renderCell: (params) => {
+          const label = params.value as string;
+          return label ? (
+            <Box sx={{ ...truncateSx }}>{label}</Box>
+          ) : (
+            <Box sx={{ color: "text.disabled" }}>—</Box>
+          );
+        },
       },
       {
         field: "connection_name",
         headerName: "conn",
-        width: 110,
+        width: 96,
+        sortable: true,
         renderCell: (params) => (
           <Chip
             label={params.row.connection_name}
             size="small"
             color={connectionColor(params.row.connection_name)}
             variant="filled"
-            sx={{ fontWeight: 500 }}
+            sx={{ fontWeight: 500, height: 22, fontSize: 11 }}
           />
         ),
       },
       {
         field: "dst_host",
         headerName: "dst",
-        flex: 1.5,
+        flex: 1.6,
         minWidth: 220,
+        sortable: true,
         valueGetter: (_v, row) => row.dst_host ?? row.dst_ip,
         renderCell: (params) => (
-          <Tooltip title={`${params.row.dst_ip}:${params.row.dst_port}`}>
-            <Typography
-              variant="body2"
-              sx={{
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-              }}
-            >
+          <Tooltip
+            title={`${params.row.dst_ip}:${params.row.dst_port}`}
+            placement="top"
+          >
+            <Box sx={{ ...truncateSx, fontFamily: MONO }}>
               {params.row.dst_host ?? params.row.dst_ip}
-            </Typography>
+            </Box>
           </Tooltip>
         ),
       },
       {
         field: "dst_port",
         headerName: "port",
-        width: 70,
-        type: "number",
+        width: 64,
         align: "right",
         headerAlign: "right",
+        sortable: true,
+        valueGetter: (_v, row) => row.dst_port,
+        // Plain integer — DataGrid's number type would add locale separators.
+        renderCell: (params) => (
+          <Box sx={{ fontFamily: MONO }}>{params.row.dst_port}</Box>
+        ),
       },
       {
         field: "bytes_up",
         headerName: "↑",
-        width: 80,
-        type: "number",
+        width: 76,
         align: "right",
         headerAlign: "right",
+        sortable: true,
+        valueGetter: (_v, row) => row.bytes_up,
         renderCell: (params) => (
-          <Typography variant="body2" sx={{ fontFamily: "ui-monospace, monospace" }}>
+          <Box sx={{ fontFamily: MONO }}>
             {humanBytes(params.row.bytes_up)}
-          </Typography>
+          </Box>
         ),
       },
       {
         field: "bytes_down",
         headerName: "↓",
-        width: 90,
-        type: "number",
+        width: 80,
         align: "right",
         headerAlign: "right",
+        sortable: true,
+        valueGetter: (_v, row) => row.bytes_down,
         renderCell: (params) => (
-          <Typography variant="body2" sx={{ fontFamily: "ui-monospace, monospace" }}>
+          <Box sx={{ fontFamily: MONO }}>
             {humanBytes(params.row.bytes_down)}
-          </Typography>
+          </Box>
         ),
       },
       {
         field: "duration",
         headerName: "dur",
-        width: 75,
-        type: "number",
+        width: 76,
         align: "right",
         headerAlign: "right",
+        sortable: true,
         valueGetter: (_v, row) =>
           row.ts_end_us != null
             ? Math.max(0, Math.round((row.ts_end_us - row.ts_start_us) / 1000))
             : null,
         renderCell: (params) =>
           params.value == null ? (
-            <Typography variant="body2" color="text.disabled">
-              …
-            </Typography>
+            <Box sx={{ color: "text.disabled" }}>…</Box>
           ) : (
-            <Typography variant="body2" sx={{ fontFamily: "ui-monospace, monospace" }}>
-              {`${params.value as number}ms`}
-            </Typography>
+            <Box sx={{ fontFamily: MONO }}>{`${params.value as number}ms`}</Box>
           ),
       },
       {
         field: "upstream_addr",
         headerName: "via",
-        width: 180,
-        valueGetter: (_v, row) => row.upstream_addr ?? "—",
+        width: 168,
+        sortable: true,
+        valueGetter: (_v, row) => row.upstream_addr ?? "",
         renderCell: (params) => (
-          <Typography
-            variant="body2"
-            sx={{ fontFamily: "ui-monospace, monospace" }}
-            color="text.secondary"
-          >
+          <Box sx={{ fontFamily: MONO, color: "text.secondary" }}>
             {params.row.upstream_addr ?? "—"}
-          </Typography>
+          </Box>
         ),
       },
     ],
@@ -209,12 +219,35 @@ export function FlowTable({ flows, selectedId, onSelect }: Props) {
       pageSizeOptions={[50, 100, 250, 500]}
       sx={{
         border: 0,
+        fontSize: 12.5,
         "& .MuiDataGrid-row": { cursor: "pointer" },
+        "& .MuiDataGrid-cell": {
+          display: "flex",
+          alignItems: "center",
+          // Uniform horizontal padding so left/right-aligned columns
+          // line up neatly without big variable gaps.
+          paddingInline: "10px",
+        },
+        "& .MuiDataGrid-columnHeader": {
+          paddingInline: "10px",
+        },
+        "& .MuiDataGrid-columnHeaderTitle": {
+          fontWeight: 600,
+          fontSize: 12,
+          letterSpacing: 0.3,
+          textTransform: "uppercase",
+          color: "text.secondary",
+        },
         "& .MuiDataGrid-cell:focus, & .MuiDataGrid-cell:focus-within": {
           outline: "none",
         },
         "& .MuiDataGrid-columnHeader:focus, & .MuiDataGrid-columnHeader:focus-within":
           { outline: "none" },
+        "& .MuiDataGrid-columnSeparator": { display: "none" },
+        "& .MuiDataGrid-footerContainer": {
+          borderTop: 1,
+          borderColor: "divider",
+        },
       }}
     />
   );
