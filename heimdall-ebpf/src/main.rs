@@ -1,4 +1,4 @@
-//! eBPF kernel programs for ebpf-socks.
+//! eBPF kernel programs for heimdall.
 //!
 //! Two programs work together:
 //!
@@ -29,7 +29,7 @@ use aya_ebpf::{
     programs::{SkBuffContext, SockAddrContext},
     EbpfContext,
 };
-use ebpf_socks_common::{is_default_bypass, OrigDst};
+use heimdall_common::{is_default_bypass, OrigDst};
 
 const PROXY_PORT: u16 = 12345;
 

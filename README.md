@@ -1,4 +1,4 @@
-# ebpf-socks
+# heimdall
 
 Transparent SOCKS5 egress proxy for Linux, powered by eBPF cgroup hooks.
 
@@ -27,7 +27,7 @@ connect(1.2.3.4:443)
     │  └────────────────────────────────────────────────────┘
     │
     ▼
-ebpf-socks relay (127.0.0.1:12345)
+heimdall relay (127.0.0.1:12345)
     │  accept() → peer port → lookup BPF map → original dst
     │
     ▼
@@ -39,7 +39,7 @@ SOCKS5 server (--socks5)  ──────────────────
 
 Traditional transparent proxies use iptables `TPROXY` + `MASQUERADE`. On Kubernetes these two rules conflict: pod traffic gets MASQUERADEd to the node IP, v2raya then marks it with `0x40`, return packets get TPROXYed before conntrack can un-SNAT them, and the pod never receives a reply.
 
-`ebpf-socks` hooks at the `connect()` **syscall level** — before the packet is ever created. No TPROXY marks, no conntrack interference, no MASQUERADE conflict. The eBPF hook and the userspace relay use two independent TCP connections, so conntrack state is never polluted.
+`heimdall` hooks at the `connect()` **syscall level** — before the packet is ever created. No TPROXY marks, no conntrack interference, no MASQUERADE conflict. The eBPF hook and the userspace relay use two independent TCP connections, so conntrack state is never polluted.
 
 ---
 
@@ -75,25 +75,25 @@ cargo install cargo-bpf  # or use nightly with -Z build-std
 
 ```bash
 # Step 1: compile the eBPF kernel programs
-cargo build -p ebpf-socks-ebpf \
+cargo build -p heimdall-ebpf \
   --target bpfel-unknown-none \
   -Z build-std=core \
   --release
 
 # Step 2: compile the userspace binary (embeds the eBPF object above)
-cargo build -p ebpf-socks --release
+cargo build -p heimdall --release
 
 # Binary is at:
-./target/release/ebpf-socks
+./target/release/heimdall
 ```
 
 ### Docker
 
 ```bash
-docker build -t ebpf-socks:latest .
+docker build -t heimdall:latest .
 
 # Or pull from registry (after CI publishes it):
-# docker pull ghcr.io/your-org/ebpf-socks:latest
+# docker pull ghcr.io/your-org/heimdall:latest
 ```
 
 ---
@@ -104,25 +104,25 @@ docker build -t ebpf-socks:latest .
 
 ```bash
 # Basic: proxy all external TCP through a local SOCKS5 server
-sudo ebpf-socks --socks5 127.0.0.1:1080
+sudo heimdall --socks5 127.0.0.1:1080
 
 # Custom listen port (if 12345 is taken)
-sudo ebpf-socks --socks5 127.0.0.1:1080 --listen 127.0.0.1:19999
+sudo heimdall --socks5 127.0.0.1:1080 --listen 127.0.0.1:19999
 
 # Attach to a specific cgroup subtree (instead of root)
-sudo ebpf-socks --socks5 127.0.0.1:1080 \
+sudo heimdall --socks5 127.0.0.1:1080 \
   --cgroup /sys/fs/cgroup/kubepods.slice
 
 # Extra bypass CIDRs (default already includes RFC-1918, loopback, link-local)
-sudo ebpf-socks --socks5 127.0.0.1:1080 --bypass 100.64.0.0/10,fd00::/8
+sudo heimdall --socks5 127.0.0.1:1080 --bypass 100.64.0.0/10,fd00::/8
 
 # All options via environment variables (useful for containers)
-SOCKS5_ADDR=127.0.0.1:1080 CGROUP_PATH=/sys/fs/cgroup sudo -E ebpf-socks
+SOCKS5_ADDR=127.0.0.1:1080 CGROUP_PATH=/sys/fs/cgroup sudo -E heimdall
 ```
 
 ```
 USAGE:
-    ebpf-socks [OPTIONS] --socks5 <ADDR>
+    heimdall [OPTIONS] --socks5 <ADDR>
 
 OPTIONS:
     --socks5 <ADDR>       SOCKS5 server address [env: SOCKS5_ADDR]
@@ -149,13 +149,13 @@ Traffic to these ranges is **never** proxied (passed through directly):
 
 ## Kubernetes Deployment
 
-`ebpf-socks` runs as a privileged **DaemonSet** — one pod per node, covering all pods on that node transparently.
+`heimdall` runs as a privileged **DaemonSet** — one pod per node, covering all pods on that node transparently.
 
 ### Quick start
 
 ```bash
 # 1. Set your SOCKS5 server address
-kubectl create secret generic ebpf-socks-config \
+kubectl create secret generic heimdall-config \
   --from-literal=socks5-addr=127.0.0.1:20170 \
   -n kube-system
 
@@ -163,7 +163,7 @@ kubectl create secret generic ebpf-socks-config \
 kubectl apply -f deploy/daemonset.yaml
 
 # 3. Verify
-kubectl -n kube-system get pods -l app=ebpf-socks
+kubectl -n kube-system get pods -l app=heimdall
 ```
 
 ### Why privileged?
@@ -178,12 +178,12 @@ The DaemonSet needs:
 
 ```
 Node
-├── ebpf-socks DaemonSet pod (privileged)
+├── heimdall DaemonSet pod (privileged)
 │   ├── eBPF hook → root cgroup (/sys/fs/cgroup)
 │   │              covers ALL pods on this node
 │   └── Relay listener on 127.0.0.1:12345
 │
-├── Pod A              → external TCP → [eBPF redirects] → ebpf-socks → SOCKS5
+├── Pod A              → external TCP → [eBPF redirects] → heimdall → SOCKS5
 ├── Pod B              → cluster TCP → [eBPF bypasses] → direct
 └── Pod C              → LAN TCP    → [eBPF bypasses] → direct
 ```
@@ -193,12 +193,12 @@ Node
 ## Crate Structure
 
 ```
-ebpf-socks/
-├── ebpf-socks/          # Userspace daemon (CLI binary)
+heimdall/
+├── heimdall/          # Userspace daemon (CLI binary)
 │   └── src/main.rs
-├── ebpf-socks-ebpf/     # eBPF kernel programs (bpfel-unknown-none target)
+├── heimdall-ebpf/     # eBPF kernel programs (bpfel-unknown-none target)
 │   └── src/main.rs
-├── ebpf-socks-common/   # Shared types (no_std compatible)
+├── heimdall-common/   # Shared types (no_std compatible)
 │   └── src/lib.rs
 └── deploy/
     └── daemonset.yaml   # Kubernetes DaemonSet manifest
