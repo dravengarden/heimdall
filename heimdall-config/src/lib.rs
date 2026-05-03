@@ -17,7 +17,7 @@ use serde::Deserialize;
 use thiserror::Error;
 
 pub const DEFAULT_PATH: &str = "/etc/heimdall/config.yaml";
-pub const ANNOTATION_KEY_DEFAULT: &str = "heimdall.io/connection";
+pub const SELECTOR_KEY_DEFAULT: &str = "heimdall.io/connection";
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -173,12 +173,15 @@ pub struct DirectConnection {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Routing {
-    /// Pod annotation key; if a pod has this annotation pointing at a known
-    /// connection, that wins over rules + default.
-    #[serde(default = "default_annotation_key", rename = "annotationKey")]
-    pub annotation_key: String,
+    /// Metadata key checked in BOTH `annotations` and `labels`. Its value
+    /// must be the name of a known connection. Annotation wins if both
+    /// are set.
+    #[serde(default = "default_selector_key", rename = "selectorKey")]
+    pub selector_key: String,
 
-    /// Admin-defined label-matching rules. First match wins.
+    /// Admin-defined matching rules (first match wins). Used when a pod
+    /// can't / shouldn't set the selectorKey itself — e.g. third-party
+    /// charts, retroactive policy.
     #[serde(default)]
     pub rules: Vec<Rule>,
 
@@ -191,14 +194,14 @@ pub struct Routing {
 impl Default for Routing {
     fn default() -> Self {
         Self {
-            annotation_key: default_annotation_key(),
+            selector_key: default_selector_key(),
             rules: Vec::new(),
             default: default_default_connection(),
         }
     }
 }
 
-fn default_annotation_key() -> String { ANNOTATION_KEY_DEFAULT.to_string() }
+fn default_selector_key() -> String { SELECTOR_KEY_DEFAULT.to_string() }
 fn default_default_connection() -> String { "default".to_string() }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -388,7 +391,7 @@ mod tests {
               bypass:
                 type: direct
             routing:
-              annotationKey: heimdall.io/connection
+              selectorKey: heimdall.io/connection
               rules:
                 - name: corp-family
                   match:
