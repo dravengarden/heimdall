@@ -23,7 +23,7 @@
 #![no_main]
 
 use aya_ebpf::{
-    helpers::bpf_get_socket_cookie,
+    helpers::{bpf_get_current_cgroup_id, bpf_get_socket_cookie},
     macros::{cgroup_skb, cgroup_sock_addr, map},
     maps::{Array, HashMap},
     programs::{SkBuffContext, SockAddrContext},
@@ -78,7 +78,13 @@ fn try_connect4(ctx: SockAddrContext) -> Result<(), ()> {
     }
 
     let cookie = unsafe { bpf_get_socket_cookie(ctx.as_ptr()) };
-    let orig = OrigDst { ip: dst_ip_be, port: dst_port_be, _pad: 0 };
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    let orig = OrigDst {
+        ip: dst_ip_be,
+        port: dst_port_be,
+        _pad: 0,
+        cgroup_id,
+    };
     COOKIE_MAP.insert(&cookie, &orig, 0).map_err(|_| ())?;
 
     unsafe {

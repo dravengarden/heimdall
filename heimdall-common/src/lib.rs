@@ -1,8 +1,12 @@
 //! Types shared between the eBPF kernel programs and the userspace daemon.
 #![cfg_attr(not(feature = "user"), no_std)]
 
-/// Original connection destination saved by the eBPF connect4 hook.
-/// All fields are in network byte order (big-endian).
+/// Original connection destination + caller identity, saved by the eBPF
+/// connect4 hook for the userspace relay to consume after accept().
+///
+/// `ip` and `port` are in network byte order. `cgroup_id` is the leaf
+/// cgroup id of the calling process (from `bpf_get_current_cgroup_id`),
+/// used by userspace to resolve pod identity (labels / annotations).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct OrigDst {
@@ -11,6 +15,9 @@ pub struct OrigDst {
     /// TCP destination port (network byte order)
     pub port: u16,
     pub _pad: u16,
+    /// Leaf cgroup id of the process that called connect().
+    /// 0 if not captured (older builds; treat as "unknown pod").
+    pub cgroup_id: u64,
 }
 
 #[cfg(feature = "user")]

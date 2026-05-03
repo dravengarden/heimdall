@@ -30,6 +30,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Low-level socket options
 libc = "0.2"
 
+# Kubernetes API client + informer (pod label/annotation cache).
+kube = { version = "0.96", default-features = false, features = ["client", "runtime", "rustls-tls"] }
+k8s-openapi = { version = "0.23", features = ["latest"] }
+futures = "0.3"
+
+# Cache types for resolver maps
+parking_lot = "0.12"
+
 [[bin]]
 name = "heimdall"
 path = "src/main.rs"
