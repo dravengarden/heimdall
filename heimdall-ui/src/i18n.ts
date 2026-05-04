@@ -22,12 +22,15 @@ const en: Catalog = {
   "nav.tap": "Live Tap",
 
   "livetap.title": "Live plaintext",
+  "livetap.podFilter": "filter by namespace/pod…",
   "livetap.cgroupFilter": "filter by cgroup_id…",
   "livetap.pause": "Pause polling",
   "livetap.resume": "Resume polling",
   "livetap.clear": "Clear buffer",
   "livetap.empty":
     "No plaintext yet. Hit an HTTPS endpoint from any libssl-using process; events appear within ~1s.",
+  "livetap.noMatch":
+    "No messages match the current pod filter. Clear the filter or wait for new traffic.",
 
   "filter.placeholder": "filter by host / pod / IP / connection…  (press /)",
   "filter.connections": "connections",
@@ -121,12 +124,15 @@ const zhCN: Catalog = {
   "nav.tap": "实时明文",
 
   "livetap.title": "实时明文",
+  "livetap.podFilter": "按 namespace/pod 过滤…",
   "livetap.cgroupFilter": "按 cgroup_id 过滤…",
   "livetap.pause": "暂停轮询",
   "livetap.resume": "恢复轮询",
   "livetap.clear": "清空缓冲",
   "livetap.empty":
     "暂无明文。从任意使用 libssl 的进程发起 HTTPS 请求,~1 秒内会出现事件。",
+  "livetap.noMatch":
+    "当前 pod 过滤条件下没有匹配。清除过滤或等待新流量。",
 
   "filter.placeholder": "搜索 hostname / pod / IP / connection…  (按 / 聚焦)",
   "filter.connections": "连接",

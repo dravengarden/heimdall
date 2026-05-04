@@ -26,6 +26,7 @@ import { useI18n } from "../i18n";
 export function LiveTapView() {
   const { t } = useI18n();
   const [cgroupFilter, setCgroupFilter] = useState<string>("");
+  const [podFilter, setPodFilter] = useState<string>("");
   const cgroupId = useMemo<number | null>(() => {
     const trimmed = cgroupFilter.trim();
     if (trimmed === "") return null;
@@ -34,6 +35,19 @@ export function LiveTapView() {
   }, [cgroupFilter]);
 
   const tap = useLiveTap({ intervalMs: 1000, cgroupId });
+
+  // The pod filter runs purely client-side: the API doesn't have a
+  // pod-substring filter (would require joining cgroup → pod on every
+  // SQL row, expensive), and the volume on the live tap is bounded to
+  // the 1000-msg ring anyway. Substring match across `ns/name`.
+  const filteredMsgs = useMemo(() => {
+    const needle = podFilter.trim().toLowerCase();
+    if (needle === "") return tap.msgs;
+    return tap.msgs.filter((m) => {
+      if (!m.pod_namespace || !m.pod_name) return false;
+      return `${m.pod_namespace}/${m.pod_name}`.toLowerCase().includes(needle);
+    });
+  }, [tap.msgs, podFilter]);
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -54,16 +68,30 @@ export function LiveTapView() {
         </Typography>
         <Chip
           size="small"
-          label={`${tap.msgs.length}`}
+          label={
+            podFilter.trim() === ""
+              ? `${tap.msgs.length}`
+              : `${filteredMsgs.length} / ${tap.msgs.length}`
+          }
           variant="outlined"
           sx={{ fontFamily: "ui-monospace, monospace" }}
+        />
+        <TextField
+          size="small"
+          placeholder={t("livetap.podFilter")}
+          value={podFilter}
+          onChange={(e) => setPodFilter(e.target.value)}
+          sx={{ width: 280, ml: 1 }}
+          slotProps={{
+            input: { sx: { fontFamily: "ui-monospace, monospace" } },
+          }}
         />
         <TextField
           size="small"
           placeholder={t("livetap.cgroupFilter")}
           value={cgroupFilter}
           onChange={(e) => setCgroupFilter(e.target.value)}
-          sx={{ width: 220, ml: 1 }}
+          sx={{ width: 180 }}
           slotProps={{
             input: { sx: { fontFamily: "ui-monospace, monospace" } },
           }}
@@ -109,9 +137,13 @@ export function LiveTapView() {
           <Alert severity="info" variant="outlined">
             {t("livetap.empty")}
           </Alert>
+        ) : filteredMsgs.length === 0 ? (
+          <Alert severity="warning" variant="outlined">
+            {t("livetap.noMatch")}
+          </Alert>
         ) : (
           <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
-            {tap.msgs.map((m) => (
+            {filteredMsgs.map((m) => (
               <MessageBlock key={m.id} msg={m} showCgroup />
             ))}
           </Box>
