@@ -218,42 +218,63 @@ Logs go to journalctl. There's no separate log file.
 
 ## Cluster cases reference
 
-What's running on this k0s node and which path each pod takes
-through heimdall. Update when adding / removing workloads.
+Every pod on this k0s node, individually. Update when adding /
+removing workloads (or run `kubectl get pods -A` and reconcile).
 
-### Silenced (`observe: false`, `use: system` or `default`)
+### Silenced — `observe: false`
 
-| Namespace | Pod | Rule | Why |
+| Namespace | Pod | `use` | Rule | Why |
+|---|---|---|---|---|
+| kube-system | cilium-8bwrt | `system` | cluster-infra | CNI agent |
+| kube-system | cilium-envoy-75h66 | `system` | cluster-infra | Cilium-managed Envoy sidecar |
+| kube-system | cilium-operator-746545f74c-4686b | `system` | cluster-infra | Cilium operator |
+| kube-system | coredns-6f57946586-tsz6n | `system` | cluster-infra | DNS |
+| kube-system | metrics-server-f69b6f4d7-pmgtl | `system` | cluster-infra | kubelet metrics scraper |
+| local-path-storage | local-path-provisioner-7bd467b8d5-nzmps | `system` | cluster-infra | PVC provisioner |
+| cattle-capi-system | capi-controller-manager-744bcd597f-x7n8s | `default` | cattle-controllers | leader-election leases |
+| cattle-turtles-system | rancher-turtles-controller-manager-66bb8b45dc-xw5rf | `default` | cattle-controllers | leader-election leases |
+| cattle-fleet-system | fleet-controller-85dcb74785-nfgdr | `default` | fleet-controller | leader-election leases |
+| cattle-system | rancher-webhook-65db7656c8-jssq5 | `default` | rancher-webhook | admission webhook only |
+| cert-manager | cert-manager-cainjector-5774787d46-hdmcn | `default` | cert-manager-noisy | CA bundle injection |
+| cert-manager | cert-manager-webhook-689df64959-978j9 | `default` | cert-manager-noisy | admission webhook only |
+| opik | opik-mysql-0 | `default` | data-stores | mysql wire protocol |
+| opik | opik-redis-master-0 | `default` | data-stores | redis wire protocol |
+| opik | opik-minio-5c9966fb6b-mwzv2 | `default` | data-stores | s3-compat object store |
+| opik | opik-zookeeper-0 | `default` | data-stores | coordination |
+
+### Observed — `observe: true`, `use: default` (the routing default)
+
+| Namespace | Pod | Why we want plaintext | Tap source |
 |---|---|---|---|
-| kube-system | cilium-* (3) | cluster-infra | CNI plumbing |
-| kube-system | coredns | cluster-infra | DNS |
-| kube-system | kube-router | cluster-infra | service routing |
-| kube-system | metrics-server | cluster-infra | kubelet metrics |
-| local-path-storage | local-path-provisioner | cluster-infra | PVC provisioner |
-| cattle-capi-system | capi-controller-manager | cattle-controllers | leader-election leases |
-| cattle-turtles-system | rancher-turtles-controller-manager | cattle-controllers | leader-election leases |
-| cattle-fleet-system | fleet-controller | fleet-controller | leader-election |
-| cattle-system | rancher-webhook | rancher-webhook | admission only |
-| cert-manager | cert-manager-webhook | cert-manager-noisy | admission only |
-| cert-manager | cert-manager-cainjector | cert-manager-noisy | CA bundle injection |
-| opik | opik-mysql-0 | data-stores | DB protocol |
-| opik | opik-redis-master-0 | data-stores | DB protocol |
-| opik | opik-minio | data-stores | object store |
-| opik | opik-zookeeper-0 | data-stores | coordination |
+| cattle-system | rancher-698f96874d-tqv5r | catalog APIs, hub, user webhooks, watch streams | Go (stripped → `.gopclntab`) |
+| cattle-fleet-local-system | fleet-agent-849974b847-7ttkl | GitOps reconcile, git clones | Go (stripped) |
+| cattle-fleet-system | gitjob-7c7447b4cb-jqccb | git clones | Go (stripped) |
+| cattle-fleet-system | helmops-7c4cf5bdd7-cmg48 | helm chart fetches | Go (stripped) |
+| cert-manager | cert-manager-6b6bf64d6c-59k88 | ACME → Let's Encrypt requests | Go (`manager` binary, has symbols) |
+| ingress-nginx | ingress-nginx-controller-6cc8797689-wkxm7 | tls-terminating gateway requests | libssl |
+| opik | opik-backend-64d7947f57-xq7fh | Java application API | Java — *currently no plaintext capture* |
+| opik | opik-python-backend-847f77fbd4-kbs4t | Python application | libssl |
+| opik | opik-frontend-8467675f55-dscrb | Node.js frontend API | libssl (Node) |
+| opik | chi-opik-clickhouse-cluster-0-0-0 | ClickHouse SQL traffic | libssl |
+| opik | opik-altinity-clickhouse-operator-856f68b7b4-zlfjg | operator's k8s API calls | Go |
 
-### Observed (`observe: true`, `use: default`)
+### Other / transient
 
-| Namespace | Pod | What's interesting |
+| Namespace | Pod | Status | Treatment |
+|---|---|---|---|
+| fleet-default | rke2-machineconfig-cleanup-cronjob-… | `Completed` (CronJob, runs once daily) | Falls into `routing.default` if running. Each new run gets `observe: true`; the run is too short-lived to matter for noise. |
+
+### Cases NOT currently exercised
+
+These are supported by the schema but no pod on this cluster
+matches them. Documented here so they're discoverable:
+
+| Combination | When you'd use it | How to set |
 |---|---|---|
-| cattle-system | rancher | external catalog APIs, hub, user webhooks |
-| cattle-fleet-local-system | fleet-agent | git clones |
-| cattle-fleet-system | gitjob | git clones |
-| cattle-fleet-system | helmops | helm chart fetches |
-| cert-manager | cert-manager (leaf) | ACME → Let's Encrypt |
-| ingress-nginx | ingress-nginx-controller | tls-terminating gateway |
-| opik | opik-backend / python-backend / frontend | application API traffic |
-| opik | chi-opik-clickhouse-cluster-0-0-0 | ClickHouse server |
-| opik | opik-altinity-clickhouse-operator | operator API calls |
+| `use: corp` + `observe: true` | Debug pod that needs to reach Corp-internal hosts via the Mac SOCKS5, with plaintext capture | annotate pod: `heimdall.io/connection: corp` |
+| `use: corp` + `observe: false` | Same routing, but suppress plaintext (e.g. running personal credentials through it) | both annotations |
+| `use: system` + `observe: true` | Pod that should not be redirected (e.g. uses host network or is otherwise architecturally outside the relay) but you still want to see its TLS plaintext | both annotations: `connection: system`, `observe: true` |
+| `use: default` + `observe: false` | Default route through v2raya but silenced — used today by the cattle-controllers / data-stores rules | rule with `observe: false` |
 
 Use the API or sqlite to spot-check what's actually being captured:
 
