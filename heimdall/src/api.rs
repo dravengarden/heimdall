@@ -452,9 +452,15 @@ pub struct CliRegisterReq {
     pub connection: String,
     #[serde(default = "default_observe")]
     pub observe: bool,
+    /// `"fake"` (heimdall hijacks :53 → fake-IP DNS) or `"system"`
+    /// (host resolver). Defaults to `"fake"` so older clients get
+    /// the more useful behaviour.
+    #[serde(default = "default_dns_strategy")]
+    pub dns: String,
 }
 
 fn default_observe() -> bool { true }
+fn default_dns_strategy() -> String { "fake".into() }
 
 #[derive(Debug, Serialize)]
 pub struct CliOverrideEntry {
@@ -504,17 +510,32 @@ async fn register_cli(
         observe: req.observe,
     };
 
+    let dns_hijack = match req.dns.as_str() {
+        "fake" => true,
+        "system" => false,
+        other => {
+            return Err(ApiError(
+                StatusCode::BAD_REQUEST,
+                format!("invalid dns `{other}` — expected `fake` or `system`"),
+            ));
+        }
+    };
+
     // Write eBPF policy byte first — if it fails, no userspace state
     // is left behind to clean up. (DELETE side does the inverse: clear
     // userspace map first, then BPF, so the relay can't see the
     // override after the BPF map already says "no policy".)
-    engine.register_external(req.cgroup_id, &decision).await.map_err(internal)?;
+    engine
+        .register_external(req.cgroup_id, &decision, dns_hijack)
+        .await
+        .map_err(internal)?;
     s.cli_overrides.write().insert(req.cgroup_id, decision);
 
     info!(
         cgroup_id = req.cgroup_id,
         connection = %req.connection,
         observe = req.observe,
+        dns = %req.dns,
         "cli register: cgroup → connection"
     );
 

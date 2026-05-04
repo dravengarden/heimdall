@@ -149,6 +149,14 @@ pub const POLICY_OBSERVE_OFF: u8 = 1 << 1;
 /// for future tuning.
 pub const POLICY_NO_BYPASS_LOG: u8 = 1 << 2;
 
+/// Hijack DNS for this cgroup: any TCP/UDP connect or UDP sendmsg to
+/// port 53 gets its destination rewritten to heimdall's fake-IP DNS
+/// server (taken from DNS_ADDR_V4 / DNS_ADDR_V6 maps). Used by
+/// `heimdall run` when the wrapped command's profile resolves to
+/// `dns: fake`, so the child uses heimdall's resolver instead of the
+/// host's systemd-resolved / /etc/resolv.conf.
+pub const POLICY_DNS_HIJACK: u8 = 1 << 3;
+
 /// Default for cgroups not present in `CGROUP_POLICY`. Observe is OFF
 /// by default — pods we know about get explicit entries, host processes
 /// don't get observed unless opted in.
