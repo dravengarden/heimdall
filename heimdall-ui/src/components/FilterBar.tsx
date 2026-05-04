@@ -16,16 +16,12 @@ import {
 } from "@mui/material";
 import SearchIcon from "@mui/icons-material/Search";
 import ClearIcon from "@mui/icons-material/Clear";
-import PauseIcon from "@mui/icons-material/PauseCircleOutline";
-import PlayArrowIcon from "@mui/icons-material/PlayCircleOutline";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
 import FilterListOffIcon from "@mui/icons-material/FilterListOff";
 import ReportProblemIcon from "@mui/icons-material/ReportProblem";
-import DownloadIcon from "@mui/icons-material/FileDownload";
 import TuneIcon from "@mui/icons-material/Tune";
-import type { Flow, FlowFilters } from "../types";
-import { downloadJson } from "../util/clipboard";
+import type { FlowFilters } from "../types";
 import { WsStatusBadge } from "./WsStatusBadge";
 import { AdvancedFiltersPopover } from "./AdvancedFiltersPopover";
 import type { WsStatus } from "../api/ws";
@@ -37,11 +33,8 @@ interface Props {
   onChange: (filters: FlowFilters) => void;
   total: number;
   visible: number;
-  paused: boolean;
-  onTogglePause: () => void;
   onRefresh: () => void;
   connections: readonly string[];
-  visibleFlows: readonly Flow[];
   wsStatus: WsStatus;
   searchInputRef: React.Ref<HTMLInputElement>;
 }
@@ -51,22 +44,14 @@ export function FilterBar({
   onChange,
   total,
   visible,
-  paused,
-  onTogglePause,
   onRefresh,
   connections,
-  visibleFlows,
   wsStatus,
   searchInputRef,
 }: Props) {
   const searchId = useId();
   const { t } = useI18n();
   const [advAnchor, setAdvAnchor] = useState<HTMLElement | null>(null);
-
-  const exportJson = (): void => {
-    const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, -5);
-    downloadJson(`heimdall-flows-${ts}.json`, visibleFlows);
-  };
 
   const advFilterCount =
     (filters.portMin != null ? 1 : 0) +
@@ -214,31 +199,10 @@ export function FilterBar({
           />
           <Divider orientation="vertical" flexItem sx={{ mx: 0.5, my: 0.5 }} />
           <WsStatusBadge status={wsStatus} />
-          <Tooltip title={paused ? t("filter.resume") : t("filter.pause")}>
-            <IconButton size="small" onClick={onTogglePause} aria-label="pause">
-              {paused ? (
-                <PlayArrowIcon fontSize="small" color="warning" />
-              ) : (
-                <PauseIcon fontSize="small" />
-              )}
-            </IconButton>
-          </Tooltip>
           <Tooltip title={t("filter.refetch")}>
             <IconButton size="small" onClick={onRefresh} aria-label="refresh">
               <RefreshIcon fontSize="small" />
             </IconButton>
-          </Tooltip>
-          <Tooltip title={t("filter.export")}>
-            <span>
-              <IconButton
-                size="small"
-                onClick={exportJson}
-                disabled={visibleFlows.length === 0}
-                aria-label="export"
-              >
-                <DownloadIcon fontSize="small" />
-              </IconButton>
-            </span>
           </Tooltip>
         </Stack>
       </Box>
