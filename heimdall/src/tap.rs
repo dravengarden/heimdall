@@ -76,12 +76,17 @@ pub struct TapHandle {
 pub fn start(bpf: &mut Ebpf) -> Result<TapHandle> {
     // ─── Discover libssl images ──────────────────────────────────────────
     let libs = scan_libssl();
-    if libs.is_empty() {
-        info!("tap: no libssl mappings found in /proc; nothing to attach");
+    info!(count = libs.len(), "tap: libssl candidates discovered");
+
+    // ─── Discover Go TLS binaries ────────────────────────────────────────
+    let go_bins = scan_go_tls();
+    info!(count = go_bins.len(), "tap: Go TLS binaries discovered");
+
+    if libs.is_empty() && go_bins.is_empty() {
+        info!("tap: no libssl mappings or Go TLS binaries found; nothing to attach");
         let (_, rx) = mpsc::channel(1);
         return Ok(TapHandle { events: rx, attached_libs: 0 });
     }
-    info!(count = libs.len(), "tap: libssl candidates discovered");
 
     // ─── Attach uprobes per unique libssl ────────────────────────────────
     let mut attached: usize = 0;
@@ -89,10 +94,23 @@ pub fn start(bpf: &mut Ebpf) -> Result<TapHandle> {
         match attach_one(bpf, &lib.path) {
             Ok(()) => {
                 attached += 1;
-                info!(path = %lib.path.display(), "tap: uprobes attached");
+                info!(path = %lib.path.display(), "tap: libssl uprobes attached");
             }
             Err(e) => {
-                warn!(path = %lib.path.display(), error = %e, "tap: uprobe attach failed");
+                warn!(path = %lib.path.display(), error = %e, "tap: libssl uprobe attach failed");
+            }
+        }
+    }
+
+    // ─── Attach Go TLS write probe per unique binary ─────────────────────
+    for bin in &go_bins {
+        match attach_go_one(bpf, &bin.path) {
+            Ok(()) => {
+                attached += 1;
+                info!(path = %bin.path.display(), "tap: go_tls_write attached");
+            }
+            Err(e) => {
+                warn!(path = %bin.path.display(), error = %e, "tap: go_tls_write attach failed");
             }
         }
     }
@@ -265,6 +283,134 @@ fn scan_libssl() -> Vec<LibImage> {
     by_inode.into_values().collect()
 }
 
+// ---------------------------------------------------------------------------
+// Go TLS discovery — scan /proc/*/exe for Go binaries with crypto/tls
+//
+// Identification heuristic:
+//   1. Walk /proc/<pid>/exe (resolved via /proc/<pid>/root for containers).
+//   2. Dedup by inode.
+//   3. ELF-parse the binary; require `.gopclntab` section to be present
+//      (every Go binary has it; non-Go binaries don't).
+//   4. Require the `crypto/tls.(*Conn).Write` symbol — many Go binaries
+//      don't link the TLS package and we'd fail attach with a noisy error.
+//
+// We intentionally don't scan symbols on huge non-Go binaries (e.g. libffi,
+// big C++ apps) — the .gopclntab gate skips them in milliseconds.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+struct GoBinary {
+    /// Host-visible path (/proc/<pid>/root/...) — works for containerized
+    /// processes since the relay runs in the host mount namespace.
+    path: PathBuf,
+}
+
+fn scan_go_tls() -> Vec<GoBinary> {
+    let mut by_inode: StdHashMap<(u64, u64), GoBinary> = StdHashMap::new();
+    let mut tried = 0u32;
+    let mut readlink_fail = 0u32;
+    let mut metadata_fail = 0u32;
+    let mut not_go = 0u32;
+
+    let entries = match fs::read_dir("/proc") {
+        Ok(d) => d,
+        Err(e) => {
+            warn!(error = %e, "tap: cannot read /proc for Go scan");
+            return Vec::new();
+        }
+    };
+
+    for entry in entries.flatten() {
+        let pid: u32 = match entry.file_name().to_str().and_then(|s| s.parse().ok()) {
+            Some(p) => p,
+            None => continue,
+        };
+        tried += 1;
+
+        // Resolve the binary as the container sees it.
+        let exe_link = format!("/proc/{pid}/exe");
+        let exe_target = match fs::read_link(&exe_link) {
+            Ok(t) => t,
+            Err(_) => {
+                readlink_fail += 1;
+                continue;
+            }
+        };
+        let exe_str = match exe_target.to_str() {
+            Some(s) => s,
+            None => continue,
+        };
+        let host_path = if exe_str.starts_with('/') {
+            PathBuf::from(format!("/proc/{pid}/root{exe_str}"))
+        } else {
+            PathBuf::from(format!("/proc/{pid}/root/{exe_str}"))
+        };
+
+        let meta = match fs::metadata(&host_path) {
+            Ok(m) => m,
+            Err(_) => {
+                metadata_fail += 1;
+                continue; // not a file (kernel thread, etc.)
+            }
+        };
+        let key = (meta.dev(), meta.ino());
+        if by_inode.contains_key(&key) {
+            continue;
+        }
+
+        // Cheap ELF probe: only inspect binaries that look like Go.
+        if !is_go_binary_with_tls(&host_path).unwrap_or(false) {
+            not_go += 1;
+            continue;
+        }
+
+        by_inode.insert(key, GoBinary { path: host_path });
+    }
+
+    debug!(
+        tried,
+        readlink_fail,
+        metadata_fail,
+        not_go,
+        unique_go = by_inode.len(),
+        "tap: Go scan stats"
+    );
+
+    by_inode.into_values().collect()
+}
+
+/// Return true iff this ELF has both `.gopclntab` (Go binary) and the
+/// `crypto/tls.(*Conn).Write` symbol. We swallow IO/parse errors and
+/// return false — anything that can't be parsed isn't a probe candidate.
+fn is_go_binary_with_tls(path: &Path) -> Result<bool> {
+    use object::{Object, ObjectSection, ObjectSymbol};
+
+    let data = fs::read(path)?;
+    let obj = match object::read::File::parse(&*data) {
+        Ok(o) => o,
+        Err(_) => return Ok(false),
+    };
+
+    // Stage 1: must be Go.
+    let is_go = obj
+        .sections()
+        .any(|s| matches!(s.name(), Ok(".gopclntab")));
+    if !is_go {
+        return Ok(false);
+    }
+
+    // Stage 2: must have the TLS write symbol. Go binaries that don't
+    // link crypto/tls (e.g. cilium-health-responder for some builds)
+    // would attach-fail noisily otherwise.
+    let want = "crypto/tls.(*Conn).Write";
+    let has_write = obj
+        .symbols()
+        .chain(obj.dynamic_symbols())
+        .any(|s| s.name().map(|n| n == want).unwrap_or(false));
+
+    Ok(has_write)
+}
+
 fn is_libssl(p: &str) -> bool {
     // Match `libssl.so`, `libssl.so.3`, `libssl.so.1.1`, etc. anywhere in
     // the path. We deliberately do not accept `libsslN.so` or musl variants
@@ -321,6 +467,22 @@ fn attach_one(bpf: &mut Ebpf, target: &Path) -> Result<()> {
             .with_context(|| format!("attach SSL_read return at {}", target.display()))?;
     }
 
+    Ok(())
+}
+
+/// Attach the Go TLS send probe (`go_tls_write`) to a single Go binary.
+/// Symbol resolution uses aya's standard ELF symbol lookup, which
+/// happily handles Go's exotic symbol names (parens, dots, slashes).
+fn attach_go_one(bpf: &mut Ebpf, target: &Path) -> Result<()> {
+    let prog: &mut UProbe = bpf
+        .program_mut("go_tls_write")
+        .context("go_tls_write program not found")?
+        .try_into()?;
+    let _ = prog.load();
+    prog.attach(Some("crypto/tls.(*Conn).Write"), 0, target, None)
+        .with_context(|| {
+            format!("attach crypto/tls.(*Conn).Write at {}", target.display())
+        })?;
     Ok(())
 }
 

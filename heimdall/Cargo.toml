@@ -65,6 +65,13 @@ mime_guess = "2"
 # Phase B tap: aya's perf event API hands us BytesMut buffers.
 bytes = "1"
 
+# Phase B Go uprobe: parse pod ELFs to detect Go binaries (.gopclntab)
+# and find crypto/tls.(*Conn).Write symbol offsets. aya already pulls
+# `object` in transitively, but we use it directly for the pre-attach
+# scan so we can filter non-Go binaries before paying the symbol
+# resolution cost.
+object = { version = "0.36", default-features = false, features = ["read", "elf", "std"] }
+
 [[bin]]
 name = "heimdall"
 path = "src/main.rs"

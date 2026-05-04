@@ -946,6 +946,7 @@ dependencies = [
  "kube",
  "libc",
  "mime_guess",
+ "object",
  "parking_lot",
  "rust-embed",
  "serde",
