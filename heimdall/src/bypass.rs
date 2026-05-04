@@ -41,6 +41,7 @@ use crate::{
 /// flow. We pass these by Arc rather than threading the whole
 /// `Shared` struct here so the dependency direction stays clean
 /// (bypass -> store/pod, not bypass -> main).
+#[derive(Clone)]
 pub struct Deps {
     pub store: Arc<Store>,
     pub events: EventBus,

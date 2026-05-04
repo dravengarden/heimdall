@@ -26,6 +26,7 @@
 //! for schema, /etc/nixos/docs/heimdall.md for the operator's view.
 
 mod api;
+mod bootstrap;
 mod bypass;
 mod cli;
 mod dns;
@@ -436,14 +437,30 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
     // nobody is consuming it.)
     if shared.cfg.runtime.tap.enabled {
         if let Some(s) = shared.store.as_ref() {
-            let deps = bypass::Deps {
+            let deps = std::sync::Arc::new(bypass::Deps {
                 store: s.clone(),
                 events: shared.events.clone(),
                 cgroup_resolver: shared.cgroup_resolver.clone(),
                 informer: shared.informer.clone(),
                 open_flows: shared.open_flows.clone(),
-            };
-            match bypass::start(&mut bpf, deps) {
+            });
+            // Bootstrap pass first: synthesize flows for connections
+            // that were already established when heimdall started.
+            // This ensures rancher / kubelet / controller TLS streams
+            // (long-lived) get a flow_id for tap correlation. Wait
+            // briefly so the policy engine has populated the eBPF map.
+            let deps_for_bootstrap = deps.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                match bootstrap::synthesize(deps_for_bootstrap).await {
+                    Ok(0) => debug!("bootstrap: no pre-existing pod connections to synthesize"),
+                    Ok(n) => info!(synthesized = n, "bootstrap: pre-existing connections recorded"),
+                    Err(e) => warn!(error = %e, "bootstrap: synthesis failed"),
+                }
+            });
+            // Live consumer for new connect4 events.
+            let deps_for_bypass = (*deps).clone();
+            match bypass::start(&mut bpf, deps_for_bypass) {
                 Ok(cpus) => info!(cpus, "bypass: synthetic flow consumer started"),
                 Err(e) => warn!(error = %e, "bypass: failed to start; cluster-internal flows won't be recorded"),
             }
