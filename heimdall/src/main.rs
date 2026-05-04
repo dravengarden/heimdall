@@ -31,7 +31,6 @@ mod bypass;
 mod cli;
 mod dns;
 mod gosym;
-mod outbound;
 mod pod;
 mod policy;
 mod router;
@@ -176,8 +175,6 @@ fn resolve_all(cfg: &HeimdallConfig) -> Result<StdHashMap<String, Arc<Upstream>>
 struct Shared {
     cfg: HeimdallConfig,
     upstreams: StdHashMap<String, Arc<Upstream>>,
-    /// Loaded routing files keyed by tag (filename minus extension).
-    outbound: Arc<outbound::Registry>,
     /// None when --no-k8s or informer init failed.
     informer: Option<Arc<PodInformer>>,
     /// None when running outside k8s.
@@ -271,16 +268,6 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
         default_observe = cfg.pod_routing.default.observe,
         "config loaded"
     );
-
-    // Load all routing/*.{yaml,json,ncl} files referenced by podRouting.
-    let outbound_registry = outbound::Registry::load(&cfg.runtime.routing_dir, &cfg)
-        .with_context(|| format!("loading routing files from {}", cfg.runtime.routing_dir.display()))?;
-    info!(
-        count = outbound_registry.len(),
-        dir = %cfg.runtime.routing_dir.display(),
-        "routing registry ready"
-    );
-    let outbound_registry = std::sync::Arc::new(outbound_registry);
 
     let upstreams = resolve_all(&cfg)?;
     info!(connections = upstreams.len(), "all connections resolved");
@@ -376,7 +363,6 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
     let shared = Arc::new(Shared {
         cfg,
         upstreams,
-        outbound: outbound_registry,
         informer,
         cgroup_resolver,
         dns,
@@ -581,40 +567,25 @@ async fn relay(
         _ => None,
     };
 
-    // ─── Resolve pod-side decision: which routing tag, observe? ───────────
+    // ─── Resolve pod-side decision → connection name directly ────────────
+    // No destination-side routing layer: `pod_decision.use_` is itself
+    // either a connection name from `connections:` or the reserved
+    // `system` keyword.
     let pod_decision = router::resolve_pod_decision(&shared.cfg, pod_info.as_ref());
 
-    // If the tag is `system`, the connection should never have reached
-    // the relay (eBPF should have skipped redirect). Race window — fall
-    // back to `default` so we don't drop the request.
-    let routing_tag = if pod_decision.use_ == heimdall_config::SYSTEM_TAG {
+    // If the decision is `system`, the connection should never have
+    // reached the relay (eBPF should have skipped redirect). Race
+    // window — fall back to `default` so we don't drop the request.
+    let conn_name = if pod_decision.use_ == heimdall_config::SYSTEM_TAG {
         warn!(
             pod = %pod_info.as_ref().map(|p| format!("{}/{}", p.namespace, p.name))
                 .unwrap_or_else(|| "unknown".into()),
-            "relay saw a connection that should have been bypassed (system); routing via `default` instead"
+            "relay saw a connection that should have been bypassed (system); falling back to default"
         );
         "default".to_string()
     } else {
         pod_decision.use_.clone()
     };
-
-    // ─── Resolve outbound tag via the routing file ────────────────────────
-    let (dst_host_for_match, dst_ip_for_match) = match &dst {
-        Dst::Domain(h) => (Some(h.as_str()), Some(dst_ip)),
-        Dst::Ip(_) => (None, Some(dst_ip)),
-    };
-    let outbound_tag = shared
-        .outbound
-        .resolve(
-            &routing_tag,
-            pod_info.as_ref(),
-            dst_host_for_match,
-            dst_ip_for_match,
-            dst_port,
-        )
-        .unwrap_or_else(|| "default".to_string());
-
-    let conn_name = outbound_tag.clone();
     let upstream = shared
         .upstreams
         .get(&conn_name)

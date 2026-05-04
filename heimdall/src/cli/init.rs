@@ -1,7 +1,6 @@
 //! `heimdall init` — bootstrap a config directory.
 //!
-//! Drops a starter `heimdall.<ext>` plus a starter
-//! `routing/default.<ext>` into `--dir` (default `/etc/heimdall`).
+//! Drops a starter `heimdall.<ext>` into `--dir` (default `/etc/heimdall`).
 //! For `--format nickel`, also emits `lib.ncl` containing the schema
 //! contracts so user configs get type-checked at evaluation time.
 //!
@@ -51,23 +50,14 @@ const HEIMDALL_YAML: &str = include_str!("init_templates/heimdall.yaml");
 const HEIMDALL_JSON: &str = include_str!("init_templates/heimdall.json");
 const HEIMDALL_TOML: &str = include_str!("init_templates/heimdall.toml");
 const HEIMDALL_NCL: &str = include_str!("init_templates/heimdall.ncl");
-
-const DEFAULT_YAML: &str = include_str!("init_templates/default.yaml");
-const DEFAULT_JSON: &str = include_str!("init_templates/default.json");
-const DEFAULT_TOML: &str = include_str!("init_templates/default.toml");
-const DEFAULT_NCL: &str = include_str!("init_templates/default.ncl");
-
 const LIB_NCL: &str = include_str!("init_templates/lib.ncl");
 
 pub fn run(args: InitArgs) -> Result<()> {
     let ext = args.format.extension();
     fs::create_dir_all(&args.dir)
         .with_context(|| format!("create dir {}", args.dir.display()))?;
-    fs::create_dir_all(args.dir.join("routing"))
-        .with_context(|| format!("create dir {}/routing", args.dir.display()))?;
 
     let main_target = args.dir.join(format!("heimdall.{ext}"));
-    let routing_target = args.dir.join(format!("routing/default.{ext}"));
     let lib_target = args.dir.join("lib.ncl");
 
     let main_content = match args.format {
@@ -76,22 +66,14 @@ pub fn run(args: InitArgs) -> Result<()> {
         InitFormat::Toml => HEIMDALL_TOML,
         InitFormat::Nickel => HEIMDALL_NCL,
     };
-    let routing_content = match args.format {
-        InitFormat::Yaml => DEFAULT_YAML,
-        InitFormat::Json => DEFAULT_JSON,
-        InitFormat::Toml => DEFAULT_TOML,
-        InitFormat::Nickel => DEFAULT_NCL,
-    };
 
     write_file(&main_target, main_content, args.force)?;
-    write_file(&routing_target, routing_content, args.force)?;
     if matches!(args.format, InitFormat::Nickel) {
         write_file(&lib_target, LIB_NCL, args.force)?;
     }
 
     println!("heimdall init: wrote starter config in `{}`", args.dir.display());
     println!("  - {}", main_target.display());
-    println!("  - {}", routing_target.display());
     if matches!(args.format, InitFormat::Nickel) {
         println!("  - {}", lib_target.display());
     }

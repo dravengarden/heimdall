@@ -7,7 +7,6 @@
     "relayIp": "127.0.0.1",
     "dnsListen": "0.0.0.0:5358",
     "fakeIpCidr": "198.19.0.0/16",
-    "routingDir": "/etc/heimdall/routing",
     "apiListen": "0.0.0.0:9999",
     "stateDir": "/var/lib/heimdall",
     "flowRetentionSecs": 259200,

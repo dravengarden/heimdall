@@ -4,9 +4,8 @@
 # daemon version changes (the contracts here mirror the Rust schema
 # in heimdall-config/src/lib.rs).
 #
-# Usage in your config:
-#   let h = import "lib.ncl" in           # main config (same dir as lib.ncl)
-#   let h = import "../lib.ncl" in        # routing files (one level deeper)
+# Usage:
+#   let h = import "lib.ncl" in
 #   { ... } | h.HeimdallConfig
 
 let MatchOperator_ = std.contract.from_predicate (fun v =>
@@ -24,12 +23,6 @@ let rec MatchCond_ = {
   namespaces       | Array String | optional,
   matchLabels      | { _ : String } | optional,
   matchExpressions | Array MatchExpression_ | optional,
-
-  # Destination matchers — Xray subset
-  domain           | Array String | optional,
-  ip               | Array String | optional,
-  port             | String | optional,
-  network          | String | optional,
 
   # Boolean composition
   all              | Array MatchCond_ | optional,
@@ -86,7 +79,6 @@ let Runtime_ = {
   bypassCidrs       | Array String | default = [],
   dnsListen         | String | default = "0.0.0.0:5358",
   fakeIpCidr        | String | default = "198.19.0.0/16",
-  routingDir        | String | default = "/etc/heimdall/routing",
   apiListen         | String | default = "127.0.0.1:9999",
   stateDir          | String | default = "/var/lib/heimdall",
   flowRetentionSecs | Number | default = 259200,
@@ -99,28 +91,6 @@ let HeimdallConfig_ = {
   runtime     | Runtime_ | default = {},
   connections | { _ : Connection_ },
   podRouting  | PodRouting_,
-} in
-
-let RoutingRule_ = {
-  type        | String | default = "field",
-  name        | String | optional,
-  domain      | Array String | optional,
-  ip          | Array String | optional,
-  port        | String | optional,
-  network     | String | optional,
-  all         | Array MatchCond_ | optional,
-  any         | Array MatchCond_ | optional,
-  "not"       | MatchCond_ | optional,
-  outboundTag | String,
-} in
-
-let DomainStrategy_ = std.contract.from_predicate (fun v =>
-  v == "AsIs" || v == "IPIfNonMatch" || v == "IPOnDemand"
-) in
-
-let RoutingFile_ = {
-  domainStrategy | DomainStrategy_ | default = "AsIs",
-  rules          | Array RoutingRule_,
 } in
 
 # ── Module export ──────────────────────────────────────────────────
@@ -140,7 +110,4 @@ let RoutingFile_ = {
   TapConfig        = TapConfig_,
   Runtime          = Runtime_,
   HeimdallConfig   = HeimdallConfig_,
-  RoutingRule      = RoutingRule_,
-  DomainStrategy   = DomainStrategy_,
-  RoutingFile      = RoutingFile_,
 }
