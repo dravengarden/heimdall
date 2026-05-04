@@ -85,15 +85,28 @@ type PortMap = Arc<RwLock<HashMap<aya::maps::MapData, u32, OrigDst>>>;
 // ---------------------------------------------------------------------------
 
 /// heimdall — transparent SOCKS5 egress proxy + observability for k8s pods.
+///
+/// `--help` is intended for AI agents reading docs: it prints **every**
+/// subcommand and every option in a single output, not the standard
+/// clap-tree where each subcommand needs its own `help` invocation.
 #[derive(Parser, Debug)]
-#[command(name = "heimdall", version, about, long_about = None)]
+#[command(name = "heimdall", version, about, long_about = None,
+          disable_help_flag = true)]
 struct Cli {
-    /// Path to YAML config.
-    #[arg(long, default_value = heimdall_config::DEFAULT_PATH, env = "HEIMDALL_CONFIG", global = true)]
+    /// Path to config file (yaml | json | toml | ncl — auto-detected by extension).
+    /// When unset, probes /etc/heimdall/heimdall.{ncl,toml,json,yaml} in order
+    /// and uses the first one that exists.
+    #[arg(long, default_value_os_t = heimdall_config::default_config_path(),
+          env = "HEIMDALL_CONFIG", global = true)]
     config: PathBuf,
 
+    /// Print the full recursive help (every subcommand + every option) and exit.
+    #[arg(short = 'h', long = "help", global = true, action = clap::ArgAction::SetTrue,
+          help = "Print full help for every subcommand and option, then exit")]
+    help: bool,
+
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -109,7 +122,8 @@ enum Cmd {
     Status,
 
     /// Bootstrap a config directory (writes starter heimdall.<ext> +
-    /// routing/default.<ext>; for Nickel format, also lib.ncl).
+    /// AI-readable README.md; for Nickel format, also lib.ncl with
+    /// schema contracts).
     Init(cli::init::InitArgs),
 }
 
@@ -234,11 +248,18 @@ enum Dst {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // `--help` (or no subcommand): print full recursive help for AI agents
+    // and exit. Has to short-circuit before logger setup.
+    if cli.help || cli.cmd.is_none() {
+        print_help_all();
+        return Ok(());
+    }
+
     // Only the daemon prints structured logs by default. CLI subcommands
     // stay quiet unless `RUST_LOG` overrides — they're meant to feed
     // stdout into pipes / `jq` / human eyes.
-    let default_level = match &cli.cmd {
-        Cmd::Serve(_) => "heimdall=info",
+    let default_level = match cli.cmd.as_ref() {
+        Some(Cmd::Serve(_)) => "heimdall=info",
         _ => "heimdall=warn",
     };
     tracing_subscriber::fmt()
@@ -248,11 +269,53 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    match cli.cmd {
+    match cli.cmd.unwrap() {
         Cmd::Serve(args) => daemon_run(&cli.config, args).await,
         Cmd::Flows(sub) => cli::flows::run(&cli.config, sub).await,
         Cmd::Status => cli::status::run(&cli.config).await,
         Cmd::Init(args) => cli::init::run(args),
+    }
+}
+
+/// Walk the clap command tree and print long-help for every node.
+/// `heimdall --help` only shows top-level subcommands; this prints
+/// every subcommand + option recursively in a single output.
+fn print_help_all() {
+    use clap::CommandFactory;
+    let mut root = Cli::command();
+    print_command_recursive(&mut root, &[]);
+}
+
+fn print_command_recursive(cmd: &mut clap::Command, path: &[&str]) {
+    let title = if path.is_empty() {
+        cmd.get_name().to_string()
+    } else {
+        format!("{} {}", path.join(" "), cmd.get_name())
+    };
+    println!();
+    println!("==============================================================");
+    println!(" {title}");
+    println!("==============================================================");
+    let _ = cmd.print_long_help();
+    println!();
+
+    // Recurse into subcommands. Skip the auto-generated `help` to keep
+    // the output noise-free.
+    let names: Vec<String> = cmd
+        .get_subcommands()
+        .filter(|s| s.get_name() != "help")
+        .map(|s| s.get_name().to_string())
+        .collect();
+    let mut new_path: Vec<&str> = path.to_vec();
+    if !path.iter().any(|s| *s == cmd.get_name()) || path.is_empty() {
+        new_path.push(cmd.get_name());
+    }
+    let owned_path: Vec<String> = new_path.iter().map(|s| s.to_string()).collect();
+    for name in names {
+        if let Some(sub) = cmd.find_subcommand_mut(&name) {
+            let path_refs: Vec<&str> = owned_path.iter().map(|s| s.as_str()).collect();
+            print_command_recursive(sub, &path_refs);
+        }
     }
 }
 

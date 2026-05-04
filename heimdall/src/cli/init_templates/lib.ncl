@@ -85,12 +85,35 @@ let Runtime_ = {
   tap               | TapConfig_ | default = {},
 } in
 
+let DnsStrategy_ = std.contract.from_predicate (fun v =>
+  v == "fake" || v == "system"
+) in
+
+let CliRunProfile_ = {
+  connection  | String | optional,
+  observe     | Bool | optional,
+  dns         | DnsStrategy_ | optional,
+  timeout     | Number | optional,
+  extraBypass | Array String | optional,
+  tag         | String | optional,
+} in
+
+let CliRun_ = {
+  "default" | CliRunProfile_ | default = {},
+  profiles  | { _ : CliRunProfile_ } | default = {},
+} in
+
+let Cli_ = {
+  run | CliRun_ | default = {},
+} in
+
 let HeimdallConfig_ = {
   apiVersion  | String | default = "heimdall.io/v1alpha1",
   kind        | String | default = "HeimdallConfig",
   runtime     | Runtime_ | default = {},
   connections | { _ : Connection_ },
   podRouting  | PodRouting_,
+  cli         | Cli_ | default = {},
 } in
 
 # ── Module export ──────────────────────────────────────────────────
@@ -109,5 +132,9 @@ let HeimdallConfig_ = {
   Connection       = Connection_,
   TapConfig        = TapConfig_,
   Runtime          = Runtime_,
+  DnsStrategy      = DnsStrategy_,
+  CliRunProfile    = CliRunProfile_,
+  CliRun           = CliRun_,
+  Cli              = Cli_,
   HeimdallConfig   = HeimdallConfig_,
 }

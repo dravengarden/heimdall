@@ -24,9 +24,24 @@ use regex::Regex;
 use serde::{de, Deserialize, Deserializer};
 use thiserror::Error;
 
-pub const DEFAULT_PATH: &str = "/etc/heimdall/heimdall.yaml";
+pub const DEFAULT_DIR: &str = "/etc/heimdall";
 pub const ROUTING_KEY_DEFAULT: &str = "heimdall.io/routing";
 pub const OBSERVE_KEY_DEFAULT: &str = "heimdall.io/observe";
+
+/// Probe `/etc/heimdall/heimdall.{ncl,toml,json,yaml}` and return the
+/// first one that exists. Falls back to `heimdall.ncl` (the canonical
+/// recommended format) if none are present so help text and error
+/// messages have something to display.
+pub fn default_config_path() -> PathBuf {
+    let dir = Path::new(DEFAULT_DIR);
+    for ext in ["ncl", "toml", "json", "yaml"] {
+        let p = dir.join(format!("heimdall.{ext}"));
+        if p.exists() {
+            return p;
+        }
+    }
+    dir.join("heimdall.ncl")
+}
 
 /// Reserved `use` value — when a pod resolves to `system`, the eBPF
 /// connect4 hook skips redirection entirely. Cannot be used as a
@@ -82,6 +97,12 @@ pub struct HeimdallConfig {
 
     #[serde(rename = "podRouting", default)]
     pub pod_routing: PodRouting,
+
+    /// Defaults for `heimdall <subcommand>` invocations (currently
+    /// only `cli.run` is consumed). Optional — empty config = empty
+    /// defaults; subcommand will fall back to compiled-in values.
+    #[serde(default)]
+    pub cli: Cli,
 }
 
 // ---------------------------------------------------------------------------
@@ -463,6 +484,74 @@ impl Default for PodDecision {
 }
 
 fn default_pod_use() -> String { "default".into() }
+
+// ---------------------------------------------------------------------------
+// cli — defaults for `heimdall <subcommand>` invocations
+// ---------------------------------------------------------------------------
+//
+// Lets every default knob for CLI subcommands live in the same
+// /etc/heimdall/heimdall.ncl as routing — no separate ~/.config/heimdall/
+// file. Each subcommand hangs its config under `cli.<subcmd>`. Today
+// only `cli.run` is consumed (by the planned proxychains-style
+// `heimdall run`); adding a new subcommand later means adding a new
+// optional field here without breaking existing configs.
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Cli {
+    #[serde(default)]
+    pub run: CliRun,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CliRun {
+    /// Baseline applied when no `--profile` flag is given.
+    #[serde(rename = "default", default)]
+    pub default: CliRunProfile,
+
+    /// Named profiles selectable via `--profile NAME`.
+    #[serde(default)]
+    pub profiles: BTreeMap<String, CliRunProfile>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CliRunProfile {
+    /// Connection name (or reserved `system`). None = inherit.
+    pub connection: Option<String>,
+
+    /// Capture plaintext via the tap. None = inherit.
+    pub observe: Option<bool>,
+
+    /// DNS resolution strategy for the wrapped command.
+    pub dns: Option<DnsStrategy>,
+
+    /// Hard timeout in seconds; 0 = no timeout.
+    pub timeout: Option<u64>,
+
+    /// Extra bypass CIDRs merged with daemon-global bypass list.
+    #[serde(rename = "extraBypass")]
+    pub extra_bypass: Option<Vec<String>>,
+
+    /// Free-form label; surfaces on the flow log entries for this run.
+    pub tag: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DnsStrategy {
+    /// Use heimdall's fake-IP DNS resolver. The relay reverses to a
+    /// hostname before forwarding via SOCKS5 ATYP=0x03.
+    Fake,
+    /// Bypass fake-IP; let the wrapped command's libc resolver hit
+    /// whatever it usually hits (host's /etc/resolv.conf).
+    System,
+}
+
+impl Default for DnsStrategy {
+    fn default() -> Self { DnsStrategy::Fake }
+}
 
 // ---------------------------------------------------------------------------
 // Loaders

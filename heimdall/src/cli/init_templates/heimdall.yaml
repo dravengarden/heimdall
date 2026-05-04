@@ -36,3 +36,12 @@ podRouting:
   default:
     use: default
     observe: false
+
+# Defaults for `heimdall <subcommand>` invocations. Consumed by the
+# planned `heimdall run` CLI proxy. All fields optional.
+cli:
+  run:
+    default:
+      connection: default
+      observe: true
+    profiles: {}
