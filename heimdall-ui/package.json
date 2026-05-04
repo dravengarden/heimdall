@@ -30,7 +30,7 @@
     "@vitejs/plugin-react": "^4.3.4",
     "babel-plugin-react-compiler": "19.0.0-beta-decd7b8-20250118",
     "eslint-plugin-react-compiler": "19.0.0-beta-decd7b8-20250118",
-    "oxlint": "^0.16.0",
+    "oxlint": "^1.62.0",
     "prettier": "^3.4.0"
   }
 }
