@@ -23,13 +23,16 @@
 #![no_main]
 
 use aya_ebpf::{
-    helpers::{bpf_get_current_cgroup_id, bpf_get_socket_cookie},
-    macros::{cgroup_skb, cgroup_sock_addr, map},
-    maps::{Array, HashMap},
-    programs::{SkBuffContext, SockAddrContext},
+    helpers::{
+        bpf_get_current_cgroup_id, bpf_get_current_pid_tgid, bpf_get_socket_cookie,
+        bpf_ktime_get_ns, gen::bpf_probe_read_user,
+    },
+    macros::{cgroup_skb, cgroup_sock_addr, map, uprobe, uretprobe},
+    maps::{Array, HashMap, PerfEventArray},
+    programs::{ProbeContext, RetProbeContext, SkBuffContext, SockAddrContext},
     EbpfContext,
 };
-use heimdall_common::{is_default_bypass, OrigDst};
+use heimdall_common::{is_default_bypass, OrigDst, TapDir, TapEvent, TAP_DATA_LEN};
 
 const PROXY_PORT: u16 = 12345;
 
@@ -84,6 +87,7 @@ fn try_connect4(ctx: SockAddrContext) -> Result<(), ()> {
         port: dst_port_be,
         _pad: 0,
         cgroup_id,
+        socket_cookie: cookie,
     };
     COOKIE_MAP.insert(&cookie, &orig, 0).map_err(|_| ())?;
 
@@ -143,6 +147,138 @@ fn try_skb_egress(ctx: &SkBuffContext) -> Result<(), ()> {
     let _ = COOKIE_MAP.remove(&cookie);
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Phase B uprobes — capture TLS plaintext at the libssl boundary.
+//
+// SSL_write(SSL *ssl, const void *buf, int num)
+//   x86_64 SysV: rdi=ssl, rsi=buf, rdx=num
+// SSL_read(SSL *ssl, void *buf, int num)
+//   entry: stash buf pointer keyed by tgid_pid
+//   ret  : look up state, read `ret` bytes from buf, emit
+// ---------------------------------------------------------------------------
+
+#[map]
+static TAP_EVENTS: PerfEventArray<TapEvent> = PerfEventArray::new(0);
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ReadEntry {
+    buf: u64,
+}
+
+#[map]
+static SSL_READ_STATE: HashMap<u64, ReadEntry> = HashMap::with_max_entries(8192, 0);
+
+#[uprobe]
+pub fn ssl_write(ctx: ProbeContext) -> u32 {
+    let _ = try_ssl_write(&ctx);
+    0
+}
+
+#[inline(always)]
+fn try_ssl_write(ctx: &ProbeContext) -> Result<(), ()> {
+    let buf: *const u8 = ctx.arg(1).ok_or(())?;
+    let num: i32 = ctx.arg(2).ok_or(())?;
+    if num <= 0 || buf.is_null() {
+        return Ok(());
+    }
+    emit_tap(ctx, TapDir::Send, num as u32, buf);
+    Ok(())
+}
+
+#[uprobe]
+pub fn ssl_read_enter(ctx: ProbeContext) -> u32 {
+    let _ = try_ssl_read_enter(&ctx);
+    0
+}
+
+#[inline(always)]
+fn try_ssl_read_enter(ctx: &ProbeContext) -> Result<(), ()> {
+    let buf: *const u8 = ctx.arg(1).ok_or(())?;
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let entry = ReadEntry { buf: buf as u64 };
+    let _ = SSL_READ_STATE.insert(&pid_tgid, &entry, 0);
+    Ok(())
+}
+
+#[uretprobe]
+pub fn ssl_read_exit(ctx: RetProbeContext) -> u32 {
+    let _ = try_ssl_read_exit(&ctx);
+    0
+}
+
+#[inline(always)]
+fn try_ssl_read_exit(ctx: &RetProbeContext) -> Result<(), ()> {
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let entry = match unsafe { SSL_READ_STATE.get(&pid_tgid) } {
+        Some(e) => *e,
+        None => return Ok(()),
+    };
+    let _ = SSL_READ_STATE.remove(&pid_tgid);
+
+    let ret: i32 = ctx.ret().ok_or(())?;
+    if ret <= 0 {
+        return Ok(());
+    }
+    let buf = entry.buf as *const u8;
+    if buf.is_null() {
+        return Ok(());
+    }
+    // Build a `ProbeContext`-shaped wrapper for emit_tap; ret context has
+    // its own ctx.as_ptr() — but PerfEventArray::output accepts any
+    // ContextLike, so we cast through `EbpfContext`.
+    emit_tap_ret(ctx, TapDir::Recv, ret as u32, buf);
+    Ok(())
+}
+
+// Emit a TapEvent. `total` is the application-visible length, `buf` is
+// the userspace pointer we'll read up to TAP_DATA_LEN bytes from.
+#[inline(always)]
+fn emit_tap(ctx: &ProbeContext, dir: TapDir, total: u32, buf: *const u8) {
+    let mut ev: TapEvent = unsafe { core::mem::zeroed() };
+    ev.tgid_pid = bpf_get_current_pid_tgid();
+    ev.ts_ns = unsafe { bpf_ktime_get_ns() };
+    ev.cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    ev.dir = dir as u32;
+    ev.total_len = total;
+    ev.captured_len = if total > TAP_DATA_LEN as u32 {
+        TAP_DATA_LEN as u32
+    } else {
+        total
+    };
+    unsafe {
+        let _ = bpf_probe_read_user(
+            ev.data.as_mut_ptr() as *mut _,
+            ev.captured_len,
+            buf as *const _,
+        );
+    }
+    TAP_EVENTS.output(ctx, &ev, 0);
+}
+
+#[inline(always)]
+fn emit_tap_ret(ctx: &RetProbeContext, dir: TapDir, total: u32, buf: *const u8) {
+    let mut ev: TapEvent = unsafe { core::mem::zeroed() };
+    ev.tgid_pid = bpf_get_current_pid_tgid();
+    ev.ts_ns = unsafe { bpf_ktime_get_ns() };
+    ev.cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    ev.dir = dir as u32;
+    ev.total_len = total;
+    ev.captured_len = if total > TAP_DATA_LEN as u32 {
+        TAP_DATA_LEN as u32
+    } else {
+        total
+    };
+    unsafe {
+        let _ = bpf_probe_read_user(
+            ev.data.as_mut_ptr() as *mut _,
+            ev.captured_len,
+            buf as *const _,
+        );
+    }
+    TAP_EVENTS.output(ctx, &ev, 0);
 }
 
 #[panic_handler]

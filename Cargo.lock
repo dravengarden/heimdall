@@ -934,6 +934,7 @@ dependencies = [
  "axum",
  "aya",
  "aya-log",
+ "bytes",
  "chrono",
  "clap",
  "comfy-table",
