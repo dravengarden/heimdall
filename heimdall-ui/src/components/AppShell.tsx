@@ -5,6 +5,8 @@ import {
   Chip,
   IconButton,
   Stack,
+  Tab,
+  Tabs,
   Toolbar,
   Tooltip,
   Typography,
@@ -16,12 +18,21 @@ import SettingsIcon from "@mui/icons-material/SettingsOutlined";
 import { useStatus } from "../hooks/useStatus";
 import { useI18n } from "../i18n";
 
+export type AppView = "flows" | "tap";
+
 interface Props {
   children: ReactNode;
+  view: AppView;
+  onViewChange: (v: AppView) => void;
   onOpenSettings: () => void;
 }
 
-export function AppShell({ children, onOpenSettings }: Props) {
+export function AppShell({
+  children,
+  view,
+  onViewChange,
+  onOpenSettings,
+}: Props) {
   const status = useStatus();
   const { t } = useI18n();
 
@@ -69,6 +80,24 @@ export function AppShell({ children, onOpenSettings }: Props) {
             </Stack>
           )}
           <Box sx={{ flex: 1 }} />
+          <Tabs
+            value={view}
+            onChange={(_, v: AppView) => onViewChange(v)}
+            textColor="inherit"
+            indicatorColor="secondary"
+            sx={{ minHeight: 36 }}
+          >
+            <Tab
+              value="flows"
+              label={t("nav.flows")}
+              sx={{ minHeight: 36, py: 0.5 }}
+            />
+            <Tab
+              value="tap"
+              label={t("nav.tap")}
+              sx={{ minHeight: 36, py: 0.5 }}
+            />
+          </Tabs>
           <Tooltip title={t("settings.title")}>
             <IconButton size="small" onClick={onOpenSettings} aria-label="settings">
               <SettingsIcon fontSize="small" />

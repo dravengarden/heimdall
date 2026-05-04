@@ -18,6 +18,17 @@ const en: Catalog = {
   "app.connecting": "connecting",
   "app.reconnecting": "reconnecting",
 
+  "nav.flows": "Flows",
+  "nav.tap": "Live Tap",
+
+  "livetap.title": "Live plaintext",
+  "livetap.cgroupFilter": "filter by cgroup_id…",
+  "livetap.pause": "Pause polling",
+  "livetap.resume": "Resume polling",
+  "livetap.clear": "Clear buffer",
+  "livetap.empty":
+    "No plaintext yet. Hit an HTTPS endpoint from any libssl-using process; events appear within ~1s.",
+
   "filter.placeholder": "filter by host / pod / IP / connection…  (press /)",
   "filter.connections": "connections",
   "filter.allConnections": "all connections",
@@ -105,6 +116,17 @@ const zhCN: Catalog = {
   "app.live": "实时",
   "app.connecting": "连接中",
   "app.reconnecting": "重连中",
+
+  "nav.flows": "流量",
+  "nav.tap": "实时明文",
+
+  "livetap.title": "实时明文",
+  "livetap.cgroupFilter": "按 cgroup_id 过滤…",
+  "livetap.pause": "暂停轮询",
+  "livetap.resume": "恢复轮询",
+  "livetap.clear": "清空缓冲",
+  "livetap.empty":
+    "暂无明文。从任意使用 libssl 的进程发起 HTTPS 请求,~1 秒内会出现事件。",
 
   "filter.placeholder": "搜索 hostname / pod / IP / connection…  (按 / 聚焦)",
   "filter.connections": "连接",
