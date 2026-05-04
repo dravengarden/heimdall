@@ -31,7 +31,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use hickory_proto::{
-    op::{Header, Message, MessageType, OpCode, Query, ResponseCode},
+    op::{Header, Message, MessageType, OpCode, ResponseCode},
     rr::{rdata::A, RData, Record, RecordType},
     serialize::binary::{BinDecodable, BinEncodable},
 };
@@ -115,10 +115,6 @@ impl DnsResolver {
     /// Reverse lookup: fake IP (network byte order) → hostname.
     pub fn lookup_be(&self, fake_ip_be: u32) -> Option<String> {
         self.by_ip.read().get(&fake_ip_be).cloned()
-    }
-
-    pub fn entries(&self) -> usize {
-        self.by_ip.read().len()
     }
 
     /// Run the UDP DNS server on `listen`. Loops forever.

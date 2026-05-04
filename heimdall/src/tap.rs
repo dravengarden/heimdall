@@ -65,12 +65,10 @@ use tracing::{debug, info, warn};
 #[derive(Debug, Clone)]
 pub struct ObservedTap {
     pub tgid: u32,
-    pub pid: u32,
     /// Leaf cgroup id of the task that made the SSL call. The relay
     /// stamps the same value into `flows.cgroup_id` at connect4 time,
     /// so we can match plaintext to the right flow without /proc walks.
     pub cgroup_id: u64,
-    pub ts_ns: u64,
     pub dir: TapDir,
     pub total_len: u32,
     pub captured: Vec<u8>,
@@ -98,8 +96,12 @@ pub fn start(bpf: &mut Ebpf) -> Result<TapHandle> {
     let go_bins = scan_go_tls();
     info!(count = go_bins.len(), "tap: Go TLS binaries discovered");
 
-    if libs.is_empty() && go_bins.is_empty() {
-        info!("tap: no libssl mappings or Go TLS binaries found; nothing to attach");
+    // ─── Discover rustls binaries ────────────────────────────────────────
+    let rs_bins = scan_rustls();
+    info!(count = rs_bins.len(), "tap: rustls binaries discovered");
+
+    if libs.is_empty() && go_bins.is_empty() && rs_bins.is_empty() {
+        info!("tap: no libssl / Go TLS / rustls binaries found; nothing to attach");
         let (_, rx) = mpsc::channel(1);
         return Ok(TapHandle { events: rx, attached_libs: 0 });
     }
@@ -127,6 +129,19 @@ pub fn start(bpf: &mut Ebpf) -> Result<TapHandle> {
             }
             Err(e) => {
                 warn!(path = %bin.path.display(), error = %e, "tap: go_tls_write attach failed");
+            }
+        }
+    }
+
+    // ─── Attach rustls probes per unique binary ──────────────────────────
+    for bin in &rs_bins {
+        match attach_rustls_one(bpf, bin) {
+            Ok(()) => {
+                attached += 1;
+                info!(path = %bin.path.display(), "tap: rustls uprobes attached");
+            }
+            Err(e) => {
+                warn!(path = %bin.path.display(), error = %e, "tap: rustls uprobe attach failed");
             }
         }
     }
@@ -204,13 +219,10 @@ fn decode(raw: &BytesMut) -> Option<ObservedTap> {
         _ => return None,
     };
     let tgid = (ev.tgid_pid >> 32) as u32;
-    let pid = ev.tgid_pid as u32;
     let cap = ev.captured_len.min(TAP_DATA_LEN as u32) as usize;
     Some(ObservedTap {
         tgid,
-        pid,
         cgroup_id: ev.cgroup_id,
-        ts_ns: ev.ts_ns,
         dir,
         total_len: ev.total_len,
         captured: ev.data[..cap].to_vec(),
@@ -630,6 +642,238 @@ fn find_go_ret_offsets(
         }
     }
     Ok(rets)
+}
+
+// ---------------------------------------------------------------------------
+// rustls discovery — scan /proc/*/exe for binaries that link rustls
+//
+// Identification: a Rust binary that contains the canonical mangled
+// symbol prefix for `<rustls::conn::ConnectionCommon<T> as
+// rustls::conn::connection::PlaintextSink>::write`.
+//
+// Caveats:
+//
+//  * Stripped Rust binaries lose `.symtab` so we can't find these —
+//    there's no `.gopclntab` equivalent. In practice most Rust
+//    release binaries on this cluster ship with full symbols, since
+//    stripping is opt-in (not cargo's default).
+//
+//  * The presence of the symbol does NOT guarantee the binary
+//    actively calls it. ClickHouse for instance links rustls (some
+//    optional dependency pulls it in) but its production TLS path
+//    statically links OpenSSL and never reaches the rustls code —
+//    `objdump` finds zero direct call sites for the symbol. Our
+//    attach succeeds in both cases; whether tap events fire depends
+//    on runtime usage.
+//
+//  * The current Rust SysV ABI assumption (`buf` in RSI/RDX,
+//    `Result<usize, io::Error>` in RAX/RDX) was reverse-engineered
+//    from typical compiled output and may need updating if the
+//    compiler ever switches to a niche-packed layout for this
+//    Result type.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+struct RustlsBinary {
+    path: PathBuf,
+    /// File offset of `<...PlaintextSink>::write` (entry).
+    write_offset: u64,
+    /// File offset of `<...Reader as std::io::Read>::read` (entry).
+    /// None when the build inlined this away (some binaries do).
+    read_offset: Option<u64>,
+}
+
+fn scan_rustls() -> Vec<RustlsBinary> {
+    let mut by_inode: StdHashMap<(u64, u64), RustlsBinary> = StdHashMap::new();
+
+    let entries = match fs::read_dir("/proc") {
+        Ok(d) => d,
+        Err(e) => {
+            warn!(error = %e, "tap: cannot read /proc for rustls scan");
+            return Vec::new();
+        }
+    };
+
+    for entry in entries.flatten() {
+        let pid: u32 = match entry.file_name().to_str().and_then(|s| s.parse().ok()) {
+            Some(p) => p,
+            None => continue,
+        };
+
+        let exe_link = format!("/proc/{pid}/exe");
+        let exe_target = match fs::read_link(&exe_link) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let exe_str = match exe_target.to_str() {
+            Some(s) => s,
+            None => continue,
+        };
+        let host_path = if exe_str.starts_with('/') {
+            PathBuf::from(format!("/proc/{pid}/root{exe_str}"))
+        } else {
+            PathBuf::from(format!("/proc/{pid}/root/{exe_str}"))
+        };
+
+        let meta = match fs::metadata(&host_path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let key = (meta.dev(), meta.ino());
+        if by_inode.contains_key(&key) {
+            continue;
+        }
+
+        match find_rustls_offsets(&host_path) {
+            Ok(Some(rb)) => {
+                by_inode.insert(key, rb);
+            }
+            Ok(None) => {} // Not a rustls binary; ignore.
+            Err(e) => {
+                debug!(path = %host_path.display(), error = %e, "tap: rustls scan failed");
+            }
+        }
+    }
+
+    by_inode.into_values().collect()
+}
+
+/// Inspect an ELF symtab for the canonical rustls plaintext-API
+/// symbols and return their file offsets.
+///
+/// Symbol patterns we match (stable across compiler versions):
+///   write: contains `PlaintextSink$GT$5write17h`
+///   read:  contains `std..io..Read$GT$4read17h`
+///
+/// The numeric prefixes (`5`, `4`) are the lengths of the method
+/// names ("write", "read") in Rust's mangling, so they're stable.
+/// The `17h<HEX>E` suffix differs per binary but isn't part of our
+/// match.
+fn find_rustls_offsets(path: &Path) -> Result<Option<RustlsBinary>> {
+    use object::{Object, ObjectSection, ObjectSymbol};
+
+    let data = fs::read(path)?;
+    let obj = match object::read::File::parse(&*data) {
+        Ok(o) => o,
+        Err(_) => return Ok(None),
+    };
+
+    let mut write_addr: Option<(u64, object::SectionIndex)> = None;
+    let mut read_addr: Option<(u64, object::SectionIndex)> = None;
+
+    for sym in obj.symbols() {
+        let name = match sym.name() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+        if !name.contains("rustls") {
+            continue;
+        }
+        if write_addr.is_none()
+            && name.contains("PlaintextSink$GT$5write17h")
+            && !name.contains("write_vectored")
+        {
+            if let Some(idx) = sym.section_index() {
+                write_addr = Some((sym.address(), idx));
+            }
+        } else if read_addr.is_none()
+            && name.contains("connection..Reader$u20$as$u20$std..io..Read$GT$4read17h")
+        {
+            if let Some(idx) = sym.section_index() {
+                read_addr = Some((sym.address(), idx));
+            }
+        }
+        if write_addr.is_some() && read_addr.is_some() {
+            break;
+        }
+    }
+
+    let (write_vaddr, write_section) = match write_addr {
+        Some(v) => v,
+        None => return Ok(None), // Not a rustls binary, or symbols stripped.
+    };
+
+    let to_file_offset = |vaddr: u64, sec_idx: object::SectionIndex| -> Result<u64> {
+        let section = obj
+            .section_by_index(sec_idx)
+            .map_err(|e| anyhow::anyhow!("section_by_index: {e}"))?;
+        let section_addr = section.address();
+        let (sec_file_off, _) = section
+            .file_range()
+            .ok_or_else(|| anyhow::anyhow!("section has no file range"))?;
+        vaddr
+            .checked_sub(section_addr)
+            .map(|d| sec_file_off + d)
+            .ok_or_else(|| anyhow::anyhow!("vaddr below section base"))
+    };
+
+    let write_offset = to_file_offset(write_vaddr, write_section)?;
+    let read_offset = match read_addr {
+        Some((vaddr, sec)) => Some(to_file_offset(vaddr, sec)?),
+        None => None,
+    };
+
+    Ok(Some(RustlsBinary {
+        path: path.to_path_buf(),
+        write_offset,
+        read_offset,
+    }))
+}
+
+/// Attach the three rustls probes (write entry, read entry,
+/// read return) to a single binary using gosym-style file offsets.
+///
+/// Rust supports kernel uretprobes (no movable stacks), so the read
+/// side uses an actual `#[uretprobe]` rather than the Go RET-offset
+/// trick.
+fn attach_rustls_one(bpf: &mut Ebpf, bin: &RustlsBinary) -> Result<()> {
+    use aya::programs::UProbe;
+
+    {
+        let prog: &mut UProbe = bpf
+            .program_mut("rustls_write")
+            .context("rustls_write program not found")?
+            .try_into()?;
+        let _ = prog.load();
+        prog.attach(None, bin.write_offset, &bin.path, None)
+            .with_context(|| format!("attach rustls_write at {} offset {:#x}",
+                bin.path.display(), bin.write_offset))?;
+    }
+
+    let read_off = match bin.read_offset {
+        Some(o) => o,
+        None => {
+            warn!(
+                path = %bin.path.display(),
+                "tap: rustls Read::read symbol absent (likely inlined); recv-side skipped"
+            );
+            return Ok(());
+        }
+    };
+
+    {
+        let prog: &mut UProbe = bpf
+            .program_mut("rustls_read_enter")
+            .context("rustls_read_enter program not found")?
+            .try_into()?;
+        let _ = prog.load();
+        prog.attach(None, read_off, &bin.path, None)
+            .with_context(|| format!("attach rustls_read_enter at {} offset {:#x}",
+                bin.path.display(), read_off))?;
+    }
+
+    {
+        let prog: &mut UProbe = bpf
+            .program_mut("rustls_read_exit")
+            .context("rustls_read_exit program not found")?
+            .try_into()?;
+        let _ = prog.load();
+        prog.attach(None, read_off, &bin.path, None)
+            .with_context(|| format!("attach rustls_read_exit at {} offset {:#x}",
+                bin.path.display(), read_off))?;
+    }
+
+    Ok(())
 }
 
 /// Convenience: spawn a logger task that drains a TapHandle and writes
