@@ -1,15 +1,52 @@
 # heimdall
 
-Transparent TLS-aware egress proxy + observability for Kubernetes pods,
+Transparent egress proxy + TLS observability for Kubernetes pods,
 powered by eBPF cgroup hooks and uprobes.
+
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![Linux](https://img.shields.io/badge/linux-5.10%2B-lightgrey)](#requirements)
+[![cgroup](https://img.shields.io/badge/cgroup-v2-orange)](#requirements)
 
 Routes outbound TCP through a SOCKS5 upstream **and** captures
 decrypted TLS payloads at the application boundary — no MITM, no CA
-injection, no per-application configuration.
+injection, no per-application configuration. Single binary
+(relay + tap + HTTP API + Web UI), deployed on Kubernetes nodes
+via systemd or as a privileged DaemonSet.
 
-Runs as a single binary (relay + tap + HTTP API + Web UI all in one),
-typically deployed on Kubernetes nodes via systemd or as a privileged
-DaemonSet.
+> **Status: alpha.** Used in production on a single-node k0s
+> cluster behind a corporate VPN; CI / release process / multi-node
+> deployment haven't been hardened yet. See
+> [CHANGELOG.md](CHANGELOG.md) for what's shipped, [docs/runbook.md](docs/runbook.md)
+> for the deploy story.
+
+---
+
+## Quickstart
+
+```bash
+# 1. Build (eBPF first, then userspace; see Build section for the why)
+( cd heimdall-ebpf && cargo +nightly build -Z build-std=core \
+                                          --target bpfel-unknown-none --release )
+( cd heimdall-ui && bun install && bun run build )
+cargo build --release
+
+# 2. Bootstrap a config directory
+sudo ./target/release/heimdall init --dir /etc/heimdall --format nickel
+
+# 3. Edit /etc/heimdall/heimdall.ncl (declares connections + podRouting rules).
+#    /etc/heimdall/README.md is auto-generated and dense; AI agents read it.
+
+# 4. Run the daemon (systemd in production; ad-hoc here for testing)
+sudo ./target/release/heimdall serve
+
+# 5. Wrap a CLI through a connection
+heimdall run -p corp -- curl https://internal.example.com/
+heimdall flows list --since 5m
+```
+
+NixOS users: this repo's [`services/heimdall/`](https://github.com/your-org/your-nixos-config/tree/main/services/heimdall)
+in the [host](https://github.com/your-org/your-nixos-config) sibling repo gives
+a fully declarative deploy.
 
 ---
 
@@ -20,9 +57,9 @@ both — internalize the distinction once and the rest follows.
 
 ### Flow — one TCP connection
 
-A **flow** is a single TCP connection from a pod (or the host) to some
-destination, tracked from `connect()` to close. One row in the
-`flows` sqlite table per flow.
+A **flow** is a single TCP connection from a pod (or a wrapped CLI
+process) to some destination, tracked from `connect()` to close. One
+row in the `flows` sqlite table per flow.
 
 Captured fields: `pod_namespace/pod_name`, `cgroup_id`, `dst_ip:port`,
 `dst_host` (when fake-IP DNS gave us a hostname), `connection_name`
@@ -33,94 +70,63 @@ A flow row is created in one of three places:
 
 | Origin | `connection_name` | When |
 |---|---|---|
-| Relay path | `default`, `corp`, … | eBPF redirected the connect4 to the relay; relay opens SOCKS5 to the named upstream |
+| Relay path | `default`, `corp`, … | eBPF redirected the connect to the relay; relay opens SOCKS5 to the named upstream |
 | Bypass path | `bypass` | Connection is in the kernel-bypass CIDR set OR pod opted into `use: system`; relay never sees it but eBPF emits a perf event so we still record the metadata |
 | Bootstrap pass | `bootstrap` | One-shot scan at daemon startup that synthesizes flows for connections already established before heimdall came up (rancher Watch streams, kubelet, controllers) |
-
-The Web UI's **Flows** tab is this table.
 
 ### Tap (message) — one decrypted SSL_write / SSL_read
 
 A **tap event** (stored as a `messages` row) is a single
 `SSL_write()` or `SSL_read()` call captured by an eBPF uprobe at the
-libssl / Go `crypto/tls.(*Conn).{Write,Read}` boundary, with up to
-**256 bytes** of plaintext copied out via `bpf_probe_read_user`.
+libssl / Go `crypto/tls.(*Conn).{Write,Read}` / rustls boundary, with
+up to **256 bytes** of plaintext copied out via `bpf_probe_read_user`.
 
 Captured fields: direction (`send` / `recv`), `body` (the truncated
 plaintext), `total_len` (how big the call actually was), `cgroup_id`,
 `tgid`, `ts_us`, and `flow_id` (foreign key to `flows`, may be NULL).
 
-The Web UI's **Live Tap** tab is this stream in real time. The
-**Plaintext** tab on a flow's detail drawer is the messages bound to
-that flow.
-
-### Flow ↔ message is 1 : N
-
-```
-Pod's long-lived TLS connection (flow #109)
-   │
-   ├─ 12:00:00.001  SEND  105 B  "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
-   ├─ 12:00:00.002  SEND   26 B  HTTP/2 SETTINGS frame
-   ├─ 12:00:00.150  RECV  537 B  "HTTP/1.1 200 OK\r\nServer:..."
-   ├─ 12:00:00.180  SEND  137 B  "GET /api/v1/pods?watch=true ..."
-   ├─ 12:00:01.220  RECV  256 B  '{"type":"MODIFIED","object":{...'
-   ├─ 12:00:02.310  RECV  256 B  '{"type":"MODIFIED","object":{...'
-   │   ...
-   └─ 12:30:00.000  connection closes — flow gets ts_end_us
-```
-
-One Rancher → kube-apiserver Watch is **one flow** but typically
-hundreds to thousands of messages.
-
-### How they correlate
-
-`messages.flow_id` is set by joining on **`cgroup_id`**: when a tap
-event fires, userspace looks up the most recent active flow for that
-cgroup in `OpenFlowIndex` and stamps its id on the message.
-
-`flow_id = NULL` is legitimate when:
-
-- A host process triggers the uprobe (no kubepods cgroup → no flow).
-- Race window between connect4 firing and the bypass-flow row landing.
-- Bootstrap hasn't completed scanning when the first uprobe fires.
-
-In all cases the API still attributes the message to a pod via
-`cgroup_id → informer.lookup(uid)`, so the UI labels stay correct.
-
 ### Two orthogonal axes per pod
 
-A pod's behavior toward heimdall is decided by two independent flags:
+A pod's behaviour toward heimdall is decided by two independent flags:
 
-- **`use`** (proxy choice): `default`, `corp`, or `system` (skip
-  the relay entirely; let the kernel route natively).
+- **`use`** (proxy choice): a connection name (e.g. `default`,
+  `corp`) or `system` (skip the relay; let the kernel route
+  natively).
 - **`observe`**: whether tap events fire for this pod's cgroup.
 
-Both come from `routing` rules in config, with annotation overrides:
+Both come from `podRouting` rules in config, with annotation/label
+overrides:
 
 ```yaml
-heimdall.io/connection: corp | default | system
-heimdall.io/observe:    "true"  | "false"
+metadata:
+  annotations:
+    heimdall.io/routing: corp | default | system
+    heimdall.io/observe: "true"   | "false"
 ```
 
-So a pod can route via the proxy while staying silenced (e.g. a
-chatty controller), or skip the proxy and stay observed (a host-
-network process you still want plaintext for). See
-[docs/config.md](docs/config.md) for the full schema and every
+A pod can route via the proxy while staying silenced (e.g. a chatty
+controller), or skip the proxy and stay observed (a host-network
+process you still want plaintext for). See
+[`/etc/heimdall/README.md`](heimdall/src/cli/init_templates/README.md)
+(auto-generated by `heimdall init`) for the full schema and every
 combination.
 
 ---
 
 ## Documentation
 
-Five focused documents under [`docs/`](docs/):
-
 | Doc | Covers |
 |---|---|
-| [docs/README.md](docs/README.md) | Reading order + 90-second elevator pitch |
 | [docs/architecture.md](docs/architecture.md) | Components, three control loops (relay / tap / policy), bootstrap pass, where each piece of state lives |
-| [docs/config.md](docs/config.md) | Full `/etc/heimdall/config.yaml` schema, the orthogonal proxy × observe model, every combination as YAML, RoutingDecision → BPF flag byte mapping |
+| [docs/config.md](docs/config.md) | Routing pods through heimdall (chart-author / k8s-side perspective) |
 | [docs/observability.md](docs/observability.md) | Phase B tap: TLS coverage matrix, `.gopclntab` parsing for stripped Go binaries, the Go RET-offset uprobe trick, flow_id correlation rules |
-| [docs/runbook.md](docs/runbook.md) | Daily build + deploy, expected startup log sequence, four common failure modes, every pod on the reference cluster classified |
+| [docs/runbook.md](docs/runbook.md) | Daily build + deploy, expected startup log sequence, common failure modes |
+| `/etc/heimdall/README.md` | Auto-generated full schema reference (re-emitted by `heimdall init`); AI agents read this when editing the config |
+
+[`skills/`](skills/) contains agentskills.io-format SKILL.md files
+for `heimdall-{flows,status,init,serve,config,run}` — installable
+into Claude Code, Codex, Cursor, etc. via
+[`bunx skills add`](https://skills.sh/).
 
 ---
 
@@ -131,34 +137,41 @@ Pod                             Host                          Upstream
 ───                             ────                          ────────
 connect(1.2.3.4:443)
   │
-  │  ┌─ eBPF connect4 (BPF_CGROUP_INET4_CONNECT) ────────────┐
-  │  │  policy = CGROUP_POLICY[cgroup_id] or DEFAULT          │
-  │  │  if kernel-bypass IP OR policy.REDIRECT_OFF:           │
-  │  │      maybe emit BYPASS_EVENT  → userspace flow row     │
-  │  │      return                                            │
-  │  │  else:                                                  │
-  │  │      COOKIE_MAP[socket_cookie] = OrigDst               │
-  │  │      rewrite dst → relay_ip:12345                      │
-  │  └────────────────────────────────────────────────────────┘
+  │  ┌─ eBPF connect4 / connect6 (BPF_CGROUP_INET{4,6}_CONNECT) ───┐
+  │  │  policy = CGROUP_POLICY[cgroup_id] or DEFAULT                │
+  │  │  if policy.DNS_HIJACK and dport == 53:                       │
+  │  │      rewrite dst → heimdall fake-IP DNS, return              │
+  │  │  if kernel-bypass IP OR policy.REDIRECT_OFF:                 │
+  │  │      maybe emit BYPASS_EVENT  → userspace flow row           │
+  │  │      return                                                   │
+  │  │  else:                                                         │
+  │  │      COOKIE_MAP[socket_cookie] = OrigDst                      │
+  │  │      rewrite dst → relay_ip:12345                             │
+  │  └──────────────────────────────────────────────────────────────┘
   │
-  │  ┌─ eBPF skb_egress (CGROUP_INET_EGRESS) on first SYN ──┐
-  │  │  read kernel-assigned src_port,                        │
-  │  │  move COOKIE_MAP entry → PORT_MAP[src_port]            │
-  │  └────────────────────────────────────────────────────────┘
+  │  ┌─ eBPF skb_egress on first SYN ────────────────────────────────┐
+  │  │  detect IP version (v4 / v6 + ext-header chain), find TCP off │
+  │  │  read kernel-assigned src_port,                                │
+  │  │  move COOKIE_MAP entry → PORT_MAP[src_port]                    │
+  │  └──────────────────────────────────────────────────────────────┘
   ▼
-heimdall relay (127.0.0.1:12345)
+heimdall relay ([::]:12345 dual-stack)
   │  accept() → src_port → PORT_MAP[src_port] → OrigDst
   │  cgroup_id → pod_uid → routing.use → connection
+  │  fake-IP reverse lookup → SOCKS5 ATYP=0x03 hostname when possible
   ▼
 SOCKS5 CONNECT 1.2.3.4:443 ────────────────────────────────▶ 1.2.3.4:443
 ```
 
 Plaintext capture is independent of the relay path. eBPF uprobes on
-`SSL_write` / `SSL_read` (libssl) and `crypto/tls.(*Conn).Write` /
-`Read` (Go) fire on every TLS call from any process whose cgroup has
-`POLICY_OBSERVE_OFF` clear, copying up to 256 bytes of plaintext into
-a perf event. Stripped Go binaries are handled by parsing
-`.gopclntab` (Go's runtime symbol table) instead of the ELF symtab.
+`SSL_write` / `SSL_read` (libssl), `crypto/tls.(*Conn).Write` / `Read`
+(Go), and rustls `PlaintextSink::write` + `Reader::read` fire on every
+TLS call from any process whose cgroup has `POLICY_OBSERVE_OFF` clear,
+copying up to 256 bytes of plaintext into a perf event. Stripped Go
+binaries are handled by parsing `.gopclntab` (Go's runtime symbol
+table) instead of the ELF symtab. Go return-side capture uses
+RET-offset uprobes (Pixie/Coroot pattern) since the kernel uretprobe
+trampoline collides with Go's movable stacks.
 
 ### Why eBPF instead of iptables TPROXY?
 
@@ -166,11 +179,33 @@ Traditional transparent proxies use iptables `TPROXY` +
 `MASQUERADE`. On Kubernetes those two rules conflict: pod traffic
 gets MASQUERADEd to the node IP, the proxy then marks it, return
 packets get TPROXYed before conntrack can un-SNAT them, and the pod
-never receives a reply.
+never receives a reply. heimdall hooks at the `connect()` syscall
+level — before the packet is created. No TPROXY marks, no conntrack
+interference, no MASQUERADE conflict.
 
-`heimdall` hooks at the `connect()` syscall level — before the packet
-is created. No TPROXY marks, no conntrack interference, no
-MASQUERADE conflict.
+---
+
+## `heimdall run` — proxychains for the cgroup era
+
+```bash
+heimdall run -p corp -- curl https://vault.prod.internal/   # corp-VPN host
+heimdall run --connection direct -- git fetch origin           # public, observed
+```
+
+Wraps an arbitrary command in a transient cgroup with its own routing
++ observe + DNS-hijack policy. Non-root: `systemd-run --user --scope`
+re-entry lands the process in a writable cgroup subtree, then a
+unprivileged user+mount namespace bind-mounts a stripped-down
+`/etc/nsswitch.conf` + `/etc/resolv.conf` so the wrapped command's
+libc resolver hits heimdall's fake-IP DNS (UDP `127.0.0.1:53` → eBPF
+hijack → daemon DNS).
+
+Works with statically-linked Go binaries, setuid binaries, and
+connectionless UDP — all things `LD_PRELOAD` shims (proxychains-ng)
+miss.
+
+See [`skills/heimdall-run/SKILL.md`](skills/heimdall-run/SKILL.md)
+for the full mechanics + failure modes.
 
 ---
 
@@ -180,12 +215,13 @@ MASQUERADE conflict.
 |---|---|
 | Linux kernel | **5.10+** (cgroup v2 + uprobes + perf event arrays) |
 | cgroup | v2 unified hierarchy (`/sys/fs/cgroup`) |
-| Capabilities | `CAP_BPF`, `CAP_NET_ADMIN`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` |
+| Capabilities | `CAP_BPF`, `CAP_NET_ADMIN`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE`, `CAP_DAC_OVERRIDE` |
 | SOCKS5 server | any (tested with v2raya, sing-box, hev-socks5-server) |
 
 `CAP_SYS_PTRACE` is needed so the daemon can readlink other UIDs'
 `/proc/<pid>/exe` while scanning for Go binaries to attach uprobes
-to. Without it, the Go-tap scanner only sees its own processes.
+to. `CAP_DAC_OVERRIDE` is needed so the orphan-cgroup GC can rmdir
+user-owned `heimdall-cli-*` directories under `user.slice`.
 
 ---
 
@@ -194,17 +230,18 @@ to. Without it, the Go-tap scanner only sees its own processes.
 ```bash
 # eBPF (different target — must build first; output is include_bytes!'d
 # into the daemon)
-( cd heimdall-ebpf && cargo +nightly build --release )
+( cd heimdall-ebpf && cargo +nightly build -Z build-std=core \
+                                          --target bpfel-unknown-none --release )
 
 # UI (only when components or hooks change)
-( cd heimdall-ui && bun run typecheck && bun run build )
+( cd heimdall-ui && bun install && bun run build )
 
 # Daemon (embeds the eBPF object + UI bundle via rust-embed)
 cargo build --release
 ```
 
-See [docs/runbook.md](docs/runbook.md) for the deploy steps and
-expected startup log sequence.
+See [docs/runbook.md](docs/runbook.md) for deploy steps and expected
+startup log sequence.
 
 ---
 
@@ -216,7 +253,7 @@ heimdall/
 │   └── src/
 │       ├── main.rs            # daemon entrypoint, relay loop
 │       ├── api.rs             # axum HTTP API + WebSocket
-│       ├── tap.rs             # libssl + Go uprobe attach + perf consumer
+│       ├── tap.rs             # libssl + Go + rustls uprobe attach + perf consumer
 │       ├── gosym.rs           # .gopclntab parser (stripped Go)
 │       ├── policy.rs          # PolicyEngine: rules → CGROUP_POLICY
 │       ├── pod.rs             # CgroupResolver + PodInformer (kube-rs)
@@ -224,32 +261,38 @@ heimdall/
 │       ├── store.rs           # sqlite: flows + messages
 │       ├── bypass.rs          # synthesize flows for kernel-bypass paths
 │       ├── bootstrap.rs       # one-shot startup scan of /proc/net/tcp
-│       ├── dns.rs             # fake-IP DNS server (UDP)
-│       └── cli/               # `heimdall flows`, `heimdall status`
+│       ├── dns.rs             # fake-IP DNS server (UDP, dual-stack)
+│       ├── gc.rs              # orphan heimdall-cli cgroup reaper
+│       └── cli/               # `heimdall {flows,status,init,run}`
 ├── heimdall-ebpf/        # eBPF kernel programs (bpfel-unknown-none)
-│   └── src/main.rs
+│   └── src/main.rs       # connect4, connect6, udp4_sendmsg, udp6_sendmsg, skb_egress, uprobes
 ├── heimdall-common/      # shared types (no_std + std features)
-├── heimdall-config/      # YAML schema + validator
+├── heimdall-config/      # YAML/JSON/TOML/Nickel schema + validator
 ├── heimdall-ui/          # React 19 + MUI + bun + Vite
-└── docs/                 # design + ops documentation
+├── docs/                 # design + ops documentation
+└── skills/               # agentskills.io SKILL.md per CLI subcommand
 ```
 
 ---
 
 ## Limitations
 
-- **TCP only.** UDP isn't intercepted; use a DoH proxy for DNS.
-- **IPv4 only.** IPv6 hooks would need a parallel `connect6`
-  program — not yet implemented.
-- **rustls is not yet tapped.** Symbols are mangled per-binary and
-  the read path is inlined; deferred. See
-  [docs/observability.md](docs/observability.md) for the full
-  coverage matrix.
-- **JVM TLS is not tapped.** Needs a JVMTI agent + native stub.
+- **TCP only for relay.** UDP isn't proxied; eBPF DNS hijack catches
+  port 53 specifically when `dns: fake` is in effect.
+- **JVM TLS not tapped.** Needs a JVMTI agent + native stub.
 - **Linux only.** cgroup eBPF hooks are Linux-specific.
+- **IPv6 extension headers in `skb_egress`**: bounded walk handles
+  Hop-by-Hop / Routing / Fragment / Destination Options / Mobility /
+  HIP / Shim6, max 8 hops. Unknown ext headers cause that single flow
+  to skip the relay (very rare for application traffic).
 
 ---
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup, build flow, and
+PR conventions. Security issues: [SECURITY.md](SECURITY.md).
+
 ## License
 
-MIT
+[Apache License 2.0](LICENSE).
