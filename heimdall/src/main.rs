@@ -259,11 +259,13 @@ impl Shared {
     }
 }
 
-/// SOCKS5 destination — either an IP literal (ATYP=0x01) or a hostname
-/// recovered via fake-IP lookup (ATYP=0x03, RFC 1928).
+/// SOCKS5 destination — IPv4 literal (ATYP=0x01), IPv6 literal
+/// (ATYP=0x04), or hostname recovered via fake-IP lookup (ATYP=0x03,
+/// RFC 1928).
 #[derive(Debug, Clone)]
 enum Dst {
-    Ip(Ipv4Addr),
+    Ip4(Ipv4Addr),
+    Ip6(std::net::Ipv6Addr),
     Domain(String),
 }
 
@@ -404,7 +406,7 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
     };
 
     // ─── Fake-IP DNS server ──────────────────────────────────────────────
-    let dns = match DnsResolver::new(&cfg.runtime.fake_ip_cidr) {
+    let dns = match DnsResolver::new(&cfg.runtime.fake_ip_cidr, &cfg.runtime.fake_ip6_cidr) {
         Ok(r) => {
             let r = Arc::new(r);
             let listen: SocketAddr = cfg
@@ -486,6 +488,19 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
         info!(relay_ip = %shared.cfg.runtime.relay_ip, "relay IP written to BPF map");
     }
 
+    // RELAY_ADDR6: 16-byte IPv6 relay address for connect6 to redirect to.
+    // Written even when relay_ip6 is the default `::1` so the program has
+    // *something* — connect6 reads slot 0 and bails if missing.
+    {
+        let relay6_bytes = shared.cfg.runtime.relay_ip6.octets();
+        let mut relay6_map: Array<&mut aya::maps::MapData, [u8; 16]> =
+            Array::try_from(bpf.map_mut("RELAY_ADDR6").context("RELAY_ADDR6 not found")?)?;
+        relay6_map
+            .set(0, relay6_bytes, 0)
+            .context("failed to set relay IPv6 in BPF map")?;
+        info!(relay_ip6 = %shared.cfg.runtime.relay_ip6, "relay IPv6 written to BPF map");
+    }
+
     let cgroup = std::fs::File::open(&shared.cfg.runtime.cgroup)
         .with_context(|| format!("failed to open cgroup path: {}", shared.cfg.runtime.cgroup))?;
 
@@ -519,6 +534,23 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
             match connect4.attach(user_cg, CgroupAttachMode::default()) {
                 Ok(_) => info!(cgroup = USER_SLICE, "eBPF connect4 attached (extra)"),
                 Err(e) => warn!(error = %e, cgroup = USER_SLICE, "extra connect4 attach failed"),
+            }
+        }
+    }
+    {
+        let connect6: &mut CgroupSockAddr = bpf
+            .program_mut("connect6")
+            .context("connect6 eBPF program not found")?
+            .try_into()?;
+        connect6.load().context("failed to load connect6")?;
+        connect6
+            .attach(&cgroup, CgroupAttachMode::default())
+            .context("failed to attach connect6")?;
+        info!(cgroup = %shared.cfg.runtime.cgroup, "eBPF connect6 attached");
+        if let Some(user_cg) = user_slice_file.as_ref() {
+            match connect6.attach(user_cg, CgroupAttachMode::default()) {
+                Ok(_) => info!(cgroup = USER_SLICE, "eBPF connect6 attached (extra)"),
+                Err(e) => warn!(error = %e, cgroup = USER_SLICE, "extra connect6 attach failed"),
             }
         }
     }
@@ -650,11 +682,35 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
         debug!("tap: disabled (runtime.tap.enabled = false)");
     }
 
-    // ─── Relay listener ────────────────────────────────────────────────────
-    let listener = TcpListener::bind(&shared.cfg.runtime.listen)
-        .await
-        .with_context(|| format!("failed to bind relay listener on {}", shared.cfg.runtime.listen))?;
-    info!(listen = %shared.cfg.runtime.listen, "heimdall ready");
+    // ─── Relay listener (dual-stack) ──────────────────────────────────────
+    // Bind a single listener that accepts both IPv4 and IPv6. Linux
+    // doesn't set `IPV6_V6ONLY` by default, so `[::]:N` accepts v4
+    // connections via v4-mapped-v6. We cooperate by:
+    //   - rewriting an explicit `0.0.0.0:N` into `[::]:N` so existing
+    //     configs Just Work
+    //   - leaving any explicit IP (v4 or v6) alone for users who want
+    //     strict binding
+    // This keeps PORT_MAP unambiguous (only one accept loop, one ephemeral
+    // port pool), avoids EADDRINUSE between paired listeners, and
+    // covers connect6 redirects without an extra socket.
+    let listen_for_bind = if shared.cfg.runtime.listen.starts_with("0.0.0.0:") {
+        let port = shared
+            .cfg
+            .runtime
+            .listen
+            .strip_prefix("0.0.0.0:")
+            .unwrap_or("12345");
+        format!("[::]:{port}")
+    } else {
+        shared.cfg.runtime.listen.clone()
+    };
+    let listener = TcpListener::bind(&listen_for_bind).await.with_context(|| {
+        format!(
+            "failed to bind relay listener on {} (config: {})",
+            listen_for_bind, shared.cfg.runtime.listen
+        )
+    })?;
+    info!(listen = %listen_for_bind, configured = %shared.cfg.runtime.listen, "heimdall ready");
 
     loop {
         let (stream, peer) = listener.accept().await?;
@@ -663,7 +719,7 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
 
         tokio::spawn(async move {
             let client_port = peer.port() as u32;
-            debug!(client_port, "accepted redirected connection");
+            debug!(client_port, %peer, "accepted redirected connection");
             if let Err(e) = relay(stream, client_port, map, shared).await {
                 warn!(client_port, "relay error: {e:#}");
             }
@@ -689,20 +745,47 @@ async fn relay(
     };
     map.write().await.remove(&client_port).ok();
 
-    let dst_ip = Ipv4Addr::from(u32::from_be(orig.ip));
     let dst_port = u16::from_be(orig.port);
 
-    // ─── Fake-IP reverse lookup ────────────────────────────────────────────
-    // If the dst falls in heimdall's fake-IP pool we have a hostname for it
-    // and prefer SOCKS5 ATYP=0x03 so the upstream proxy resolves it via
-    // its own resolver (which knows internal / VPN-pushed DNS we don't).
-    let dst = match shared.dns.as_ref().and_then(|d| d.lookup_be(orig.ip)) {
-        Some(host) => {
-            debug!(%dst_ip, %host, "fake-IP reverse lookup hit");
-            Dst::Domain(host)
+    // ─── Dual-stack destination decode + fake-IP reverse lookup ───────────
+    // OrigDst.addr is 16 bytes network-byte-order; for v4 the first 4 bytes
+    // are the address and the rest are zero. Pick the right family per
+    // `orig.family`. If the dst falls in heimdall's fake-IP pool (v4 OR v6)
+    // we have a hostname for it and prefer SOCKS5 ATYP=0x03 so the upstream
+    // proxy resolves it via its own resolver (which knows internal /
+    // VPN-pushed DNS we don't).
+    let (dst, dst_ip_display) = match orig.family {
+        heimdall_common::FAMILY_V6 => {
+            let v6 = std::net::Ipv6Addr::from(orig.addr);
+            let from_dns = shared.dns.as_ref().and_then(|d| d.lookup6(&v6));
+            let display = v6.to_string();
+            match from_dns {
+                Some(host) => {
+                    debug!(addr = %v6, %host, "fake-IP reverse lookup hit (v6)");
+                    (Dst::Domain(host), display)
+                }
+                None => (Dst::Ip6(v6), display),
+            }
         }
-        None => Dst::Ip(dst_ip),
+        _ => {
+            // v4 (default for older OrigDst with family=0).
+            let v4_be = u32::from_ne_bytes([
+                orig.addr[0], orig.addr[1], orig.addr[2], orig.addr[3],
+            ]);
+            let v4 = Ipv4Addr::from(u32::from_be(v4_be));
+            let from_dns = shared.dns.as_ref().and_then(|d| d.lookup_be(v4_be));
+            let display = v4.to_string();
+            match from_dns {
+                Some(host) => {
+                    debug!(addr = %v4, %host, "fake-IP reverse lookup hit (v4)");
+                    (Dst::Domain(host), display)
+                }
+                None => (Dst::Ip4(v4), display),
+            }
+        }
     };
+    // Backward-compat alias used by older log lines below.
+    let dst_ip = dst_ip_display;
 
     // ─── Resolve pod identity ──────────────────────────────────────────────
     let pod_info = match (&shared.cgroup_resolver, &shared.informer) {
@@ -754,7 +837,8 @@ async fn relay(
         .unwrap_or_else(|| "unknown".to_string());
 
     let (dst_label, dst_host_for_store, atyp) = match &dst {
-        Dst::Ip(ip) => (ip.to_string(), None, "ip"),
+        Dst::Ip4(ip) => (ip.to_string(), None, "ip"),
+        Dst::Ip6(ip) => (ip.to_string(), None, "ip6"),
         Dst::Domain(d) => (d.clone(), Some(d.clone()), "domain"),
     };
 
@@ -817,7 +901,8 @@ async fn relay(
             }
             Upstream::Direct => {
                 let target = match &dst {
-                    Dst::Ip(ip) => format!("{ip}:{dst_port}"),
+                    Dst::Ip4(ip) => format!("{ip}:{dst_port}"),
+                    Dst::Ip6(ip) => format!("[{ip}]:{dst_port}"),
                     Dst::Domain(d) => format!("{d}:{dst_port}"),
                 };
                 let mut up = TcpStream::connect(&target)
@@ -911,8 +996,12 @@ async fn socks5_connect(
     let mut req = Vec::with_capacity(8 + 256);
     req.extend_from_slice(&[0x05, 0x01, 0x00]); // VER, CMD=CONNECT, RSV
     match dst {
-        Dst::Ip(ip) => {
+        Dst::Ip4(ip) => {
             req.push(0x01); // ATYP=IPv4
+            req.extend_from_slice(&ip.octets());
+        }
+        Dst::Ip6(ip) => {
+            req.push(0x04); // ATYP=IPv6
             req.extend_from_slice(&ip.octets());
         }
         Dst::Domain(host) => {

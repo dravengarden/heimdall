@@ -2,32 +2,48 @@
 #![cfg_attr(not(feature = "user"), no_std)]
 
 /// Original connection destination + caller identity, saved by the eBPF
-/// connect4 hook for the userspace relay to consume after accept().
+/// connect4 / connect6 hooks for the userspace relay to consume after
+/// accept().
 ///
-/// `ip` and `port` are in network byte order. `cgroup_id` is the leaf
-/// cgroup id of the calling process (from `bpf_get_current_cgroup_id`),
-/// used by userspace to resolve pod identity (labels / annotations).
-/// `socket_cookie` is the kernel's per-socket identifier
-/// (`bpf_get_socket_cookie`); the userspace relay uses it to correlate
-/// a flow with TLS plaintext events emitted by the tap (Phase B
-/// uprobes).
+/// Dual-stack: `addr` holds the destination address bytes in network
+/// byte order, `family` discriminates IPv4 vs IPv6, and `port` is in
+/// network byte order. For IPv4 only the first 4 bytes of `addr` are
+/// significant (rest are zero); for IPv6 all 16 bytes.
+///
+/// `cgroup_id` is the leaf cgroup id of the calling process (from
+/// `bpf_get_current_cgroup_id`), used by userspace to resolve pod
+/// identity (labels / annotations). `socket_cookie` is the kernel's
+/// per-socket identifier (`bpf_get_socket_cookie`); the userspace
+/// relay uses it to correlate a flow with TLS plaintext events
+/// emitted by the tap (Phase B uprobes).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct OrigDst {
-    /// IPv4 destination address (network byte order)
-    pub ip: u32,
+    /// Destination address (network byte order). For IPv4, bytes 0..4
+    /// hold the address and bytes 4..16 are zero.
+    pub addr: [u8; 16],
     /// TCP destination port (network byte order)
     pub port: u16,
-    pub _pad: u16,
+    /// `AF_INET` (4) or `AF_INET6` (6) — which `addr` slice is valid.
+    /// Stored as the wire-protocol family number directly.
+    pub family: u8,
+    pub _pad: u8,
     /// Leaf cgroup id of the process that called connect().
     /// 0 if not captured (older builds; treat as "unknown pod").
     pub cgroup_id: u64,
     /// Kernel socket cookie of the underlying TCP socket (set by
-    /// `bpf_get_socket_cookie` in connect4). Stable for the lifetime of
-    /// the connection and shared with eBPF kprobes / uprobes that can
-    /// look up the same cookie on the same socket.
+    /// `bpf_get_socket_cookie` in connect4 / connect6). Stable for the
+    /// lifetime of the connection and shared with eBPF kprobes /
+    /// uprobes that can look up the same cookie on the same socket.
     pub socket_cookie: u64,
 }
+
+/// Family discriminator values stored in `OrigDst::family`. We use the
+/// wire-protocol numbers (matching `AF_INET` / `AF_INET6` on Linux) so
+/// the BPF side and userspace can compare against the same constants
+/// without depending on libc.
+pub const FAMILY_V4: u8 = 4;
+pub const FAMILY_V6: u8 = 6;
 
 // ---------------------------------------------------------------------------
 // Phase B — TLS plaintext tap
@@ -87,18 +103,21 @@ unsafe impl aya::Pod for OrigDst {}
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct BypassEvent {
-    /// Kernel monotonic time at the connect4 hook.
+    /// Kernel monotonic time at the connect4 / connect6 hook.
     pub ts_ns: u64,
     /// `bpf_get_current_cgroup_id()` of the calling task.
     pub cgroup_id: u64,
     /// `bpf_get_socket_cookie()` — stable per-socket id, shared with
     /// the tap so future kprobe-based correlation can join on it.
     pub socket_cookie: u64,
-    /// Destination IPv4 address in network byte order.
-    pub dst_ip_be: u32,
+    /// Destination address (network byte order). For IPv4, bytes 0..4
+    /// hold the address and bytes 4..16 are zero. Mirrors `OrigDst::addr`.
+    pub dst_addr: [u8; 16],
     /// Destination TCP port in network byte order.
     pub dst_port_be: u16,
-    pub _pad: u16,
+    /// `FAMILY_V4` (4) or `FAMILY_V6` (6).
+    pub family: u8,
+    pub _pad: u8,
 }
 
 #[cfg(feature = "user")]
@@ -166,6 +185,51 @@ pub fn is_default_bypass(ip_be: u32) -> bool {
     || ip >> 16 == 0xC0A8                // 192.168.0.0/16  LAN
     || ip >> 16 == 0x0AF4                // 10.244.0.0/16   k0s pod CIDR
     || ip >> 20 == 0x0A6                 // 10.96.0.0/12    k0s service CIDR
+}
+
+/// IPv6 sibling of [`is_default_bypass`]. Bytes are the on-wire IPv6
+/// address (network byte order, 16 bytes). Returns true for ranges
+/// that should NEVER hit the relay so the eBPF connect6 hook lets
+/// them through unmodified.
+///
+/// | CIDR              | Why                                              |
+/// |-------------------|--------------------------------------------------|
+/// | `::/128`          | Unspecified                                      |
+/// | `::1/128`         | Loopback                                         |
+/// | `fe80::/10`       | Link-local                                       |
+/// | `ff00::/8`        | Multicast                                        |
+/// | `::ffff:/96`      | IPv4-mapped IPv6 — bypassed iff the inner IPv4   |
+/// |                   | address itself is bypassed                       |
+///
+/// Notably, **`fc00::/7` (ULA) is NOT bypassed**. heimdall's own
+/// IPv6 fake-IP pool defaults to `fc00:198:19::/96` which sits inside
+/// the ULA range, so blanket-bypassing fc00::/7 would short-circuit
+/// every fake-IP redirect. Mirrors the v4 narrow-bypass philosophy
+/// (10.x outside k0s CIDRs is NOT bypassed either).
+pub fn is_default_bypass6(addr: &[u8; 16]) -> bool {
+    // ::1 (loopback) — all zero except final byte == 1.
+    let all_but_last_zero = addr[..15].iter().all(|&b| b == 0);
+    if all_but_last_zero && (addr[15] == 0 || addr[15] == 1) {
+        return true;
+    }
+    // fe80::/10 — link-local. First 10 bits = 1111 1110 10.
+    if addr[0] == 0xfe && (addr[1] & 0xc0) == 0x80 {
+        return true;
+    }
+    // ff00::/8 — multicast.
+    if addr[0] == 0xff {
+        return true;
+    }
+    // IPv4-mapped IPv6: ::ffff:a.b.c.d. Defer to the v4 bypass check on
+    // the embedded address so the same set of "narrow" ranges applies.
+    let is_v4_mapped = addr[..10].iter().all(|&b| b == 0)
+        && addr[10] == 0xff
+        && addr[11] == 0xff;
+    if is_v4_mapped {
+        let v4_be = u32::from_ne_bytes([addr[12], addr[13], addr[14], addr[15]]);
+        return is_default_bypass(v4_be);
+    }
+    false
 }
 
 #[cfg(test)]

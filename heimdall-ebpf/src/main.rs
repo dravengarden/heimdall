@@ -33,8 +33,9 @@ use aya_ebpf::{
     EbpfContext,
 };
 use heimdall_common::{
-    is_default_bypass, BypassEvent, OrigDst, TapDir, TapEvent, DEFAULT_POLICY,
-    POLICY_NO_BYPASS_LOG, POLICY_OBSERVE_OFF, POLICY_REDIRECT_OFF, TAP_DATA_LEN,
+    is_default_bypass, is_default_bypass6, BypassEvent, OrigDst, TapDir, TapEvent,
+    DEFAULT_POLICY, FAMILY_V4, FAMILY_V6, POLICY_NO_BYPASS_LOG, POLICY_OBSERVE_OFF,
+    POLICY_REDIRECT_OFF, TAP_DATA_LEN,
 };
 
 const PROXY_PORT: u16 = 12345;
@@ -42,6 +43,12 @@ const PROXY_PORT: u16 = 12345;
 // Relay IPv4 address in network byte order, set by userspace at startup.
 #[map]
 static RELAY_ADDR: Array<u32> = Array::with_max_entries(2, 0);
+
+// Relay IPv6 address (16 bytes, network byte order) — set by userspace
+// at startup whenever `runtime.relay_ip6` is configured. Stored as a
+// 4×u32 array so it's a flat POD for the verifier.
+#[map]
+static RELAY_ADDR6: Array<[u8; 16]> = Array::with_max_entries(1, 0);
 
 // Stage-1 map: socket_cookie → original destination
 // Populated in connect4, consumed in skb_egress.
@@ -106,26 +113,121 @@ fn try_connect4(ctx: SockAddrContext) -> Result<(), ()> {
     let user_bypass = (policy & POLICY_REDIRECT_OFF) != 0;
 
     if kernel_bypass || user_bypass {
-        // Emit a synthetic-flow event unless the policy disables both
-        // observation and bypass logging. Userspace correlates tap
-        // plaintext to flow_id via cgroup_id, so bypass logging is
-        // wasted unless we'd actually observe.
+        if (policy & POLICY_OBSERVE_OFF) == 0 && (policy & POLICY_NO_BYPASS_LOG) == 0 {
+            let mut bypass_ev = BypassEvent {
+                ts_ns: unsafe { bpf_ktime_get_ns() },
+                cgroup_id,
+                socket_cookie: cookie,
+                dst_addr: [0u8; 16],
+                dst_port_be,
+                family: FAMILY_V4,
+                _pad: 0,
+            };
+            // Store IPv4 in the first 4 bytes (network byte order).
+            let ip_bytes = dst_ip_be.to_ne_bytes();
+            bypass_ev.dst_addr[0] = ip_bytes[0];
+            bypass_ev.dst_addr[1] = ip_bytes[1];
+            bypass_ev.dst_addr[2] = ip_bytes[2];
+            bypass_ev.dst_addr[3] = ip_bytes[3];
+            BYPASS_EVENTS.output(&ctx, &bypass_ev, 0);
+        }
+        return Ok(());
+    }
+    let mut orig = OrigDst {
+        addr: [0u8; 16],
+        port: dst_port_be,
+        family: FAMILY_V4,
+        _pad: 0,
+        cgroup_id,
+        socket_cookie: cookie,
+    };
+    let ip_bytes = dst_ip_be.to_ne_bytes();
+    orig.addr[0] = ip_bytes[0];
+    orig.addr[1] = ip_bytes[1];
+    orig.addr[2] = ip_bytes[2];
+    orig.addr[3] = ip_bytes[3];
+    COOKIE_MAP.insert(&cookie, &orig, 0).map_err(|_| ())?;
+
+    unsafe {
+        (*sa).user_ip4 = relay_ip_be;
+        (*sa).user_port = u32::from(PROXY_PORT.to_be());
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// connect6 — IPv6 sibling of connect4.
+//
+// Mirror logic: read user_ip6 + user_port from the sock_addr, consult
+// CGROUP_POLICY + is_default_bypass6, either emit a BypassEvent (with
+// family=FAMILY_V6) or rewrite the destination to RELAY_ADDR6 + PROXY_PORT.
+// COOKIE_MAP entries from connect6 carry family=FAMILY_V6 so userspace
+// + skb_egress can decode the address bytes correctly.
+// ---------------------------------------------------------------------------
+
+#[cgroup_sock_addr(connect6)]
+pub fn connect6(ctx: SockAddrContext) -> i32 {
+    match try_connect6(ctx) {
+        Ok(()) | Err(()) => 1,
+    }
+}
+
+#[inline(always)]
+fn try_connect6(ctx: SockAddrContext) -> Result<(), ()> {
+    let sa = ctx.sock_addr;
+    // user_ip6 is a [u32; 4] in the bpf_sock_addr struct. Each u32 is in
+    // network byte order; together they form the 16 wire bytes.
+    let dst6_words = unsafe { (*sa).user_ip6 };
+    let dst_port_be = unsafe { (*sa).user_port as u16 };
+
+    let relay6 = match RELAY_ADDR6.get(0) {
+        Some(a) => *a,
+        None => return Ok(()),
+    };
+
+    // Compose the on-wire 16-byte destination from the 4 BE u32s.
+    let mut dst_addr = [0u8; 16];
+    for i in 0..4 {
+        let b = dst6_words[i].to_ne_bytes();
+        dst_addr[i * 4]     = b[0];
+        dst_addr[i * 4 + 1] = b[1];
+        dst_addr[i * 4 + 2] = b[2];
+        dst_addr[i * 4 + 3] = b[3];
+    }
+
+    // Self-loop check — already going to the relay's v6 address+port.
+    if dst_addr == relay6 && u16::from_be(dst_port_be) == PROXY_PORT {
+        return Ok(());
+    }
+
+    let cookie = unsafe { bpf_get_socket_cookie(ctx.as_ptr()) };
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    let policy = policy_for(cgroup_id);
+
+    let kernel_bypass = is_default_bypass6(&dst_addr);
+    let user_bypass = (policy & POLICY_REDIRECT_OFF) != 0;
+
+    if kernel_bypass || user_bypass {
         if (policy & POLICY_OBSERVE_OFF) == 0 && (policy & POLICY_NO_BYPASS_LOG) == 0 {
             let bypass_ev = BypassEvent {
                 ts_ns: unsafe { bpf_ktime_get_ns() },
                 cgroup_id,
                 socket_cookie: cookie,
-                dst_ip_be,
+                dst_addr,
                 dst_port_be,
+                family: FAMILY_V6,
                 _pad: 0,
             };
             BYPASS_EVENTS.output(&ctx, &bypass_ev, 0);
         }
         return Ok(());
     }
+
     let orig = OrigDst {
-        ip: dst_ip_be,
+        addr: dst_addr,
         port: dst_port_be,
+        family: FAMILY_V6,
         _pad: 0,
         cgroup_id,
         socket_cookie: cookie,
@@ -133,7 +235,19 @@ fn try_connect4(ctx: SockAddrContext) -> Result<(), ()> {
     COOKIE_MAP.insert(&cookie, &orig, 0).map_err(|_| ())?;
 
     unsafe {
-        (*sa).user_ip4 = relay_ip_be;
+        // Rewrite destination to the relay's v6 address. user_ip6 takes
+        // 4 BE u32s — pour the 16 wire bytes back into them.
+        let mut words = [0u32; 4];
+        for i in 0..4 {
+            let b = [
+                relay6[i * 4],
+                relay6[i * 4 + 1],
+                relay6[i * 4 + 2],
+                relay6[i * 4 + 3],
+            ];
+            words[i] = u32::from_ne_bytes(b);
+        }
+        (*sa).user_ip6 = words;
         (*sa).user_port = u32::from(PROXY_PORT.to_be());
     }
 
@@ -157,16 +271,45 @@ pub fn skb_egress(ctx: SkBuffContext) -> i32 {
 }
 
 // IPv4 + TCP header field offsets (IP starts at byte 0 in cgroup_skb).
-const OFF_IP_PROTO: usize = 9;
 const IPPROTO_TCP: u8 = 6;
+// IPv4 protocol field is at offset 9 in the IP header.
+const OFF_IPV4_PROTO: usize = 9;
+// IPv6 next-header is at offset 6 in the fixed 40-byte header.
+// IPv6 fixed header size = 40 bytes; TCP src port follows directly when
+// next-header is TCP. Extension headers aren't handled in this MVP.
+const OFF_IPV6_NEXT: usize = 6;
+const IPV6_FIXED_HDR: usize = 40;
 
 #[inline(always)]
 fn try_skb_egress(ctx: &SkBuffContext) -> Result<(), ()> {
-    // Only handle TCP.
-    let proto: u8 = ctx.load(OFF_IP_PROTO).map_err(|_| ())?;
-    if proto != IPPROTO_TCP {
-        return Ok(());
-    }
+    // Detect IP version from the high nibble of the first byte.
+    let ver_ihl: u8 = ctx.load(0).map_err(|_| ())?;
+    let version = ver_ihl >> 4;
+
+    let tcp_off = match version {
+        4 => {
+            // IPv4: protocol at offset 9, header length encoded as IHL
+            // (low nibble of byte 0, in 32-bit words).
+            let proto: u8 = ctx.load(OFF_IPV4_PROTO).map_err(|_| ())?;
+            if proto != IPPROTO_TCP {
+                return Ok(());
+            }
+            ((ver_ihl & 0x0f) as usize) * 4
+        }
+        6 => {
+            // IPv6: next-header at offset 6, fixed 40-byte header.
+            // Extension headers aren't tracked; non-TCP next-header
+            // (incl. extension headers like Hop-by-Hop) just bails — at
+            // worst we skip a hop-by-hop-prefixed TCP connection, which
+            // is rare for application traffic.
+            let next: u8 = ctx.load(OFF_IPV6_NEXT).map_err(|_| ())?;
+            if next != IPPROTO_TCP {
+                return Ok(());
+            }
+            IPV6_FIXED_HDR
+        }
+        _ => return Ok(()),
+    };
 
     // Look up COOKIE_MAP for this socket. Only intercepted connections have entries.
     let cookie = unsafe { bpf_get_socket_cookie(ctx.as_ptr()) };
@@ -175,13 +318,9 @@ fn try_skb_egress(ctx: &SkBuffContext) -> Result<(), ()> {
         None => return Ok(()),
     };
 
-    // Parse the IPv4 IHL to find the TCP header start.
-    let ip_ver_ihl: u8 = ctx.load(0).map_err(|_| ())?;
-    let ihl = ((ip_ver_ihl & 0x0f) as usize) * 4;
-
     // Read TCP source port (network byte order → host byte order).
     // inet_hash_connect has already assigned this ephemeral port.
-    let src_port_be: u16 = ctx.load(ihl).map_err(|_| ())?;
+    let src_port_be: u16 = ctx.load(tcp_off).map_err(|_| ())?;
     let src_port = u16::from_be(src_port_be) as u32;
 
     PORT_MAP.insert(&src_port, &orig, 0).map_err(|_| ())?;

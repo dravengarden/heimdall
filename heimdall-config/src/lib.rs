@@ -16,7 +16,7 @@
 use std::{
     collections::BTreeMap,
     fs,
-    net::Ipv4Addr,
+    net::{Ipv4Addr, Ipv6Addr},
     path::{Path, PathBuf},
 };
 
@@ -118,6 +118,14 @@ pub struct Runtime {
     pub listen: String,
     #[serde(default = "default_relay_ip", rename = "relayIp")]
     pub relay_ip: Ipv4Addr,
+    /// IPv6 relay address. When set, the daemon attaches a connect6
+    /// eBPF program that rewrites IPv6 connect() destinations to this
+    /// address + port (`runtime.listen`'s port). When None, IPv6
+    /// connections fall through to whatever the host normally does
+    /// with them. Defaults to `::1` so dual-stack works out of the
+    /// box on hosts where the relay binds `[::]`.
+    #[serde(default = "default_relay_ip6", rename = "relayIp6")]
+    pub relay_ip6: Ipv6Addr,
     #[serde(default, rename = "bypassCidrs")]
     pub bypass_cidrs: Vec<String>,
 
@@ -125,6 +133,17 @@ pub struct Runtime {
     pub dns_listen: String,
     #[serde(default = "default_fake_ip_cidr", rename = "fakeIpCidr")]
     pub fake_ip_cidr: String,
+    /// Optional IPv6 fake-IP CIDR. When set, the fake-IP DNS server
+    /// answers AAAA queries with synthetic addresses from this pool
+    /// (paired with the existing IPv4 pool); the relay reverses these
+    /// to hostnames at SOCKS5 ATYP=0x03 time. When None, AAAA queries
+    /// stay empty-NOERROR (forcing resolver fallback to A) — the
+    /// pre-IPv6 behaviour.
+    ///
+    /// Default uses the v4-mapped fc00:198:19::/96 ULA range to mirror
+    /// the v4 pool 1:1 visually (`fc00:198:19::a.b.c.d`).
+    #[serde(default = "default_fake_ip6_cidr", rename = "fakeIp6Cidr")]
+    pub fake_ip6_cidr: String,
 
     #[serde(default = "default_state_dir", rename = "stateDir")]
     pub state_dir: PathBuf,
@@ -142,9 +161,11 @@ impl Default for Runtime {
             cgroup: default_cgroup(),
             listen: default_listen(),
             relay_ip: default_relay_ip(),
+            relay_ip6: default_relay_ip6(),
             bypass_cidrs: Vec::new(),
             dns_listen: default_dns_listen(),
             fake_ip_cidr: default_fake_ip_cidr(),
+            fake_ip6_cidr: default_fake_ip6_cidr(),
             state_dir: default_state_dir(),
             flow_retention_secs: default_flow_retention_secs(),
             api_listen: default_api_listen(),
@@ -156,8 +177,10 @@ impl Default for Runtime {
 fn default_cgroup() -> String { "/sys/fs/cgroup".into() }
 fn default_listen() -> String { "0.0.0.0:12345".into() }
 fn default_relay_ip() -> Ipv4Addr { Ipv4Addr::new(127, 0, 0, 1) }
+fn default_relay_ip6() -> Ipv6Addr { Ipv6Addr::LOCALHOST }
 fn default_dns_listen() -> String { "0.0.0.0:5358".into() }
 fn default_fake_ip_cidr() -> String { "198.19.0.0/16".into() }
+fn default_fake_ip6_cidr() -> String { "fc00:198:19::/96".into() }
 fn default_state_dir() -> PathBuf { PathBuf::from("/var/lib/heimdall") }
 fn default_flow_retention_secs() -> i64 { 3 * 86400 }
 fn default_api_listen() -> String { "127.0.0.1:9999".into() }
