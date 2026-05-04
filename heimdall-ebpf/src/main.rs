@@ -34,11 +34,12 @@ use aya_ebpf::{
 };
 use heimdall_common::{
     is_default_bypass, is_default_bypass6, BypassEvent, OrigDst, TapDir, TapEvent,
-    DEFAULT_POLICY, FAMILY_V4, FAMILY_V6, POLICY_NO_BYPASS_LOG, POLICY_OBSERVE_OFF,
-    POLICY_REDIRECT_OFF, TAP_DATA_LEN,
+    DEFAULT_POLICY, FAMILY_V4, FAMILY_V6, POLICY_DNS_HIJACK, POLICY_NO_BYPASS_LOG,
+    POLICY_OBSERVE_OFF, POLICY_REDIRECT_OFF, TAP_DATA_LEN,
 };
 
 const PROXY_PORT: u16 = 12345;
+const DNS_PORT: u16 = 53;
 
 // Relay IPv4 address in network byte order, set by userspace at startup.
 #[map]
@@ -49,6 +50,21 @@ static RELAY_ADDR: Array<u32> = Array::with_max_entries(2, 0);
 // 4×u32 array so it's a flat POD for the verifier.
 #[map]
 static RELAY_ADDR6: Array<[u8; 16]> = Array::with_max_entries(1, 0);
+
+// Heimdall fake-IP DNS endpoint, IPv4. Slot 0 = ip in network byte
+// order, slot 1 = port in network byte order (16-bit value stored in
+// u32 lower bits). Populated at startup from runtime.dnsListen.
+// Used by connect4 + udp4_sendmsg when the cgroup has POLICY_DNS_HIJACK.
+#[map]
+static DNS_ADDR_V4: Array<u32> = Array::with_max_entries(2, 0);
+
+// Heimdall fake-IP DNS endpoint, IPv6. addr at slot 0 (16 bytes),
+// port at slot 0 of DNS_PORT_V6 (separate map to keep the value type
+// simple).
+#[map]
+static DNS_ADDR_V6: Array<[u8; 16]> = Array::with_max_entries(1, 0);
+#[map]
+static DNS_PORT_V6: Array<u32> = Array::with_max_entries(1, 0);
 
 // Stage-1 map: socket_cookie → original destination
 // Populated in connect4, consumed in skb_egress.
@@ -80,6 +96,77 @@ fn policy_for(cgroup_id: u64) -> u8 {
 }
 
 // ---------------------------------------------------------------------------
+// DNS hijack helpers — shared between connect4/connect6 and sendmsg4/sendmsg6.
+//
+// When the cgroup's policy has POLICY_DNS_HIJACK set AND the destination
+// port is 53, rewrite the destination to heimdall's fake-IP DNS server
+// (taken from DNS_ADDR_V4 / DNS_ADDR_V6 maps populated at startup).
+//
+// Returns true when the destination was rewritten — caller should treat
+// that as "this connection is going to heimdall DNS, NOT the relay" and
+// return early (don't store in COOKIE_MAP, don't emit BypassEvent, don't
+// run any other redirect logic).
+// ---------------------------------------------------------------------------
+
+#[inline(always)]
+fn try_hijack_dns_v4(sa: *mut aya_ebpf::bindings::bpf_sock_addr, policy: u8) -> bool {
+    if (policy & POLICY_DNS_HIJACK) == 0 {
+        return false;
+    }
+    let dport = unsafe { (*sa).user_port as u16 };
+    if u16::from_be(dport) != DNS_PORT {
+        return false;
+    }
+    let dns_ip_be = match DNS_ADDR_V4.get(0) {
+        Some(v) => *v,
+        None => return false,
+    };
+    let dns_port_be = match DNS_ADDR_V4.get(1) {
+        Some(v) => *v as u16,
+        None => return false,
+    };
+    unsafe {
+        (*sa).user_ip4 = dns_ip_be;
+        (*sa).user_port = u32::from(dns_port_be);
+    }
+    true
+}
+
+#[inline(always)]
+fn try_hijack_dns_v6(sa: *mut aya_ebpf::bindings::bpf_sock_addr, policy: u8) -> bool {
+    if (policy & POLICY_DNS_HIJACK) == 0 {
+        return false;
+    }
+    let dport = unsafe { (*sa).user_port as u16 };
+    if u16::from_be(dport) != DNS_PORT {
+        return false;
+    }
+    let dns_addr = match DNS_ADDR_V6.get(0) {
+        Some(v) => *v,
+        None => return false,
+    };
+    let dns_port_be = match DNS_PORT_V6.get(0) {
+        Some(v) => *v as u16,
+        None => return false,
+    };
+    unsafe {
+        let mut words = [0u32; 4];
+        for i in 0..4 {
+            let b = [
+                dns_addr[i * 4],
+                dns_addr[i * 4 + 1],
+                dns_addr[i * 4 + 2],
+                dns_addr[i * 4 + 3],
+            ];
+            words[i] = u32::from_ne_bytes(b);
+        }
+        (*sa).user_ip6 = words;
+        (*sa).user_port = u32::from(dns_port_be);
+    }
+    true
+}
+
+// ---------------------------------------------------------------------------
 // Program 1: intercept connect() and rewrite destination
 // ---------------------------------------------------------------------------
 
@@ -108,6 +195,15 @@ fn try_connect4(ctx: SockAddrContext) -> Result<(), ()> {
     let cookie = unsafe { bpf_get_socket_cookie(ctx.as_ptr()) };
     let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
     let policy = policy_for(cgroup_id);
+
+    // DNS hijack runs BEFORE the bypass/redirect path: any UDP/TCP
+    // connect() to *:53 from a hijack-marked cgroup gets steered to
+    // heimdall's fake-IP DNS, regardless of where the resolver
+    // thought it was sending the query (typically 127.0.0.53 via
+    // systemd-resolved).
+    if try_hijack_dns_v4(sa, policy) {
+        return Ok(());
+    }
 
     let kernel_bypass = is_default_bypass(dst_ip_be);
     let user_bypass = (policy & POLICY_REDIRECT_OFF) != 0;
@@ -205,6 +301,11 @@ fn try_connect6(ctx: SockAddrContext) -> Result<(), ()> {
     let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
     let policy = policy_for(cgroup_id);
 
+    // DNS hijack — same semantics as connect4 but for v6 sockets.
+    if try_hijack_dns_v6(sa, policy) {
+        return Ok(());
+    }
+
     let kernel_bypass = is_default_bypass6(&dst_addr);
     let user_bypass = (policy & POLICY_REDIRECT_OFF) != 0;
 
@@ -252,6 +353,41 @@ fn try_connect6(ctx: SockAddrContext) -> Result<(), ()> {
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// sendmsg4 / sendmsg6 — DNS-only hijack for connectionless UDP.
+//
+// glibc's stub resolver uses connect()ed UDP, so connect4 catches it.
+// Pure-Go binaries (netgo build tag) and some other implementations
+// use raw sendto / sendmsg without a prior connect, which doesn't
+// fire connect4. cgroup_sock_addr/sendmsg4 fires on every UDP send
+// (sendto/sendmsg) for AF_INET sockets that aren't connected, giving
+// us a chance to rewrite the destination.
+//
+// We DON'T hijack non-DNS UDP traffic — relay-side TCP redirection
+// for arbitrary UDP would require holding state per-connection (no
+// 5-tuple), which heimdall doesn't do. So this is strictly a DNS
+// rewrite gate: same logic as connect4 but bails out for everything
+// except the dst:53 case.
+// ---------------------------------------------------------------------------
+
+#[cgroup_sock_addr(sendmsg4)]
+pub fn udp4_sendmsg(ctx: SockAddrContext) -> i32 {
+    let sa = ctx.sock_addr;
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    let policy = policy_for(cgroup_id);
+    let _ = try_hijack_dns_v4(sa, policy);
+    1
+}
+
+#[cgroup_sock_addr(sendmsg6)]
+pub fn udp6_sendmsg(ctx: SockAddrContext) -> i32 {
+    let sa = ctx.sock_addr;
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    let policy = policy_for(cgroup_id);
+    let _ = try_hijack_dns_v6(sa, policy);
+    1
 }
 
 // ---------------------------------------------------------------------------

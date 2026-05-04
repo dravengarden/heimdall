@@ -501,6 +501,52 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
         info!(relay_ip6 = %shared.cfg.runtime.relay_ip6, "relay IPv6 written to BPF map");
     }
 
+    // DNS_ADDR_V4 / DNS_ADDR_V6 / DNS_PORT_V6: where eBPF should
+    // redirect :53 traffic for cgroups marked POLICY_DNS_HIJACK
+    // (typically `heimdall run` invocations with dns=fake). The
+    // daemon's own DNS server listens on `runtime.dnsListen`; we
+    // resolve that to a loopback address + port so v4 hijack lands
+    // on 127.0.0.1:5358 and v6 hijack lands on ::1:5358 by default.
+    {
+        let dns_listen = &shared.cfg.runtime.dns_listen;
+        let dns_port: u16 = dns_listen
+            .rsplit(':')
+            .next()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(5358);
+
+        // v4 — assume the daemon's DNS is reachable at 127.0.0.1:<port>
+        // (loopback to itself). For exotic configs where dnsListen is
+        // an explicit non-loopback IP, we'd want to use that instead;
+        // for now the loopback assumption matches every realistic
+        // deployment.
+        let dns_v4_be = u32::from(std::net::Ipv4Addr::LOCALHOST).to_be();
+        let dns_port_be = dns_port.to_be() as u32;
+        let mut dns_map: Array<&mut aya::maps::MapData, u32> =
+            Array::try_from(bpf.map_mut("DNS_ADDR_V4").context("DNS_ADDR_V4 not found")?)?;
+        dns_map
+            .set(0, dns_v4_be, 0)
+            .context("DNS_ADDR_V4 set ip")?;
+        dns_map
+            .set(1, dns_port_be, 0)
+            .context("DNS_ADDR_V4 set port")?;
+
+        let mut dns6_map: Array<&mut aya::maps::MapData, [u8; 16]> = Array::try_from(
+            bpf.map_mut("DNS_ADDR_V6").context("DNS_ADDR_V6 not found")?,
+        )?;
+        dns6_map
+            .set(0, std::net::Ipv6Addr::LOCALHOST.octets(), 0)
+            .context("DNS_ADDR_V6 set addr")?;
+        let mut dns6_port_map: Array<&mut aya::maps::MapData, u32> = Array::try_from(
+            bpf.map_mut("DNS_PORT_V6").context("DNS_PORT_V6 not found")?,
+        )?;
+        dns6_port_map
+            .set(0, dns_port_be, 0)
+            .context("DNS_PORT_V6 set")?;
+
+        info!(dns_port, "DNS hijack target written to BPF maps (loopback)");
+    }
+
     let cgroup = std::fs::File::open(&shared.cfg.runtime.cgroup)
         .with_context(|| format!("failed to open cgroup path: {}", shared.cfg.runtime.cgroup))?;
 
@@ -551,6 +597,25 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
             match connect6.attach(user_cg, CgroupAttachMode::default()) {
                 Ok(_) => info!(cgroup = USER_SLICE, "eBPF connect6 attached (extra)"),
                 Err(e) => warn!(error = %e, cgroup = USER_SLICE, "extra connect6 attach failed"),
+            }
+        }
+    }
+    // udp{4,6}_sendmsg: catch connectionless UDP DNS sends (Go's
+    // pure-Go resolver, etc.) — connect4/connect6 don't fire on
+    // sendto without a prior connect.
+    for name in ["udp4_sendmsg", "udp6_sendmsg"] {
+        let prog: &mut CgroupSockAddr = bpf
+            .program_mut(name)
+            .with_context(|| format!("{name} eBPF program not found"))?
+            .try_into()?;
+        prog.load().with_context(|| format!("failed to load {name}"))?;
+        prog.attach(&cgroup, CgroupAttachMode::default())
+            .with_context(|| format!("failed to attach {name}"))?;
+        info!(cgroup = %shared.cfg.runtime.cgroup, prog = name, "eBPF sendmsg attached");
+        if let Some(user_cg) = user_slice_file.as_ref() {
+            match prog.attach(user_cg, CgroupAttachMode::default()) {
+                Ok(_) => info!(cgroup = USER_SLICE, prog = name, "eBPF sendmsg attached (extra)"),
+                Err(e) => warn!(error = %e, cgroup = USER_SLICE, prog = name, "extra sendmsg attach failed"),
             }
         }
     }

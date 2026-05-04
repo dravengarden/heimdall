@@ -255,8 +255,21 @@ impl PolicyEngine {
     /// cli_overrides map; this method keeps the eBPF map in lockstep.
     /// Marks the cgroup_id as externally managed so the periodic
     /// reconcile pass doesn't wipe it.
-    pub async fn register_external(&self, cgroup_id: u64, decision: &PodDecision) -> Result<()> {
-        let flags = encode(decision);
+    ///
+    /// `dns_hijack=true` ORs in `POLICY_DNS_HIJACK` so eBPF redirects
+    /// :53 traffic to heimdall's fake-IP DNS server. Used by
+    /// `heimdall run` invocations whose profile resolves to
+    /// `dns: fake`; pod-side reconcile never sets this bit.
+    pub async fn register_external(
+        &self,
+        cgroup_id: u64,
+        decision: &PodDecision,
+        dns_hijack: bool,
+    ) -> Result<()> {
+        let mut flags = encode(decision);
+        if dns_hijack {
+            flags |= heimdall_common::POLICY_DNS_HIJACK;
+        }
         self.external.write().insert(cgroup_id);
         self.write_one(cgroup_id, flags).await
     }
