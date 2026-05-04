@@ -25,9 +25,6 @@ impl<'a> MatchTarget for PodMatchTarget<'a> {
     fn pod_namespace(&self) -> Option<&str> {
         Some(&self.info.namespace)
     }
-    fn pod_label(&self, key: &str) -> Option<&str> {
-        self.info.labels.get(key).map(|s| s.as_str())
-    }
     fn pod_labels(&self) -> &std::collections::BTreeMap<String, String> {
         &self.info.labels
     }
@@ -154,8 +151,9 @@ mod tests {
 
         // A single rule using the new MatchCond schema.
         let match_yaml = r#"
-namespace: [cattle-system]
-label: ["app=rancher"]
+namespaces: [cattle-system]
+matchLabels:
+  app: rancher
 "#;
         let m: heimdall_config::MatchCond = serde_yaml::from_str(match_yaml).unwrap();
         let rules = vec![PodRule {
