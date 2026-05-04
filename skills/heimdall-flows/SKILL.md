@@ -1,11 +1,12 @@
 ---
 name: heimdall-flows
 description: |
-  Query the heimdall flow log to see what k8s pods (or CLI processes via
-  `heimdall run`) talked to externally. Triggers on tasks like "did pod X
-  reach hostname Y", "what egress is corp-system making", "show flows
-  for the last hour". Wraps `heimdall flows {list,search,show}`. The
-  daemon must be running (otherwise: see heimdall-status).
+  Query the heimdall flow log to see what k8s pods talked to externally
+  (and, once `heimdall run` is past its experimental phase, ad-hoc CLI
+  processes too). Triggers on tasks like "did pod X reach hostname Y",
+  "what egress is namespace Z making", "show flows for the last hour".
+  Wraps `heimdall flows {list,search,show}`. The daemon must be running
+  (otherwise: see heimdall-status).
 license: MIT
 metadata:
   author: dravengarden

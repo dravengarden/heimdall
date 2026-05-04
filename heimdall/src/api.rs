@@ -12,7 +12,7 @@
 //! Set to `0.0.0.0:9999` to expose for LAN browser access; firewall is
 //! managed in NixOS.
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{collections::BTreeMap, net::SocketAddr, sync::Arc};
 
 use anyhow::{Context, Result};
 use axum::{
@@ -22,17 +22,18 @@ use axum::{
     },
     http::{header, StatusCode, Uri},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use rust_embed::Embed;
-use heimdall_config::HeimdallConfig;
+use heimdall_config::{Connection, HeimdallConfig, PodDecision, SYSTEM_TAG};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{info, warn};
 
 use crate::pod::{CgroupResolver, PodInformer};
+use crate::policy::PolicyEngine;
 use crate::store::{Flow, ListQuery, Message as StoreMessage, MessageQuery, Store};
 
 // ---------------------------------------------------------------------------
@@ -82,6 +83,17 @@ pub struct AppState {
     /// fields left null.
     pub cgroup_resolver: Option<Arc<CgroupResolver>>,
     pub informer: Option<Arc<PodInformer>>,
+    /// Snapshot of `connections:` from the loaded config — used by
+    /// `POST /api/cli/register` to validate the requested connection
+    /// name without re-reading the config file.
+    pub connections: BTreeMap<String, Connection>,
+    /// Shared with the relay's `Shared.cli_overrides`. The HTTP
+    /// register endpoints write here and the relay reads on every
+    /// new flow.
+    pub cli_overrides: Arc<parking_lot::RwLock<std::collections::HashMap<u64, PodDecision>>>,
+    /// Late-bound policy engine handle. None until eBPF programs
+    /// finish loading; the register endpoint returns 503 until then.
+    pub policy_engine: Arc<parking_lot::Mutex<Option<Arc<PolicyEngine>>>>,
 }
 
 impl AppState {
@@ -109,6 +121,15 @@ pub fn router(state: AppState) -> Router {
         .route("/api/flows/{id}/messages", get(flow_messages))
         .route("/api/messages", get(list_messages))
         .route("/api/ws/flows", get(ws_flows))
+        // CLI register endpoints — driven by `heimdall run`.
+        // POST /api/cli/deregister?cgroup_id=N (query-string for the
+        // id; standalone endpoint instead of DELETE on the register
+        // path so the body-less + Path<u64> + parking_lot guard
+        // combination doesn't trip axum 0.8's Handler bound). Both
+        // endpoints write / clear the same cli_overrides map and the
+        // matching CGROUP_POLICY BPF entry.
+        .route("/api/cli/register", get(list_cli_overrides).post(register_cli))
+        .route("/api/cli/deregister", post(deregister_cli))
         // Embedded Dioxus UI bundle. Order matters: API first, then the
         // catch-all static handler so it doesn't shadow API paths.
         .route("/", get(serve_index))
@@ -410,6 +431,137 @@ async fn ws_flows_loop(mut socket: WebSocket, s: AppState) {
             },
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// CLI register endpoints — for `heimdall run`
+// ---------------------------------------------------------------------------
+//
+// `heimdall run` mkdir's a transient cgroup and POSTs the cgroup_id
+// + intended (connection, observe) here. This handler:
+//   1. validates the connection name against the loaded config
+//   2. inserts into Shared.cli_overrides (read by the relay)
+//   3. asks the PolicyEngine to write the eBPF policy byte so the
+//      kernel-side connect4 hook actually redirects.
+//
+// DELETE reverses both steps. Both endpoints are idempotent.
+
+#[derive(Debug, Deserialize)]
+pub struct CliRegisterReq {
+    pub cgroup_id: u64,
+    pub connection: String,
+    #[serde(default = "default_observe")]
+    pub observe: bool,
+}
+
+fn default_observe() -> bool { true }
+
+#[derive(Debug, Serialize)]
+pub struct CliOverrideEntry {
+    pub cgroup_id: u64,
+    pub connection: String,
+    pub observe: bool,
+}
+
+async fn register_cli(
+    State(s): State<AppState>,
+    Json(req): Json<CliRegisterReq>,
+) -> Result<Json<CliOverrideEntry>, ApiError> {
+    // Validate connection name against the live config snapshot.
+    if req.connection != SYSTEM_TAG && !s.connections.contains_key(&req.connection) {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "unknown connection `{}` — not in connections registry and not the reserved `system` tag",
+                req.connection
+            ),
+        ));
+    }
+
+    // PolicyEngine handle is populated only after eBPF attach succeeds
+    // and only when the k8s informer is up. If absent, the eBPF map
+    // can't receive the policy byte → registration is meaningless.
+    // Take the Option<Arc<…>> out of the parking_lot Mutex *before*
+    // any .await — the guard is !Send and would poison the future.
+    let engine_opt: Option<Arc<PolicyEngine>> = {
+        let g = s.policy_engine.lock();
+        g.clone()
+    };
+    let engine = match engine_opt {
+        Some(e) => e,
+        None => {
+            return Err(ApiError(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "policy engine not initialised (k8s informer down or eBPF attach pending); \
+                 retry in a moment or check `heimdall status`"
+                    .into(),
+            ));
+        }
+    };
+
+    let decision = PodDecision {
+        use_: req.connection.clone(),
+        observe: req.observe,
+    };
+
+    // Write eBPF policy byte first — if it fails, no userspace state
+    // is left behind to clean up. (DELETE side does the inverse: clear
+    // userspace map first, then BPF, so the relay can't see the
+    // override after the BPF map already says "no policy".)
+    engine.register_external(req.cgroup_id, &decision).await.map_err(internal)?;
+    s.cli_overrides.write().insert(req.cgroup_id, decision);
+
+    info!(
+        cgroup_id = req.cgroup_id,
+        connection = %req.connection,
+        observe = req.observe,
+        "cli register: cgroup → connection"
+    );
+
+    Ok(Json(CliOverrideEntry {
+        cgroup_id: req.cgroup_id,
+        connection: req.connection,
+        observe: req.observe,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct DeregisterParams {
+    cgroup_id: u64,
+}
+
+async fn deregister_cli(
+    State(s): State<AppState>,
+    Query(p): Query<DeregisterParams>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    s.cli_overrides.write().remove(&p.cgroup_id);
+    // Take the Option<Arc<...>> out before awaiting so the parking_lot
+    // MutexGuard isn't held across the .await — guard is !Send.
+    let engine_opt: Option<Arc<PolicyEngine>> = {
+        let g = s.policy_engine.lock();
+        g.clone()
+    };
+    if let Some(engine) = engine_opt {
+        engine.deregister_external(p.cgroup_id).await.map_err(internal)?;
+    }
+    info!(cgroup_id = p.cgroup_id, "cli deregister: cgroup cleared");
+    Ok(Json(serde_json::json!({ "ok": true, "cgroup_id": p.cgroup_id })))
+}
+
+async fn list_cli_overrides(
+    State(s): State<AppState>,
+) -> Json<Vec<CliOverrideEntry>> {
+    let entries: Vec<CliOverrideEntry> = s
+        .cli_overrides
+        .read()
+        .iter()
+        .map(|(cg, d)| CliOverrideEntry {
+            cgroup_id: *cg,
+            connection: d.use_.clone(),
+            observe: d.observe,
+        })
+        .collect();
+    Json(entries)
 }
 
 // ---------------------------------------------------------------------------

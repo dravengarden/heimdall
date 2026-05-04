@@ -235,6 +235,21 @@ impl PolicyEngine {
         self.last.write().remove(&cg);
         Ok(())
     }
+
+    /// External-facing wrapper for writing a single cgroup's policy
+    /// byte from a `PodDecision`. Used by the HTTP register endpoints
+    /// that drive `heimdall run` — they own the userspace
+    /// cli_overrides map; this method keeps the eBPF map in lockstep.
+    pub async fn register_external(&self, cgroup_id: u64, decision: &PodDecision) -> Result<()> {
+        let flags = encode(decision);
+        self.write_one(cgroup_id, flags).await
+    }
+
+    /// External-facing wrapper for clearing a previously registered
+    /// cgroup. Idempotent — a missing key is treated as success.
+    pub async fn deregister_external(&self, cgroup_id: u64) -> Result<()> {
+        self.delete_one(cgroup_id).await
+    }
 }
 
 /// Map a routing decision to the eBPF policy byte.
