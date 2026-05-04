@@ -33,6 +33,21 @@ export interface Status {
   flows_count: number;
 }
 
+// Wire type — must match heimdall::store::Message. `body` is serialized
+// by serde_json as a JSON array of byte values.
+export interface Message {
+  id: number;
+  flow_id: number | null;
+  ts_us: number;
+  cgroup_id: number;
+  tgid: number;
+  /** 0 = send (SSL_write), 1 = recv (SSL_read return) */
+  dir: 0 | 1;
+  total_len: number;
+  captured_len: number;
+  body: readonly number[];
+}
+
 export type ErrorMode = "all" | "ok" | "errors-only";
 
 export interface FlowFilters {

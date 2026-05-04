@@ -15,8 +15,8 @@ import CloseIcon from "@mui/icons-material/Close";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import ReplayIcon from "@mui/icons-material/Replay";
 import dayjs from "dayjs";
-import type { Flow } from "../types";
-import { fetchFlow } from "../api/client";
+import type { Flow, Message } from "../types";
+import { fetchFlow, fetchFlowMessages } from "../api/client";
 import { connectionColor } from "../theme";
 import { copyText } from "../util/clipboard";
 import { useI18n } from "../i18n";
@@ -31,7 +31,7 @@ const DRAWER_WIDTH = 560;
 
 export function FlowDetail({ flowId, onClose, fallback }: Props) {
   const [flow, setFlow] = useState<Flow | null>(null);
-  const [tab, setTab] = useState<"overview" | "raw">("overview");
+  const [tab, setTab] = useState<"overview" | "plaintext" | "raw">("overview");
   const [toast, setToast] = useState<string | null>(null);
   const { t } = useI18n();
 
@@ -127,10 +127,11 @@ export function FlowDetail({ flowId, onClose, fallback }: Props) {
 
         <Tabs
           value={tab}
-          onChange={(_, v: "overview" | "raw") => setTab(v)}
+          onChange={(_, v: "overview" | "plaintext" | "raw") => setTab(v)}
           sx={{ borderBottom: 1, borderColor: "divider", px: 1 }}
         >
           <Tab value="overview" label={t("detail.tabs.overview")} />
+          <Tab value="plaintext" label={t("detail.tabs.plaintext")} />
           <Tab value="raw" label={t("detail.tabs.raw")} />
         </Tabs>
 
@@ -142,6 +143,8 @@ export function FlowDetail({ flowId, onClose, fallback }: Props) {
               flow={flow}
               onCopy={(text, label) => void showToast(text, label)}
             />
+          ) : tab === "plaintext" ? (
+            <Plaintext flowId={flow.id} />
           ) : (
             <RawJson flow={flow} />
           )}
@@ -380,6 +383,154 @@ function RawJson({ flow }: { flow: Flow }) {
       {JSON.stringify(flow, null, 2)}
     </Box>
   );
+}
+
+// ─── Plaintext tab — eBPF uprobe-captured TLS plaintext ────────────────
+
+function Plaintext({ flowId }: { flowId: number }) {
+  const [msgs, setMsgs] = useState<readonly Message[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const { t } = useI18n();
+
+  useEffect(() => {
+    let cancelled = false;
+    setMsgs(null);
+    setErr(null);
+    fetchFlowMessages(flowId, { limit: 1000 })
+      .then((rows) => {
+        if (!cancelled) setMsgs(rows);
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setErr(String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [flowId]);
+
+  if (err != null) {
+    return (
+      <Alert severity="error" variant="outlined">
+        {err}
+      </Alert>
+    );
+  }
+  if (msgs == null) {
+    return <Typography color="text.secondary">loading…</Typography>;
+  }
+  if (msgs.length === 0) {
+    return (
+      <Alert severity="info" variant="outlined">
+        {t("detail.plaintext.empty")}
+      </Alert>
+    );
+  }
+
+  return (
+    <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
+      {msgs.map((m) => (
+        <MessageBlock key={m.id} msg={m} />
+      ))}
+    </Box>
+  );
+}
+
+function MessageBlock({ msg }: { msg: Message }) {
+  const { t } = useI18n();
+  const isSend = msg.dir === 0;
+  const truncated = msg.captured_len < msg.total_len;
+  const ts = dayjs(msg.ts_us / 1000).format("HH:mm:ss.SSS");
+  return (
+    <Box
+      sx={{
+        border: 1,
+        borderColor: "divider",
+        borderRadius: 1,
+        overflow: "hidden",
+      }}
+    >
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          gap: 1,
+          px: 1,
+          py: 0.5,
+          background: (theme) =>
+            isSend
+              ? `${theme.palette.primary.main}1a`
+              : `${theme.palette.success.main}1a`,
+        }}
+      >
+        <Chip
+          size="small"
+          label={isSend ? t("detail.plaintext.send") : t("detail.plaintext.recv")}
+          color={isSend ? "primary" : "success"}
+          variant="filled"
+          sx={{ height: 20, fontSize: 11 }}
+        />
+        <Typography
+          variant="caption"
+          sx={{ fontFamily: "ui-monospace, monospace", color: "text.secondary" }}
+        >
+          {ts}
+        </Typography>
+        <Typography
+          variant="caption"
+          sx={{ fontFamily: "ui-monospace, monospace", color: "text.secondary" }}
+        >
+          tgid={msg.tgid}
+        </Typography>
+        <Box sx={{ flex: 1 }} />
+        <Typography
+          variant="caption"
+          sx={{ fontFamily: "ui-monospace, monospace", color: "text.secondary" }}
+        >
+          {truncated
+            ? `${msg.captured_len} / ${msg.total_len} B`
+            : `${msg.total_len} B`}
+        </Typography>
+      </Box>
+      <Box
+        component="pre"
+        sx={{
+          m: 0,
+          px: 1.25,
+          py: 0.75,
+          background: "rgba(0,0,0,0.18)",
+          fontFamily: "ui-monospace, monospace",
+          fontSize: 11,
+          lineHeight: 1.45,
+          whiteSpace: "pre",
+          overflowX: "auto",
+        }}
+      >
+        {hexAscii(msg.body)}
+      </Box>
+    </Box>
+  );
+}
+
+/** tcpdump-style hex + ascii dump. */
+function hexAscii(bytes: readonly number[]): string {
+  const lines: string[] = [];
+  for (let off = 0; off < bytes.length; off += 16) {
+    const chunk = bytes.slice(off, off + 16);
+    const hex = chunk
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join(" ")
+      .padEnd(16 * 3 - 1, " ");
+    // Insert a double-space between the two octets-of-8 groups.
+    const hexFmt =
+      hex.slice(0, 8 * 3 - 1) + "  " + hex.slice(8 * 3 - 1).trimStart();
+    const ascii = chunk
+      .map((b) => (b >= 0x20 && b < 0x7f ? String.fromCharCode(b) : "."))
+      .join("");
+    lines.push(
+      `${off.toString(16).padStart(4, "0")}  ${hexFmt.padEnd(48, " ")}  ${ascii}`,
+    );
+  }
+  return lines.join("\n");
 }
 
 function podLabel(flow: Flow): string | null {
