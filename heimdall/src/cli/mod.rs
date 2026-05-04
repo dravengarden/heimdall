@@ -6,4 +6,5 @@
 
 pub mod flows;
 pub mod init;
+pub mod run;
 pub mod status;

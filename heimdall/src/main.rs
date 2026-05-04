@@ -125,6 +125,13 @@ enum Cmd {
     /// AI-readable README.md; for Nickel format, also lib.ncl with
     /// schema contracts).
     Init(cli::init::InitArgs),
+
+    /// Wrap a CLI command so its egress goes through a heimdall
+    /// connection (proxychains-style). Non-root: re-execs itself
+    /// under `systemd-run --user --scope` to land in a writable
+    /// cgroup. Defaults from `cli.run` in heimdall.<ext>; flags
+    /// override.
+    Run(cli::run::RunArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -205,7 +212,27 @@ struct Shared {
     /// to correlate libssl uprobe events with the flow row written by
     /// the relay. Empty when the tap is disabled.
     open_flows: Arc<parking_lot::RwLock<StdHashMap<u64, Vec<i64>>>>,
+    /// `heimdall run` registers a (cgroup_id → PodDecision) entry here
+    /// before exec'ing the wrapped command. Relay checks this map
+    /// first; if hit, takes precedence over pod routing rules and
+    /// over `podRouting.default`. Empty when no CLI process is
+    /// currently registered. Cleared by the matching DELETE call
+    /// after the wrapped command exits.
+    ///
+    /// Shared by Arc::clone with `api::AppState.cli_overrides` so the
+    /// HTTP register endpoints write here in lockstep with the
+    /// PolicyEngine BPF map update.
+    cli_overrides: CliOverrides,
 }
+
+/// Shared (cgroup_id → PodDecision) override map for `heimdall run`
+/// CLI processes. See `Shared.cli_overrides` for semantics.
+type CliOverrides = Arc<parking_lot::RwLock<StdHashMap<u64, heimdall_config::PodDecision>>>;
+
+/// Late-bound policy engine slot. Constructed only when k8s informer
+/// is up; the HTTP API holds an Arc clone of this slot so register
+/// endpoints can call `engine.write_one()` once it's populated.
+type PolicyEngineSlot = Arc<parking_lot::Mutex<Option<Arc<policy::PolicyEngine>>>>;
 
 impl Shared {
     /// Record that a flow with this cgroup_id is now open. The tap
@@ -274,6 +301,7 @@ async fn main() -> Result<()> {
         Cmd::Flows(sub) => cli::flows::run(&cli.config, sub).await,
         Cmd::Status => cli::status::run(&cli.config).await,
         Cmd::Init(args) => cli::init::run(args),
+        Cmd::Run(args) => cli::run::run(&cli.config, args),
     }
 }
 
@@ -401,6 +429,15 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
     // ─── HTTP API (REST + WebSocket) ──────────────────────────────────────
     let events = api::EventBus::new(1024);
 
+    // Shared between Shared{} (relay reads), AppState (HTTP register
+    // endpoints write), and the `heimdall run` flow. Initialised here
+    // so AppState gets a clone before it's spawned. See type aliases
+    // above for semantics.
+    let cli_overrides: CliOverrides =
+        Arc::new(parking_lot::RwLock::new(StdHashMap::new()));
+    let policy_engine_slot: PolicyEngineSlot =
+        Arc::new(parking_lot::Mutex::new(None));
+
     if let Some(s) = store.as_ref() {
         let api_listen: SocketAddr = cfg
             .runtime
@@ -413,6 +450,9 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
             cfg_path: config_path.clone(),
             cgroup_resolver: cgroup_resolver.clone(),
             informer: informer.clone(),
+            connections: cfg.connections.clone(),
+            cli_overrides: cli_overrides.clone(),
+            policy_engine: policy_engine_slot.clone(),
         };
         tokio::spawn(async move {
             if let Err(e) = api::serve(app_state, api_listen).await {
@@ -432,6 +472,7 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
         store,
         events,
         open_flows: Arc::new(parking_lot::RwLock::new(StdHashMap::new())),
+        cli_overrides: cli_overrides.clone(),
     });
 
     // ─── Load eBPF object and attach programs ─────────────────────────────
@@ -448,25 +489,60 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
     let cgroup = std::fs::File::open(&shared.cfg.runtime.cgroup)
         .with_context(|| format!("failed to open cgroup path: {}", shared.cfg.runtime.cgroup))?;
 
-    let connect4: &mut CgroupSockAddr = bpf
-        .program_mut("connect4")
-        .context("connect4 eBPF program not found")?
-        .try_into()?;
-    connect4.load().context("failed to load connect4")?;
-    connect4
-        .attach(&cgroup, CgroupAttachMode::default())
-        .context("failed to attach connect4")?;
-    info!(cgroup = %shared.cfg.runtime.cgroup, "eBPF connect4 attached");
-
-    let skb_egress: &mut CgroupSkb = bpf
-        .program_mut("skb_egress")
-        .context("skb_egress eBPF program not found")?
-        .try_into()?;
-    skb_egress.load().context("failed to load skb_egress")?;
-    skb_egress
-        .attach(&cgroup, CgroupSkbAttachType::Egress, CgroupAttachMode::default())
-        .context("failed to attach skb_egress")?;
-    info!(cgroup = %shared.cfg.runtime.cgroup, "eBPF skb_egress attached");
+    // ─── eBPF attach (cgroup_sock_addr connect4 + cgroup_skb egress) ────────
+    // Primary attach at runtime.cgroup (typically /sys/fs/cgroup/kubepods)
+    // covers k8s pods. Optional secondary at /sys/fs/cgroup/user.slice
+    // covers `heimdall run` / interactive user processes. Host services
+    // under system.slice intentionally stay outside scope.
+    //
+    // Earlier root-cgroup attach was tried — it appeared to attach
+    // successfully but no longer fired connect4 for any cgroup, even
+    // pods. Suspected interaction with cilium attaching its own progs
+    // at root in cgroup v2 hierarchical mode. Falling back to the
+    // dual-attach approach which is verified working for pods.
+    const USER_SLICE: &str = "/sys/fs/cgroup/user.slice";
+    let user_slice_file = std::path::Path::new(USER_SLICE)
+        .exists()
+        .then(|| std::fs::File::open(USER_SLICE).ok())
+        .flatten();
+    {
+        let connect4: &mut CgroupSockAddr = bpf
+            .program_mut("connect4")
+            .context("connect4 eBPF program not found")?
+            .try_into()?;
+        connect4.load().context("failed to load connect4")?;
+        connect4
+            .attach(&cgroup, CgroupAttachMode::default())
+            .context("failed to attach connect4")?;
+        info!(cgroup = %shared.cfg.runtime.cgroup, "eBPF connect4 attached");
+        if let Some(user_cg) = user_slice_file.as_ref() {
+            match connect4.attach(user_cg, CgroupAttachMode::default()) {
+                Ok(_) => info!(cgroup = USER_SLICE, "eBPF connect4 attached (extra)"),
+                Err(e) => warn!(error = %e, cgroup = USER_SLICE, "extra connect4 attach failed"),
+            }
+        }
+    }
+    {
+        let skb_egress: &mut CgroupSkb = bpf
+            .program_mut("skb_egress")
+            .context("skb_egress eBPF program not found")?
+            .try_into()?;
+        skb_egress.load().context("failed to load skb_egress")?;
+        skb_egress
+            .attach(&cgroup, CgroupSkbAttachType::Egress, CgroupAttachMode::default())
+            .context("failed to attach skb_egress")?;
+        info!(cgroup = %shared.cfg.runtime.cgroup, "eBPF skb_egress attached");
+        if let Some(user_cg) = user_slice_file.as_ref() {
+            match skb_egress.attach(
+                user_cg,
+                CgroupSkbAttachType::Egress,
+                CgroupAttachMode::default(),
+            ) {
+                Ok(_) => info!(cgroup = USER_SLICE, "eBPF skb_egress attached (extra)"),
+                Err(e) => warn!(error = %e, cgroup = USER_SLICE, "extra skb_egress attach failed"),
+            }
+        }
+    }
 
     let port_map: PortMap = Arc::new(RwLock::new(
         HashMap::try_from(bpf.take_map("PORT_MAP").context("PORT_MAP not found")?)?,
@@ -485,12 +561,18 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
             cgr.clone(),
             policy_map,
         ));
+        // Hand a clone to the HTTP API so /api/cli/register endpoints
+        // can write the policy byte for arbitrary cgroup_ids alongside
+        // their userspace cli_overrides entry. spawn() consumes the
+        // remaining Arc and starts the reconcile task.
+        *policy_engine_slot.lock() = Some(engine.clone());
         engine.spawn();
         info!("policy engine started");
     } else {
         warn!(
             "policy engine not started (no informer / cgroup resolver); \
-             eBPF will use default policy (observe OFF) for every cgroup"
+             eBPF will use default policy (observe OFF) for every cgroup. \
+             `heimdall run` register endpoints will reject."
         );
     }
 
@@ -631,10 +713,21 @@ async fn relay(
     };
 
     // ─── Resolve pod-side decision → connection name directly ────────────
+    // `heimdall run` registers a per-cgroup override here before exec.
+    // When present it bypasses the pod_routing rules entirely (useful
+    // for ad-hoc CLI proxying that doesn't fit any rule). When absent,
+    // fall back to the standard pod-selector resolution.
+    //
     // No destination-side routing layer: `pod_decision.use_` is itself
     // either a connection name from `connections:` or the reserved
     // `system` keyword.
-    let pod_decision = router::resolve_pod_decision(&shared.cfg, pod_info.as_ref());
+    let pod_decision = if let Some(ovr) =
+        shared.cli_overrides.read().get(&orig.cgroup_id).cloned()
+    {
+        ovr
+    } else {
+        router::resolve_pod_decision(&shared.cfg, pod_info.as_ref())
+    };
 
     // If the decision is `system`, the connection should never have
     // reached the relay (eBPF should have skipped redirect). Race
