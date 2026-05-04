@@ -84,3 +84,4 @@ path = "src/main.rs"
 
 [dev-dependencies]
 tempfile = "3.27.0"
+serde_yaml = "0.9"
