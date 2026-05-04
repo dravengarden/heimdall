@@ -1,0 +1,96 @@
+name: Bug report
+description: Heimdall isn't doing what its docs say it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. **Security issues:** don't file
+        them here — see [SECURITY.md](../../SECURITY.md) for private
+        disclosure.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: |
+        One-paragraph summary. What did you run, what did you expect,
+        what did you see instead?
+      placeholder: |
+        Ran `heimdall run -p conviva -- curl https://internal/`. Expected
+        the request to route via the conviva connection. Saw `Could not
+        resolve host` instead. Direct `dig @127.0.0.1 -p 5358` works.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Minimal steps a maintainer can copy-paste.
+      placeholder: |
+        1. `heimdall init --format nickel`
+        2. Edit `/etc/heimdall/heimdall.ncl` to add connection X
+        3. `sudo systemctl restart heimdall`
+        4. `heimdall run -- curl https://Y`
+    validations:
+      required: true
+
+  - type: input
+    id: kernel
+    attributes:
+      label: Kernel version
+      description: "`uname -r`"
+      placeholder: "6.12.5"
+    validations:
+      required: true
+
+  - type: input
+    id: distro
+    attributes:
+      label: Distribution
+      placeholder: "NixOS 25.05 / Ubuntu 24.04 / …"
+
+  - type: input
+    id: heimdall-version
+    attributes:
+      label: heimdall version / commit
+      description: "`heimdall --version` or `git rev-parse HEAD` if running from source"
+
+  - type: textarea
+    id: status
+    attributes:
+      label: "`heimdall status` output"
+      render: text
+      description: |
+        Paste the full output. If the daemon is down, say so.
+
+  - type: textarea
+    id: journal
+    attributes:
+      label: Journal entries
+      render: text
+      description: |
+        `journalctl -u heimdall --since "5 min ago"` covering the
+        failure. Trim to relevant lines, but include attach + ready
+        + the failure itself.
+
+  - type: textarea
+    id: flow
+    attributes:
+      label: Flow log row (if applicable)
+      render: json
+      description: |
+        For routing / connection bugs:
+        `curl http://127.0.0.1:9999/api/flows?limit=20` and paste the
+        relevant entry.
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Confirmation
+      options:
+        - label: I'm not reporting a security vulnerability (those go via SECURITY.md)
+          required: true
+        - label: I've checked the issue isn't already filed
+          required: true

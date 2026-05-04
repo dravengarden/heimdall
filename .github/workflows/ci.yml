@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+  ebpf:
+    name: eBPF build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: bpfel-unknown-none
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: heimdall-ebpf
+      - name: Build eBPF programs
+        run: |
+          cd heimdall-ebpf
+          cargo +nightly build -Z build-std=core \
+                               --target bpfel-unknown-none --release
+      - name: Upload eBPF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: heimdall-ebpf
+          path: heimdall-ebpf/target/bpfel-unknown-none/release/heimdall-ebpf
+          if-no-files-found: error
+
+  ui:
+    name: UI typecheck + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: bun install
+        working-directory: heimdall-ui
+        run: bun install --frozen-lockfile
+      - name: bun typecheck
+        working-directory: heimdall-ui
+        run: bun run typecheck
+      - name: bun build
+        working-directory: heimdall-ui
+        run: bun run build
+      - name: Upload UI bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: heimdall-ui-dist
+          path: heimdall-ui/dist
+          if-no-files-found: error
+
+  build:
+    name: Userspace build + test
+    needs: [ebpf, ui]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Download eBPF artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: heimdall-ebpf
+          path: heimdall-ebpf/target/bpfel-unknown-none/release
+      - name: Download UI bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: heimdall-ui-dist
+          path: heimdall-ui/dist
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: cargo test
+        run: cargo test --workspace --release
+      - name: cargo build --release
+        run: cargo build --release --workspace
