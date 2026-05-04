@@ -209,6 +209,44 @@ pub fn ssl_read_exit(ctx: RetProbeContext) -> u32 {
     0
 }
 
+// ---------------------------------------------------------------------------
+// Go TLS: crypto/tls.(*Conn).Write — entry probe.
+//
+// Go uses its own ABI ("ABI Internal", x86_64). For methods on *Conn:
+//   func (c *Conn) Write(b []byte) (n int, err error)
+//
+// Register layout at entry:
+//   RAX = receiver  (*Conn)
+//   RBX = b.data    (slice ptr)
+//   RCX = b.len
+//   RDI = b.cap     (unused here)
+//
+// We don't try to attach a uretprobe — the kernel's uretprobe trampoline
+// patches the user-space stack, which collides with the Go runtime's
+// movable stacks. The send-side write probe is enough to surface
+// outbound HTTP requests (URL, headers, body) without needing the
+// return value.
+// ---------------------------------------------------------------------------
+
+#[uprobe]
+pub fn go_tls_write(ctx: ProbeContext) -> u32 {
+    let _ = try_go_tls_write(&ctx);
+    0
+}
+
+#[inline(always)]
+fn try_go_tls_write(ctx: &ProbeContext) -> Result<(), ()> {
+    let regs = unsafe { &*ctx.regs };
+    let buf = regs.rbx as *const u8;
+    let num = regs.rcx as i64;
+    if num <= 0 || buf.is_null() {
+        return Ok(());
+    }
+    let total = if num > i32::MAX as i64 { i32::MAX as u32 } else { num as u32 };
+    emit_tap(ctx, TapDir::Send, total, buf);
+    Ok(())
+}
+
 #[inline(always)]
 fn try_ssl_read_exit(ctx: &RetProbeContext) -> Result<(), ()> {
     let pid_tgid = bpf_get_current_pid_tgid();
