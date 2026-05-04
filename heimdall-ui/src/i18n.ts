@@ -64,6 +64,7 @@ const en: Catalog = {
   "table.cols.via": "via",
 
   "detail.tabs.overview": "Overview",
+  "detail.tabs.plaintext": "Plaintext",
   "detail.tabs.raw": "Raw JSON",
   "detail.copyJson": "Copy flow as JSON",
   "detail.replay": "Replay",
@@ -74,6 +75,10 @@ const en: Catalog = {
   "detail.section.timing": "Timing",
   "detail.section.internals": "Internals",
   "detail.copy": "Copy {0}",
+  "detail.plaintext.empty":
+    "No plaintext captured for this flow. The eBPF tap only sees libssl-using processes; pods that statically link Go's crypto/tls or rustls do not surface here yet.",
+  "detail.plaintext.send": "SEND",
+  "detail.plaintext.recv": "RECV",
 
   "settings.title": "Settings",
   "settings.appearance": "Appearance",
@@ -147,6 +152,7 @@ const zhCN: Catalog = {
   "table.cols.via": "经由",
 
   "detail.tabs.overview": "概览",
+  "detail.tabs.plaintext": "明文",
   "detail.tabs.raw": "原始 JSON",
   "detail.copyJson": "复制为 JSON",
   "detail.replay": "重放",
@@ -157,6 +163,10 @@ const zhCN: Catalog = {
   "detail.section.timing": "时间",
   "detail.section.internals": "内部",
   "detail.copy": "复制 {0}",
+  "detail.plaintext.empty":
+    "此 flow 未抓到明文。eBPF tap 仅能看到使用 libssl 的进程;静态链接 Go crypto/tls 或 rustls 的 pod 暂不支持。",
+  "detail.plaintext.send": "发送",
+  "detail.plaintext.recv": "接收",
 
   "settings.title": "设置",
   "settings.appearance": "外观",

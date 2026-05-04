@@ -1,4 +1,4 @@
-import type { Flow, Status } from "../types";
+import type { Flow, Message, Status } from "../types";
 
 const base = "";
 
@@ -28,5 +28,17 @@ export async function fetchFlow(id: number): Promise<Flow> {
 export async function fetchStatus(): Promise<Status> {
   const res = await fetch(`${base}/api/status`);
   if (!res.ok) throw new Error(`status HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function fetchFlowMessages(
+  flowId: number,
+  params: { limit?: number; sinceUs?: number } = {},
+): Promise<Message[]> {
+  const qs = new URLSearchParams();
+  qs.set("limit", String(params.limit ?? 500));
+  if (params.sinceUs != null) qs.set("since_us", String(params.sinceUs));
+  const res = await fetch(`${base}/api/flows/${flowId}/messages?${qs}`);
+  if (!res.ok) throw new Error(`messages flow=${flowId} HTTP ${res.status}`);
   return res.json();
 }
