@@ -411,10 +411,27 @@ const IPPROTO_TCP: u8 = 6;
 // IPv4 protocol field is at offset 9 in the IP header.
 const OFF_IPV4_PROTO: usize = 9;
 // IPv6 next-header is at offset 6 in the fixed 40-byte header.
-// IPv6 fixed header size = 40 bytes; TCP src port follows directly when
-// next-header is TCP. Extension headers aren't handled in this MVP.
 const OFF_IPV6_NEXT: usize = 6;
 const IPV6_FIXED_HDR: usize = 40;
+
+// IPv6 extension-header next-header values we know how to skip past.
+// Each one (except Fragment) has a uniform layout: byte 0 = next-header,
+// byte 1 = Hdr Ext Len in 8-octet units NOT including the first 8 bytes,
+// so the on-wire length is `(len + 1) * 8`. Fragment (44) is a fixed 8.
+//
+// Reference: RFC 8200 §4 + IANA "Protocol Numbers" registry.
+const IPV6_EXT_HOPOPT: u8 = 0;       // Hop-by-Hop Options
+const IPV6_EXT_ROUTING: u8 = 43;     // Routing
+const IPV6_EXT_FRAGMENT: u8 = 44;    // Fragment (fixed 8-byte header)
+const IPV6_EXT_DSTOPTS: u8 = 60;     // Destination Options
+const IPV6_EXT_MOBILITY: u8 = 135;   // Mobility (RFC 6275)
+const IPV6_EXT_HIP: u8 = 139;        // HIP (RFC 7401)
+const IPV6_EXT_SHIM6: u8 = 140;      // Shim6 (RFC 5533)
+
+/// Bounded extension-header walk. The BPF verifier rejects unbounded
+/// loops; 8 ext headers is more than any real-world packet (RFC 8200
+/// recommends ≤ a handful).
+const MAX_IPV6_EXT_HDRS: usize = 8;
 
 #[inline(always)]
 fn try_skb_egress(ctx: &SkBuffContext) -> Result<(), ()> {
@@ -433,16 +450,43 @@ fn try_skb_egress(ctx: &SkBuffContext) -> Result<(), ()> {
             ((ver_ihl & 0x0f) as usize) * 4
         }
         6 => {
-            // IPv6: next-header at offset 6, fixed 40-byte header.
-            // Extension headers aren't tracked; non-TCP next-header
-            // (incl. extension headers like Hop-by-Hop) just bails — at
-            // worst we skip a hop-by-hop-prefixed TCP connection, which
-            // is rare for application traffic.
-            let next: u8 = ctx.load(OFF_IPV6_NEXT).map_err(|_| ())?;
+            // IPv6: walk the next-header chain past extension headers
+            // until we hit TCP (or give up). Extension headers we
+            // understand: Hop-by-Hop (0), Routing (43), Fragment (44),
+            // Destination Options (60), Mobility (135), HIP (139),
+            // Shim6 (140). Anything else (incl. unknown) → bail.
+            let mut next: u8 = ctx.load(OFF_IPV6_NEXT).map_err(|_| ())?;
+            let mut off = IPV6_FIXED_HDR;
+            // Bounded loop for the verifier — enough for any realistic
+            // packet (RFC 8200 hints at small fixed limits).
+            for _ in 0..MAX_IPV6_EXT_HDRS {
+                if next == IPPROTO_TCP {
+                    break;
+                }
+                let (nh, hdr_len) = match next {
+                    IPV6_EXT_HOPOPT
+                    | IPV6_EXT_ROUTING
+                    | IPV6_EXT_DSTOPTS
+                    | IPV6_EXT_MOBILITY
+                    | IPV6_EXT_HIP
+                    | IPV6_EXT_SHIM6 => {
+                        let nh: u8 = ctx.load(off).map_err(|_| ())?;
+                        let len: u8 = ctx.load(off + 1).map_err(|_| ())?;
+                        (nh, (len as usize + 1) * 8)
+                    }
+                    IPV6_EXT_FRAGMENT => {
+                        let nh: u8 = ctx.load(off).map_err(|_| ())?;
+                        (nh, 8)
+                    }
+                    _ => return Ok(()), // not TCP and not an ext header we know
+                };
+                next = nh;
+                off += hdr_len;
+            }
             if next != IPPROTO_TCP {
                 return Ok(());
             }
-            IPV6_FIXED_HDR
+            off
         }
         _ => return Ok(()),
     };
