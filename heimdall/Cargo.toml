@@ -72,6 +72,12 @@ bytes = "1"
 # resolution cost.
 object = { version = "0.36", default-features = false, features = ["read", "elf", "std"] }
 
+# Pure-Rust x86-64 disassembler. Phase B uses it to walk the body of
+# crypto/tls.(*Conn).Read and find every RET instruction, since Go's
+# movable stacks make uretprobes unsafe — we attach a regular uprobe
+# at each return site instead (Pixie/Coroot pattern).
+iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info"] }
+
 [[bin]]
 name = "heimdall"
 path = "src/main.rs"

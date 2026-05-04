@@ -247,6 +247,74 @@ fn try_go_tls_write(ctx: &ProbeContext) -> Result<(), ()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Go TLS: crypto/tls.(*Conn).Read — paired entry + return probes.
+//
+//   func (c *Conn) Read(b []byte) (n int, err error)
+//
+// At entry:  RAX=*Conn, RBX=b.data, RCX=b.len, RDI=b.cap
+// At return: RAX=n, RBX=err.tab, RCX=err.data
+//
+// We can't use a uretprobe here because the kernel's uretprobe trampoline
+// rewrites the return address, which collides with Go's stack-growth
+// machinery (movable stacks copy frames around and the trampoline anchor
+// gets stale). The standard mitigation, used by Pixie and Coroot, is to
+// disassemble the function in userspace, find every RET instruction, and
+// attach a regular uprobe at each one. At those uprobes we read RAX as
+// the syscall return value.
+//
+// `go_tls_read_enter` stashes the buf pointer keyed by pid_tgid;
+// `go_tls_read_ret` reads RAX (return n) and copies n bytes from the
+// stashed buf.
+// ---------------------------------------------------------------------------
+
+#[map]
+static GO_READ_STATE: HashMap<u64, ReadEntry> = HashMap::with_max_entries(8192, 0);
+
+#[uprobe]
+pub fn go_tls_read_enter(ctx: ProbeContext) -> u32 {
+    let _ = try_go_tls_read_enter(&ctx);
+    0
+}
+
+#[inline(always)]
+fn try_go_tls_read_enter(ctx: &ProbeContext) -> Result<(), ()> {
+    let regs = unsafe { &*ctx.regs };
+    let buf = regs.rbx;
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let entry = ReadEntry { buf };
+    let _ = GO_READ_STATE.insert(&pid_tgid, &entry, 0);
+    Ok(())
+}
+
+#[uprobe]
+pub fn go_tls_read_ret(ctx: ProbeContext) -> u32 {
+    let _ = try_go_tls_read_ret(&ctx);
+    0
+}
+
+#[inline(always)]
+fn try_go_tls_read_ret(ctx: &ProbeContext) -> Result<(), ()> {
+    let regs = unsafe { &*ctx.regs };
+    let n = regs.rax as i64;
+    if n <= 0 {
+        return Ok(());
+    }
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let entry = match unsafe { GO_READ_STATE.get(&pid_tgid) } {
+        Some(e) => *e,
+        None => return Ok(()),
+    };
+    let _ = GO_READ_STATE.remove(&pid_tgid);
+    let buf = entry.buf as *const u8;
+    if buf.is_null() {
+        return Ok(());
+    }
+    let total = if n > i32::MAX as i64 { i32::MAX as u32 } else { n as u32 };
+    emit_tap(ctx, TapDir::Recv, total, buf);
+    Ok(())
+}
+
 #[inline(always)]
 fn try_ssl_read_exit(ctx: &RetProbeContext) -> Result<(), ()> {
     let pid_tgid = bpf_get_current_pid_tgid();

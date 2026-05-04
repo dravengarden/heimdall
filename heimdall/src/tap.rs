@@ -470,20 +470,154 @@ fn attach_one(bpf: &mut Ebpf, target: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Attach the Go TLS send probe (`go_tls_write`) to a single Go binary.
-/// Symbol resolution uses aya's standard ELF symbol lookup, which
-/// happily handles Go's exotic symbol names (parens, dots, slashes).
+/// Attach the Go TLS probes (write entry, read entry, read-at-RET) to
+/// a single Go binary. Symbol resolution uses aya's standard ELF symbol
+/// lookup, which happily handles Go's exotic symbol names. RET sites
+/// for Read are computed via iced-x86 disassembly (see notes on the
+/// eBPF programs for why uretprobes don't work on Go binaries).
 fn attach_go_one(bpf: &mut Ebpf, target: &Path) -> Result<()> {
+    // ─── crypto/tls.(*Conn).Write — entry only ──────────────────────────
+    {
+        let prog: &mut UProbe = bpf
+            .program_mut("go_tls_write")
+            .context("go_tls_write program not found")?
+            .try_into()?;
+        let _ = prog.load();
+        prog.attach(Some("crypto/tls.(*Conn).Write"), 0, target, None)
+            .with_context(|| {
+                format!("attach crypto/tls.(*Conn).Write at {}", target.display())
+            })?;
+    }
+
+    // ─── crypto/tls.(*Conn).Read — entry stash ──────────────────────────
+    {
+        let prog: &mut UProbe = bpf
+            .program_mut("go_tls_read_enter")
+            .context("go_tls_read_enter program not found")?
+            .try_into()?;
+        let _ = prog.load();
+        prog.attach(Some("crypto/tls.(*Conn).Read"), 0, target, None)
+            .with_context(|| {
+                format!("attach crypto/tls.(*Conn).Read entry at {}", target.display())
+            })?;
+    }
+
+    // ─── crypto/tls.(*Conn).Read — every RET site ───────────────────────
+    let rets = match find_go_ret_offsets(target, "crypto/tls.(*Conn).Read") {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(
+                path = %target.display(),
+                error = %e,
+                "tap: could not enumerate RET offsets; recv-side uprobe skipped"
+            );
+            return Ok(());
+        }
+    };
+    if rets.is_empty() {
+        warn!(
+            path = %target.display(),
+            "tap: 0 RET sites found in crypto/tls.(*Conn).Read; recv-side uprobe skipped"
+        );
+        return Ok(());
+    }
+    info!(path = %target.display(), ret_sites = rets.len(), "tap: Go Read RET sites found");
+
     let prog: &mut UProbe = bpf
-        .program_mut("go_tls_write")
-        .context("go_tls_write program not found")?
+        .program_mut("go_tls_read_ret")
+        .context("go_tls_read_ret program not found")?
         .try_into()?;
     let _ = prog.load();
-    prog.attach(Some("crypto/tls.(*Conn).Write"), 0, target, None)
-        .with_context(|| {
-            format!("attach crypto/tls.(*Conn).Write at {}", target.display())
-        })?;
+    let mut attached_rets = 0usize;
+    for off in rets {
+        match prog.attach(None, off, target, None) {
+            Ok(_) => attached_rets += 1,
+            Err(e) => {
+                warn!(
+                    path = %target.display(),
+                    offset = format_args!("{:#x}", off),
+                    error = %e,
+                    "tap: go_tls_read_ret attach failed at offset"
+                );
+            }
+        }
+    }
+    if attached_rets == 0 {
+        warn!(path = %target.display(), "tap: 0/N RET attachments succeeded for Read");
+    }
     Ok(())
+}
+
+/// Find file offsets of every RET instruction inside the named function
+/// in the given ELF. Used to attach uprobes at Go return sites since
+/// uretprobes don't work on Go binaries (movable stacks).
+fn find_go_ret_offsets(path: &Path, sym_name: &str) -> Result<Vec<u64>> {
+    use iced_x86::{Decoder, DecoderOptions, FlowControl};
+    use object::{Object, ObjectSection, ObjectSymbol};
+
+    let data = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let obj = object::read::File::parse(&*data)
+        .map_err(|e| anyhow::anyhow!("ELF parse: {e}"))?;
+
+    let sym = obj
+        .symbols()
+        .chain(obj.dynamic_symbols())
+        .find(|s| s.name().map(|n| n == sym_name).unwrap_or(false))
+        .ok_or_else(|| anyhow::anyhow!("symbol {sym_name} not found"))?;
+
+    let sym_addr = sym.address();
+    let sym_size = sym.size();
+    if sym_size == 0 {
+        return Ok(Vec::new());
+    }
+
+    let section_idx = sym
+        .section_index()
+        .ok_or_else(|| anyhow::anyhow!("symbol has no section"))?;
+    let section = obj
+        .section_by_index(section_idx)
+        .map_err(|e| anyhow::anyhow!("section_by_index: {e}"))?;
+    let section_addr = section.address();
+    let (section_file_off, _section_file_size) = section
+        .file_range()
+        .ok_or_else(|| anyhow::anyhow!("section has no file range"))?;
+
+    let section_data = section
+        .data()
+        .map_err(|e| anyhow::anyhow!("section data: {e}"))?;
+    let func_off_in_section = sym_addr.checked_sub(section_addr).ok_or_else(|| {
+        anyhow::anyhow!("symbol addr {sym_addr:#x} below section addr {section_addr:#x}")
+    })? as usize;
+    let end = func_off_in_section
+        .checked_add(sym_size as usize)
+        .ok_or_else(|| anyhow::anyhow!("symbol size overflows"))?;
+    if end > section_data.len() {
+        anyhow::bail!(
+            "symbol body [{func_off_in_section}..{end}] exceeds section data ({})",
+            section_data.len()
+        );
+    }
+    let bytes = &section_data[func_off_in_section..end];
+
+    // Walk instructions linearly, recording RET sites. iced-x86's
+    // FlowControl::Return covers near-RET (0xC3), near-RET-imm16 (0xC2),
+    // far-RET, and IRET. We accept all of them — the ones Go actually
+    // emits in compiled .text are near-RET, but staying permissive keeps
+    // the matcher compatible with future toolchain choices.
+    let mut decoder = Decoder::with_ip(64, bytes, sym_addr, DecoderOptions::NONE);
+    let mut rets = Vec::new();
+    while decoder.can_decode() {
+        let pos_in_func = decoder.position();
+        let insn = decoder.decode();
+        if matches!(insn.flow_control(), FlowControl::Return) {
+            // file_offset = section_file_offset + (sym_addr - section_addr) + pos_in_func
+            let file_off = section_file_off
+                + func_off_in_section as u64
+                + pos_in_func as u64;
+            rets.push(file_off);
+        }
+    }
+    Ok(rets)
 }
 
 /// Convenience: spawn a logger task that drains a TapHandle and writes
