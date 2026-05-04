@@ -32,7 +32,7 @@ use aya::maps::HashMap as BpfHashMap;
 use heimdall_common::{
     DEFAULT_POLICY, POLICY_NO_BYPASS_LOG, POLICY_OBSERVE_OFF, POLICY_REDIRECT_OFF,
 };
-use heimdall_config::{HeimdallConfig, RoutingDecision, SYSTEM_CONNECTION};
+use heimdall_config::{HeimdallConfig, PodDecision, SYSTEM_TAG};
 use parking_lot::RwLock;
 use tokio::sync::broadcast::error::RecvError;
 use tracing::{debug, info, warn};
@@ -124,7 +124,7 @@ impl PolicyEngine {
 
     /// Re-eval one pod and write its cgroup_ids' policy. Used on Upsert.
     async fn apply_pod(&self, info: &PodInfo) {
-        let decision = router::resolve_decision(&self.cfg, Some(info));
+        let decision = router::resolve_pod_decision(&self.cfg, Some(info));
         let flags = encode(&decision);
 
         let cgs = self.cgroups.uid_to_cgroups(&info.uid);
@@ -165,7 +165,7 @@ impl PolicyEngine {
         let pod_flags: StdHashMap<String, u8> = pod_snap
             .into_iter()
             .map(|(uid, info)| {
-                let dec = router::resolve_decision(&self.cfg, Some(&info));
+                let dec = router::resolve_pod_decision(&self.cfg, Some(&info));
                 (uid, encode(&dec))
             })
             .collect();
@@ -242,9 +242,9 @@ impl PolicyEngine {
 /// The bit layout matches `heimdall-common::POLICY_*`:
 ///   - `use: system`     → REDIRECT_OFF
 ///   - `observe: false`  → OBSERVE_OFF + NO_BYPASS_LOG (no synthetic flow)
-fn encode(d: &RoutingDecision) -> u8 {
+fn encode(d: &PodDecision) -> u8 {
     let mut flags = 0u8;
-    if d.use_ == SYSTEM_CONNECTION {
+    if d.use_ == SYSTEM_TAG {
         flags |= POLICY_REDIRECT_OFF;
     }
     if !d.observe {
@@ -266,25 +266,25 @@ mod tests {
 
     #[test]
     fn encode_default_uses_proxy_and_observe() {
-        let d = RoutingDecision { use_: "default".into(), observe: true };
+        let d = PodDecision { use_: "default".into(), observe: true };
         assert_eq!(encode(&d), 0);
     }
 
     #[test]
     fn encode_system_use_sets_redirect_off() {
-        let d = RoutingDecision { use_: "system".into(), observe: true };
+        let d = PodDecision { use_: "system".into(), observe: true };
         assert_eq!(encode(&d), POLICY_REDIRECT_OFF);
     }
 
     #[test]
     fn encode_observe_off_sets_observe_and_no_bypass_log() {
-        let d = RoutingDecision { use_: "default".into(), observe: false };
+        let d = PodDecision { use_: "default".into(), observe: false };
         assert_eq!(encode(&d), POLICY_OBSERVE_OFF | POLICY_NO_BYPASS_LOG);
     }
 
     #[test]
     fn encode_system_with_no_observe_combines() {
-        let d = RoutingDecision { use_: "system".into(), observe: false };
+        let d = PodDecision { use_: "system".into(), observe: false };
         assert_eq!(
             encode(&d),
             POLICY_REDIRECT_OFF | POLICY_OBSERVE_OFF | POLICY_NO_BYPASS_LOG

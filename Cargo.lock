@@ -952,6 +952,7 @@ dependencies = [
  "rust-embed",
  "serde",
  "serde_json",
+ "serde_yaml",
  "sqlx",
  "tempfile",
  "tokio",
@@ -974,7 +975,10 @@ name = "heimdall-config"
 version = "0.1.0"
 dependencies = [
  "indoc",
+ "ipnet",
+ "regex",
  "serde",
+ "serde_json",
  "serde_yaml",
  "thiserror 1.0.69",
 ]
@@ -1322,6 +1326,9 @@ name = "ipnet"
 version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "is_terminal_polyfill"

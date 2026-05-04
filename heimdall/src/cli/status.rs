@@ -13,8 +13,10 @@ pub async fn run(config_path: &Path) -> Result<()> {
 
     println!("config         {}", config_path.display());
     println!("connections    {}", cfg.connections.len());
-    println!("rules          {}", cfg.routing.rules.len());
-    println!("default conn   {}", cfg.routing.default);
+    println!("pod rules      {}", cfg.pod_routing.rules.len());
+    println!("default use    {}", cfg.pod_routing.default.use_);
+    println!("default observe {}", cfg.pod_routing.default.observe);
+    println!("routing dir    {}", cfg.runtime.routing_dir.display());
     println!("relay listen   {}", cfg.runtime.listen);
     println!("dns listen     {}", cfg.runtime.dns_listen);
     println!("fake-IP CIDR   {}", cfg.runtime.fake_ip_cidr);
