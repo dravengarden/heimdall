@@ -5,13 +5,13 @@
 ### Building a new daemon
 
 ```bash
-cd ~/heimdall
-
-# eBPF first (its build artifact is include_bytes!'d into the daemon)
-( cd heimdall-ebpf && cargo +nightly build --release )
+# eBPF first (its build artifact is include_bytes!'d into the daemon).
+# Needs nightly + bpfel-unknown-none + rust-src + build-std.
+( cd heimdall-ebpf && cargo +nightly build -Z build-std=core \
+                                          --target bpfel-unknown-none --release )
 
 # UI (only when components/ or hooks/ changed)
-( cd heimdall-ui && bun run typecheck && bun run build )
+( cd heimdall-ui && bun install --frozen-lockfile && bun run typecheck && bun run build )
 
 # Daemon (embeds the UI bundle via rust-embed)
 cargo build --release
@@ -19,16 +19,19 @@ cargo build --release
 
 ### Deploying
 
+Pure-Nix deploy lives in the companion `services/heimdall/` (NixOS
+module). For ad-hoc deploys directly from a build:
+
 ```bash
 sudo install -m 0755 target/release/heimdall /usr/local/bin/heimdall
 sudo systemctl restart heimdall
 sudo journalctl -u heimdall -f       # tail logs
 ```
 
-A clean restart should print, in order:
+A clean restart should print roughly, in order:
 
 ```
-config loaded
+config loaded                           ← /etc/heimdall/heimdall.{ncl,toml,json,yaml} auto-discovered
 all connections resolved
 flow store ready
 pod informer started
@@ -36,19 +39,29 @@ fake-IP DNS server ready
 HTTP API listening
 pod informer initial sync complete pods=N
 relay IP written to BPF map
-eBPF connect4 attached
-eBPF skb_egress attached
+relay IPv6 written to BPF map
+DNS hijack target written to BPF maps   ← DNS_ADDR_V4 + DNS_ADDR_V6 + DNS_PORT_V6
+eBPF connect4 attached cgroup=...
+eBPF connect4 attached (extra) cgroup=/sys/fs/cgroup/user.slice
+eBPF connect6 attached cgroup=...
+eBPF connect6 attached (extra) cgroup=/sys/fs/cgroup/user.slice
+eBPF sendmsg attached prog=udp4_sendmsg
+eBPF sendmsg attached prog=udp6_sendmsg
+eBPF skb_egress attached cgroup=...
+eBPF skb_egress attached (extra) cgroup=/sys/fs/cgroup/user.slice
 policy engine started
+orphan-cgroup GC spawned (interval 30s)
 policy: reconciled writes=N deletes=0 pods=M cgroups=K
-bypass: synthetic flow consumer started cpus=20
+bypass: synthetic flow consumer started
 tap: libssl candidates discovered count=A
 tap: Go TLS binaries discovered count=B
 tap: libssl uprobes attached path=...   (×A)
 tap: Go Read RET sites found ret_sites=7   (×B)
 tap: go_tls_write attached path=...   (×B)
-tap: started (Phase B) attached_libs=A+B persist=true
+tap: rustls uprobes attached path=...   (×C)
+tap: started (Phase B) attached_libs=A+B+C persist=true
 tap: store writer started
-heimdall ready listen=0.0.0.0:12345
+heimdall ready listen=[::]:12345 configured=0.0.0.0:12345
 bootstrap: synthesized flows for pre-existing connections inserted=N
 bootstrap: pre-existing connections recorded synthesized=N
 ```
@@ -99,15 +112,31 @@ cat /proc/<pid>/status | grep ^CapBnd
 nix shell nixpkgs#libcap -c capsh --decode=$(cat /proc/<pid>/status | grep CapBnd | awk '{print $2}')
 ```
 
-Should include `cap_sys_ptrace`. If missing, edit
-`/etc/<host-config>/services/k0s/default.nix`:
+Should include `cap_sys_ptrace`. The full cap set required by the
+daemon is:
 
-```nix
-AmbientCapabilities    = [ "CAP_BPF" "CAP_NET_ADMIN" "CAP_SYS_ADMIN" "CAP_SYS_PTRACE" ];
-CapabilityBoundingSet  = [ "CAP_BPF" "CAP_NET_ADMIN" "CAP_SYS_ADMIN" "CAP_SYS_PTRACE" ];
+```
+CAP_BPF              # load eBPF programs + maps
+CAP_NET_ADMIN        # attach cgroup hooks, manage tc-style egress
+CAP_SYS_ADMIN        # cgroup v2 attach, mount-ns ops
+CAP_SYS_PTRACE       # readlink /proc/<pid>/exe (Go scanner)
+CAP_DAC_OVERRIDE     # rmdir user-owned heimdall-cli-* cgroups (GC)
 ```
 
-then `sudo nixos-rebuild switch && sudo systemctl restart heimdall`.
+If the unit is managed by NixOS, edit the heimdall service module:
+
+```nix
+AmbientCapabilities = [
+  "CAP_BPF" "CAP_NET_ADMIN" "CAP_SYS_ADMIN"
+  "CAP_SYS_PTRACE" "CAP_DAC_OVERRIDE"
+];
+CapabilityBoundingSet = [
+  "CAP_BPF" "CAP_NET_ADMIN" "CAP_SYS_ADMIN"
+  "CAP_SYS_PTRACE" "CAP_DAC_OVERRIDE"
+];
+```
+
+then rebuild + restart the unit.
 
 ### "tap: libssl uprobes attached path=..." but no messages
 
@@ -199,20 +228,84 @@ want to record. Add a rule:
 The `observe: false` path is gated in eBPF so the bypass event
 itself never fires for those cgroups (no perf-buffer overhead).
 
+### `heimdall run` — child process can't reach its target
+
+Most failures fall into one of three buckets:
+
+1. **DNS still goes to the host resolver.** Run with `--dns fake`
+   (default for `cli.run.default.dns = "fake"`). Confirm the child
+   actually entered the mount-ns shim:
+
+   ```bash
+   pid=<child pid>
+   sudo cat /proc/$pid/mountinfo | grep -E '/etc/nsswitch.conf|/etc/resolv.conf|/var/run/nscd/socket'
+   ```
+
+   You should see three bind-mounts. If empty, `unshare(CLONE_NEWUSER)`
+   probably failed — check `dmesg | tail` and
+   `/proc/sys/user/max_user_namespaces` (must be > 0).
+
+2. **Pod-style label/annotation didn't take.** `heimdall run` does
+   NOT use pod labels — it registers via `POST /api/cli/register`.
+   Confirm the daemon saw the registration:
+
+   ```bash
+   sudo bpftool map dump name CGROUP_POLICY | tail
+   journalctl -u heimdall --since "1 minute ago" | grep cli
+   ```
+
+3. **systemd-run --user --scope failed.** Without user-cgroup
+   delegation, the child has no writable subtree under
+   `/sys/fs/cgroup/user.slice/user-<UID>.slice/...`. Check:
+
+   ```bash
+   systemctl --user status
+   ls -ld /sys/fs/cgroup/user.slice/user-$UID.slice/user@$UID.service/app.slice
+   ```
+
+   The `app.slice` directory must be writable by `$UID` (cgroup v2
+   delegation). On distros where this is restricted, run
+   `heimdall run` as root.
+
+### Orphan-cgroup GC isn't reaping leaked dirs
+
+The GC walks `/sys/fs/cgroup/user.slice` every 30s (depth ≤ 6),
+matching directories named `heimdall-cli-*` whose
+`cgroup.events: populated 0`. Common reasons it skips a candidate:
+
+- **Still populated** — a child process is still alive in the cgroup.
+  Check `cat <path>/cgroup.procs`.
+- **Outside the search root** — `heimdall run` always nests under
+  `user.slice`; if you mkdir'd a test cgroup elsewhere it won't be
+  swept.
+- **Missing `CAP_DAC_OVERRIDE`** — `rmdir` returns `EACCES` because
+  the cgroup dir is user-owned. Symptom in journal:
+  `gc: rmdir failed path=... err=Permission denied`. Fix by adding
+  the cap (see "tap: Go TLS binaries discovered count=0" above).
+
+To force a sweep without waiting 30s:
+
+```bash
+sudo systemctl restart heimdall   # GC runs once at startup, then every 30s
+```
+
 ## Where things live
 
 ```
-/etc/heimdall/config.yaml             config
-/etc/heimdall/secrets/                password files (mode 0400 root:root)
-/etc/heimdall/config.yaml.bak.*       backups left by manual edits
-/var/lib/heimdall/flows.db            sqlite (flows + messages tables)
-/var/lib/heimdall/                    state dir (more files in future)
-/usr/local/bin/heimdall               deployed binary
-/etc/systemd/system/heimdall.service  ← actually a NixOS-rendered unit
-/etc/<host-config>/services/k0s/default.nix   the unit's source of truth
-~/heimdall/                      source repo
-~/heimdall/docs/                 you are here
+/etc/heimdall/heimdall.{ncl,toml,json,yaml}   config (auto-discovered)
+/etc/heimdall/README.md                       schema reference (heimdall init)
+/etc/heimdall/lib.ncl                         Nickel contracts (heimdall init)
+/etc/heimdall/secrets/                        password files (0400 root:root)
+/var/lib/heimdall/flows.db                    sqlite (flows + messages)
+/var/lib/heimdall/                            state dir
+/etc/systemd/system/heimdall.service          systemd unit
+                                              (NixOS-rendered when on NixOS)
 ```
+
+`heimdall init` writes `lib.ncl` and `README.md` on every run, but
+preserves an existing `heimdall.ncl` unless `--force` is passed.
+Refresh the schema docs without losing your live config by re-running
+`heimdall init` (no `--force`).
 
 Logs go to journalctl. There's no separate log file.
 

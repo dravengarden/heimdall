@@ -19,6 +19,17 @@ the application's own `SSL_*` / `crypto/tls.(*Conn).*` calls.
 | **JVM (TLSv1Engine, etc.)** | ❌ not implemented | — | Needs JVMTI agent + native stub probed via uprobe. |
 | **BoringSSL static** | ❌ not implemented | — | Pixie's BoringSSL pattern-matching would work; deferred. |
 
+## IPv4 / IPv6 / Unix-domain transport
+
+Tap is **transport-agnostic**: uprobes fire at the application's
+`SSL_*` / Go / rustls call boundary, before the bytes hit any socket.
+A pod that opens a v6 TLS connection produces identical `TapEvent`
+rows to one using v4; the tap layer never inspects the socket family.
+Address-family details enter the picture only on the relay side
+(see `architecture.md`'s data flow), where `OrigDst.family` is
+preserved through `COOKIE_MAP` / `PORT_MAP` and surfaces as the
+`atyp` column on the resulting flow row.
+
 ## How a tap event becomes a row
 
 1. App makes a TLS call (e.g. `rancher` writes an HTTP/2 frame to
@@ -54,8 +65,12 @@ entry in the in-memory `OpenFlowIndex`. Three writers populate it:
    startup that reads each pod's `/proc/<pid>/net/tcp` and
    synthesizes a flow per ESTABLISHED v4 connection. Tagged
    `connection_name = "bootstrap"`. Without this, long-lived
-   pre-existing connections (rancher → apiserver, kubelet's watch
-   stream) would never get a flow_id.
+   pre-existing connections (e.g. cluster controllers ↔ apiserver,
+   kubelet's watch stream) would never get a flow_id. Currently v4
+   only; v6 bootstrap (parsing `/proc/<pid>/net/tcp6`) is on the
+   backlog, but the gap only matters for IPv6 connections that were
+   already established when the daemon started — fresh connections
+   correlate via the connect4/connect6 path.
 
 Multi-container pods: bootstrap pushes the synthetic flow_id to
 **every** cgroup of the pod, not just the one that owned the listing
