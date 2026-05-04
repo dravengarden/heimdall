@@ -131,7 +131,17 @@ async fn reader_loop(
 }
 
 async fn insert_one(deps: &Deps, ev: BypassEvent) {
-    let dst_ip = Ipv4Addr::from(u32::from_be(ev.dst_ip_be));
+    // Decode dst per family — same dual-stack scheme as OrigDst.
+    let (dst_str, atyp) = if ev.family == heimdall_common::FAMILY_V6 {
+        let v6 = std::net::Ipv6Addr::from(ev.dst_addr);
+        (v6.to_string(), Some("ip6"))
+    } else {
+        let v4_be = u32::from_ne_bytes([
+            ev.dst_addr[0], ev.dst_addr[1], ev.dst_addr[2], ev.dst_addr[3],
+        ]);
+        let v4 = Ipv4Addr::from(u32::from_be(v4_be));
+        (v4.to_string(), Some("ip"))
+    };
     let dst_port = u16::from_be(ev.dst_port_be);
 
     let pod = lookup_pod(deps, ev.cgroup_id);
@@ -144,10 +154,10 @@ async fn insert_one(deps: &Deps, ev: BypassEvent) {
         pod_name: pod.as_ref().map(|p| p.name.clone()),
         connection_name: "bypass".to_string(),
         dst_host: None,
-        dst_ip: dst_ip.to_string(),
+        dst_ip: dst_str,
         dst_port,
         upstream_addr: None,
-        atyp: Some("ip"),
+        atyp,
     };
 
     let id = match deps.store.insert_flow_start(start).await {
