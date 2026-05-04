@@ -1,32 +1,29 @@
 ---
 name: heimdall-run
 description: |
-  EXPERIMENTAL — wrap a CLI command so its egress goes through a heimdall
-  connection (proxychains-style), without LD_PRELOAD. Triggers on
-  "send this curl through the corp VPN", "route this CLI tool's
-  traffic via a specific connection", "see plaintext for an ad-hoc
-  command". Non-root: re-execs itself under `systemd-run --user
-  --scope` so it lands in a writable cgroup. Defaults from `cli.run`
-  in heimdall.<ext>; flags override.
+  Wrap a CLI command so its egress goes through a heimdall connection
+  (proxychains-style), without LD_PRELOAD. Triggers on "send this curl
+  through the corp VPN", "route this CLI tool's traffic via a specific
+  connection", "see plaintext for an ad-hoc command". Non-root: re-execs
+  itself under `systemd-run --user --scope` so it lands in a writable
+  cgroup. Defaults from `cli.run` in heimdall.<ext>; flags override.
+  IPv4 only — pass `-4` to curl/etc. or use a target with no AAAA
+  record, otherwise the connection bypasses heimdall via IPv6.
 license: MIT
 metadata:
   author: dravengarden
-  version: '0.1.0-experimental'
+  version: '0.1.0'
 ---
 
 # heimdall run — proxychains-style CLI proxy
 
-> **STATUS: EXPERIMENTAL.** All control-plane plumbing is in place
-> (cgroup creation, HTTP register/deregister, profile resolution,
-> fork/exec, signal forwarding, exit-code propagation). The eBPF
-> *redirect* for processes under `user.slice` is **not yet firing
-> reliably** — the cgroup is registered with the daemon but
-> `connect4` doesn't intercept user-side connect() calls in the
-> current attach configuration. Pod traffic is unaffected. See
-> "Known issue" below.
->
-> Use it for testing the mechanism + flow logging; don't depend on it
-> for security-critical egress paths until the eBPF gap is fixed.
+> **IPv4 ONLY.** heimdall's eBPF program is `cgroup_inet4_connect`
+> (no IPv6 sibling yet). For wrapped commands that resolve to AAAA,
+> the IPv6 path bypasses heimdall and goes through whatever the
+> host normally uses (typically v2raya for users with proxy env
+> set). Force IPv4 with curl `-4`, `wget --inet4-only`, or env
+> `RES_OPTIONS="single-request-reopen"` plus a v4-only DNS resolver.
+> Filed as a follow-up: add `cgroup_inet6_connect`.
 
 Use when:
 - An ad-hoc CLI tool (curl, git, wget, kubectl, …) needs to egress
@@ -112,37 +109,46 @@ heimdall run --tag "release-build-2026-05-04" -- cargo publish
    the cgroup. Forwards the child's exit code (or 128 + signal) as
    `heimdall run`'s own.
 
-## Known issue (EXPERIMENTAL caveat)
+## Why this is non-trivial
 
-**Symptom**: child commands run successfully and reach their
-destinations (HTTP responses normal), but their connections show up
-in the flow log with `connection_name: "bypass"` instead of the
-requested connection — the eBPF `connect4` hook isn't redirecting
-them to the relay.
+If you're wondering why this can't be a simple `LD_PRELOAD` shim:
 
-**Root cause**: the daemon attaches `cgroup_sock_addr` + `cgroup_skb`
-at both `runtime.cgroup` (typically `/sys/fs/cgroup/kubepods`) and
-`/sys/fs/cgroup/user.slice`. The kubepods attach works for pods.
-The user.slice attach reports success at startup but the program
-doesn't appear to fire for descendants.
+- Static Go binaries: LD_PRELOAD has no effect on them
+- setuid binaries: kernel ignores LD_PRELOAD
+- UDP destinations + DNS: connect-only shims miss them
 
-**Suspected**:
-- aya 0.13 may track multiple cgroup attaches under one program in a
-  way that makes only one effective.
-- Cilium attaches its own cgroup_sock_addr programs that may
-  interact with heimdall's at the user.slice level.
-- Kernel cgroup_sock_addr hierarchical inheritance interaction with
-  systemd's user-slice scopes.
+heimdall sidesteps all of that by intercepting at the kernel
+syscall level via cgroup-attached eBPF programs.
 
-**Investigation tools needed** (not currently installed on the
-host): `bpftool` (`pkgs.bpftools` in NixOS), `bpftrace`, plus
-turning on aya's debug logging. Filed as a follow-up.
+## Two non-obvious bits the implementation handles
 
-**Workaround for now**: the planned `cli` config schema +
-`heimdall run` register/deregister API are stable; once the eBPF
-attach is sorted, no CLI surface changes are needed. In the
-meantime, `heimdall run --print-decision` is useful for validating
-profile resolution.
+### 1. v2raya host TPROXY would otherwise eat the redirected packet
+
+heimdall's connect4 rewrites `dst` to the relay socket
+(cilium_host:12345). On a NixOS host running v2raya for system-wide
+proxying, v2raya's mangle-table TPROXY rules would otherwise see
+this as host-originated traffic and divert it to v2raya's port
+52345 — heimdall relay never sees it. NixOS module
+`services/k0s/default.nix:k8s-v2raya-fix` adds two iptables rules
+to the TP_OUT/TP_PRE chains that whitelist the relay endpoint
+(dst=10.244.0.41:12345 → RETURN/K8S_BYPASS). Required.
+
+### 2. PolicyEngine reconcile would otherwise wipe the registration
+
+The reconcile loop (5s tick) drops CGROUP_POLICY entries it
+doesn't recognise as belonging to a current pod. CLI-registered
+entries are flagged via a separate `external` set so reconcile
+skips them — see `policy.rs::register_external` /
+`deregister_external`.
+
+## Failure to intercept — IPv6 bypass
+
+`heimdall run -- curl https://...` will fall back to direct egress
+(via the host's normal proxy if any) when the destination has an
+AAAA record and curl prefers IPv6. Workarounds:
+- pass `-4` to curl
+- use a v4-only resolver target
+- await `cgroup_inet6_connect` support (TODO)
 
 ## Failure modes
 
