@@ -42,3 +42,18 @@ export async function fetchFlowMessages(
   if (!res.ok) throw new Error(`messages flow=${flowId} HTTP ${res.status}`);
   return res.json();
 }
+
+/** Free-form message query — used by the live tap view to surface
+ *  plaintext from any libssl-using process, including ones outside
+ *  the relay's cgroup (host openssl, etc.). */
+export async function fetchTapMessages(
+  params: { limit?: number; sinceUs?: number; cgroupId?: number } = {},
+): Promise<Message[]> {
+  const qs = new URLSearchParams();
+  qs.set("limit", String(params.limit ?? 200));
+  if (params.sinceUs != null) qs.set("since_us", String(params.sinceUs));
+  if (params.cgroupId != null) qs.set("cgroup_id", String(params.cgroupId));
+  const res = await fetch(`${base}/api/messages?${qs}`);
+  if (!res.ok) throw new Error(`messages HTTP ${res.status}`);
+  return res.json();
+}

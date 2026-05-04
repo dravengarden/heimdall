@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Box } from "@mui/material";
-import { AppShell } from "./components/AppShell";
+import { AppShell, type AppView } from "./components/AppShell";
 import { FilterBar } from "./components/FilterBar";
 import { ActiveFilterChips } from "./components/ActiveFilterChips";
 import { FlowTable } from "./components/FlowTable";
 import { FlowDetail } from "./components/FlowDetail";
+import { LiveTapView } from "./components/LiveTapView";
 import { SettingsDrawer } from "./components/SettingsDrawer";
 import { useLiveFlows } from "./hooks/useLiveFlows";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
@@ -28,6 +29,7 @@ export function App({
   const { flows, paused, setPaused, refetch, wsStatus } = useLiveFlows(300);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [view, setView] = useState<AppView>("flows");
   const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   const [filters, setFilters] = useState<FlowFilters>(DEFAULT_FILTERS);
@@ -61,33 +63,43 @@ export function App({
   );
 
   return (
-    <AppShell onOpenSettings={() => setSettingsOpen(true)}>
-      <FilterBar
-        filters={filters}
-        onChange={setFilters}
-        total={flows.length}
-        visible={visible.length}
-        paused={paused}
-        onTogglePause={() => setPaused(!paused)}
-        onRefresh={refetch}
-        connections={connections}
-        visibleFlows={visible}
-        wsStatus={wsStatus}
-        searchInputRef={searchInputRef}
-      />
-      <ActiveFilterChips filters={filters} onChange={setFilters} />
-      <Box sx={{ flex: 1, minHeight: 0 }}>
-        <FlowTable
-          flows={visible}
-          selectedId={selectedId}
-          onSelect={setSelectedId}
-        />
-      </Box>
-      <FlowDetail
-        flowId={selectedId}
-        onClose={() => setSelectedId(null)}
-        fallback={selectedFlow}
-      />
+    <AppShell
+      view={view}
+      onViewChange={setView}
+      onOpenSettings={() => setSettingsOpen(true)}
+    >
+      {view === "flows" ? (
+        <>
+          <FilterBar
+            filters={filters}
+            onChange={setFilters}
+            total={flows.length}
+            visible={visible.length}
+            paused={paused}
+            onTogglePause={() => setPaused(!paused)}
+            onRefresh={refetch}
+            connections={connections}
+            visibleFlows={visible}
+            wsStatus={wsStatus}
+            searchInputRef={searchInputRef}
+          />
+          <ActiveFilterChips filters={filters} onChange={setFilters} />
+          <Box sx={{ flex: 1, minHeight: 0 }}>
+            <FlowTable
+              flows={visible}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+            />
+          </Box>
+          <FlowDetail
+            flowId={selectedId}
+            onClose={() => setSelectedId(null)}
+            fallback={selectedFlow}
+          />
+        </>
+      ) : (
+        <LiveTapView />
+      )}
       <SettingsDrawer
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
