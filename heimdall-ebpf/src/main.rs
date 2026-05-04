@@ -32,7 +32,10 @@ use aya_ebpf::{
     programs::{ProbeContext, RetProbeContext, SkBuffContext, SockAddrContext},
     EbpfContext,
 };
-use heimdall_common::{is_default_bypass, BypassEvent, OrigDst, TapDir, TapEvent, TAP_DATA_LEN};
+use heimdall_common::{
+    is_default_bypass, BypassEvent, OrigDst, TapDir, TapEvent, DEFAULT_POLICY,
+    POLICY_NO_BYPASS_LOG, POLICY_OBSERVE_OFF, POLICY_REDIRECT_OFF, TAP_DATA_LEN,
+};
 
 const PROXY_PORT: u16 = 12345;
 
@@ -55,6 +58,19 @@ static PORT_MAP: HashMap<u32, OrigDst> = HashMap::with_max_entries(65536, 0);
 // record a synthetic flow row and let tap events correlate to it.
 #[map]
 static BYPASS_EVENTS: PerfEventArray<BypassEvent> = PerfEventArray::new(0);
+
+// Per-cgroup policy. Userspace populates this from PodInformer + routing
+// rules; eBPF programs read it once per syscall to decide whether to
+// redirect / observe / log.
+#[map]
+static CGROUP_POLICY: HashMap<u64, u8> = HashMap::with_max_entries(65536, 0);
+
+#[inline(always)]
+fn policy_for(cgroup_id: u64) -> u8 {
+    unsafe { CGROUP_POLICY.get(&cgroup_id) }
+        .copied()
+        .unwrap_or(DEFAULT_POLICY)
+}
 
 // ---------------------------------------------------------------------------
 // Program 1: intercept connect() and rewrite destination
@@ -82,27 +98,31 @@ fn try_connect4(ctx: SockAddrContext) -> Result<(), ()> {
         return Ok(());
     }
 
-    if is_default_bypass(dst_ip_be) {
-        // Emit a perf event so userspace can create a synthetic flow row.
-        // Without this, tap-captured plaintext from kube-apiserver / cluster
-        // service traffic has flow_id=NULL because the relay never sees the
-        // bypass connection.
-        let cookie = unsafe { bpf_get_socket_cookie(ctx.as_ptr()) };
-        let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
-        let bypass_ev = BypassEvent {
-            ts_ns: unsafe { bpf_ktime_get_ns() },
-            cgroup_id,
-            socket_cookie: cookie,
-            dst_ip_be,
-            dst_port_be,
-            _pad: 0,
-        };
-        BYPASS_EVENTS.output(&ctx, &bypass_ev, 0);
-        return Ok(());
-    }
-
     let cookie = unsafe { bpf_get_socket_cookie(ctx.as_ptr()) };
     let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    let policy = policy_for(cgroup_id);
+
+    let kernel_bypass = is_default_bypass(dst_ip_be);
+    let user_bypass = (policy & POLICY_REDIRECT_OFF) != 0;
+
+    if kernel_bypass || user_bypass {
+        // Emit a synthetic-flow event unless the policy disables both
+        // observation and bypass logging. Userspace correlates tap
+        // plaintext to flow_id via cgroup_id, so bypass logging is
+        // wasted unless we'd actually observe.
+        if (policy & POLICY_OBSERVE_OFF) == 0 && (policy & POLICY_NO_BYPASS_LOG) == 0 {
+            let bypass_ev = BypassEvent {
+                ts_ns: unsafe { bpf_ktime_get_ns() },
+                cgroup_id,
+                socket_cookie: cookie,
+                dst_ip_be,
+                dst_port_be,
+                _pad: 0,
+            };
+            BYPASS_EVENTS.output(&ctx, &bypass_ev, 0);
+        }
+        return Ok(());
+    }
     let orig = OrigDst {
         ip: dst_ip_be,
         port: dst_port_be,
@@ -364,10 +384,14 @@ fn try_ssl_read_exit(ctx: &RetProbeContext) -> Result<(), ()> {
 // the userspace pointer we'll read up to TAP_DATA_LEN bytes from.
 #[inline(always)]
 fn emit_tap(ctx: &ProbeContext, dir: TapDir, total: u32, buf: *const u8) {
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    if (policy_for(cgroup_id) & POLICY_OBSERVE_OFF) != 0 {
+        return;
+    }
     let mut ev: TapEvent = unsafe { core::mem::zeroed() };
     ev.tgid_pid = bpf_get_current_pid_tgid();
     ev.ts_ns = unsafe { bpf_ktime_get_ns() };
-    ev.cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    ev.cgroup_id = cgroup_id;
     ev.dir = dir as u32;
     ev.total_len = total;
     ev.captured_len = if total > TAP_DATA_LEN as u32 {
@@ -387,10 +411,14 @@ fn emit_tap(ctx: &ProbeContext, dir: TapDir, total: u32, buf: *const u8) {
 
 #[inline(always)]
 fn emit_tap_ret(ctx: &RetProbeContext, dir: TapDir, total: u32, buf: *const u8) {
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    if (policy_for(cgroup_id) & POLICY_OBSERVE_OFF) != 0 {
+        return;
+    }
     let mut ev: TapEvent = unsafe { core::mem::zeroed() };
     ev.tgid_pid = bpf_get_current_pid_tgid();
     ev.ts_ns = unsafe { bpf_ktime_get_ns() };
-    ev.cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    ev.cgroup_id = cgroup_id;
     ev.dir = dir as u32;
     ev.total_len = total;
     ev.captured_len = if total > TAP_DATA_LEN as u32 {

@@ -30,6 +30,7 @@ mod bypass;
 mod cli;
 mod dns;
 mod pod;
+mod policy;
 mod router;
 mod store;
 mod tap;
@@ -400,6 +401,28 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
         HashMap::try_from(bpf.take_map("PORT_MAP").context("PORT_MAP not found")?)?,
     ));
 
+    // ─── PolicyEngine — keeps CGROUP_POLICY in sync with rules + pods ───
+    // Started before bypass / tap so the eBPF map is populated by the
+    // time real traffic starts hitting connect4.
+    if let (Some(inf), Some(cgr)) = (shared.informer.as_ref(), shared.cgroup_resolver.as_ref()) {
+        let policy_map = HashMap::try_from(
+            bpf.take_map("CGROUP_POLICY").context("CGROUP_POLICY not found")?,
+        )?;
+        let engine = std::sync::Arc::new(policy::PolicyEngine::new(
+            std::sync::Arc::new(shared.cfg.clone()),
+            inf.clone(),
+            cgr.clone(),
+            policy_map,
+        ));
+        engine.spawn();
+        info!("policy engine started");
+    } else {
+        warn!(
+            "policy engine not started (no informer / cgroup resolver); \
+             eBPF will use default policy (observe OFF) for every cgroup"
+        );
+    }
+
     // ─── Phase B: synthetic flows for bypassed connections ──────────────
     // Drains the BYPASS_EVENTS perf array (always populated by connect4)
     // and creates flow rows for cluster-internal traffic that the relay
@@ -521,7 +544,21 @@ async fn relay(
     };
 
     // ─── Pick connection ───────────────────────────────────────────────────
-    let conn_name = router::resolve_connection(&shared.cfg, pod_info.as_ref());
+    let decision = router::resolve_decision(&shared.cfg, pod_info.as_ref());
+    // If a pod resolves to `system` but the connection still landed at the
+    // relay, the policy engine race-window let it through — eBPF will catch
+    // up next reconcile. For this connection, fall back to the default so
+    // we don't drop the request entirely.
+    let conn_name = if decision.use_ == heimdall_config::SYSTEM_CONNECTION {
+        warn!(
+            pod = %pod_info.as_ref().map(|p| format!("{}/{}", p.namespace, p.name))
+                .unwrap_or_else(|| "unknown".into()),
+            "relay saw a connection that should have been bypassed (system); falling back to default"
+        );
+        shared.cfg.routing.default.use_.clone()
+    } else {
+        decision.use_.clone()
+    };
     let upstream = shared
         .upstreams
         .get(&conn_name)
