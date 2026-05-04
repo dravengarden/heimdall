@@ -59,6 +59,13 @@ pub struct PolicyEngine {
     /// no-op writes and to detect entries that should be removed
     /// because the pod is gone.
     last: Arc<RwLock<StdHashMap<u64, u8>>>,
+    /// Cgroup IDs registered via `register_external` (i.e. by
+    /// `heimdall run` through the HTTP API). The reconcile loop
+    /// MUST NOT delete these — they're owned by the external caller,
+    /// who'll deregister explicitly. Without this set, every
+    /// reconcile pass would treat them as stale (no matching pod
+    /// in the informer snapshot) and wipe them from CGROUP_POLICY.
+    external: Arc<RwLock<HashSet<u64>>>,
 }
 
 impl PolicyEngine {
@@ -74,6 +81,7 @@ impl PolicyEngine {
             cgroups,
             map: Arc::new(tokio::sync::Mutex::new(map)),
             last: Arc::new(RwLock::new(StdHashMap::new())),
+            external: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -196,9 +204,14 @@ impl PolicyEngine {
                 }
             }
             // Drop entries we used to manage but no longer want to.
+            // Externally-managed cgroups (registered via `heimdall run`
+            // / POST /api/cli/register) are SKIPPED — their owner
+            // calls deregister explicitly; reconcile shouldn't race
+            // against that lifecycle.
             let alive: HashSet<u64> = desired.keys().copied().collect();
+            let external = self.external.read().clone();
             for cg in prev.keys() {
-                if !alive.contains(cg) {
+                if !alive.contains(cg) && !external.contains(cg) {
                     if let Err(e) = self.delete_one(*cg).await {
                         debug!(cgroup = cg, error = %e, "policy: delete failed");
                     } else {
@@ -240,14 +253,20 @@ impl PolicyEngine {
     /// byte from a `PodDecision`. Used by the HTTP register endpoints
     /// that drive `heimdall run` — they own the userspace
     /// cli_overrides map; this method keeps the eBPF map in lockstep.
+    /// Marks the cgroup_id as externally managed so the periodic
+    /// reconcile pass doesn't wipe it.
     pub async fn register_external(&self, cgroup_id: u64, decision: &PodDecision) -> Result<()> {
         let flags = encode(decision);
+        self.external.write().insert(cgroup_id);
         self.write_one(cgroup_id, flags).await
     }
 
     /// External-facing wrapper for clearing a previously registered
-    /// cgroup. Idempotent — a missing key is treated as success.
+    /// cgroup. Removes the external-marker too so a re-used cgroup_id
+    /// (e.g. inode reuse after rmdir) is back under reconcile's
+    /// control. Idempotent — a missing key is treated as success.
     pub async fn deregister_external(&self, cgroup_id: u64) -> Result<()> {
+        self.external.write().remove(&cgroup_id);
         self.delete_one(cgroup_id).await
     }
 }
