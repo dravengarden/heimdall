@@ -48,6 +48,8 @@ pub enum ConfigError {
     Parse { path: PathBuf, source: serde_yaml::Error },
     #[error("parse {path}: {source}")]
     ParseJson { path: PathBuf, source: serde_json::Error },
+    #[error("parse {path}: {source}")]
+    ParseToml { path: PathBuf, source: toml::de::Error },
     #[error("apiVersion `{0}` is not supported (expected `heimdall.io/v1alpha1`)")]
     UnsupportedApiVersion(String),
     #[error("kind `{0}` is not supported (expected `HeimdallConfig`)")]
@@ -70,8 +72,6 @@ pub enum ConfigError {
     InvalidCidr { value: String, reason: String },
     #[error("invalid port spec `{value}`: {reason}")]
     InvalidPort { value: String, reason: String },
-    #[error("invalid label expression `{value}`: {reason}")]
-    InvalidLabel { value: String, reason: String },
     #[error("routing file `{path}` references unknown outboundTag `{tag}`")]
     UnknownOutboundTag { path: PathBuf, tag: String },
 }
@@ -299,65 +299,43 @@ impl<'de> Deserialize<'de> for MatchValue {
 }
 
 // ---------------------------------------------------------------------------
-// LabelExpr — "key=value", "key=*", "key" semantics
+// matchExpressions — K8s LabelSelector compatible
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
-pub struct LabelExpr {
+/// One label-expression entry. Mirrors `metav1.LabelSelectorRequirement`
+/// from K8s (key + operator + values), supporting the four canonical
+/// operators. `values` is required for `In` / `NotIn`, must be empty
+/// for `Exists` / `DoesNotExist`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MatchExpression {
     pub key: String,
-    pub value: LabelValueMatcher,
+    pub operator: MatchOperator,
+    #[serde(default)]
+    pub values: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
-pub enum LabelValueMatcher {
-    /// Key must exist with any value (`"key"` or `"key=*"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum MatchOperator {
+    In,
+    NotIn,
     Exists,
-    /// Value must match (supports MatchValue prefix syntax).
-    Match(MatchValue),
+    DoesNotExist,
 }
 
-impl LabelExpr {
-    pub fn parse(s: &str) -> Result<Self, ConfigError> {
-        match s.split_once('=') {
-            Some((k, "*")) | Some((k, "")) => Ok(LabelExpr {
-                key: k.to_string(),
-                value: LabelValueMatcher::Exists,
-            }),
-            Some((k, v)) => Ok(LabelExpr {
-                key: k.to_string(),
-                value: LabelValueMatcher::Match(MatchValue::parse(v)?),
-            }),
-            None => {
-                // bare "key" → key exists
-                if s.is_empty() {
-                    return Err(ConfigError::InvalidLabel {
-                        value: s.to_string(),
-                        reason: "empty label expression".into(),
-                    });
-                }
-                Ok(LabelExpr {
-                    key: s.to_string(),
-                    value: LabelValueMatcher::Exists,
-                })
-            }
-        }
-    }
-
+impl MatchExpression {
     pub fn matches(&self, labels: &BTreeMap<String, String>) -> bool {
-        match labels.get(&self.key) {
-            None => false,
-            Some(v) => match &self.value {
-                LabelValueMatcher::Exists => true,
-                LabelValueMatcher::Match(m) => m.matches(v),
-            },
+        let val = labels.get(&self.key);
+        match self.operator {
+            MatchOperator::Exists => val.is_some(),
+            MatchOperator::DoesNotExist => val.is_none(),
+            MatchOperator::In => val
+                .map(|v| self.values.iter().any(|x| x == v))
+                .unwrap_or(false),
+            MatchOperator::NotIn => val
+                .map(|v| !self.values.iter().any(|x| x == v))
+                .unwrap_or(true),
         }
-    }
-}
-
-impl<'de> Deserialize<'de> for LabelExpr {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(d)?;
-        LabelExpr::parse(&s).map_err(de::Error::custom)
     }
 }
 
@@ -486,12 +464,11 @@ pub trait MatchTarget {
     fn pod_label(&self, _key: &str) -> Option<&str> {
         None
     }
-    /// Used by the `app:` shorthand — checks both the modern Helm
-    /// label and the legacy `app` label. Default reads them via
-    /// `pod_label`.
-    fn pod_app_value(&self) -> Option<&str> {
-        self.pod_label("app.kubernetes.io/name")
-            .or_else(|| self.pod_label("app"))
+    /// Full label snapshot — required for `matchLabels` /
+    /// `matchExpressions` evaluation. Default returns an empty map.
+    fn pod_labels(&self) -> &BTreeMap<String, String> {
+        static EMPTY: std::sync::OnceLock<BTreeMap<String, String>> = std::sync::OnceLock::new();
+        EMPTY.get_or_init(BTreeMap::new)
     }
 
     fn dst_host(&self) -> Option<&str> {
@@ -517,37 +494,30 @@ impl MatchCond {
         }
 
         // Field-level matchers (implicit AND across fields).
-        if !self.namespace.is_empty() {
+        if !self.namespaces.is_empty() {
             let ns = match target.pod_namespace() {
                 Some(s) => s,
                 None => return false,
             };
-            if !self.namespace.iter().any(|m| m.matches(ns)) {
+            if !self.namespaces.iter().any(|m| m.matches(ns)) {
                 return false;
             }
         }
 
-        if !self.app.is_empty() {
-            let app = match target.pod_app_value() {
-                Some(s) => s,
-                None => return false,
-            };
-            if !self.app.iter().any(|m| m.matches(app)) {
-                return false;
+        if !self.match_labels.is_empty() {
+            let labels = target.pod_labels();
+            for (k, v) in &self.match_labels {
+                match labels.get(k) {
+                    Some(actual) if actual == v => continue,
+                    _ => return false,
+                }
             }
         }
 
-        if !self.label.is_empty() {
-            // Build a small map view via the trait — every label expr
-            // checks key existence + optional value match.
-            for expr in &self.label {
-                let val = target.pod_label(&expr.key);
-                let ok = match (val, &expr.value) {
-                    (None, _) => false,
-                    (Some(_), LabelValueMatcher::Exists) => true,
-                    (Some(v), LabelValueMatcher::Match(m)) => m.matches(v),
-                };
-                if !ok {
+        if !self.match_expressions.is_empty() {
+            let labels = target.pod_labels();
+            for expr in &self.match_expressions {
+                if !expr.matches(labels) {
                     return false;
                 }
             }
@@ -645,20 +615,26 @@ fn domain_match(m: &MatchValue, host: &str) -> bool {
 
 /// Recursive condition with implicit AND between fields, OR within each
 /// list field, and explicit `all`/`any`/`not` for arbitrary boolean
-/// composition. Used by both pod selectors and routing-file rules; per-
-/// use-case fields apply where relevant.
+/// composition.
+///
+/// Pod selectors mirror Kubernetes `LabelSelector` exactly
+/// (`matchLabels` map + `matchExpressions` with In/NotIn/Exists/
+/// DoesNotExist), plus an explicit `namespaces` list at the top.
+///
+/// Destination matchers track Xray's routing fields (`domain`, `ip`,
+/// `port`, `network`).
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MatchCond {
-    // ── Pod selectors ─────────────────────────────────────────────
+    // ── Pod selectors (K8s LabelSelector compatible) ─────────────
     #[serde(default)]
-    pub namespace: Vec<MatchValue>,
-    #[serde(default)]
-    pub app: Vec<MatchValue>,
-    #[serde(default)]
-    pub label: Vec<LabelExpr>,
+    pub namespaces: Vec<MatchValue>,
+    #[serde(default, rename = "matchLabels")]
+    pub match_labels: BTreeMap<String, String>,
+    #[serde(default, rename = "matchExpressions")]
+    pub match_expressions: Vec<MatchExpression>,
 
-    // ── Destination matchers ──────────────────────────────────────
+    // ── Destination matchers (Xray subset) ────────────────────────
     #[serde(default)]
     pub domain: Vec<MatchValue>,
     #[serde(default)]
@@ -680,9 +656,9 @@ pub struct MatchCond {
 impl MatchCond {
     /// True when no matcher fields are populated — acts as catchall.
     pub fn is_empty(&self) -> bool {
-        self.namespace.is_empty()
-            && self.app.is_empty()
-            && self.label.is_empty()
+        self.namespaces.is_empty()
+            && self.match_labels.is_empty()
+            && self.match_expressions.is_empty()
             && self.domain.is_empty()
             && self.ip.is_empty()
             && self.port.is_none()
@@ -814,6 +790,7 @@ const SUPPORTED_KIND: &str = "HeimdallConfig";
 pub enum Format {
     Yaml,
     Json,
+    Toml,
     Nickel,
 }
 
@@ -823,6 +800,7 @@ impl Format {
         match ext {
             "yaml" | "yml" => Some(Format::Yaml),
             "json" => Some(Format::Json),
+            "toml" => Some(Format::Toml),
             "ncl" => Some(Format::Nickel),
             _ => None,
         }
@@ -884,6 +862,12 @@ pub fn parse_typed<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, Con
                 .map_err(|source| ConfigError::Read { path: path.to_path_buf(), source })?;
             serde_json::from_str(&raw)
                 .map_err(|source| ConfigError::ParseJson { path: path.to_path_buf(), source })
+        }
+        Format::Toml => {
+            let raw = fs::read_to_string(path)
+                .map_err(|source| ConfigError::Read { path: path.to_path_buf(), source })?;
+            toml::from_str(&raw)
+                .map_err(|source| ConfigError::ParseToml { path: path.to_path_buf(), source })
         }
         Format::Nickel => {
             let json = run_nickel_export(path)?;
@@ -970,7 +954,7 @@ mod tests {
     }
 
     #[test]
-    fn label_expr() {
+    fn match_expression_all_operators() {
         let labels: BTreeMap<String, String> = [
             ("app".to_string(), "rancher".to_string()),
             ("tier".to_string(), "backend".to_string()),
@@ -978,11 +962,33 @@ mod tests {
         .into_iter()
         .collect();
 
-        assert!(LabelExpr::parse("app=rancher").unwrap().matches(&labels));
-        assert!(!LabelExpr::parse("app=ghost").unwrap().matches(&labels));
-        assert!(LabelExpr::parse("tier=*").unwrap().matches(&labels));
-        assert!(LabelExpr::parse("missing=*").unwrap().matches(&labels) == false);
-        assert!(LabelExpr::parse("app=regexp:^ranch.*$").unwrap().matches(&labels));
+        let in_op = MatchExpression {
+            key: "app".into(),
+            operator: MatchOperator::In,
+            values: vec!["rancher".into(), "fleet".into()],
+        };
+        assert!(in_op.matches(&labels));
+
+        let notin_op = MatchExpression {
+            key: "app".into(),
+            operator: MatchOperator::NotIn,
+            values: vec!["mysql".into()],
+        };
+        assert!(notin_op.matches(&labels));
+
+        let exists = MatchExpression {
+            key: "tier".into(),
+            operator: MatchOperator::Exists,
+            values: vec![],
+        };
+        assert!(exists.matches(&labels));
+
+        let absent = MatchExpression {
+            key: "missing".into(),
+            operator: MatchOperator::DoesNotExist,
+            values: vec![],
+        };
+        assert!(absent.matches(&labels));
     }
 
     #[test]
@@ -1018,9 +1024,10 @@ mod tests {
                 - name: opik-non-data
                   match:
                     all:
-                      - namespace: [opik]
+                      - namespaces: [opik]
                       - not:
-                          app: [mysql, redis]
+                          matchExpressions:
+                            - { key: "app.kubernetes.io/name", operator: In, values: [mysql, redis] }
                   use: default
                   observe: true
               default:
@@ -1033,7 +1040,7 @@ mod tests {
         assert_eq!(r.name.as_deref(), Some("opik-non-data"));
         let m = r.match_.as_ref().unwrap();
         assert_eq!(m.all.len(), 2);
-        assert!(m.all[0].namespace.len() == 1);
+        assert!(m.all[0].namespaces.len() == 1);
         assert!(m.all[1].not.is_some());
     }
 
@@ -1070,6 +1077,7 @@ mod tests {
         assert_eq!(Format::detect(Path::new("config.yaml")), Some(Format::Yaml));
         assert_eq!(Format::detect(Path::new("config.yml")), Some(Format::Yaml));
         assert_eq!(Format::detect(Path::new("config.json")), Some(Format::Json));
+        assert_eq!(Format::detect(Path::new("config.toml")), Some(Format::Toml));
         assert_eq!(Format::detect(Path::new("config.ncl")), Some(Format::Nickel));
         assert_eq!(Format::detect(Path::new("config")), None);
     }
@@ -1087,6 +1095,9 @@ mod tests {
         }
         fn pod_label(&self, key: &str) -> Option<&str> {
             self.labels.get(key).map(|s| s.as_str())
+        }
+        fn pod_labels(&self) -> &BTreeMap<String, String> {
+            &self.labels
         }
     }
 
@@ -1123,35 +1134,44 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_namespace_and_app() {
+    fn evaluate_namespaces_and_match_labels() {
         let p = pod("opik", &[("app.kubernetes.io/name", "mysql")]);
-        let c = cond_yaml(indoc! {"
-            namespace: [opik, kube-system]
-            app: [mysql, redis]
-        "});
+        let c = cond_yaml(indoc! {r#"
+            namespaces: [opik, kube-system]
+            matchLabels:
+              "app.kubernetes.io/name": mysql
+        "#});
         assert!(c.evaluate(&p));
 
-        let c2 = cond_yaml(indoc! {"
-            namespace: [opik]
-            app: [postgres]
-        "});
+        let c2 = cond_yaml(indoc! {r#"
+            namespaces: [opik]
+            matchLabels:
+              "app.kubernetes.io/name": postgres
+        "#});
         assert!(!c2.evaluate(&p));
     }
 
     #[test]
-    fn evaluate_app_falls_back_to_legacy_app_label() {
-        let p = pod("cattle-system", &[("app", "rancher")]);
+    fn evaluate_match_expressions_in() {
+        let p = pod("cattle-fleet-system", &[("app", "fleet-agent")]);
         let c = cond_yaml(indoc! {"
-            app: [rancher]
+            matchExpressions:
+              - { key: app, operator: In, values: [fleet-agent, gitjob, helmops] }
         "});
         assert!(c.evaluate(&p));
+
+        let p2 = pod("cattle-fleet-system", &[("app", "rancher")]);
+        assert!(!c.evaluate(&p2));
     }
 
     #[test]
-    fn evaluate_label_with_value_regex() {
-        let p = pod("opik", &[("version", "v3.2.1")]);
+    fn evaluate_match_expressions_not_in_and_does_not_exist() {
+        let p = pod("opik", &[("app.kubernetes.io/name", "opik")]);
         let c = cond_yaml(indoc! {r#"
-            label: ["version=regexp:^v3\\..*"]
+            namespaces: [opik]
+            matchExpressions:
+              - { key: "app.kubernetes.io/name", operator: NotIn, values: [mysql, redis] }
+              - { key: legacy, operator: DoesNotExist }
         "#});
         assert!(c.evaluate(&p));
     }
@@ -1161,9 +1181,9 @@ mod tests {
         let p = pod("cattle-system", &[("app", "rancher")]);
         let c = cond_yaml(indoc! {"
             any:
-              - namespace: [cattle-system]
-                label: [app=rancher]
-              - namespace: [cattle-fleet-system]
+              - namespaces: [cattle-system]
+                matchLabels: { app: rancher }
+              - namespaces: [cattle-fleet-system]
         "});
         assert!(c.evaluate(&p));
 
@@ -1175,12 +1195,13 @@ mod tests {
     fn evaluate_all_and_not() {
         let p_app = pod("opik", &[("app.kubernetes.io/name", "opik")]);
         let p_db = pod("opik", &[("app.kubernetes.io/name", "mysql")]);
-        let c = cond_yaml(indoc! {"
+        let c = cond_yaml(indoc! {r#"
             all:
-              - namespace: [opik]
+              - namespaces: [opik]
               - not:
-                  app: [mysql, redis, minio]
-        "});
+                  matchExpressions:
+                    - { key: "app.kubernetes.io/name", operator: In, values: [mysql, redis, minio] }
+        "#});
         assert!(c.evaluate(&p_app));
         assert!(!c.evaluate(&p_db));
     }

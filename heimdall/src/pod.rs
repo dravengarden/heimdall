@@ -40,8 +40,10 @@ pub struct PodInfo {
     pub uid: String,
     pub namespace: String,
     pub name: String,
-    pub labels: HashMap<String, String>,
-    pub annotations: HashMap<String, String>,
+    /// `BTreeMap` to match the shape `MatchCond::evaluate` expects
+    /// for label evaluation; deterministic iteration also helps tests.
+    pub labels: std::collections::BTreeMap<String, String>,
+    pub annotations: std::collections::BTreeMap<String, String>,
 }
 
 // ---------------------------------------------------------------------------

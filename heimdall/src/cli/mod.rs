@@ -5,4 +5,5 @@
 //! read-only queries — just open the database read-only and query.
 
 pub mod flows;
+pub mod init;
 pub mod status;

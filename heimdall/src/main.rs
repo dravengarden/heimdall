@@ -108,6 +108,10 @@ enum Cmd {
 
     /// Daemon health and counts.
     Status,
+
+    /// Bootstrap a config directory (writes starter heimdall.<ext> +
+    /// routing/default.<ext>; for Nickel format, also lib.ncl).
+    Init(cli::init::InitArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -251,6 +255,7 @@ async fn main() -> Result<()> {
         Cmd::Serve(args) => daemon_run(&cli.config, args).await,
         Cmd::Flows(sub) => cli::flows::run(&cli.config, sub).await,
         Cmd::Status => cli::status::run(&cli.config).await,
+        Cmd::Init(args) => cli::init::run(args),
     }
 }
 
