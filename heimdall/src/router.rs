@@ -28,6 +28,9 @@ impl<'a> MatchTarget for PodMatchTarget<'a> {
     fn pod_label(&self, key: &str) -> Option<&str> {
         self.info.labels.get(key).map(|s| s.as_str())
     }
+    fn pod_labels(&self) -> &std::collections::BTreeMap<String, String> {
+        &self.info.labels
+    }
 }
 
 /// Resolve the pod-side decision. Returns `(use_tag, observe)`.
