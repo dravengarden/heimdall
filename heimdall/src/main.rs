@@ -26,6 +26,7 @@
 //! for schema, /etc/<host-config>/docs/heimdall.md for the operator's view.
 
 mod api;
+mod bypass;
 mod cli;
 mod dns;
 mod pod;
@@ -398,6 +399,32 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
     let port_map: PortMap = Arc::new(RwLock::new(
         HashMap::try_from(bpf.take_map("PORT_MAP").context("PORT_MAP not found")?)?,
     ));
+
+    // ─── Phase B: synthetic flows for bypassed connections ──────────────
+    // Drains the BYPASS_EVENTS perf array (always populated by connect4)
+    // and creates flow rows for cluster-internal traffic that the relay
+    // never sees. Without this, Plaintext-tab correlation is empty for
+    // pods talking to kube-apiserver / pod-CIDR services.
+    //
+    // Gated on tap.enabled: when tap is off, the synthetic rows would
+    // never be useful and would flood the flows table with k8s probe
+    // chatter. (The kernel-side perf buffer just gets overwritten when
+    // nobody is consuming it.)
+    if shared.cfg.runtime.tap.enabled {
+        if let Some(s) = shared.store.as_ref() {
+            let deps = bypass::Deps {
+                store: s.clone(),
+                events: shared.events.clone(),
+                cgroup_resolver: shared.cgroup_resolver.clone(),
+                informer: shared.informer.clone(),
+                open_flows: shared.open_flows.clone(),
+            };
+            match bypass::start(&mut bpf, deps) {
+                Ok(cpus) => info!(cpus, "bypass: synthetic flow consumer started"),
+                Err(e) => warn!(error = %e, "bypass: failed to start; cluster-internal flows won't be recorded"),
+            }
+        }
+    }
 
     // ─── Phase B: TLS plaintext tap (libssl uprobes) ──────────────────────
     if shared.cfg.runtime.tap.enabled {

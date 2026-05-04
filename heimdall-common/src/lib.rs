@@ -76,6 +76,34 @@ unsafe impl aya::Pod for TapEvent {}
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for OrigDst {}
 
+// ---------------------------------------------------------------------------
+// Bypass notifications — emitted by connect4 when a destination falls into
+// `is_default_bypass` (so the relay never sees the connection). Userspace
+// uses these to create synthetic flow rows and populate the open-flow index
+// so plaintext events captured by the libssl / Go uprobes can still
+// correlate to a flow_id in the messages table.
+// ---------------------------------------------------------------------------
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct BypassEvent {
+    /// Kernel monotonic time at the connect4 hook.
+    pub ts_ns: u64,
+    /// `bpf_get_current_cgroup_id()` of the calling task.
+    pub cgroup_id: u64,
+    /// `bpf_get_socket_cookie()` — stable per-socket id, shared with
+    /// the tap so future kprobe-based correlation can join on it.
+    pub socket_cookie: u64,
+    /// Destination IPv4 address in network byte order.
+    pub dst_ip_be: u32,
+    /// Destination TCP port in network byte order.
+    pub dst_port_be: u16,
+    pub _pad: u16,
+}
+
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for BypassEvent {}
+
 /// Returns true if the given IPv4 address (network byte order) should bypass
 /// the proxy entirely (eBPF connect4 won't redirect it).
 ///

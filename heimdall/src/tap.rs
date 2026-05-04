@@ -12,7 +12,7 @@
 //!   AsyncPerfEventArray (one buffer per CPU) → mpsc::Sender<ObservedTap>
 //!
 //! Caveats / scope:
-//!  * OpenSSL only for v0. rustls / Java will need different program logic.
+//!  * libssl + Go only. rustls / Java need different program logic.
 //!  * Symbol resolution via the dynsym table (libssl exports SSL_write and
 //!    SSL_read). If a build strips them, attach fails for that file.
 //!  * We attach by *file path*, not pid. One attach catches every process
@@ -20,7 +20,23 @@
 //!    can later filter events by tgid → cgroup_id → pod_uid.
 //!
 //! Future work tracked elsewhere:
-//!  * rustls — uprobe pattern matching + correlate via recvfrom(fd).
+//!
+//!  * rustls — investigated and deliberately deferred. Write side IS
+//!    attachable via the demangled symbol `<rustls::conn::ConnectionCommon
+//!    <T> as rustls::conn::connection::PlaintextSink>::write`, but each
+//!    binary mangles a different `::h<hash>` suffix so we'd need a
+//!    demangle-and-pattern-match pass instead of aya's exact-name lookup.
+//!    Read side is harder: Reader::read is inlined into call sites in
+//!    every rustls build we've seen on this cluster, so only `consume`
+//!    and `into_first_chunk` remain as standalone symbols and neither
+//!    carries the plaintext buffer in a usable register. The Coroot
+//!    pattern is a recvfrom(fd) kprobe joined to the rustls Connection's
+//!    Reader at userspace correlation time — ~1 day of work and per
+//!    binary verification. The 6 rustls binaries on this host are vector,
+//!    edge-runtime, clickhouse, heimdall itself, pop-launcher, and zed
+//!    remote-server — we cover the high-traffic ones (clickhouse, vector)
+//!    in a future iteration when justified.
+//!
 //!  * Java/JVM — JVMTI agent + native stub probed via uprobe.
 //!  * Live discovery — re-scan periodically or via fanotify on cgroup procs.
 

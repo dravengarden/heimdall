@@ -32,7 +32,7 @@ use aya_ebpf::{
     programs::{ProbeContext, RetProbeContext, SkBuffContext, SockAddrContext},
     EbpfContext,
 };
-use heimdall_common::{is_default_bypass, OrigDst, TapDir, TapEvent, TAP_DATA_LEN};
+use heimdall_common::{is_default_bypass, BypassEvent, OrigDst, TapDir, TapEvent, TAP_DATA_LEN};
 
 const PROXY_PORT: u16 = 12345;
 
@@ -49,6 +49,12 @@ static COOKIE_MAP: HashMap<u64, OrigDst> = HashMap::with_max_entries(65536, 0);
 // Populated in skb_egress, consumed by the userspace relay after accept().
 #[map]
 static PORT_MAP: HashMap<u32, OrigDst> = HashMap::with_max_entries(65536, 0);
+
+// Phase B: bypass notifications. Connect4 emits one event per bypassed
+// connection (loopback / LAN / k0s pod-or-service CIDR) so userspace can
+// record a synthetic flow row and let tap events correlate to it.
+#[map]
+static BYPASS_EVENTS: PerfEventArray<BypassEvent> = PerfEventArray::new(0);
 
 // ---------------------------------------------------------------------------
 // Program 1: intercept connect() and rewrite destination
@@ -77,6 +83,21 @@ fn try_connect4(ctx: SockAddrContext) -> Result<(), ()> {
     }
 
     if is_default_bypass(dst_ip_be) {
+        // Emit a perf event so userspace can create a synthetic flow row.
+        // Without this, tap-captured plaintext from kube-apiserver / cluster
+        // service traffic has flow_id=NULL because the relay never sees the
+        // bypass connection.
+        let cookie = unsafe { bpf_get_socket_cookie(ctx.as_ptr()) };
+        let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+        let bypass_ev = BypassEvent {
+            ts_ns: unsafe { bpf_ktime_get_ns() },
+            cgroup_id,
+            socket_cookie: cookie,
+            dst_ip_be,
+            dst_port_be,
+            _pad: 0,
+        };
+        BYPASS_EVENTS.output(&ctx, &bypass_ev, 0);
         return Ok(());
     }
 
