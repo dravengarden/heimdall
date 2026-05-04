@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Box } from "@mui/material";
 import { AppShell } from "./components/AppShell";
 import { FilterBar } from "./components/FilterBar";
@@ -8,8 +8,9 @@ import { FlowDetail } from "./components/FlowDetail";
 import { SettingsDrawer } from "./components/SettingsDrawer";
 import { useLiveFlows } from "./hooks/useLiveFlows";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
-import type { FlowFilters } from "./types";
+import { DEFAULT_FILTERS, type FlowFilters } from "./types";
 import type { ThemeMode } from "./theme";
+import { flowMatches } from "./util/filterFlow";
 
 interface Props {
   themeMode: ThemeMode;
@@ -29,11 +30,16 @@ export function App({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
 
-  const [filters, setFilters] = useState<FlowFilters>({
-    query: "",
-    connection: null,
-    hideErrors: false,
-  });
+  const [filters, setFilters] = useState<FlowFilters>(DEFAULT_FILTERS);
+
+  // `ageMaxSec` filter must use a "now" that ticks; without this, an aged-out
+  // row would stay visible until something else triggers a re-render.
+  const [nowUs, setNowUs] = useState<number>(Date.now() * 1000);
+  useEffect(() => {
+    if (filters.ageMaxSec == null) return;
+    const id = setInterval(() => setNowUs(Date.now() * 1000), 1000);
+    return () => clearInterval(id);
+  }, [filters.ageMaxSec]);
 
   useKeyboardShortcuts({ searchInputRef, selectedId, setSelectedId });
 
@@ -43,27 +49,14 @@ export function App({
     return Array.from(set).sort();
   }, [flows]);
 
-  const visible = useMemo(() => {
-    const q = filters.query.trim().toLowerCase();
-    return flows.filter((f) => {
-      if (filters.hideErrors && f.error) return false;
-      if (filters.connection && f.connection_name !== filters.connection)
-        return false;
-      if (q.length === 0) return true;
-      const fields: ReadonlyArray<string | null> = [
-        f.dst_host,
-        f.dst_ip,
-        f.pod_name,
-        f.namespace,
-        f.connection_name,
-        f.upstream_addr,
-      ];
-      return fields.some((s) => s != null && s.toLowerCase().includes(q));
-    });
-  }, [flows, filters]);
+  const visible = useMemo(
+    () => flows.filter((f) => flowMatches(f, filters, nowUs)),
+    [flows, filters, nowUs],
+  );
 
   const selectedFlow = useMemo(
-    () => (selectedId == null ? undefined : flows.find((f) => f.id === selectedId)),
+    () =>
+      selectedId == null ? undefined : flows.find((f) => f.id === selectedId),
     [flows, selectedId],
   );
 
