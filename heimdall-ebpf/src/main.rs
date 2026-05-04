@@ -334,6 +334,104 @@ pub fn go_tls_read_ret(ctx: ProbeContext) -> u32 {
     0
 }
 
+// ---------------------------------------------------------------------------
+// rustls — paired entry + uretprobe pair on PlaintextSink::write and
+// <Reader as io::Read>::read.
+//
+// Unlike Go, Rust binaries have a fixed (non-movable) stack and are
+// uretprobe-safe. So the read side uses a real uretprobe — no need to
+// disassemble for RET offsets.
+//
+// Rust uses the SysV ABI on x86_64 for these `&mut self, &[u8]` →
+// `io::Result<usize>` methods:
+//
+//   At entry:
+//     RDI = &mut self        (PlaintextSink / Reader)
+//     RSI = buf.as_ptr()     (slice data)
+//     RDX = buf.len()        (slice length)
+//
+//   At return (`io::Result<usize>` is 16 bytes; passed in (RAX, RDX)):
+//     RAX = enum discriminant in low byte (0 = Ok, 1 = Err)
+//     RDX = the value (Ok→ usize n, Err→ error pointer)
+//
+// We trust that layout; if the captured plaintext looks right
+// (HTTP/2 frames, JSON, etc.) the ABI assumption is correct. If the
+// compiler ever switches to a different niche-packed layout for
+// `Result<usize, io::Error>`, this would need updating.
+// ---------------------------------------------------------------------------
+
+#[map]
+static RUSTLS_READ_STATE: HashMap<u64, ReadEntry> = HashMap::with_max_entries(8192, 0);
+
+#[uprobe]
+pub fn rustls_write(ctx: ProbeContext) -> u32 {
+    let _ = try_rustls_write(&ctx);
+    0
+}
+
+#[inline(always)]
+fn try_rustls_write(ctx: &ProbeContext) -> Result<(), ()> {
+    let regs = unsafe { &*ctx.regs };
+    let buf = regs.rsi as *const u8;
+    let num = regs.rdx as i64;
+    if num <= 0 || buf.is_null() {
+        return Ok(());
+    }
+    let total = if num > i32::MAX as i64 { i32::MAX as u32 } else { num as u32 };
+    emit_tap(ctx, TapDir::Send, total, buf);
+    Ok(())
+}
+
+#[uprobe]
+pub fn rustls_read_enter(ctx: ProbeContext) -> u32 {
+    let _ = try_rustls_read_enter(&ctx);
+    0
+}
+
+#[inline(always)]
+fn try_rustls_read_enter(ctx: &ProbeContext) -> Result<(), ()> {
+    let regs = unsafe { &*ctx.regs };
+    let buf = regs.rsi;
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let entry = ReadEntry { buf };
+    let _ = RUSTLS_READ_STATE.insert(&pid_tgid, &entry, 0);
+    Ok(())
+}
+
+#[uretprobe]
+pub fn rustls_read_exit(ctx: RetProbeContext) -> u32 {
+    let _ = try_rustls_read_exit(&ctx);
+    0
+}
+
+#[inline(always)]
+fn try_rustls_read_exit(ctx: &RetProbeContext) -> Result<(), ()> {
+    let regs = unsafe { &*ctx.regs };
+    // Discriminant in low byte of RAX. 0 = Ok, anything else = Err.
+    if (regs.rax & 0xFF) != 0 {
+        return Ok(());
+    }
+    let n = regs.rdx as i64;
+    if n <= 0 {
+        return Ok(());
+    }
+
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let entry = match unsafe { RUSTLS_READ_STATE.get(&pid_tgid) } {
+        Some(e) => *e,
+        None => return Ok(()),
+    };
+    let _ = RUSTLS_READ_STATE.remove(&pid_tgid);
+
+    let buf = entry.buf as *const u8;
+    if buf.is_null() {
+        return Ok(());
+    }
+    let total = if n > i32::MAX as i64 { i32::MAX as u32 } else { n as u32 };
+    emit_tap_ret(ctx, TapDir::Recv, total, buf);
+    Ok(())
+}
+
 #[inline(always)]
 fn try_go_tls_read_ret(ctx: &ProbeContext) -> Result<(), ()> {
     let regs = unsafe { &*ctx.regs };

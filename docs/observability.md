@@ -15,7 +15,7 @@ the application's own `SSL_*` / `crypto/tls.(*Conn).*` calls.
 | **Go `crypto/tls.(*Conn).Write`** | ✅ working | uprobe at function entry | ABI Internal: receiver in RAX, slice (data, len, cap) in RBX/RCX/RDI. |
 | **Go `crypto/tls.(*Conn).Read`** | ✅ working | uprobe at entry + uprobe at every RET site (no uretprobe) | uretprobes break Go's movable stacks, so we disassemble the function body with iced-x86 and attach a normal uprobe at every `FlowControl::Return` instruction. |
 | **Go binaries built with `-ldflags="-s -w"`** | ✅ working | symbols come from `.gopclntab` instead of `.symtab` | rancher, kubelet, kube-apiserver, cilium, fleet, etc. — the runtime's own symbol table survives stripping. |
-| **rustls** | ❌ deferred | — | Write-side symbol exists post-demangle but each binary mangles a different `::h<hash>`; read-side is inlined. Notes in `tap.rs` doc-comment. |
+| **rustls** | ✅ implemented | uprobe at `<ConnectionCommon<T> as PlaintextSink>::write` entry; uprobe + uretprobe at `<Reader as std::io::Read>::read` | Symbol pattern match against the mangled name (`PlaintextSink$GT$5write17h`, `std..io..Read$GT$4read17h`). ABI: `RSI=buf.ptr`, `RDX=buf.len`; return is 16-byte `(RAX=tag, RDX=value)`. **Caveat:** symbol presence ≠ runtime usage — ClickHouse links rustls but its TLS path goes through statically-linked OpenSSL, so tap attaches successfully but never fires for that binary. Vector / edge-runtime / heimdall's own kube-rs client actually exercise it. |
 | **JVM (TLSv1Engine, etc.)** | ❌ not implemented | — | Needs JVMTI agent + native stub probed via uprobe. |
 | **BoringSSL static** | ❌ not implemented | — | Pixie's BoringSSL pattern-matching would work; deferred. |
 
