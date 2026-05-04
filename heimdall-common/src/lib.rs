@@ -104,6 +104,37 @@ pub struct BypassEvent {
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for BypassEvent {}
 
+// ---------------------------------------------------------------------------
+// Per-cgroup policy flags. Userspace evaluates routing rules against pod
+// labels/annotations and writes the resulting flag bits into the BPF
+// CGROUP_POLICY map keyed by cgroup_id; eBPF programs read it per syscall.
+//
+// Map miss → DEFAULT_POLICY (observe OFF, redirect ON). The "observe OFF
+// on miss" choice means host processes that aren't pods don't get tapped
+// unless `runtime.tap.hostObserve` explicitly populates them.
+// ---------------------------------------------------------------------------
+
+/// Skip eBPF connect4 redirect — let the kernel route the connection
+/// natively. Used for pods opting into `proxy: system`.
+pub const POLICY_REDIRECT_OFF: u8 = 1 << 0;
+
+/// Suppress tap events from this cgroup — both libssl uprobes and Go
+/// uprobes check the bit before emitting. Used for noisy infrastructure
+/// pods (controllers, webhooks, data stores).
+pub const POLICY_OBSERVE_OFF: u8 = 1 << 1;
+
+/// When set on an `is_kernel_bypass` or `REDIRECT_OFF` connection,
+/// suppress the synthetic flow row userspace would otherwise create.
+/// Tied to `POLICY_OBSERVE_OFF` in the default policy mapping (no
+/// observe → no synthetic flow), but available as a separate bit
+/// for future tuning.
+pub const POLICY_NO_BYPASS_LOG: u8 = 1 << 2;
+
+/// Default for cgroups not present in `CGROUP_POLICY`. Observe is OFF
+/// by default — pods we know about get explicit entries, host processes
+/// don't get observed unless opted in.
+pub const DEFAULT_POLICY: u8 = POLICY_OBSERVE_OFF | POLICY_NO_BYPASS_LOG;
+
 /// Returns true if the given IPv4 address (network byte order) should bypass
 /// the proxy entirely (eBPF connect4 won't redirect it).
 ///

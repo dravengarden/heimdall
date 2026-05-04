@@ -94,6 +94,36 @@ impl CgroupResolver {
         None
     }
 
+    /// All cgroup_ids associated with `uid`. Empty vec on miss; used by
+    /// the policy engine to write per-cgroup eBPF map entries when the
+    /// informer reports a pod change.
+    pub fn uid_to_cgroups(&self, uid: &str) -> Vec<u64> {
+        self.cache
+            .read()
+            .iter()
+            .filter_map(|(cg, u)| (u == uid).then_some(*cg))
+            .collect()
+    }
+
+    /// Snapshot of every (cgroup_id, pod_uid) entry currently in the
+    /// cache. Used by the policy engine's reconcile pass to diff against
+    /// the BPF map and apply missing/stale entries.
+    pub fn snapshot(&self) -> Vec<(u64, String)> {
+        self.cache
+            .read()
+            .iter()
+            .map(|(cg, uid)| (*cg, uid.clone()))
+            .collect()
+    }
+
+    /// Force a fresh scan, bypassing the rate limit. The policy engine
+    /// runs this on every reconcile tick so cgroup churn is picked up
+    /// without waiting for a `resolve()` miss to trigger it.
+    pub fn rescan(&self) {
+        *self.last_rescan.write() = Instant::now();
+        self.scan();
+    }
+
     /// Rescan if enough time has elapsed; returns true if we did.
     fn maybe_rescan(&self) -> bool {
         let now = Instant::now();
@@ -194,10 +224,29 @@ fn looks_like_uuid(s: &str) -> bool {
 // PodInformer — pod_uid → PodInfo
 // ---------------------------------------------------------------------------
 
+/// Event emitted when a pod is added, updated, or deleted. Subscribers use
+/// this to react to identity changes (e.g. policy engine re-evaluating
+/// the routing decision and pushing fresh flags into the eBPF map).
+#[derive(Debug, Clone)]
+pub enum PodEvent {
+    /// New or updated pod. Carries the post-change snapshot.
+    Upsert(PodInfo),
+    /// Pod removed. Only the UID is meaningful (lookup will already miss).
+    Delete(String),
+    /// Initial-sync barrier — fired after the watcher has seen every
+    /// existing pod. Subscribers can use this to do a one-time bulk
+    /// reconcile.
+    InitDone,
+}
+
 /// In-memory cache of all pods' identity, refreshed via kube-rs watcher.
 #[derive(Clone)]
 pub struct PodInformer {
     cache: Arc<RwLock<HashMap<String, PodInfo>>>,
+    /// Bounded broadcast channel so multiple consumers can listen
+    /// without blocking the watcher loop. Capacity is generous —
+    /// pod churn is low (tens per minute on a busy cluster).
+    events: tokio::sync::broadcast::Sender<PodEvent>,
 }
 
 impl PodInformer {
@@ -210,6 +259,8 @@ impl PodInformer {
         let api: Api<Pod> = Api::all(client);
         let cache = Arc::new(RwLock::new(HashMap::<String, PodInfo>::new()));
         let cache_for_task = cache.clone();
+        let (tx, _rx) = tokio::sync::broadcast::channel::<PodEvent>(1024);
+        let tx_for_task = tx.clone();
 
         tokio::spawn(async move {
             let stream = watcher(api, watcher::Config::default()).default_backoff();
@@ -221,16 +272,19 @@ impl PodInformer {
                     }
                     Ok(watcher::Event::InitApply(p)) | Ok(watcher::Event::Apply(p)) => {
                         if let Some(info) = pod_info(&p) {
-                            cache_for_task.write().insert(info.uid.clone(), info);
+                            cache_for_task.write().insert(info.uid.clone(), info.clone());
+                            let _ = tx_for_task.send(PodEvent::Upsert(info));
                         }
                     }
                     Ok(watcher::Event::Delete(p)) => {
                         if let Some(uid) = p.uid() {
                             cache_for_task.write().remove(&uid);
+                            let _ = tx_for_task.send(PodEvent::Delete(uid));
                         }
                     }
                     Ok(watcher::Event::InitDone) => {
                         info!(pods = cache_for_task.read().len(), "pod informer initial sync complete");
+                        let _ = tx_for_task.send(PodEvent::InitDone);
                     }
                     Err(e) => {
                         warn!(error = %e, "pod watcher error; retrying with backoff");
@@ -239,15 +293,28 @@ impl PodInformer {
             }
         });
 
-        Ok(Self { cache })
+        Ok(Self { cache, events: tx })
     }
 
     pub fn lookup(&self, uid: &str) -> Option<PodInfo> {
         self.cache.read().get(uid).cloned()
     }
 
-    pub fn len(&self) -> usize {
-        self.cache.read().len()
+    /// Snapshot of every (uid, info) currently in the cache. The policy
+    /// engine reconcile pass uses this to drive the diff against the
+    /// CgroupResolver and the eBPF map.
+    pub fn snapshot(&self) -> Vec<(String, PodInfo)> {
+        self.cache
+            .read()
+            .iter()
+            .map(|(uid, info)| (uid.clone(), info.clone()))
+            .collect()
+    }
+
+    /// Subscribe to pod-level change events. Each subscriber gets its own
+    /// receiver; lagged subscribers see `RecvError::Lagged`.
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<PodEvent> {
+        self.events.subscribe()
     }
 }
 

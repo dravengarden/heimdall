@@ -17,7 +17,14 @@ use serde::Deserialize;
 use thiserror::Error;
 
 pub const DEFAULT_PATH: &str = "/etc/heimdall/config.yaml";
-pub const SELECTOR_KEY_DEFAULT: &str = "heimdall.io/connection";
+pub const CONNECTION_KEY_DEFAULT: &str = "heimdall.io/connection";
+pub const OBSERVE_KEY_DEFAULT: &str = "heimdall.io/observe";
+
+/// Reserved value for `routing.*.use` (and the connection annotation) that
+/// means "don't redirect through the relay; let the kernel route natively".
+/// Distinct from a `Connection::Direct` upstream — system mode skips heimdall
+/// entirely at the eBPF connect4 hook.
+pub const SYSTEM_CONNECTION: &str = "system";
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -31,12 +38,14 @@ pub enum ConfigError {
     UnsupportedKind(String),
     #[error("connections must define `default`")]
     MissingDefaultConnection,
-    #[error("routing.default refers to unknown connection `{0}`")]
+    #[error("routing.default.use refers to unknown connection `{0}`")]
     DefaultConnectionUnknown(String),
     #[error("routing.rules[{index}] (`{name}`) refers to unknown connection `{connection}`")]
     RuleConnectionUnknown { index: usize, name: String, connection: String },
     #[error("routing.rules[{index}] is missing a name")]
     RuleMissingName { index: usize },
+    #[error("connection name `{0}` is reserved (used internally for system bypass)")]
+    ReservedConnectionName(String),
     #[error("connection `{name}` has empty addr (required for type `{ty}`)")]
     EmptyAddr { name: String, ty: String },
     #[error("read passwordFile `{path}`: {source}")]
@@ -234,36 +243,74 @@ pub struct DirectConnection {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Routing {
-    /// Metadata key checked in BOTH `annotations` and `labels`. Its value
-    /// must be the name of a known connection. Annotation wins if both
-    /// are set.
-    #[serde(default = "default_selector_key", rename = "selectorKey")]
-    pub selector_key: String,
+    /// Annotation/label key whose value picks the proxy connection.
+    /// Either a name in `connections:` or the reserved string `system`.
+    #[serde(default = "default_connection_key", rename = "connectionKey")]
+    pub connection_key: String,
+
+    /// Annotation/label key whose value (`"true"` / `"false"`) toggles
+    /// per-pod observation. Wins over rules and default.
+    #[serde(default = "default_observe_key", rename = "observeKey")]
+    pub observe_key: String,
 
     /// Admin-defined matching rules (first match wins). Used when a pod
-    /// can't / shouldn't set the selectorKey itself — e.g. third-party
+    /// can't / shouldn't set the annotation keys itself — e.g. third-party
     /// charts, retroactive policy.
     #[serde(default)]
     pub rules: Vec<Rule>,
 
-    /// Final fallback connection name. Must reference an entry in
-    /// `connections` (validated at load time).
-    #[serde(default = "default_default_connection")]
-    pub default: String,
+    /// Final fallback decision for pods not matching any rule and not
+    /// carrying explicit annotations.
+    #[serde(default)]
+    pub default: RoutingDecision,
 }
 
 impl Default for Routing {
     fn default() -> Self {
         Self {
-            selector_key: default_selector_key(),
+            connection_key: default_connection_key(),
+            observe_key: default_observe_key(),
             rules: Vec::new(),
-            default: default_default_connection(),
+            default: RoutingDecision::default(),
         }
     }
 }
 
-fn default_selector_key() -> String { SELECTOR_KEY_DEFAULT.to_string() }
-fn default_default_connection() -> String { "default".to_string() }
+fn default_connection_key() -> String { CONNECTION_KEY_DEFAULT.to_string() }
+fn default_observe_key() -> String { OBSERVE_KEY_DEFAULT.to_string() }
+fn default_use() -> String { "default".to_string() }
+fn default_observe() -> bool { true }
+
+/// One routing decision: which connection to use, and whether to
+/// emit tap events. Both `Rule` and `Routing.default` produce one of
+/// these; the runtime resolver returns it back to the relay.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoutingDecision {
+    /// Connection name in `connections:`, or `"system"` to skip the
+    /// eBPF redirect entirely.
+    #[serde(default = "default_use", rename = "use")]
+    pub use_: String,
+
+    /// When false, eBPF tap programs suppress events from this pod's
+    /// cgroup and userspace skips synthetic-flow logging for bypass /
+    /// system connections.
+    #[serde(default = "default_observe")]
+    pub observe: bool,
+}
+
+impl Default for RoutingDecision {
+    fn default() -> Self {
+        Self { use_: default_use(), observe: default_observe() }
+    }
+}
+
+impl std::fmt::Display for RoutingDecision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let obs = if self.observe { "observe" } else { "no-observe" };
+        write!(f, "{}/{obs}", self.use_)
+    }
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -273,9 +320,24 @@ pub struct Rule {
     #[serde(rename = "match")]
     pub r#match: Match,
 
-    /// Name of a connection in the registry.
+    /// Connection name or `"system"`.
     #[serde(rename = "use")]
     pub use_: String,
+
+    /// Whether tap events should fire for pods matching this rule.
+    /// Defaults to true to match the historical "observe everything"
+    /// behavior; set to false for noisy infrastructure.
+    #[serde(default = "default_observe")]
+    pub observe: bool,
+}
+
+impl Rule {
+    pub fn decision(&self) -> RoutingDecision {
+        RoutingDecision {
+            use_: self.use_.clone(),
+            observe: self.observe,
+        }
+    }
 }
 
 /// K8s LabelSelector-compatible match block, plus optional namespace filter.
@@ -336,26 +398,30 @@ impl HeimdallConfig {
             return Err(ConfigError::UnsupportedKind(self.kind.clone()));
         }
 
-        // connections.default must exist
-        if !self.connections.contains_key("default")
-            && !self.connections.contains_key(&self.routing.default)
-        {
-            // If routing.default is also missing from connections, fail early.
-            // (Most users will have a connection literally named "default".)
+        // `system` is reserved — must NOT appear in connections:.
+        if self.connections.contains_key(SYSTEM_CONNECTION) {
+            return Err(ConfigError::ReservedConnectionName(SYSTEM_CONNECTION.into()));
+        }
+
+        // connections must define `default` (the implicit fallback target).
+        if !self.connections.contains_key("default") {
             return Err(ConfigError::MissingDefaultConnection);
         }
 
-        // routing.default must reference a known connection
-        if !self.connections.contains_key(&self.routing.default) {
-            return Err(ConfigError::DefaultConnectionUnknown(self.routing.default.clone()));
+        // routing.default.use must be a known connection or the reserved
+        // `system` keyword.
+        if !self.is_valid_use(&self.routing.default.use_) {
+            return Err(ConfigError::DefaultConnectionUnknown(
+                self.routing.default.use_.clone(),
+            ));
         }
 
-        // Each rule.use must reference a known connection
+        // Each rule.use must be a known connection or `system`.
         for (i, rule) in self.routing.rules.iter().enumerate() {
             if rule.name.is_empty() {
                 return Err(ConfigError::RuleMissingName { index: i });
             }
-            if !self.connections.contains_key(&rule.use_) {
+            if !self.is_valid_use(&rule.use_) {
                 return Err(ConfigError::RuleConnectionUnknown {
                     index: i,
                     name: rule.name.clone(),
@@ -376,10 +442,8 @@ impl HeimdallConfig {
         Ok(())
     }
 
-    /// The connection used when no annotation and no rule matches.
-    pub fn default_connection(&self) -> &Connection {
-        // Validated at load: routing.default exists in connections.
-        self.connections.get(&self.routing.default).expect("validated")
+    fn is_valid_use(&self, name: &str) -> bool {
+        name == SYSTEM_CONNECTION || self.connections.contains_key(name)
     }
 }
 
@@ -424,8 +488,8 @@ mod tests {
                 addr: 127.0.0.1:20170
         "#};
         let cfg = parse(yaml).unwrap();
-        assert_eq!(cfg.routing.default, "default");
-        assert!(matches!(cfg.default_connection(), Connection::Socks5(_)));
+        assert_eq!(cfg.routing.default.use_, "default");
+        assert!(cfg.routing.default.observe);
     }
 
     #[test]
@@ -449,23 +513,34 @@ mod tests {
                 auth:
                   username: draven
                   passwordFile: /etc/heimdall/secrets/conviva.pw
-              bypass:
-                type: direct
             routing:
-              selectorKey: heimdall.io/connection
+              connectionKey: heimdall.io/connection
+              observeKey: heimdall.io/observe
               rules:
+                - name: cluster-infra
+                  match: { namespaces: [kube-system] }
+                  use: system
+                  observe: false
                 - name: conviva-family
                   match:
                     matchLabels: { family: conviva }
                     matchExpressions:
                       - { key: env, operator: In, values: [prod, stg] }
                   use: conviva
-              default: default
+                  observe: true
+              default:
+                use: default
+                observe: true
         "#};
         let cfg = parse(yaml).unwrap();
-        assert_eq!(cfg.connections.len(), 3);
-        assert_eq!(cfg.routing.rules.len(), 1);
-        assert_eq!(cfg.routing.rules[0].r#match.match_labels.get("family"), Some(&"conviva".to_string()));
+        assert_eq!(cfg.connections.len(), 2);
+        assert_eq!(cfg.routing.rules.len(), 2);
+        assert_eq!(cfg.routing.rules[0].use_, "system");
+        assert!(!cfg.routing.rules[0].observe);
+        assert_eq!(
+            cfg.routing.rules[1].r#match.match_labels.get("family"),
+            Some(&"conviva".to_string())
+        );
     }
 
     #[test]
@@ -478,7 +553,9 @@ mod tests {
                 type: socks5
                 addr: 127.0.0.1:20170
             routing:
-              default: nonexistent
+              default:
+                use: nonexistent
+                observe: true
         "#};
         assert!(matches!(parse(yaml), Err(ConfigError::DefaultConnectionUnknown(_))));
     }
@@ -497,6 +574,37 @@ mod tests {
                   use: ghost
         "#};
         assert!(matches!(parse(yaml), Err(ConfigError::RuleConnectionUnknown { .. })));
+    }
+
+    #[test]
+    fn accepts_system_use_value() {
+        // `system` is reserved and need not appear in connections:.
+        let yaml = indoc! {r#"
+            apiVersion: heimdall.io/v1alpha1
+            kind: HeimdallConfig
+            connections:
+              default: { type: socks5, addr: 127.0.0.1:20170 }
+            routing:
+              rules:
+                - name: cluster-infra
+                  match: { namespaces: [kube-system] }
+                  use: system
+                  observe: false
+        "#};
+        let cfg = parse(yaml).unwrap();
+        assert_eq!(cfg.routing.rules[0].use_, "system");
+    }
+
+    #[test]
+    fn rejects_user_naming_a_connection_system() {
+        let yaml = indoc! {r#"
+            apiVersion: heimdall.io/v1alpha1
+            kind: HeimdallConfig
+            connections:
+              default: { type: socks5, addr: 127.0.0.1:20170 }
+              system: { type: direct }
+        "#};
+        assert!(matches!(parse(yaml), Err(ConfigError::ReservedConnectionName(_))));
     }
 
     #[test]

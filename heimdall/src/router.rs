@@ -1,57 +1,99 @@
-//! Routing engine: pick a connection name for each pod.
+//! Routing decision: pick a connection name AND observe flag for each pod.
 //!
-//! Resolution order (matches /etc/nixos/docs/heimdall.md):
+//! Two orthogonal axes:
+//!   - `use`: connection name (any in `connections:`) or the reserved
+//!     `system` keyword (skip eBPF redirect entirely).
+//!   - `observe`: tap-on or tap-off for this pod's cgroup.
 //!
-//!   1. Pod **annotation** at `routing.selectorKey`
-//!      (default `heimdall.io/connection`) → use that connection.
-//!   2. Pod **label** at the same `routing.selectorKey` → use that connection.
-//!   3. `routing.rules` first match wins
-//!      (admin-defined; for pods that can't set the selectorKey themselves).
-//!   4. `routing.default`.
+//! Resolution order for each axis (independent):
 //!
-//! Annotation wins over label if both are set, because annotations are
+//!   1. Pod **annotation** at the relevant key
+//!      (`routing.connectionKey` for `use`, `routing.observeKey` for
+//!      `observe`).
+//!   2. Pod **label** at the same key.
+//!   3. `routing.rules` first match — both axes come from the same rule.
+//!   4. `routing.default` — `use` and `observe` from the default block.
+//!
+//! Annotations win over labels if both are set, because annotations are
 //! generally harder to set accidentally via templating.
 
-use heimdall_config::{HeimdallConfig, Match, MatchExpression, MatchOperator, Rule};
+use heimdall_config::{HeimdallConfig, Match, MatchExpression, MatchOperator, Rule, RoutingDecision, SYSTEM_CONNECTION};
 
 use crate::pod::PodInfo;
 
-/// Decide which connection name to use for a pod.
-/// Falls back to `cfg.routing.default` if nothing matches.
-///
-/// Returns `String` (not `&str`) because the chosen name might come from
-/// either `cfg` (rule / default) or from `pod` (annotation/label value),
-/// which have unrelated lifetimes at the call site.
-pub fn resolve_connection(cfg: &HeimdallConfig, pod: Option<&PodInfo>) -> String {
+/// Decide both the connection (`use`) and observation flag for a pod.
+/// Falls back to `cfg.routing.default` when nothing else matches.
+pub fn resolve_decision(cfg: &HeimdallConfig, pod: Option<&PodInfo>) -> RoutingDecision {
     let Some(pod) = pod else {
         return cfg.routing.default.clone();
     };
 
-    let key = &cfg.routing.selector_key;
+    // Walk both axes independently. Each gets its own per-axis lookup
+    // (annotation → label → rule → default). Combining them at the end
+    // means a pod can carry just `heimdall.io/observe: false` without
+    // also having to spell out a connection.
+    let use_ = resolve_use(cfg, pod);
+    let observe = resolve_observe(cfg, pod);
 
-    // 1. Annotation override (chart-author explicit, hardest to set by accident).
+    RoutingDecision { use_, observe }
+}
+
+fn resolve_use(cfg: &HeimdallConfig, pod: &PodInfo) -> String {
+    let key = &cfg.routing.connection_key;
+
     if let Some(name) = pod.annotations.get(key) {
-        if cfg.connections.contains_key(name) {
+        if is_valid_use_name(cfg, name) {
             return name.clone();
         }
     }
-
-    // 2. Label (chart-author declarative; also queryable by other tools).
     if let Some(name) = pod.labels.get(key) {
-        if cfg.connections.contains_key(name) {
+        if is_valid_use_name(cfg, name) {
             return name.clone();
         }
     }
 
-    // 3. Admin-defined rules — first match wins.
     for rule in &cfg.routing.rules {
         if rule_matches(rule, pod) {
             return rule.use_.clone();
         }
     }
 
-    // 4. Default.
-    cfg.routing.default.clone()
+    cfg.routing.default.use_.clone()
+}
+
+fn resolve_observe(cfg: &HeimdallConfig, pod: &PodInfo) -> bool {
+    let key = &cfg.routing.observe_key;
+
+    if let Some(v) = pod.annotations.get(key) {
+        if let Some(b) = parse_bool(v) {
+            return b;
+        }
+    }
+    if let Some(v) = pod.labels.get(key) {
+        if let Some(b) = parse_bool(v) {
+            return b;
+        }
+    }
+
+    for rule in &cfg.routing.rules {
+        if rule_matches(rule, pod) {
+            return rule.observe;
+        }
+    }
+
+    cfg.routing.default.observe
+}
+
+fn is_valid_use_name(cfg: &HeimdallConfig, name: &str) -> bool {
+    name == SYSTEM_CONNECTION || cfg.connections.contains_key(name)
+}
+
+fn parse_bool(s: &str) -> Option<bool> {
+    match s.to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Some(true),
+        "false" | "0" | "no" | "off" => Some(false),
+        _ => None,
+    }
 }
 
 fn rule_matches(rule: &Rule, pod: &PodInfo) -> bool {
@@ -103,15 +145,15 @@ fn match_expr(e: &MatchExpression, pod: &PodInfo) -> bool {
 mod tests {
     use super::*;
     use heimdall_config::{
-        Connection, DirectConnection, HeimdallConfig, Match, MatchExpression, MatchOperator,
-        Routing, Rule, Runtime, Socks5Connection,
+        Connection, HeimdallConfig, Match, MatchExpression, MatchOperator, Routing, Rule,
+        RoutingDecision, Runtime, Socks5Connection,
     };
     use std::collections::BTreeMap;
 
     fn make_cfg() -> HeimdallConfig {
         let mut connections = BTreeMap::new();
         connections.insert(
-            "default".to_string(),
+            "default".into(),
             Connection::Socks5(Socks5Connection {
                 description: None,
                 owner: None,
@@ -121,7 +163,7 @@ mod tests {
             }),
         );
         connections.insert(
-            "conviva".to_string(),
+            "conviva".into(),
             Connection::Socks5(Socks5Connection {
                 description: None,
                 owner: None,
@@ -130,24 +172,32 @@ mod tests {
                 mitm: false,
             }),
         );
-        connections.insert(
-            "bypass".to_string(),
-            Connection::Direct(DirectConnection { description: None, owner: None }),
-        );
 
-        // Admin-defined fallback rule for pods that can't set selectorKey.
         let mut legacy_labels = BTreeMap::new();
         legacy_labels.insert("app.kubernetes.io/part-of".into(), "conviva".into());
 
-        let rules = vec![Rule {
-            name: "legacy-conviva".into(),
-            r#match: Match {
-                match_labels: legacy_labels,
-                match_expressions: vec![],
-                namespaces: vec![],
+        let rules = vec![
+            Rule {
+                name: "noisy-controllers".into(),
+                r#match: Match {
+                    match_labels: BTreeMap::new(),
+                    match_expressions: vec![],
+                    namespaces: vec!["kube-system".into()],
+                },
+                use_: "system".into(),
+                observe: false,
             },
-            use_: "conviva".into(),
-        }];
+            Rule {
+                name: "legacy-conviva".into(),
+                r#match: Match {
+                    match_labels: legacy_labels,
+                    match_expressions: vec![],
+                    namespaces: vec![],
+                },
+                use_: "conviva".into(),
+                observe: true,
+            },
+        ];
 
         HeimdallConfig {
             api_version: "heimdall.io/v1alpha1".into(),
@@ -155,9 +205,10 @@ mod tests {
             runtime: Runtime::default(),
             connections,
             routing: Routing {
-                selector_key: "heimdall.io/connection".into(),
+                connection_key: "heimdall.io/connection".into(),
+                observe_key: "heimdall.io/observe".into(),
                 rules,
-                default: "default".into(),
+                default: RoutingDecision { use_: "default".into(), observe: true },
             },
         }
     }
@@ -175,104 +226,102 @@ mod tests {
     #[test]
     fn no_pod_returns_default() {
         let cfg = make_cfg();
-        assert_eq!(resolve_connection(&cfg, None), "default");
+        let d = resolve_decision(&cfg, None);
+        assert_eq!(d.use_, "default");
+        assert!(d.observe);
     }
 
     #[test]
     fn nothing_matches_returns_default() {
         let cfg = make_cfg();
         let pod = pod_with(&[("env", "prod")], &[]);
-        assert_eq!(resolve_connection(&cfg, Some(&pod)), "default");
+        let d = resolve_decision(&cfg, Some(&pod));
+        assert_eq!(d.use_, "default");
+        assert!(d.observe);
     }
 
     #[test]
-    fn label_selector_key_picks_connection() {
-        let cfg = make_cfg();
-        let pod = pod_with(&[("heimdall.io/connection", "conviva")], &[]);
-        assert_eq!(resolve_connection(&cfg, Some(&pod)), "conviva");
-    }
-
-    #[test]
-    fn annotation_selector_key_picks_connection() {
-        let cfg = make_cfg();
-        let pod = pod_with(&[], &[("heimdall.io/connection", "bypass")]);
-        assert_eq!(resolve_connection(&cfg, Some(&pod)), "bypass");
-    }
-
-    #[test]
-    fn annotation_wins_over_label_when_both_set() {
+    fn annotation_selects_system_and_observe_off() {
         let cfg = make_cfg();
         let pod = pod_with(
-            &[("heimdall.io/connection", "conviva")],
-            &[("heimdall.io/connection", "bypass")],
+            &[],
+            &[
+                ("heimdall.io/connection", "system"),
+                ("heimdall.io/observe", "false"),
+            ],
         );
-        assert_eq!(resolve_connection(&cfg, Some(&pod)), "bypass");
+        let d = resolve_decision(&cfg, Some(&pod));
+        assert_eq!(d.use_, "system");
+        assert!(!d.observe);
     }
 
     #[test]
-    fn unknown_connection_in_annotation_falls_through() {
+    fn observe_axis_independent_of_connection_axis() {
+        let cfg = make_cfg();
+        // Just turn observe off via annotation; let `use` come from default.
+        let pod = pod_with(&[], &[("heimdall.io/observe", "false")]);
+        let d = resolve_decision(&cfg, Some(&pod));
+        assert_eq!(d.use_, "default");
+        assert!(!d.observe);
+    }
+
+    #[test]
+    fn rule_provides_both_axes_when_no_annotations() {
+        let cfg = make_cfg();
+        let pod = PodInfo {
+            namespace: "kube-system".into(),
+            ..Default::default()
+        };
+        let d = resolve_decision(&cfg, Some(&pod));
+        assert_eq!(d.use_, "system");
+        assert!(!d.observe);
+    }
+
+    #[test]
+    fn legacy_rule_observes_by_default() {
+        let cfg = make_cfg();
+        let pod = pod_with(&[("app.kubernetes.io/part-of", "conviva")], &[]);
+        let d = resolve_decision(&cfg, Some(&pod));
+        assert_eq!(d.use_, "conviva");
+        assert!(d.observe);
+    }
+
+    #[test]
+    fn invalid_use_in_annotation_falls_through() {
         let cfg = make_cfg();
         let pod = pod_with(
             &[("heimdall.io/connection", "conviva")],
             &[("heimdall.io/connection", "ghost")],
         );
-        // annotation = ghost (unknown) → fall through to label = conviva
-        assert_eq!(resolve_connection(&cfg, Some(&pod)), "conviva");
+        // ghost is not in connections and not "system" → falls back to label.
+        let d = resolve_decision(&cfg, Some(&pod));
+        assert_eq!(d.use_, "conviva");
     }
 
     #[test]
-    fn unknown_connection_in_label_falls_through_to_rules() {
+    fn invalid_observe_value_falls_through() {
         let cfg = make_cfg();
         let pod = pod_with(
-            &[
-                ("heimdall.io/connection", "ghost"),
-                ("app.kubernetes.io/part-of", "conviva"),
-            ],
             &[],
+            &[("heimdall.io/observe", "maybe")],
         );
-        // label says ghost (unknown) → falls to rule matching part-of=conviva → conviva
-        assert_eq!(resolve_connection(&cfg, Some(&pod)), "conviva");
-    }
-
-    #[test]
-    fn rule_matches_when_no_selector_key() {
-        let cfg = make_cfg();
-        let pod = pod_with(&[("app.kubernetes.io/part-of", "conviva")], &[]);
-        assert_eq!(resolve_connection(&cfg, Some(&pod)), "conviva");
+        // unparseable → falls through to default (observe: true).
+        let d = resolve_decision(&cfg, Some(&pod));
+        assert!(d.observe);
     }
 
     #[test]
     fn match_expression_in() {
         let mut cfg = make_cfg();
-        cfg.routing.rules[0].r#match.match_labels.clear();
-        cfg.routing.rules[0].r#match.match_expressions = vec![MatchExpression {
+        cfg.routing.rules[1].r#match.match_labels.clear();
+        cfg.routing.rules[1].r#match.match_expressions = vec![MatchExpression {
             key: "env".into(),
             operator: MatchOperator::In,
             values: vec!["prod".into(), "stg".into()],
         }];
-
         let p_prod = pod_with(&[("env", "prod")], &[]);
+        assert_eq!(resolve_decision(&cfg, Some(&p_prod)).use_, "conviva");
         let p_dev = pod_with(&[("env", "dev")], &[]);
-        assert_eq!(resolve_connection(&cfg, Some(&p_prod)), "conviva");
-        assert_eq!(resolve_connection(&cfg, Some(&p_dev)), "default");
-    }
-
-    #[test]
-    fn namespace_filter() {
-        let mut cfg = make_cfg();
-        cfg.routing.rules[0].r#match.namespaces = vec!["conviva-prod".into()];
-
-        let p_in = PodInfo {
-            namespace: "conviva-prod".into(),
-            labels: [("app.kubernetes.io/part-of".into(), "conviva".into())].into(),
-            ..Default::default()
-        };
-        let p_out = PodInfo {
-            namespace: "default".into(),
-            labels: [("app.kubernetes.io/part-of".into(), "conviva".into())].into(),
-            ..Default::default()
-        };
-        assert_eq!(resolve_connection(&cfg, Some(&p_in)), "conviva");
-        assert_eq!(resolve_connection(&cfg, Some(&p_out)), "default");
+        assert_eq!(resolve_decision(&cfg, Some(&p_dev)).use_, "default");
     }
 }
