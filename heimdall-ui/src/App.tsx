@@ -26,7 +26,7 @@ export function App({
   fontSize,
   onFontSizeChange,
 }: Props) {
-  const { flows, paused, setPaused, refetch, wsStatus } = useLiveFlows(300);
+  const { flows, refetch, wsStatus } = useLiveFlows(300);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [view, setView] = useState<AppView>("flows");
@@ -75,11 +75,8 @@ export function App({
             onChange={setFilters}
             total={flows.length}
             visible={visible.length}
-            paused={paused}
-            onTogglePause={() => setPaused(!paused)}
             onRefresh={refetch}
             connections={connections}
-            visibleFlows={visible}
             wsStatus={wsStatus}
             searchInputRef={searchInputRef}
           />

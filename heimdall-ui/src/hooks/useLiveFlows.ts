@@ -1,31 +1,36 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { Flow } from "../types";
 import { fetchFlows } from "../api/client";
 import { subscribeFlows, type WsStatus } from "../api/ws";
 
-const MAX_FLOWS = 1000;
+/// In-memory cache cap. Beyond this, the oldest flows are evicted.
+/// DataGrid still renders only one page (100 by default), so this is
+/// effectively the lookback window the user can scroll through
+/// without round-tripping to the backend. The full history is in
+/// sqlite — `heimdall flows list` and the HTTP API can replay
+/// anything that aged out of the cache.
+const MAX_FLOWS = 3000;
 
 export interface UseLiveFlows {
   flows: readonly Flow[];
   loading: boolean;
-  paused: boolean;
-  setPaused: (paused: boolean) => void;
   refetch: () => void;
   wsStatus: WsStatus;
 }
 
 /**
  * Initial fetch of the latest flows + WebSocket subscription that
- * prepends new flows to the list. Caps the in-memory list at
- * `MAX_FLOWS` to keep the UI responsive.
+ * prepends new flows to the list, capped at `MAX_FLOWS`.
+ *
+ * No pause control — flows are persisted to sqlite by the daemon
+ * regardless of UI state, and freezing a row in place isn't useful
+ * once the detail drawer is open (selecting a flow there pins it
+ * independently of the live list).
  */
 export function useLiveFlows(initialLimit = 200): UseLiveFlows {
   const [flows, setFlows] = useState<readonly Flow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [paused, setPaused] = useState(false);
   const [wsStatus, setWsStatus] = useState<WsStatus>("connecting");
-  const pausedRef = useRef(paused);
-  pausedRef.current = paused;
 
   const refetch = useCallback((): void => {
     setLoading(true);
@@ -44,9 +49,9 @@ export function useLiveFlows(initialLimit = 200): UseLiveFlows {
   useEffect(() => {
     const cleanup = subscribeFlows({
       onFlow: (flow) => {
-        if (pausedRef.current) return;
         setFlows((prev) => {
-          // De-dupe by id; insert newest at front.
+          // De-dupe by id; insert newest at front. FIFO eviction
+          // when over the cap so memory stays bounded.
           const filtered = prev.filter((f) => f.id !== flow.id);
           const next = [flow, ...filtered];
           return next.length > MAX_FLOWS ? next.slice(0, MAX_FLOWS) : next;
@@ -57,5 +62,5 @@ export function useLiveFlows(initialLimit = 200): UseLiveFlows {
     return cleanup;
   }, []);
 
-  return { flows, loading, paused, setPaused, refetch, wsStatus };
+  return { flows, loading, refetch, wsStatus };
 }
