@@ -112,7 +112,7 @@ pub fn run(args: InitArgs) -> Result<()> {
     println!("  1. Read README.md — it's the AI-readable schema reference.");
     println!("  2. Edit the config to declare your `connections` and `podRouting.rules`.");
     println!(
-        "  3. Point your systemd unit at: heimdall serve --config {}",
+        "  3. Run `heimdall serve` (the daemon auto-discovers {}; pass\n     --config <PATH> only if the file lives elsewhere).",
         main_target.display()
     );
     if matches!(args.format, InitFormat::Nickel) {

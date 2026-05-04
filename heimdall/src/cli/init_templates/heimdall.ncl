@@ -36,4 +36,17 @@ let h = import "lib.ncl" in
     rules = [],
     "default" = { use = "default", observe = false },
   },
+
+  # ─── Defaults for `heimdall <subcommand>` ────────────────────────
+  # Currently consumed by the planned `heimdall run` (proxychains-style
+  # CLI proxy). All fields optional — empty cli = compiled-in fallbacks.
+  cli = {
+    run = {
+      "default" = {
+        connection = "default",
+        observe    = true,
+      },
+      profiles = {},
+    },
+  },
 } | h.HeimdallConfig

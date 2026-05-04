@@ -32,3 +32,10 @@ rules = []
 [podRouting.default]
 use = "default"
 observe = false
+
+# Defaults for `heimdall <subcommand>` (consumed by planned `heimdall run`).
+[cli.run.default]
+connection = "default"
+observe = true
+
+[cli.run.profiles]

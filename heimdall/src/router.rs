@@ -174,6 +174,7 @@ matchLabels:
                 rules,
                 default: PodDecision { use_: "default".into(), observe: false },
             },
+            cli: Default::default(),
         }
     }
 

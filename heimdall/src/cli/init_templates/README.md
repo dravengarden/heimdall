@@ -12,9 +12,9 @@ heimdall, regenerate both.
 
 > **Audience**: this file is dense on purpose. It's the reference an
 > AI agent reads when asked "edit /etc/heimdall/heimdall.ncl to do
-> X". For the user-facing how-to ("label your pod"), see the doc in
-> `/etc/nixos/docs/services/heimdall-config.md` (or
-> `~/conviva/docs/heimdall.md`).
+> X". The user-facing how-to ("label your pod") lives elsewhere
+> (typically a project-side doc that explains which connection names
+> are wired up in this deployment).
 
 ## Directory layout
 
@@ -27,18 +27,22 @@ heimdall, regenerate both.
     └── *.pw        ← 0400 root:root, no trailing newline
 ```
 
-The systemd unit hard-codes:
+The daemon probes `/etc/heimdall/heimdall.{ncl,toml,json,yaml}` in
+that order and uses the first one that exists, so a typical systemd
+unit is just:
 
 ```
-ExecStart=/usr/local/bin/heimdall serve --config /etc/heimdall/heimdall.ncl
+ExecStart=/usr/local/bin/heimdall serve
 ```
 
-The daemon supports YAML / JSON / TOML / Nickel via extension
-dispatch (`heimdall.{yaml,json,toml,ncl}`). Nickel is recommended
-because `lib.ncl` validates the whole record at evaluation time —
-typos and wrong types are caught before the daemon ever sees the
-file. Other formats are validated by `serde(deny_unknown_fields)` at
-load time.
+Override with `--config <PATH>` or `HEIMDALL_CONFIG=<PATH>` if you
+keep the file elsewhere.
+
+Format selection is by extension (`.yaml` / `.json` / `.toml` /
+`.ncl`). Nickel is recommended because `lib.ncl` validates the whole
+record at evaluation time — typos and wrong types are caught before
+the daemon ever sees the file. Other formats are validated by
+`serde(deny_unknown_fields)` at load time.
 
 ## Bootstrap workflow
 
@@ -119,19 +123,22 @@ annotation/label overrides.
 ```nickel
 connections = {
   default = {
-    description = "Local v2raya — public internet egress",
+    description = "Public internet egress (e.g. local SOCKS5 proxy)",
     type        = "socks5",
-    addr        = "127.0.0.1:20170",
+    addr        = "127.0.0.1:1080",
   },
 
-  conviva = {
-    description = "Mac SOCKS5 → AnyConnect VPN",
-    owner       = "jwchen@conviva.ai",
+  # Example: a second upstream for a different egress path. Pick any
+  # name your charts will reference — keys with hyphens or dots must
+  # be quoted in Nickel record syntax (`"corp-vpn" = ...`); use a
+  # plain identifier (`corpVpn` / `internal`) to avoid the quoting.
+  internal = {
+    description = "Auth-protected SOCKS5 (e.g. corporate VPN gateway)",
     type        = "socks5",
-    addr        = "192.168.0.155:1080",
+    addr        = "10.0.0.1:1080",
     auth = {
-      username     = "draven",
-      passwordFile = "/etc/heimdall/secrets/conviva.pw",
+      username     = "alice",
+      passwordFile = "/etc/heimdall/secrets/internal.pw",
     },
   },
 
@@ -280,11 +287,11 @@ on a rule to make it a catchall.
 
 ### Boolean composition example
 
-"namespace is conviva AND (label X=foo OR label Y is one of [a, b])":
+"namespace is `payments` AND (label X=foo OR label Y is one of [a, b])":
 
 ```nickel
 {
-  namespaces = [ "conviva" ],
+  namespaces = [ "payments" ],
   any = [
     { matchLabels = { X = "foo" } },
     { matchExpressions = [
@@ -303,6 +310,51 @@ on a rule to make it a catchall.
 }
 ```
 
+## `cli` — defaults for `heimdall <subcommand>`
+
+Optional top-level field that lets every CLI default live in the
+same config file as routing. No `~/.config/heimdall/cli.toml`,
+nothing else to discover. Each subcommand hangs its config under
+`cli.<subcmd>`. Today only `cli.run` is consumed (by the planned
+proxychains-style `heimdall run`).
+
+```nickel
+cli = {
+  run = {
+    # Baseline applied when --profile is not given. Every field optional.
+    "default" = {
+      connection  = "default",       # connection name (or reserved "system")
+      observe     = true,             # capture plaintext via the tap
+      dns         = "fake",           # "fake" | "system" — DNS strategy
+      timeout     = 0,                 # seconds; 0 = no timeout
+      extraBypass = [],                # extra CIDRs to bypass for this command
+      tag         = "",                # free-form label, surfaces in flow log
+    },
+
+    # Named profiles selectable via --profile NAME. Inherits from
+    # default; override only the fields you care about.
+    profiles = {
+      internal = { connection = "internal" },
+      peek     = { tag = "interactive-debug" },
+      silent   = { observe = false },
+    },
+  },
+}
+```
+
+### Resolution order for `heimdall run`
+
+```
+flag (e.g. --connection X)
+  > [profile.NAME] in cli.run.profiles
+  > cli.run.default
+  > compiled-in fallback (connection="default", observe=true, dns="fake")
+```
+
+Adding more subcommand defaults later is non-breaking — just add a
+new `cli.<other-subcmd>` entry. All `cli.*` fields are optional, so
+existing configs continue to validate.
+
 ## Per-pod overrides (no config edit needed)
 
 Set on the pod's metadata:
@@ -310,10 +362,10 @@ Set on the pod's metadata:
 ```yaml
 metadata:
   annotations:
-    heimdall.io/routing: conviva   # pick a connection by name
+    heimdall.io/routing: internal  # pick a connection by name
     heimdall.io/observe: "true"    # force observe regardless of rule
   labels:
-    heimdall.io/routing: conviva   # labels work too; annotations win if both set
+    heimdall.io/routing: internal  # labels work too; annotations win if both set
 ```
 
 Annotation > label > rule > default. Annotations are usually a
