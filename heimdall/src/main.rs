@@ -30,6 +30,7 @@ mod bootstrap;
 mod bypass;
 mod cli;
 mod dns;
+mod gc;
 mod gosym;
 mod pod;
 mod policy;
@@ -227,7 +228,7 @@ struct Shared {
 
 /// Shared (cgroup_id → PodDecision) override map for `heimdall run`
 /// CLI processes. See `Shared.cli_overrides` for semantics.
-type CliOverrides = Arc<parking_lot::RwLock<StdHashMap<u64, heimdall_config::PodDecision>>>;
+pub type CliOverrides = Arc<parking_lot::RwLock<StdHashMap<u64, heimdall_config::PodDecision>>>;
 
 /// Late-bound policy engine slot. Constructed only when k8s informer
 /// is up; the HTTP API holds an Arc clone of this slot so register
@@ -665,6 +666,13 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
         *policy_engine_slot.lock() = Some(engine.clone());
         engine.spawn();
         info!("policy engine started");
+
+        // GC orphan `heimdall run` cgroups: when the wrapping CLI is
+        // killed before it can deregister + rmdir, the transient
+        // cgroup + BPF policy entry leak. Periodic walker reaps any
+        // empty `heimdall-cli-*` cgroups under user.slice.
+        gc::spawn(cli_overrides.clone(), policy_engine_slot.clone());
+        info!("orphan-cgroup GC spawned (interval 30s)");
     } else {
         warn!(
             "policy engine not started (no informer / cgroup resolver); \
