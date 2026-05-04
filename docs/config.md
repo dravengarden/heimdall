@@ -1,253 +1,261 @@
-# Configuration reference
+# heimdall config — directory layout & setup
 
-Path: `/etc/heimdall/config.yaml`. Loaded once at startup; restart
-the unit to pick up changes (`sudo systemctl restart heimdall`).
+Authoritative reference for **how heimdall reads configuration** on
+the the host. Schema details live in `heimdall-config/src/lib.rs`;
+this doc covers files-on-disk + the bootstrap workflow.
 
-## Two orthogonal axes
+> Single source of truth: this file is at
+> `~/heimdall/docs/config.md` and is symlinked into
+> `/etc/<host-config>/docs/services/heimdall-config.md` and
+> `~/corp/docs/heimdall.md`. Edit here.
+
+## Directory layout
 
 ```
-                  ┌────────────────── observe ──────────────────┐
-                  │                                              │
-                  │              true              false         │
-        ┌─────────┼──────────────────────┬──────────────────────┤
-        │         │                      │                      │
-        │ default │ proxy via v2raya     │ proxy via v2raya     │
-        │         │ + capture plaintext  │ + no plaintext       │
-        │         │                      │                      │
-        │  proxy  │                      │                      │
-        │ corp │ proxy via Mac        │ proxy via Mac        │
-        │         │ + capture plaintext  │ + no plaintext       │
-        │         │                      │                      │
-        │ system  │ no relay redirect    │ no relay redirect    │
-        │         │ + capture plaintext  │ + nothing            │
-        └─────────┴──────────────────────┴──────────────────────┘
-                                              ┌─── least heimdall
-                                              │    involvement
+/etc/heimdall/
+├── heimdall.ncl          ← main config (loaded by daemon)
+├── lib.ncl               ← Nickel schema contracts (imported by heimdall.ncl)
+└── secrets/              ← 0700 root:root, NOT in git
+    └── corp.pw        ← 0400 root:root, no trailing newline
 ```
 
-The two axes are fully independent:
+That's it. There is no `routing/` subdir, no `config.yaml`, no
+per-pod policy files. One main config + one schema lib + a secrets
+dir. The daemon supports YAML / JSON / TOML / Nickel via extension
+dispatch — **on the host we use Nickel** because `lib.ncl` validates the
+whole record at evaluation time (typos and wrong types are caught
+before the daemon ever sees the file).
 
-- A pod can pick `use: system` and still be observed (uprobes don't
-  depend on the relay path).
-- A pod can use the proxy but suppress observability (e.g. high-volume
-  database protocols where plaintext is uninteresting).
+The systemd unit (`services/heimdall/default.nix`) hard-codes:
 
-## Top-level structure
-
-```yaml
-apiVersion: heimdall.io/v1alpha1
-kind: HeimdallConfig
-
-runtime:        # eBPF + listener + retention knobs
-connections:    # named SOCKS5 / Direct upstreams
-routing:        # how each pod's (use, observe) is decided
+```
+ExecStart=/usr/local/bin/heimdall serve --config /etc/heimdall/heimdall.ncl
 ```
 
-## `runtime`
+If you want a different format, change `--format` on `heimdall init`,
+update the ExecStart path, `nixos-rebuild switch`.
+
+## Setup / bootstrap
+
+First-time setup (or reset):
+
+```bash
+# 1. Generate starter config + schema lib
+sudo /usr/local/bin/heimdall init --dir /etc/heimdall --format nickel
+
+# 2. Edit /etc/heimdall/heimdall.ncl — declare connections + rules
+
+# 3. Validate locally before restart (recommended)
+nix-shell -p nickel --run "cd /etc/heimdall && nickel export -f json heimdall.ncl > /dev/null"
+
+# 4. Apply
+sudo systemctl restart heimdall
+sudo journalctl -u heimdall -n 5 --no-pager | grep "config loaded"
+# expected: config loaded path=... connections=N pod_rules=M default_use=... default_observe=...
+```
+
+`heimdall init` writes:
+- `heimdall.<ext>` — main starter config
+- `lib.ncl` — schema contracts (Nickel format only)
+
+It does **not** touch `secrets/`. Add credentials by hand:
+
+```bash
+sudo install -d -m 0700 -o root -g root /etc/heimdall/secrets
+printf '%s' 'PASSWORD' | sudo tee /etc/heimdall/secrets/<name>.pw > /dev/null
+sudo chmod 0400 /etc/heimdall/secrets/<name>.pw
+```
+
+`--force` overwrites existing files. Without it, `init` refuses to
+clobber.
+
+## Schema (top-level)
+
+```nickel
+let h = import "lib.ncl" in
+{
+  apiVersion = "heimdall.io/v1alpha1",
+  kind       = "HeimdallConfig",
+
+  runtime     = { ... },             # eBPF + listener + retention knobs
+  connections = { name = { ... } },  # named SOCKS5 / direct upstreams
+  podRouting  = {                    # pod-selector → connection name
+    routingKey = "heimdall.io/routing",
+    observeKey = "heimdall.io/observe",
+    rules      = [ ... ],
+    "default"  = { use = "...", observe = ... },
+  },
+} | h.HeimdallConfig
+```
+
+### `runtime`
 
 | Key | Default | Meaning |
 |---|---|---|
-| `cgroup` | `/sys/fs/cgroup` | Path to attach `connect4` and `skb_egress` to. Use `/sys/fs/cgroup/kubepods` to scope to k8s only. |
-| `listen` | `0.0.0.0:12345` | Relay TCP listener (target of connect4 rewrite). |
-| `relayIp` | `127.0.0.1` | IPv4 the relay listens on as seen from pods. On k0s this is typically `cilium_host` (`10.244.0.41`). |
-| `bypassCidrs` | `[]` | Reserved; not yet wired into eBPF. |
-| `dnsListen` | `0.0.0.0:5358` | UDP listener for the fake-IP DNS server. CoreDNS forwards non-cluster zones here. |
-| `fakeIpCidr` | `198.19.0.0/16` | Pool to draw fake IPs from (RFC 2544 benchmark range). |
+| `cgroup` | `/sys/fs/cgroup` | Cgroup root to attach `connect4` + `skb_egress`. Use `/sys/fs/cgroup/kubepods` for k8s scope. |
+| `listen` | `0.0.0.0:12345` | Relay TCP listener. |
+| `relayIp` | `127.0.0.1` | IPv4 the relay listens on as seen from pods. On k0s use `cilium_host` (`10.244.0.41`). |
+| `bypassCidrs` | `[]` | Reserved; not yet wired. |
+| `dnsListen` | `0.0.0.0:5358` | Fake-IP DNS UDP listener. |
+| `fakeIpCidr` | `198.19.0.0/16` | Fake-IP pool (RFC 2544 benchmark range). |
+| `apiListen` | `127.0.0.1:9999` | HTTP API + Web UI. Use `0.0.0.0:9999` for LAN. |
 | `stateDir` | `/var/lib/heimdall` | sqlite + future blob storage. |
-| `flowRetentionSecs` | `259200` (3d) | Cleanup task drops flows + messages older than this. |
-| `apiListen` | `127.0.0.1:9999` | HTTP API + UI. Set `0.0.0.0:9999` for LAN access. |
-| `tap.enabled` | `false` | Master switch for the Phase B uprobe tap. When false, no /proc scan, no uprobes, no perf consumer. |
-| `tap.persist` | `false` | Within the tap, controls whether captured plaintext is written to the `messages` table. When false, events only show up in the journal logs. |
+| `flowRetentionSecs` | `259200` (3d) | Cleanup task drops rows older than this. |
+| `tap.enabled` | `false` | Master switch for Phase B uprobe tap. |
+| `tap.persist` | `false` | Within tap, write captured plaintext to `messages` table. |
 
-## `connections`
+### `connections`
 
-A registry of named upstream targets. Connection names are used in
-`routing` to pick where redirected traffic goes.
+```nickel
+connections = {
+  default = {
+    description = "Local v2raya — public internet",
+    type = "socks5",
+    addr = "127.0.0.1:20170",
+  },
+  corp = {
+    description = "Mac SOCKS5 → AnyConnect VPN",
+    owner       = "colleague@corp.ai",
+    type        = "socks5",
+    addr        = "<UPSTREAM_IP>:1080",
+    auth = {
+      username     = "draven",
+      passwordFile = "/etc/heimdall/secrets/corp.pw",
+    },
+  },
+  direct = { type = "direct" },
+}
+```
+
+| Field | Notes |
+|---|---|
+| `type` | `"socks5"` or `"direct"`. |
+| `addr` | Required for `socks5`. |
+| `auth` | Optional (RFC 1929 user/pass). `passwordFile` is read at daemon startup. |
+| `description`, `owner` | Free-form; surfaced in API + UI. |
+| `mitm` | Reserved for M5; parsed but ignored. |
+
+The reserved name `system` is **not** a connection — it means "no
+relay, eBPF lets the connection through untouched." Do not declare a
+`connections.system` entry.
+
+### `podRouting`
+
+Resolution order, top-down:
+
+```
+1. pod.annotations[routingKey]   ← annotation override (e.g. "system" / "corp")
+2. pod.labels     [routingKey]   ← label override
+3. first matching rule in podRouting.rules
+4. podRouting.default
+```
+
+`observe` resolves the same way through `observeKey` (default
+`heimdall.io/observe`); the two axes are independent.
+
+A rule has:
+
+```nickel
+{
+  name    = "string",        # optional, for logs
+  "match" = { ... },         # MatchCond; omit for catchall
+  use     = "default",       # connection name, or reserved "system"
+  observe = true,            # optional override of podRouting.default.observe
+}
+```
+
+### `MatchCond` (K8s LabelSelector + boolean ops)
+
+```nickel
+{
+  namespaces       = ["a", "b"],                # match on pod namespace
+  matchLabels      = { key = "value" },         # AND of equality
+  matchExpressions = [
+    { key = "app", operator = "In", values = ["x", "y"] },
+    { key = "env", operator = "NotIn", values = ["prod"] },
+    { key = "feature.flag", operator = "Exists" },
+    { key = "deprecated", operator = "DoesNotExist" },
+  ],
+
+  # Boolean composition — every leaf is itself a MatchCond
+  all = [ ... ],   # AND
+  any = [ ... ],   # OR
+  "not" = { ... }, # NOT  (`not` is reserved in Nickel; quote it)
+}
+```
+
+All present fields **AND** together. Boolean ops let you build
+arbitrary trees. Empty `MatchCond` (or `all = []`) matches everything.
+
+## The host's current rules (live config)
+
+```
+podRouting.rules:
+  cluster-infra        ns ∈ {kube-system, local-path-storage}            → use=system
+  corp-workloads    label app.k8s.io/part-of=corp  ∨  ns corp*  → use=corp, observe=true
+  observed-workloads   rancher / fleet / cert-manager / ingress / opik   → use=default, observe=true
+podRouting.default:    use=default, observe=false
+```
+
+The annotation/label override path (`heimdall.io/routing: <name>` on
+a pod) always wins over rules. So a Helm chart can opt into
+`corp` egress without touching this file:
 
 ```yaml
-connections:
-  default:
-    description: Local v2raya — default egress.
-    type: socks5
-    addr: 127.0.0.1:20170
-
-  corp:
-    description: SOCKS5 server on Mac (LAN). hev-socks5-server.
-    owner: colleague@corp.ai
-    type: socks5
-    addr: <UPSTREAM_IP>:1080
-    auth:
-      username: draven
-      passwordFile: /etc/heimdall/secrets/corp.pw
+# values.yaml
+podLabels:
+  heimdall.io/routing: corp
 ```
 
-Two connection types:
+## Smoke test
 
-- `type: socks5` — relay opens a SOCKS5 client to `addr`, optionally
-  with `auth.{username, passwordFile}`.
-- `type: direct` — relay direct-connects to the original destination
-  with no proxy layer. Useful for "see traffic but don't tunnel".
+After any rule change, verify routing decisions via the flows API:
 
-The reserved name `system` is **NOT** declared here — it's a
-keyword in `routing` that means "skip eBPF redirect entirely". The
-validator rejects a connection literally named `system`.
+```bash
+# Generate traffic from a pod that should match the rule under test:
+sudo KUBECONFIG=/var/lib/k0s/pki/admin.conf kubectl exec -n <ns> <pod> -- \
+  curl -ksSm 5 -o /dev/null https://www.cloudflare.com/
 
-`connections.default` is required: validation fails without it.
-
-## `routing`
-
-The decision pipeline for each pod. Two annotation keys are checked
-independently — set both, neither, or just one.
-
-```yaml
-routing:
-  connectionKey: heimdall.io/connection   # picks `use`
-  observeKey:    heimdall.io/observe      # picks `observe`
-
-  rules:
-    - name: cluster-infra
-      match:
-        namespaces: [kube-system, local-path-storage]
-      use: system
-      observe: false
-
-  default:
-    use: default
-    observe: true
+# Inspect the resulting flow:
+curl -sS "http://127.0.0.1:9999/api/flows?limit=20" \
+  | python3 -c "import json,sys; [print(f[\"namespace\"], f[\"connection_name\"], f[\"dst_host\"] or f[\"dst_ip\"]) for f in json.load(sys.stdin)]"
 ```
 
-### Resolution order (each axis independently)
+Expected:
+- `connection_name` = the `use:` your rule resolved to
+- `dst_host` = hostname (atyp=domain) when fake-IP DNS round-tripped;
+  IP literal (atyp=ip) means the pod connected by raw IP
 
-1. **Pod annotation** at the relevant key.
-2. **Pod label** at the same key.
-3. **`routing.rules`** — first rule that matches (rule's `use` and
-   `observe` are taken together).
-4. **`routing.default`**.
+For pods with `use: system`, **no flow record appears** (eBPF lets
+the connection skip the relay).
 
-So a pod with just `heimdall.io/observe: false` flips observe off
-while inheriting `use` from the default. Conversely a pod with
-`heimdall.io/connection: corp` keeps `observe` from whatever rule
-or default applies.
+For traffic where `dst_ip` is in the cluster CIDR or in the bypass
+list, you'll see `connection_name: bypass` — that's the synthetic
+log the eBPF bypass path emits, not a real relay flow.
 
-### Annotation values
+## Common edits
 
-- `heimdall.io/connection` — any name in `connections:` or the literal
-  string `system`.
-- `heimdall.io/observe` — `true | false | yes | no | on | off | 1 | 0`
-  (case-insensitive). Anything unparseable falls through to the next
-  layer of resolution.
+| What | Where |
+|---|---|
+| Add a new SOCKS5 upstream | `connections.<name>` + `secrets/<name>.pw` (if auth) |
+| Route a namespace to it | new entry in `podRouting.rules` with `use = "<name>"` |
+| Per-pod override | label/annotation `heimdall.io/routing: <name>` (no config edit) |
+| Skip relay for some pods | `use = "system"` |
+| Capture plaintext | `observe = true` (rule or default) + `runtime.tap.enabled = true` |
 
-### Match block
+## Where things break
 
-K8s LabelSelector-compatible plus an optional namespace filter.
+- Misspelled `use:` — caught at startup: `unknown use 'foo' in pod rule`.
+- Misspelled MatchCond field — caught at Nickel evaluation:
+  `unknown field 'namespace', expected one of 'namespaces', 'matchLabels', ...`.
+- Forgotten `secrets/<name>.pw` — daemon refuses to start; create the file then restart.
+- `nickel` not in PATH — systemd unit bundles it via `path = [ pkgs.nickel ]`.
+  Hand-validating from a fish shell needs `nix-shell -p nickel --run ...`.
+- Editing CoreDNS forward target by hand — k0s overwrites it. The
+  fix lives in `services/k0s/default.nix:k0s-coredns-patch`.
 
-```yaml
-match:
-  matchLabels:                       # all-of
-    family: corp
-  matchExpressions:                  # all-of
-    - { key: env, operator: In,         values: [prod, stg] }
-    - { key: tier, operator: NotIn,     values: [data] }
-    - { key: legacy, operator: Exists }
-    - { key: external, operator: DoesNotExist }
-  namespaces: [corp-prod, corp-stg]
-```
+## Related
 
-`deny_unknown_fields` is on for the schema. `matchLables` (typo) and
-similar are rejected at load.
-
-## Reference: cluster cases
-
-Concrete rules from the deployed config on this k0s cluster, with
-the labels each rule actually matches. Maintained when the cluster
-inventory changes — see [runbook.md](runbook.md).
-
-| Rule | Targets | `use` | `observe` |
-|---|---|---|---|
-| `cluster-infra` | `kube-system`, `local-path-storage` namespaces | `system` | `false` |
-| `cert-manager-noisy` | `cert-manager` ns + `app.kubernetes.io/name in [cainjector, webhook]` | `default` | `false` |
-| `rancher-webhook` | `cattle-system` + `app: rancher-webhook` | `default` | `false` |
-| `cattle-controllers` | `cattle-capi-system`, `cattle-turtles-system` namespaces | `default` | `false` |
-| `fleet-controller` | `cattle-fleet-system` + `app: fleet-controller` | `default` | `false` |
-| `data-stores` | `app.kubernetes.io/name in [mysql, minio, redis, zookeeper-opik, postgresql, postgres]` | `default` | `false` |
-| (default) | everything else (rancher, cert-manager leaf, ingress-nginx, fleet-agent / gitjob / helmops, opik backend pods, etc.) | `default` | `true` |
-
-Pods picked up by `cluster-infra` do **both**: skip the eBPF redirect
-**and** suppress tap events. Pods picked up by `cattle-controllers`
-still go through the proxy (so external API calls work), they just
-don't pollute the messages table with their leader-election leases.
-
-## Per-pod overrides
-
-```yaml
-metadata:
-  annotations:
-    heimdall.io/connection: corp     # route this pod via Mac
-    heimdall.io/observe:    "true"      # force observe even if a rule says false
-```
-
-Annotations win over rules. Use sparingly — usually it's better to
-add a rule so the policy is grep-able from one place.
-
-## All six (`use` × `observe`) combinations as YAML
-
-```yaml
-# 1. Default for most user workloads — proxy via v2raya, capture plaintext.
-default:
-  use: default
-  observe: true
-
-# 2. Noisy controller — proxy as normal, but silence the tap.
-- name: cattle-controllers
-  match: { namespaces: [cattle-capi-system, cattle-turtles-system] }
-  use: default
-  observe: false
-
-# 3. Pod that needs corporate VPN routing AND observation (the dev case).
-metadata:
-  annotations:
-    heimdall.io/connection: corp
-    heimdall.io/observe: "true"
-
-# 4. Same routing as #3, plaintext suppressed (e.g. own credentials in flight).
-metadata:
-  annotations:
-    heimdall.io/connection: corp
-    heimdall.io/observe: "false"
-
-# 5. Cluster infrastructure — bypass the relay entirely AND silence tap.
-- name: cluster-infra
-  match: { namespaces: [kube-system, local-path-storage] }
-  use: system
-  observe: false
-
-# 6. Pod that should bypass the relay (host-network style) but you DO
-#    want to see its TLS plaintext. No example currently in this
-#    cluster, but configurable:
-metadata:
-  annotations:
-    heimdall.io/connection: system
-    heimdall.io/observe: "true"
-```
-
-## `RoutingDecision` flag encoding
-
-For reference, `policy.rs::encode` maps a `RoutingDecision` to the
-byte stored in `CGROUP_POLICY`:
-
-```
-flags = 0x00
-if use == "system":  flags |= POLICY_REDIRECT_OFF   (0x01)
-if !observe:         flags |= POLICY_OBSERVE_OFF |
-                              POLICY_NO_BYPASS_LOG  (0x06)
-```
-
-So in the BPF map:
-
-| Value | Meaning | Cluster pods |
-|---|---|---|
-| `0x00` | observe + redirect (the default) | rancher, ingress-nginx, opik backends, cert-manager leaf, fleet-agent / gitjob / helmops |
-| `0x06` | observe off, redirect on | webhooks, cainjector, capi/turtles, fleet-controller, mysql/redis/minio |
-| `0x07` | observe off, redirect off | kube-system, local-path-storage |
-
-`bpftool map dump name CGROUP_POLICY` will show this directly.
+- Service module (NixOS): `/etc/<host-config>/services/heimdall/default.nix`
+- Architecture / data flow: `/etc/<host-config>/docs/services/heimdall.md`
+- Corp networking context: `~/corp/docs/networking.md`
