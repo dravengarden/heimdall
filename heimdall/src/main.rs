@@ -31,6 +31,7 @@ mod dns;
 mod pod;
 mod router;
 mod store;
+mod tap;
 
 use std::{
     collections::HashMap as StdHashMap,
@@ -178,6 +179,35 @@ struct Shared {
     /// Live flow event bus — relay publishes finish events,
     /// API WebSocket subscribers consume.
     events: api::EventBus,
+    /// Phase B: cgroup_id → most-recently-opened active flow_id, used
+    /// to correlate libssl uprobe events with the flow row written by
+    /// the relay. Empty when the tap is disabled.
+    open_flows: Arc<parking_lot::RwLock<StdHashMap<u64, Vec<i64>>>>,
+}
+
+impl Shared {
+    /// Record that a flow with this cgroup_id is now open. The tap
+    /// consumer prefers the most recent open flow when correlating.
+    fn open_flow_push(&self, cgroup_id: u64, flow_id: i64) {
+        self.open_flows.write().entry(cgroup_id).or_default().push(flow_id);
+    }
+
+    /// Mark a flow finished. We remove this exact id rather than the
+    /// last one to handle interleaved finishes within the same cgroup.
+    fn open_flow_pop(&self, cgroup_id: u64, flow_id: i64) {
+        let mut g = self.open_flows.write();
+        if let Some(v) = g.get_mut(&cgroup_id) {
+            v.retain(|&x| x != flow_id);
+            if v.is_empty() {
+                g.remove(&cgroup_id);
+            }
+        }
+    }
+
+    /// Most recent active flow_id for this cgroup_id, if any.
+    fn open_flow_latest(&self, cgroup_id: u64) -> Option<i64> {
+        self.open_flows.read().get(&cgroup_id).and_then(|v| v.last().copied())
+    }
 }
 
 /// SOCKS5 destination — either an IP literal (ATYP=0x01) or a hostname
@@ -326,6 +356,7 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
         dns,
         store,
         events,
+        open_flows: Arc::new(parking_lot::RwLock::new(StdHashMap::new())),
     });
 
     // ─── Load eBPF object and attach programs ─────────────────────────────
@@ -365,6 +396,38 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
     let port_map: PortMap = Arc::new(RwLock::new(
         HashMap::try_from(bpf.take_map("PORT_MAP").context("PORT_MAP not found")?)?,
     ));
+
+    // ─── Phase B: TLS plaintext tap (libssl uprobes) ──────────────────────
+    if shared.cfg.runtime.tap.enabled {
+        match tap::start(&mut bpf) {
+            Ok(handle) => {
+                let persist = shared.cfg.runtime.tap.persist;
+                info!(
+                    attached_libs = handle.attached_libs,
+                    persist,
+                    "tap: started (Phase B)"
+                );
+                match (persist, shared.store.as_ref()) {
+                    (true, Some(s)) => {
+                        let shared_for_corr = shared.clone();
+                        tap::spawn_store_writer(handle, s.clone(), move |cg| {
+                            shared_for_corr.open_flow_latest(cg)
+                        });
+                    }
+                    (true, None) => {
+                        warn!("tap: persist=true but store unavailable; falling back to journal only");
+                        tap::spawn_journal_logger(handle);
+                    }
+                    (false, _) => tap::spawn_journal_logger(handle),
+                }
+            }
+            Err(e) => {
+                warn!(error = %e, "tap: failed to start; relay continues without it");
+            }
+        }
+    } else {
+        debug!("tap: disabled (runtime.tap.enabled = false)");
+    }
 
     // ─── Relay listener ────────────────────────────────────────────────────
     let listener = TcpListener::bind(&shared.cfg.runtime.listen)
@@ -454,7 +517,7 @@ async fn relay(
         };
         match s
             .insert_flow_start(store::FlowStart {
-                socket_cookie: None, // Phase B will plumb from eBPF
+                socket_cookie: Some(orig.socket_cookie),
                 cgroup_id: Some(orig.cgroup_id),
                 pod_uid: pod_info.as_ref().map(|p| p.uid.clone()),
                 namespace: pod_info.as_ref().map(|p| p.namespace.clone()),
@@ -468,7 +531,11 @@ async fn relay(
             })
             .await
         {
-            Ok(id) => Some(id),
+            Ok(id) => {
+                // Make this flow visible to the tap consumer for correlation.
+                shared.open_flow_push(orig.cgroup_id, id);
+                Some(id)
+            }
             Err(e) => {
                 warn!(error = %e, "store: insert_flow_start failed");
                 None
@@ -540,6 +607,9 @@ async fn relay(
         } else {
             shared.events.publish(api::FlowEvent { flow_id: id });
         }
+        // Drop from the open-flow index so future tap events no longer
+        // attribute plaintext to this flow.
+        shared.open_flow_pop(orig.cgroup_id, id);
     }
 
     result.map(|_| ())

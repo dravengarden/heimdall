@@ -7,6 +7,10 @@
 /// `ip` and `port` are in network byte order. `cgroup_id` is the leaf
 /// cgroup id of the calling process (from `bpf_get_current_cgroup_id`),
 /// used by userspace to resolve pod identity (labels / annotations).
+/// `socket_cookie` is the kernel's per-socket identifier
+/// (`bpf_get_socket_cookie`); the userspace relay uses it to correlate
+/// a flow with TLS plaintext events emitted by the tap (Phase B
+/// uprobes).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct OrigDst {
@@ -18,7 +22,56 @@ pub struct OrigDst {
     /// Leaf cgroup id of the process that called connect().
     /// 0 if not captured (older builds; treat as "unknown pod").
     pub cgroup_id: u64,
+    /// Kernel socket cookie of the underlying TCP socket (set by
+    /// `bpf_get_socket_cookie` in connect4). Stable for the lifetime of
+    /// the connection and shared with eBPF kprobes / uprobes that can
+    /// look up the same cookie on the same socket.
+    pub socket_cookie: u64,
 }
+
+// ---------------------------------------------------------------------------
+// Phase B — TLS plaintext tap
+// ---------------------------------------------------------------------------
+
+/// Direction of a [`TapEvent`].
+#[repr(u32)]
+#[derive(Clone, Copy, Debug)]
+pub enum TapDir {
+    Send = 0,
+    Recv = 1,
+}
+
+/// Inline buffer length for [`TapEvent::data`]. Values above this are
+/// truncated; userspace records `total_len` separately so it knows how
+/// many bytes were really written/read.
+pub const TAP_DATA_LEN: usize = 256;
+
+/// Single SSL_write entry / SSL_read return event emitted by an eBPF
+/// uprobe to a perf event array. Fixed-size so the verifier is happy.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TapEvent {
+    /// `bpf_get_current_pid_tgid`: high 32 bits = tgid, low 32 = pid.
+    pub tgid_pid: u64,
+    /// `bpf_ktime_get_ns()` at uprobe entry/return.
+    pub ts_ns: u64,
+    /// `bpf_get_current_cgroup_id()` of the calling task. Userspace uses
+    /// this to correlate the captured plaintext with a flow recorded by
+    /// the relay (which stamped the same cgroup_id at connect4 time).
+    pub cgroup_id: u64,
+    /// 0 = send (SSL_write), 1 = recv (SSL_read return).
+    pub dir: u32,
+    /// Bytes captured into `data` (≤ TAP_DATA_LEN).
+    pub captured_len: u32,
+    /// SSL_write's `num` argument or SSL_read's return value (full size
+    /// the application asked for / received).
+    pub total_len: u32,
+    pub _pad: u32,
+    pub data: [u8; TAP_DATA_LEN],
+}
+
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for TapEvent {}
 
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for OrigDst {}

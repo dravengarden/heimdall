@@ -50,6 +50,26 @@ const SCHEMA: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_flows_pod ON flows(pod_uid)",
     "CREATE INDEX IF NOT EXISTS idx_flows_connection ON flows(connection_name)",
     "CREATE INDEX IF NOT EXISTS idx_flows_dst_host ON flows(dst_host)",
+    // ── Phase B: TLS plaintext messages, captured at libssl boundary.
+    //
+    // flow_id is nullable: tap events arrive before / after a flow's
+    // recorded lifetime, or for processes outside the relay's cgroup
+    // (e.g. host openssl). cgroup_id is always present (eBPF stamps it)
+    // and lets us filter even when correlation fails.
+    r#"CREATE TABLE IF NOT EXISTS messages (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        flow_id       INTEGER,
+        ts_us         INTEGER NOT NULL,
+        cgroup_id     INTEGER NOT NULL,
+        tgid          INTEGER NOT NULL,
+        dir           INTEGER NOT NULL,
+        total_len     INTEGER NOT NULL,
+        captured_len  INTEGER NOT NULL,
+        body          BLOB NOT NULL
+    )"#,
+    "CREATE INDEX IF NOT EXISTS idx_messages_flow ON messages(flow_id, ts_us)",
+    "CREATE INDEX IF NOT EXISTS idx_messages_cgroup_ts ON messages(cgroup_id, ts_us)",
+    "CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(ts_us DESC)",
 ];
 
 #[derive(Debug, Clone)]
@@ -107,6 +127,46 @@ pub struct ListQuery {
     pub pod_substr: Option<String>,
     pub connection: Option<String>,
     pub host_substr: Option<String>,
+}
+
+// ─── Phase B: messages ──────────────────────────────────────────────────
+
+/// One captured plaintext chunk at the libssl boundary (one SSL_write
+/// or one SSL_read return). `body` is up to TAP_DATA_LEN bytes; if
+/// `total_len > captured_len` the application sent / received more than
+/// what we sampled.
+#[derive(Debug, Clone)]
+pub struct InsertMessage {
+    pub flow_id: Option<i64>,
+    pub ts_us: i64,
+    pub cgroup_id: i64,
+    pub tgid: i64,
+    /// 0 = send (SSL_write), 1 = recv (SSL_read return).
+    pub dir: u32,
+    pub total_len: i64,
+    pub body: Vec<u8>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+pub struct Message {
+    pub id: i64,
+    pub flow_id: Option<i64>,
+    pub ts_us: i64,
+    pub cgroup_id: i64,
+    pub tgid: i64,
+    pub dir: i64,
+    pub total_len: i64,
+    pub captured_len: i64,
+    pub body: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MessageQuery {
+    pub limit: u32,
+    pub flow_id: Option<i64>,
+    pub cgroup_id: Option<i64>,
+    pub since_us: Option<i64>,
 }
 
 #[derive(Clone)]
@@ -231,11 +291,69 @@ impl Store {
 
     pub async fn cleanup_older_than(&self, secs: i64) -> Result<u64> {
         let cutoff = now_micros() - secs.saturating_mul(1_000_000);
+        let mut total = 0u64;
         let r = sqlx::query("DELETE FROM flows WHERE ts_start_us < ?")
             .bind(cutoff)
             .execute(&self.pool)
             .await?;
-        Ok(r.rows_affected())
+        total += r.rows_affected();
+        // Messages share the same retention. Delete by ts_us so we still
+        // drop messages whose flow_id is NULL (host openssl, etc.).
+        let r = sqlx::query("DELETE FROM messages WHERE ts_us < ?")
+            .bind(cutoff)
+            .execute(&self.pool)
+            .await?;
+        total += r.rows_affected();
+        Ok(total)
+    }
+
+    pub async fn insert_message(&self, m: InsertMessage) -> Result<i64> {
+        let captured_len = m.body.len() as i64;
+        let r = sqlx::query(
+            r#"INSERT INTO messages (
+                flow_id, ts_us, cgroup_id, tgid, dir,
+                total_len, captured_len, body
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"#,
+        )
+        .bind(m.flow_id)
+        .bind(m.ts_us)
+        .bind(m.cgroup_id)
+        .bind(m.tgid)
+        .bind(m.dir as i64)
+        .bind(m.total_len)
+        .bind(captured_len)
+        .bind(&m.body)
+        .execute(&self.pool)
+        .await?;
+        Ok(r.last_insert_rowid())
+    }
+
+    pub async fn list_messages(&self, q: MessageQuery) -> Result<Vec<Message>> {
+        let limit = q.limit.max(1).min(10_000) as i64;
+        let mut sql = String::from("SELECT * FROM messages WHERE 1=1");
+        if q.flow_id.is_some() {
+            sql.push_str(" AND flow_id = ?");
+        }
+        if q.cgroup_id.is_some() {
+            sql.push_str(" AND cgroup_id = ?");
+        }
+        if q.since_us.is_some() {
+            sql.push_str(" AND ts_us >= ?");
+        }
+        sql.push_str(" ORDER BY ts_us ASC, id ASC LIMIT ?");
+
+        let mut query = sqlx::query_as::<_, Message>(&sql);
+        if let Some(f) = q.flow_id {
+            query = query.bind(f);
+        }
+        if let Some(c) = q.cgroup_id {
+            query = query.bind(c);
+        }
+        if let Some(t) = q.since_us {
+            query = query.bind(t);
+        }
+        let rows = query.bind(limit).fetch_all(&self.pool).await?;
+        Ok(rows)
     }
 }
 

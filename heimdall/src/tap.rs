@@ -1,0 +1,398 @@
+//! Phase B — TLS plaintext tap via libssl uprobes.
+//!
+//! Pipeline:
+//!
+//!   /proc/*/maps → unique libssl files (deduped by inode + dev)
+//!       │
+//!       │ aya UProbe::attach(SSL_write / SSL_read entry / SSL_read return)
+//!       ▼
+//!   eBPF uprobe programs emit TapEvent → TAP_EVENTS perf array
+//!       │
+//!       ▼
+//!   AsyncPerfEventArray (one buffer per CPU) → mpsc::Sender<ObservedTap>
+//!
+//! Caveats / scope:
+//!  * OpenSSL only for v0. rustls / Java will need different program logic.
+//!  * Symbol resolution via the dynsym table (libssl exports SSL_write and
+//!    SSL_read). If a build strips them, attach fails for that file.
+//!  * We attach by *file path*, not pid. One attach catches every process
+//!    that maps that libssl image (including pods and the host). Userspace
+//!    can later filter events by tgid → cgroup_id → pod_uid.
+//!
+//! Future work tracked elsewhere:
+//!  * rustls — uprobe pattern matching + correlate via recvfrom(fd).
+//!  * Java/JVM — JVMTI agent + native stub probed via uprobe.
+//!  * Live discovery — re-scan periodically or via fanotify on cgroup procs.
+
+use std::{
+    collections::{HashMap as StdHashMap, HashSet},
+    fs::{self, File},
+    io::{BufRead, BufReader},
+    os::unix::fs::MetadataExt,
+    path::{Path, PathBuf},
+};
+
+use anyhow::{Context, Result};
+use aya::{
+    maps::AsyncPerfEventArray,
+    programs::UProbe,
+    util::online_cpus,
+    Ebpf,
+};
+use bytes::BytesMut;
+use heimdall_common::{TapDir, TapEvent, TAP_DATA_LEN};
+use tokio::sync::mpsc;
+use tracing::{debug, info, warn};
+
+/// One captured SSL_write call or SSL_read return, ready for the daemon
+/// to correlate with a flow via cgroup_id.
+#[derive(Debug, Clone)]
+pub struct ObservedTap {
+    pub tgid: u32,
+    pub pid: u32,
+    /// Leaf cgroup id of the task that made the SSL call. The relay
+    /// stamps the same value into `flows.cgroup_id` at connect4 time,
+    /// so we can match plaintext to the right flow without /proc walks.
+    pub cgroup_id: u64,
+    pub ts_ns: u64,
+    pub dir: TapDir,
+    pub total_len: u32,
+    pub captured: Vec<u8>,
+}
+
+/// Receiver end of the tap pipeline. Daemon owns this and reads events.
+pub struct TapHandle {
+    pub events: mpsc::Receiver<ObservedTap>,
+    /// Number of unique libssl images we successfully attached uprobes to.
+    pub attached_libs: usize,
+}
+
+/// Initialize the tap: scan processes for libssl, attach uprobes, spawn
+/// per-CPU perf consumers. Returns an `mpsc::Receiver` of decoded events.
+///
+/// On any single-step error this returns an empty handle (0 attached libs)
+/// rather than failing — the relay should keep working even when the tap
+/// can't.
+pub fn start(bpf: &mut Ebpf) -> Result<TapHandle> {
+    // ─── Discover libssl images ──────────────────────────────────────────
+    let libs = scan_libssl();
+    if libs.is_empty() {
+        info!("tap: no libssl mappings found in /proc; nothing to attach");
+        let (_, rx) = mpsc::channel(1);
+        return Ok(TapHandle { events: rx, attached_libs: 0 });
+    }
+    info!(count = libs.len(), "tap: libssl candidates discovered");
+
+    // ─── Attach uprobes per unique libssl ────────────────────────────────
+    let mut attached: usize = 0;
+    for lib in &libs {
+        match attach_one(bpf, &lib.path) {
+            Ok(()) => {
+                attached += 1;
+                info!(path = %lib.path.display(), "tap: uprobes attached");
+            }
+            Err(e) => {
+                warn!(path = %lib.path.display(), error = %e, "tap: uprobe attach failed");
+            }
+        }
+    }
+
+    // ─── Open perf event consumers ───────────────────────────────────────
+    let (tx, rx) = mpsc::channel::<ObservedTap>(8192);
+
+    let map = bpf
+        .take_map("TAP_EVENTS")
+        .context("TAP_EVENTS map not found in eBPF object")?;
+    let mut perf: AsyncPerfEventArray<_> = AsyncPerfEventArray::try_from(map)?;
+
+    let cpus = online_cpus().map_err(|(s, e)| anyhow::anyhow!("online_cpus({s}): {e}"))?;
+    for cpu in cpus {
+        let buf = perf
+            .open(cpu, None)
+            .with_context(|| format!("open perf buffer on cpu {cpu}"))?;
+        let tx = tx.clone();
+        tokio::spawn(consumer_loop(buf, tx, cpu));
+    }
+
+    Ok(TapHandle { events: rx, attached_libs: attached })
+}
+
+/// Per-CPU perf event consumer. Decodes raw TapEvent bytes into ObservedTap
+/// and forwards to the daemon via an mpsc channel. The channel can drop
+/// events under backpressure (try_send) — the relay path stays unblocked.
+async fn consumer_loop(
+    mut buf: aya::maps::perf::AsyncPerfEventArrayBuffer<aya::maps::MapData>,
+    tx: mpsc::Sender<ObservedTap>,
+    cpu: u32,
+) {
+    // 16 buffers x event_size, enough headroom for bursty TLS reads.
+    let event_size = std::mem::size_of::<TapEvent>();
+    let mut bufs: Vec<BytesMut> = (0..16)
+        .map(|_| BytesMut::with_capacity(event_size))
+        .collect();
+
+    loop {
+        let events = match buf.read_events(&mut bufs).await {
+            Ok(e) => e,
+            Err(e) => {
+                warn!(cpu, error = %e, "tap: perf buffer read error, exiting");
+                return;
+            }
+        };
+        if events.lost > 0 {
+            warn!(cpu, lost = events.lost, "tap: perf buffer dropped events");
+        }
+        for slot in bufs.iter_mut().take(events.read) {
+            if let Some(ev) = decode(slot) {
+                let _ = tx.try_send(ev);
+            }
+        }
+    }
+}
+
+fn decode(raw: &BytesMut) -> Option<ObservedTap> {
+    if raw.len() < std::mem::size_of::<TapEvent>() {
+        return None;
+    }
+    // Safe: TapEvent is #[repr(C)] of plain integers + a fixed-size byte
+    // array, no padding-sensitive interpretation, and we just memcpy.
+    let mut ev: TapEvent = unsafe { std::mem::zeroed() };
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            raw.as_ptr(),
+            (&mut ev as *mut TapEvent) as *mut u8,
+            std::mem::size_of::<TapEvent>(),
+        );
+    }
+    let dir = match ev.dir {
+        0 => TapDir::Send,
+        1 => TapDir::Recv,
+        _ => return None,
+    };
+    let tgid = (ev.tgid_pid >> 32) as u32;
+    let pid = ev.tgid_pid as u32;
+    let cap = ev.captured_len.min(TAP_DATA_LEN as u32) as usize;
+    Some(ObservedTap {
+        tgid,
+        pid,
+        cgroup_id: ev.cgroup_id,
+        ts_ns: ev.ts_ns,
+        dir,
+        total_len: ev.total_len,
+        captured: ev.data[..cap].to_vec(),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// libssl discovery — scan /proc/*/maps for unique inode mappings
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+struct LibImage {
+    /// Host-visible path (e.g. /proc/<pid>/root/usr/lib/libssl.so.3) —
+    /// works for processes in mount namespaces (containers).
+    path: PathBuf,
+    /// (dev, inode) for dedup; we keep one path per unique pair.
+    #[allow(dead_code)]
+    dev: u64,
+    #[allow(dead_code)]
+    inode: u64,
+}
+
+fn scan_libssl() -> Vec<LibImage> {
+    let mut by_inode: StdHashMap<(u64, u64), LibImage> = StdHashMap::new();
+
+    let entries = match fs::read_dir("/proc") {
+        Ok(d) => d,
+        Err(e) => {
+            warn!(error = %e, "tap: cannot read /proc");
+            return Vec::new();
+        }
+    };
+
+    for entry in entries.flatten() {
+        let pid: u32 = match entry.file_name().to_str().and_then(|s| s.parse().ok()) {
+            Some(p) => p,
+            None => continue,
+        };
+
+        let maps_path = format!("/proc/{pid}/maps");
+        let f = match File::open(&maps_path) {
+            Ok(f) => f,
+            Err(_) => continue, // process gone or unreadable
+        };
+
+        // Use a per-pid set of paths we've already seen in *this* maps file
+        // so we don't try to stat the same `r--p`/`r-xp` twice.
+        let mut seen_in_pid: HashSet<String> = HashSet::new();
+
+        for line in BufReader::new(f).lines().flatten() {
+            // Format: addr_lo-addr_hi perms offset dev inode  pathname
+            //   7f...000-7f...000 r-xp 00000000 fd:00 1234567 /usr/lib/libssl.so.3
+            // We accept any executable-mapped libssl image; we'll attach
+            // SSL_write/SSL_read symbols which live in .text anyway.
+            let pathname_idx = match line.match_indices(' ').nth(5) {
+                Some((i, _)) => i + 1,
+                None => continue,
+            };
+            let pathname = line[pathname_idx..].trim();
+            if pathname.is_empty() || !is_libssl(pathname) {
+                continue;
+            }
+            if !seen_in_pid.insert(pathname.to_string()) {
+                continue;
+            }
+
+            // Resolve via /proc/<pid>/root so we read the file as the
+            // container sees it, not the host (paths can collide).
+            let host_path = PathBuf::from(format!("/proc/{pid}/root{pathname}"));
+            let meta = match fs::metadata(&host_path) {
+                Ok(m) => m,
+                Err(e) => {
+                    debug!(path = %host_path.display(), error = %e, "tap: stat failed, skipping");
+                    continue;
+                }
+            };
+            let key = (meta.dev(), meta.ino());
+            by_inode.entry(key).or_insert(LibImage {
+                path: host_path,
+                dev: meta.dev(),
+                inode: meta.ino(),
+            });
+        }
+    }
+
+    by_inode.into_values().collect()
+}
+
+fn is_libssl(p: &str) -> bool {
+    // Match `libssl.so`, `libssl.so.3`, `libssl.so.1.1`, etc. anywhere in
+    // the path. We deliberately do not accept `libsslN.so` or musl variants
+    // here — that's a future iteration.
+    let fname = match Path::new(p).file_name().and_then(|s| s.to_str()) {
+        Some(f) => f,
+        None => return false,
+    };
+    fname == "libssl.so"
+        || fname.starts_with("libssl.so.")
+}
+
+// ---------------------------------------------------------------------------
+// Uprobe attach — wires our 3 BPF programs to one libssl image
+// ---------------------------------------------------------------------------
+
+fn attach_one(bpf: &mut Ebpf, target: &Path) -> Result<()> {
+    // SSL_write — entry-only, captures plaintext send.
+    // ProbeKind (uprobe vs uretprobe) is set by the eBPF section name,
+    // which the `#[uprobe]` / `#[uretprobe]` attribute on the kernel
+    // program already determines — no need to assert it here.
+    {
+        let prog: &mut UProbe = bpf
+            .program_mut("ssl_write")
+            .context("ssl_write program not found")?
+            .try_into()?;
+        // load() is a no-op the second time we hit it for the same program,
+        // but we must call it at least once. Errors here usually mean
+        // "already loaded", which is fine on per-image attach iterations.
+        let _ = prog.load();
+        prog.attach(Some("SSL_write"), 0, target, None)
+            .with_context(|| format!("attach SSL_write at {}", target.display()))?;
+    }
+
+    // SSL_read — entry stashes buf pointer keyed by tgid_pid.
+    {
+        let prog: &mut UProbe = bpf
+            .program_mut("ssl_read_enter")
+            .context("ssl_read_enter program not found")?
+            .try_into()?;
+        let _ = prog.load();
+        prog.attach(Some("SSL_read"), 0, target, None)
+            .with_context(|| format!("attach SSL_read entry at {}", target.display()))?;
+    }
+
+    // SSL_read return — reads stash, copies `ret` bytes from buf, emits.
+    {
+        let prog: &mut UProbe = bpf
+            .program_mut("ssl_read_exit")
+            .context("ssl_read_exit program not found")?
+            .try_into()?;
+        let _ = prog.load();
+        prog.attach(Some("SSL_read"), 0, target, None)
+            .with_context(|| format!("attach SSL_read return at {}", target.display()))?;
+    }
+
+    Ok(())
+}
+
+/// Convenience: spawn a logger task that drains a TapHandle and writes
+/// each event to the tracing journal at INFO level. Used during
+/// development to confirm uprobes are firing without persisting.
+pub fn spawn_journal_logger(mut handle: TapHandle) {
+    tokio::spawn(async move {
+        info!(attached_libs = handle.attached_libs, "tap: journal logger started");
+        while let Some(ev) = handle.events.recv().await {
+            let preview = String::from_utf8_lossy(
+                &ev.captured[..ev.captured.len().min(96)],
+            )
+            .replace('\n', "\\n")
+            .replace('\r', "\\r");
+            let dir = match ev.dir {
+                TapDir::Send => "SEND",
+                TapDir::Recv => "RECV",
+            };
+            info!(
+                "tap[{} cg={} tgid={} total={} cap={}]: {}",
+                dir, ev.cgroup_id, ev.tgid, ev.total_len, ev.captured.len(), preview
+            );
+        }
+        warn!("tap: journal logger stopped (channel closed)");
+    });
+}
+
+/// Drain a TapHandle into the sqlite store. Each event becomes a row in
+/// `messages`. The provided `correlate` closure resolves cgroup_id to a
+/// flow_id for the open-flow index (NULL when nothing matches).
+///
+/// Insertion is best-effort: errors are logged and the loop continues —
+/// a transient sqlite error must not stall the perf consumers (which
+/// would back up the kernel ring buffer).
+pub fn spawn_store_writer<F>(
+    mut handle: TapHandle,
+    store: std::sync::Arc<crate::store::Store>,
+    correlate: F,
+)
+where
+    F: Fn(u64) -> Option<i64> + Send + Sync + 'static,
+{
+    tokio::spawn(async move {
+        info!(
+            attached_libs = handle.attached_libs,
+            "tap: store writer started (messages will persist)"
+        );
+        // Use SystemTime at message-receive time. The eBPF ev.ts_ns is
+        // monotonic kernel time and does not match wall-clock ts_us
+        // used in the flows table; we'd need a kallsyms-style offset to
+        // convert. For now, "wall clock at userspace dequeue" is good
+        // enough for ordering within a flow — events arrive < 10ms
+        // after the syscall.
+        while let Some(ev) = handle.events.recv().await {
+            let flow_id = correlate(ev.cgroup_id);
+            let msg = crate::store::InsertMessage {
+                flow_id,
+                ts_us: crate::store::now_micros(),
+                cgroup_id: ev.cgroup_id as i64,
+                tgid: ev.tgid as i64,
+                dir: match ev.dir {
+                    TapDir::Send => 0,
+                    TapDir::Recv => 1,
+                },
+                total_len: ev.total_len as i64,
+                body: ev.captured,
+            };
+            if let Err(e) = store.insert_message(msg).await {
+                warn!(error = %e, "tap: insert_message failed");
+            }
+        }
+        warn!("tap: store writer stopped (channel closed)");
+    });
+}

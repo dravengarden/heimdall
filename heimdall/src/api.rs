@@ -32,7 +32,7 @@ use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{info, warn};
 
-use crate::store::{Flow, ListQuery, Store};
+use crate::store::{Flow, ListQuery, Message as StoreMessage, MessageQuery, Store};
 
 // ---------------------------------------------------------------------------
 // Live flow event bus — relay → broadcast → WebSocket subscribers
@@ -87,6 +87,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/status", get(status))
         .route("/api/flows", get(list_flows))
         .route("/api/flows/{id}", get(show_flow))
+        .route("/api/flows/{id}/messages", get(flow_messages))
+        .route("/api/messages", get(list_messages))
         .route("/api/ws/flows", get(ws_flows))
         // Embedded Dioxus UI bundle. Order matters: API first, then the
         // catch-all static handler so it doesn't shadow API paths.
@@ -249,6 +251,57 @@ async fn show_flow(
         .map_err(internal)?
         .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("no flow with id {id}")))?;
     Ok(Json(f))
+}
+
+// ─── Phase B: messages endpoints ────────────────────────────────────────
+
+#[derive(Deserialize, Default)]
+struct MessageParams {
+    #[serde(default = "default_msg_limit")]
+    limit: u32,
+    cgroup_id: Option<i64>,
+    since_us: Option<i64>,
+}
+
+fn default_msg_limit() -> u32 { 200 }
+
+/// Messages for a specific flow, ordered ASC by ts_us. Returns [] when
+/// the flow has no captured plaintext yet (or tap is disabled).
+async fn flow_messages(
+    State(s): State<AppState>,
+    Path(id): Path<i64>,
+    Query(p): Query<MessageParams>,
+) -> Result<Json<Vec<StoreMessage>>, ApiError> {
+    let rows = s
+        .store
+        .list_messages(MessageQuery {
+            limit: p.limit,
+            flow_id: Some(id),
+            cgroup_id: None,
+            since_us: p.since_us,
+        })
+        .await
+        .map_err(internal)?;
+    Ok(Json(rows))
+}
+
+/// Free-form messages query — useful for the "all plaintext for this
+/// pod" view, or for host-side libssl events with no flow correlation.
+async fn list_messages(
+    State(s): State<AppState>,
+    Query(p): Query<MessageParams>,
+) -> Result<Json<Vec<StoreMessage>>, ApiError> {
+    let rows = s
+        .store
+        .list_messages(MessageQuery {
+            limit: p.limit,
+            flow_id: None,
+            cgroup_id: p.cgroup_id,
+            since_us: p.since_us,
+        })
+        .await
+        .map_err(internal)?;
+    Ok(Json(rows))
 }
 
 // WebSocket: pushes a JSON line for every new flow recorded by the relay.

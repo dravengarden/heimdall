@@ -110,6 +110,29 @@ pub struct Runtime {
     /// to `0.0.0.0:9999` for LAN browser access.
     #[serde(default = "default_api_listen", rename = "apiListen")]
     pub api_listen: String,
+
+    /// Phase B TLS plaintext tap. Off by default — turning this on
+    /// scans /proc for libssl mappings at startup and attaches uprobes.
+    #[serde(default)]
+    pub tap: TapConfig,
+}
+
+/// Phase B (TLS plaintext tap) settings.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TapConfig {
+    /// Master switch. When false, no /proc scan, no uprobe attach,
+    /// no perf consumer threads.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// When true, captured plaintext is written to the `messages`
+    /// table in the flow store and exposed via the HTTP API.
+    /// When false (default), tap events only show up in the
+    /// daemon journal — useful for verifying probes attach without
+    /// committing to disk-resident plaintext.
+    #[serde(default)]
+    pub persist: bool,
 }
 
 impl Default for Runtime {
@@ -124,6 +147,7 @@ impl Default for Runtime {
             state_dir: default_state_dir(),
             flow_retention_secs: default_flow_retention_secs(),
             api_listen: default_api_listen(),
+            tap: TapConfig::default(),
         }
     }
 }

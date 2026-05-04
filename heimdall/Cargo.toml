@@ -62,6 +62,9 @@ tower-http = { version = "0.6", features = ["cors", "trace"] }
 rust-embed = { version = "8", features = ["debug-embed"] }
 mime_guess = "2"
 
+# Phase B tap: aya's perf event API hands us BytesMut buffers.
+bytes = "1"
+
 [[bin]]
 name = "heimdall"
 path = "src/main.rs"
