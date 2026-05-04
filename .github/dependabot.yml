@@ -1,0 +1,47 @@
+version: 2
+
+updates:
+  # Cargo: keep cargo deps fresh. Group patch + minor updates so we
+  # get one PR per ecosystem instead of N noisy ones.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      patch-and-minor:
+        update-types: ["patch", "minor"]
+
+  # eBPF crate (separate workspace).
+  - package-ecosystem: cargo
+    directory: /heimdall-ebpf
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      patch-and-minor:
+        update-types: ["patch", "minor"]
+
+  # GitHub Actions.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Bun has no native dependabot support, but the heimdall-ui
+  # package.json + bun.lock can be tracked via npm for major-version
+  # signal. Bun reads package.json fine — the warnings about
+  # bun-specific lock format are harmless.
+  - package-ecosystem: npm
+    directory: /heimdall-ui
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      patch-and-minor:
+        update-types: ["patch", "minor"]

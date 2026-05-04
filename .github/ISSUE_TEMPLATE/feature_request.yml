@@ -1,0 +1,43 @@
+name: Feature request
+description: A new capability heimdall should grow
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Heimdall is small and we'd rather discuss design than have you
+        rewrite a chunk twice. File the request first, send the PR
+        second.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's the problem?
+      description: |
+        Describe the use case — what are you trying to do, and what
+        in heimdall today doesn't let you?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed
+    attributes:
+      label: Proposed solution
+      description: |
+        What should change? Skip implementation details if you don't
+        have them; the use case is what matters first.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: |
+        Workarounds you've tried, related projects, or features in
+        adjacent tooling.
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Out of scope
+      description: |
+        Anything you specifically *don't* want this to do?
