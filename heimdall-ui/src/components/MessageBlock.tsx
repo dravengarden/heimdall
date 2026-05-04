@@ -50,6 +50,30 @@ export function MessageBlock({ msg, showCgroup = false }: Props) {
         >
           {ts}
         </Typography>
+        {msg.pod_namespace && msg.pod_name ? (
+          <Chip
+            size="small"
+            label={`${msg.pod_namespace}/${msg.pod_name}`}
+            variant="outlined"
+            color="info"
+            sx={{
+              height: 20,
+              fontSize: 11,
+              fontFamily: "ui-monospace, monospace",
+              maxWidth: 360,
+            }}
+          />
+        ) : (
+          <Typography
+            variant="caption"
+            sx={{
+              fontFamily: "ui-monospace, monospace",
+              color: "text.disabled",
+            }}
+          >
+            host
+          </Typography>
+        )}
         <Typography
           variant="caption"
           sx={{ fontFamily: "ui-monospace, monospace", color: "text.secondary" }}
@@ -59,9 +83,12 @@ export function MessageBlock({ msg, showCgroup = false }: Props) {
         {showCgroup && (
           <Typography
             variant="caption"
-            sx={{ fontFamily: "ui-monospace, monospace", color: "text.secondary" }}
+            sx={{
+              fontFamily: "ui-monospace, monospace",
+              color: "text.disabled",
+            }}
           >
-            cgroup={msg.cgroup_id}
+            cg={msg.cgroup_id}
           </Typography>
         )}
         {msg.flow_id != null && (

@@ -32,6 +32,7 @@ use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{info, warn};
 
+use crate::pod::{CgroupResolver, PodInformer};
 use crate::store::{Flow, ListQuery, Message as StoreMessage, MessageQuery, Store};
 
 // ---------------------------------------------------------------------------
@@ -75,6 +76,24 @@ pub struct AppState {
     pub store: Arc<Store>,
     pub events: EventBus,
     pub cfg_path: std::path::PathBuf,
+    /// Optional pod-identity resolvers — mirror the relay's runtime
+    /// state. When either is None (e.g. --no-k8s, or the informer
+    /// failed at startup) the API returns messages with the pod_label
+    /// fields left null.
+    pub cgroup_resolver: Option<Arc<CgroupResolver>>,
+    pub informer: Option<Arc<PodInformer>>,
+}
+
+impl AppState {
+    /// Look up the pod identity for a cgroup_id. Returns None when
+    /// either resolver is unavailable, the cgroup is not a pod, or
+    /// the pod isn't in the informer's snapshot yet.
+    fn pod_for_cgroup(&self, cgroup_id: i64) -> Option<crate::pod::PodInfo> {
+        let cr = self.cgroup_resolver.as_ref()?;
+        let inf = self.informer.as_ref()?;
+        let uid = cr.resolve(cgroup_id as u64)?;
+        inf.lookup(&uid)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -265,13 +284,60 @@ struct MessageParams {
 
 fn default_msg_limit() -> u32 { 200 }
 
+/// Wire shape for messages — pass-through of the stored row plus
+/// pod identity resolved at API time. The DB schema deliberately
+/// stores cgroup_id only; pods can change identity (rolling update,
+/// restart) and recomputing on read avoids stale labels.
+#[derive(Serialize)]
+struct ApiMessage {
+    id: i64,
+    flow_id: Option<i64>,
+    ts_us: i64,
+    cgroup_id: i64,
+    tgid: i64,
+    dir: i64,
+    total_len: i64,
+    captured_len: i64,
+    body: Vec<u8>,
+    pod_namespace: Option<String>,
+    pod_name: Option<String>,
+}
+
+fn enrich_messages(rows: Vec<StoreMessage>, s: &AppState) -> Vec<ApiMessage> {
+    // Cache cgroup → pod within the response so a flood of messages
+    // from the same pod doesn't redo the cgroup walk per row.
+    let mut cache: std::collections::HashMap<i64, Option<crate::pod::PodInfo>> =
+        std::collections::HashMap::new();
+    rows.into_iter()
+        .map(|m| {
+            let pod = cache
+                .entry(m.cgroup_id)
+                .or_insert_with(|| s.pod_for_cgroup(m.cgroup_id))
+                .clone();
+            ApiMessage {
+                id: m.id,
+                flow_id: m.flow_id,
+                ts_us: m.ts_us,
+                cgroup_id: m.cgroup_id,
+                tgid: m.tgid,
+                dir: m.dir,
+                total_len: m.total_len,
+                captured_len: m.captured_len,
+                body: m.body,
+                pod_namespace: pod.as_ref().map(|p| p.namespace.clone()),
+                pod_name: pod.as_ref().map(|p| p.name.clone()),
+            }
+        })
+        .collect()
+}
+
 /// Messages for a specific flow, ordered ASC by ts_us. Returns [] when
 /// the flow has no captured plaintext yet (or tap is disabled).
 async fn flow_messages(
     State(s): State<AppState>,
     Path(id): Path<i64>,
     Query(p): Query<MessageParams>,
-) -> Result<Json<Vec<StoreMessage>>, ApiError> {
+) -> Result<Json<Vec<ApiMessage>>, ApiError> {
     let rows = s
         .store
         .list_messages(MessageQuery {
@@ -282,7 +348,7 @@ async fn flow_messages(
         })
         .await
         .map_err(internal)?;
-    Ok(Json(rows))
+    Ok(Json(enrich_messages(rows, &s)))
 }
 
 /// Free-form messages query — useful for the "all plaintext for this
@@ -290,7 +356,7 @@ async fn flow_messages(
 async fn list_messages(
     State(s): State<AppState>,
     Query(p): Query<MessageParams>,
-) -> Result<Json<Vec<StoreMessage>>, ApiError> {
+) -> Result<Json<Vec<ApiMessage>>, ApiError> {
     let rows = s
         .store
         .list_messages(MessageQuery {
@@ -301,7 +367,7 @@ async fn list_messages(
         })
         .await
         .map_err(internal)?;
-    Ok(Json(rows))
+    Ok(Json(enrich_messages(rows, &s)))
 }
 
 // WebSocket: pushes a JSON line for every new flow recorded by the relay.

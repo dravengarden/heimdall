@@ -33,8 +33,10 @@ export interface Status {
   flows_count: number;
 }
 
-// Wire type — must match heimdall::store::Message. `body` is serialized
-// by serde_json as a JSON array of byte values.
+// Wire type — must match heimdall::api::ApiMessage. `body` is serialized
+// by serde_json as a JSON array of byte values. The pod_* fields are
+// resolved at API time from the daemon's cgroup → pod cache; null for
+// host processes or pods the informer hasn't seen yet.
 export interface Message {
   id: number;
   flow_id: number | null;
@@ -46,6 +48,8 @@ export interface Message {
   total_len: number;
   captured_len: number;
   body: readonly number[];
+  pod_namespace: string | null;
+  pod_name: string | null;
 }
 
 export type ErrorMode = "all" | "ok" | "errors-only";

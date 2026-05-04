@@ -168,9 +168,9 @@ struct Shared {
     cfg: HeimdallConfig,
     upstreams: StdHashMap<String, Arc<Upstream>>,
     /// None when --no-k8s or informer init failed.
-    informer: Option<PodInformer>,
+    informer: Option<Arc<PodInformer>>,
     /// None when running outside k8s.
-    cgroup_resolver: Option<CgroupResolver>,
+    cgroup_resolver: Option<Arc<CgroupResolver>>,
     /// Fake-IP DNS resolver. None when DNS server failed to bind
     /// (relay degrades to plain IP-mode SOCKS5 in that case).
     dns: Option<Arc<DnsResolver>>,
@@ -285,7 +285,7 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
     let cgroup_resolver = if args.no_k8s {
         None
     } else {
-        Some(CgroupResolver::new(&cfg.runtime.cgroup))
+        Some(Arc::new(CgroupResolver::new(&cfg.runtime.cgroup)))
     };
     let informer = if args.no_k8s {
         None
@@ -293,7 +293,7 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
         match PodInformer::spawn().await {
             Ok(i) => {
                 info!("pod informer started");
-                Some(i)
+                Some(Arc::new(i))
             }
             Err(e) => {
                 warn!(error = %e, "pod informer failed to start; routing falls back to default");
@@ -338,6 +338,8 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
             store: s.clone(),
             events: events.clone(),
             cfg_path: config_path.clone(),
+            cgroup_resolver: cgroup_resolver.clone(),
+            informer: informer.clone(),
         };
         tokio::spawn(async move {
             if let Err(e) = api::serve(app_state, api_listen).await {
