@@ -29,6 +29,7 @@ mod api;
 mod bypass;
 mod cli;
 mod dns;
+mod gosym;
 mod pod;
 mod policy;
 mod router;

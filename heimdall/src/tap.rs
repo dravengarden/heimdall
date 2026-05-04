@@ -395,36 +395,25 @@ fn scan_go_tls() -> Vec<GoBinary> {
     by_inode.into_values().collect()
 }
 
-/// Return true iff this ELF has both `.gopclntab` (Go binary) and the
-/// `crypto/tls.(*Conn).Write` symbol. We swallow IO/parse errors and
-/// return false — anything that can't be parsed isn't a probe candidate.
+/// Return true iff this ELF is a Go binary that links `crypto/tls`.
+///
+/// Stripped Go binaries (rancher, cilium, fleet — anything built with
+/// `-ldflags="-s -w"`) have no ELF symbol table, so we can't use
+/// `obj.symbols()` to check. Instead we do a two-stage probe:
+///
+///   1. `.gopclntab` section exists → Go binary.
+///   2. `crypto::gosym::find_functions` resolves `crypto/tls.(*Conn).Write`
+///      via the runtime's own symbol table inside `.gopclntab`.
+///
+/// Both stages are cheap on this codebase — gosym walks the function
+/// table linearly with an early exit once the needle is found.
 fn is_go_binary_with_tls(path: &Path) -> Result<bool> {
-    use object::{Object, ObjectSection, ObjectSymbol};
-
-    let data = fs::read(path)?;
-    let obj = match object::read::File::parse(&*data) {
-        Ok(o) => o,
-        Err(_) => return Ok(false),
-    };
-
-    // Stage 1: must be Go.
-    let is_go = obj
-        .sections()
-        .any(|s| matches!(s.name(), Ok(".gopclntab")));
-    if !is_go {
+    if !crate::gosym::looks_like_go(path).unwrap_or(false) {
         return Ok(false);
     }
-
-    // Stage 2: must have the TLS write symbol. Go binaries that don't
-    // link crypto/tls (e.g. cilium-health-responder for some builds)
-    // would attach-fail noisily otherwise.
-    let want = "crypto/tls.(*Conn).Write";
-    let has_write = obj
-        .symbols()
-        .chain(obj.dynamic_symbols())
-        .any(|s| s.name().map(|n| n == want).unwrap_or(false));
-
-    Ok(has_write)
+    let funcs =
+        crate::gosym::find_functions(path, &["crypto/tls.(*Conn).Write"]).unwrap_or_default();
+    Ok(funcs.contains_key("crypto/tls.(*Conn).Write"))
 }
 
 fn is_libssl(p: &str) -> bool {
@@ -487,11 +476,28 @@ fn attach_one(bpf: &mut Ebpf, target: &Path) -> Result<()> {
 }
 
 /// Attach the Go TLS probes (write entry, read entry, read-at-RET) to
-/// a single Go binary. Symbol resolution uses aya's standard ELF symbol
-/// lookup, which happily handles Go's exotic symbol names. RET sites
-/// for Read are computed via iced-x86 disassembly (see notes on the
-/// eBPF programs for why uretprobes don't work on Go binaries).
+/// a single Go binary. Function locations come from `.gopclntab` via
+/// `crate::gosym`, so this works equally well on stripped builds —
+/// it doesn't depend on the ELF symbol table at all. RET sites for
+/// Read are computed via iced-x86 disassembly because uretprobes
+/// don't compose with Go's movable stacks.
 fn attach_go_one(bpf: &mut Ebpf, target: &Path) -> Result<()> {
+    let funcs = crate::gosym::find_functions(
+        target,
+        &[
+            "crypto/tls.(*Conn).Write",
+            "crypto/tls.(*Conn).Read",
+        ],
+    )
+    .context("gosym lookup")?;
+
+    let write_fn = funcs
+        .get("crypto/tls.(*Conn).Write")
+        .context("crypto/tls.(*Conn).Write not in .gopclntab")?;
+    let read_fn = funcs
+        .get("crypto/tls.(*Conn).Read")
+        .context("crypto/tls.(*Conn).Read not in .gopclntab")?;
+
     // ─── crypto/tls.(*Conn).Write — entry only ──────────────────────────
     {
         let prog: &mut UProbe = bpf
@@ -499,9 +505,13 @@ fn attach_go_one(bpf: &mut Ebpf, target: &Path) -> Result<()> {
             .context("go_tls_write program not found")?
             .try_into()?;
         let _ = prog.load();
-        prog.attach(Some("crypto/tls.(*Conn).Write"), 0, target, None)
+        prog.attach(None, write_fn.file_offset, target, None)
             .with_context(|| {
-                format!("attach crypto/tls.(*Conn).Write at {}", target.display())
+                format!(
+                    "attach go_tls_write at {} offset {:#x}",
+                    target.display(),
+                    write_fn.file_offset
+                )
             })?;
     }
 
@@ -512,14 +522,18 @@ fn attach_go_one(bpf: &mut Ebpf, target: &Path) -> Result<()> {
             .context("go_tls_read_enter program not found")?
             .try_into()?;
         let _ = prog.load();
-        prog.attach(Some("crypto/tls.(*Conn).Read"), 0, target, None)
+        prog.attach(None, read_fn.file_offset, target, None)
             .with_context(|| {
-                format!("attach crypto/tls.(*Conn).Read entry at {}", target.display())
+                format!(
+                    "attach go_tls_read_enter at {} offset {:#x}",
+                    target.display(),
+                    read_fn.file_offset
+                )
             })?;
     }
 
     // ─── crypto/tls.(*Conn).Read — every RET site ───────────────────────
-    let rets = match find_go_ret_offsets(target, "crypto/tls.(*Conn).Read") {
+    let rets = match find_go_ret_offsets(target, read_fn) {
         Ok(v) => v,
         Err(e) => {
             warn!(
@@ -564,73 +578,55 @@ fn attach_go_one(bpf: &mut Ebpf, target: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Find file offsets of every RET instruction inside the named function
-/// in the given ELF. Used to attach uprobes at Go return sites since
-/// uretprobes don't work on Go binaries (movable stacks).
-fn find_go_ret_offsets(path: &Path, sym_name: &str) -> Result<Vec<u64>> {
+/// Disassemble the named function's body and return the file offset
+/// of every RET instruction. Uses iced-x86's `FlowControl::Return`
+/// classification, which covers near-RET, near-RET-imm16, far-RET,
+/// and IRET in one shot.
+fn find_go_ret_offsets(
+    path: &Path,
+    func: &crate::gosym::FuncLocation,
+) -> Result<Vec<u64>> {
     use iced_x86::{Decoder, DecoderOptions, FlowControl};
-    use object::{Object, ObjectSection, ObjectSymbol};
+    use object::{Object, ObjectSection};
+
+    if func.size == 0 {
+        return Ok(Vec::new());
+    }
 
     let data = fs::read(path).with_context(|| format!("read {}", path.display()))?;
     let obj = object::read::File::parse(&*data)
         .map_err(|e| anyhow::anyhow!("ELF parse: {e}"))?;
-
-    let sym = obj
-        .symbols()
-        .chain(obj.dynamic_symbols())
-        .find(|s| s.name().map(|n| n == sym_name).unwrap_or(false))
-        .ok_or_else(|| anyhow::anyhow!("symbol {sym_name} not found"))?;
-
-    let sym_addr = sym.address();
-    let sym_size = sym.size();
-    if sym_size == 0 {
-        return Ok(Vec::new());
-    }
-
-    let section_idx = sym
-        .section_index()
-        .ok_or_else(|| anyhow::anyhow!("symbol has no section"))?;
-    let section = obj
-        .section_by_index(section_idx)
-        .map_err(|e| anyhow::anyhow!("section_by_index: {e}"))?;
-    let section_addr = section.address();
-    let (section_file_off, _section_file_size) = section
-        .file_range()
-        .ok_or_else(|| anyhow::anyhow!("section has no file range"))?;
-
-    let section_data = section
+    let text = obj
+        .section_by_name(".text")
+        .context(".text section not found")?;
+    let text_addr = text.address();
+    let text_data = text
         .data()
         .map_err(|e| anyhow::anyhow!("section data: {e}"))?;
-    let func_off_in_section = sym_addr.checked_sub(section_addr).ok_or_else(|| {
-        anyhow::anyhow!("symbol addr {sym_addr:#x} below section addr {section_addr:#x}")
-    })? as usize;
-    let end = func_off_in_section
-        .checked_add(sym_size as usize)
-        .ok_or_else(|| anyhow::anyhow!("symbol size overflows"))?;
-    if end > section_data.len() {
+
+    let func_off_in_text = func
+        .vaddr
+        .checked_sub(text_addr)
+        .ok_or_else(|| anyhow::anyhow!("vaddr below .text base"))?
+        as usize;
+    let end = func_off_in_text
+        .checked_add(func.size as usize)
+        .ok_or_else(|| anyhow::anyhow!("func size overflow"))?;
+    if end > text_data.len() {
         anyhow::bail!(
-            "symbol body [{func_off_in_section}..{end}] exceeds section data ({})",
-            section_data.len()
+            "func body [{func_off_in_text}..{end}] exceeds .text data ({})",
+            text_data.len()
         );
     }
-    let bytes = &section_data[func_off_in_section..end];
 
-    // Walk instructions linearly, recording RET sites. iced-x86's
-    // FlowControl::Return covers near-RET (0xC3), near-RET-imm16 (0xC2),
-    // far-RET, and IRET. We accept all of them — the ones Go actually
-    // emits in compiled .text are near-RET, but staying permissive keeps
-    // the matcher compatible with future toolchain choices.
-    let mut decoder = Decoder::with_ip(64, bytes, sym_addr, DecoderOptions::NONE);
+    let bytes = &text_data[func_off_in_text..end];
+    let mut decoder = Decoder::with_ip(64, bytes, func.vaddr, DecoderOptions::NONE);
     let mut rets = Vec::new();
     while decoder.can_decode() {
         let pos_in_func = decoder.position();
         let insn = decoder.decode();
         if matches!(insn.flow_control(), FlowControl::Return) {
-            // file_offset = section_file_offset + (sym_addr - section_addr) + pos_in_func
-            let file_off = section_file_off
-                + func_off_in_section as u64
-                + pos_in_func as u64;
-            rets.push(file_off);
+            rets.push(func.file_offset + pos_in_func as u64);
         }
     }
     Ok(rets)
