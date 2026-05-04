@@ -189,6 +189,47 @@ metadata:
 Annotations win over rules. Use sparingly — usually it's better to
 add a rule so the policy is grep-able from one place.
 
+## All six (`use` × `observe`) combinations as YAML
+
+```yaml
+# 1. Default for most user workloads — proxy via v2raya, capture plaintext.
+default:
+  use: default
+  observe: true
+
+# 2. Noisy controller — proxy as normal, but silence the tap.
+- name: cattle-controllers
+  match: { namespaces: [cattle-capi-system, cattle-turtles-system] }
+  use: default
+  observe: false
+
+# 3. Pod that needs corporate VPN routing AND observation (the dev case).
+metadata:
+  annotations:
+    heimdall.io/connection: conviva
+    heimdall.io/observe: "true"
+
+# 4. Same routing as #3, plaintext suppressed (e.g. own credentials in flight).
+metadata:
+  annotations:
+    heimdall.io/connection: conviva
+    heimdall.io/observe: "false"
+
+# 5. Cluster infrastructure — bypass the relay entirely AND silence tap.
+- name: cluster-infra
+  match: { namespaces: [kube-system, local-path-storage] }
+  use: system
+  observe: false
+
+# 6. Pod that should bypass the relay (host-network style) but you DO
+#    want to see its TLS plaintext. No example currently in this
+#    cluster, but configurable:
+metadata:
+  annotations:
+    heimdall.io/connection: system
+    heimdall.io/observe: "true"
+```
+
 ## `RoutingDecision` flag encoding
 
 For reference, `policy.rs::encode` maps a `RoutingDecision` to the
