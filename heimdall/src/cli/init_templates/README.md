@@ -99,12 +99,14 @@ current schema.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `cgroup` | string | `/sys/fs/cgroup` | Cgroup root for `connect4` + `skb_egress` BPF attach. Use `/sys/fs/cgroup/kubepods` to scope to k8s. |
-| `listen` | string | `0.0.0.0:12345` | Relay TCP listener (target of connect4 redirect). |
+| `cgroup` | string | `/sys/fs/cgroup` | Cgroup root for `connect4` + `connect6` + `skb_egress` BPF attach. Use `/sys/fs/cgroup/kubepods` to scope to k8s. |
+| `listen` | string | `0.0.0.0:12345` | Relay TCP listener. The daemon auto-rewrites a v4 wildcard to `[::]:N` for dual-stack accept; explicit IPs are honoured as-is. |
 | `relayIp` | string | `127.0.0.1` | IPv4 the relay listens on as seen from pods. On k0s use `cilium_host` (`10.244.0.41`). |
-| `bypassCidrs` | array of string | `[]` | Reserved; not yet wired into eBPF. Built-in bypass list covers loopback, link-local, LAN, k0s pod/svc CIDRs. |
+| `relayIp6` | string | `::1` | IPv6 sibling of `relayIp`. eBPF `connect6` rewrites IPv6 destinations to `relayIp6:listen-port`. |
+| `bypassCidrs` | array of string | `[]` | Reserved; not yet wired into eBPF. Built-in bypass list covers loopback, link-local, LAN, k0s pod/svc CIDRs (v4) and equivalents (v6). |
 | `dnsListen` | string | `0.0.0.0:5358` | Fake-IP DNS UDP listener. |
-| `fakeIpCidr` | string | `198.19.0.0/16` | Fake-IP pool (RFC 2544 benchmark range, guaranteed not in real routing). |
+| `fakeIpCidr` | string | `198.19.0.0/16` | IPv4 fake-IP pool (RFC 2544 benchmark range, guaranteed not in real routing). |
+| `fakeIp6Cidr` | string | `fc00:198:19::/96` | IPv6 fake-IP pool. AAAA queries get synthetic addresses from this range; relay reverses them at SOCKS5 ATYP=0x03 time. Empty string disables AAAA synthesis (fall back to NOERROR + 0 records). |
 | `apiListen` | string | `127.0.0.1:9999` | HTTP API + Web UI. Set `0.0.0.0:9999` for LAN access. |
 | `stateDir` | string | `/var/lib/heimdall` | sqlite + future blob storage. systemd creates 0750 root:root. |
 | `flowRetentionSecs` | integer | `259200` (3d) | Cleanup task drops `flows` + `messages` older than this. |
@@ -113,6 +115,8 @@ current schema.
 
 `tap.enabled=false` overrides `tap.persist`. Tap requires
 `CAP_SYS_PTRACE` in the systemd unit (already set in NixOS module).
+The orphan-cgroup GC for `heimdall run` requires `CAP_DAC_OVERRIDE`
+so the daemon can rmdir user-owned heimdall-cli-* directories.
 
 ## `connections`
 
@@ -315,7 +319,7 @@ on a rule to make it a catchall.
 Optional top-level field that lets every CLI default live in the
 same config file as routing. No `~/.config/heimdall/cli.toml`,
 nothing else to discover. Each subcommand hangs its config under
-`cli.<subcmd>`. Today only `cli.run` is consumed (by the planned
+`cli.<subcmd>`. Today only `cli.run` is consumed (the
 proxychains-style `heimdall run`).
 
 ```nickel
@@ -342,10 +346,17 @@ cli = {
 }
 ```
 
+### `cli.run.*.dns`
+
+| Value | Behaviour |
+|---|---|
+| `"fake"` (default) | Hijack DNS lookups for the wrapped command's cgroup so heimdall's fake-IP DNS sees them. Two layers stacked: eBPF rewrites any `:53` connect / sendmsg destination to the daemon (`DNS_ADDR_V4` / `DNS_ADDR_V6` BPF map), AND `heimdall run` enters a private user+mount namespace and bind-mounts a stripped-down `/etc/nsswitch.conf` (`hosts: files dns`), a single-entry `/etc/resolv.conf` (`nameserver 127.0.0.1`), and `/dev/null` over `/var/run/nscd/socket`. Result: the wrapped command's libc `getaddrinfo` issues UDP `127.0.0.1:53` queries that hit heimdall's fake-IP DNS regardless of NixOS's `nss-resolve` / nscd setup. |
+| `"system"` | Skip the shim entirely. Wrapped command uses the host's normal resolver (systemd-resolved / nscd / public DNS). Useful when the command needs hosts heimdall's fake-IP DNS isn't supposed to see, or when reproducibility against the host's resolver matters. |
+
 ### Resolution order for `heimdall run`
 
 ```
-flag (e.g. --connection X)
+flag (e.g. --connection X / --dns system)
   > [profile.NAME] in cli.run.profiles
   > cli.run.default
   > compiled-in fallback (connection="default", observe=true, dns="fake")
@@ -354,6 +365,20 @@ flag (e.g. --connection X)
 Adding more subcommand defaults later is non-breaking — just add a
 new `cli.<other-subcmd>` entry. All `cli.*` fields are optional, so
 existing configs continue to validate.
+
+### Lifecycle: orphan-cgroup GC
+
+When a `heimdall run` invocation exits cleanly the wrapping
+process deregisters the cgroup_id with the daemon and rmdirs the
+transient cgroup. `kill -9`, OOM kill, and other abnormal exits
+leak both the cgroup directory and the BPF policy entry.
+
+The daemon runs a periodic GC pass (every 30s) that walks
+`/sys/fs/cgroup/user.slice` for `heimdall-cli-*` directories with
+`cgroup.events: populated 0` (no live processes), and tears down:
+the userspace `cli_overrides` entry, the `PolicyEngine.external`
+set entry, the `CGROUP_POLICY` BPF map row, and rmdirs the
+directory. Idempotent and safe to leave running indefinitely.
 
 ## Per-pod overrides (no config edit needed)
 
