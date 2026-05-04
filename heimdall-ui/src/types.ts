@@ -33,8 +33,31 @@ export interface Status {
   flows_count: number;
 }
 
+export type ErrorMode = "all" | "ok" | "errors-only";
+
 export interface FlowFilters {
+  /** free-text substring match across host / IP / pod / connection / upstream */
   query: string;
-  connection: string | null;
-  hideErrors: boolean;
+  /** empty array = all connections; otherwise rows must match one of these */
+  connections: readonly string[];
+  /** all = no filter; ok = drop rows with error; errors-only = keep only errors */
+  errorMode: ErrorMode;
+  /** inclusive lower bound on dst_port; null = no lower bound */
+  portMin: number | null;
+  /** inclusive upper bound on dst_port; null = no upper bound */
+  portMax: number | null;
+  /** minimum total bytes (up + down); null = no threshold */
+  bytesMin: number | null;
+  /** keep only flows whose ts_start is within the last N seconds; null = no limit */
+  ageMaxSec: number | null;
 }
+
+export const DEFAULT_FILTERS: FlowFilters = {
+  query: "",
+  connections: [],
+  errorMode: "all",
+  portMin: null,
+  portMax: null,
+  bytesMin: null,
+  ageMaxSec: null,
+};
