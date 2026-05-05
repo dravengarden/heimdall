@@ -135,6 +135,11 @@ enum Cmd {
     /// List, search, and inspect recorded flows.
     Flows(FlowsArgs),
 
+    /// Inspect the resolved config: validate, show its content, or
+    /// print the auto-discovered path.
+    #[command(subcommand)]
+    Config(cli::config::ConfigCmd),
+
     /// Daemon health and counts.
     Status(StatusArgs),
 
@@ -365,6 +370,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Serve(args) => daemon_run(&config_path, args).await,
+        Cmd::Config(sub) => cli::config::run(&config_path, sub).await,
         Cmd::Flows(args) => match args.cmd {
             Some(sub) => cli::flows::run(&config_path, sub).await,
             // arg_required_else_help on FlowsArgs already handles the

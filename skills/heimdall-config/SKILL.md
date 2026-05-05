@@ -54,7 +54,11 @@ less /etc/heimdall/README.md
 # 2. Edit
 sudoedit /etc/heimdall/heimdall.ncl
 
-# 3. (Nickel only) validate locally
+# 3. Validate before applying
+heimdall config validate                 # exit 0 / 1, human-readable
+heimdall config validate --json          # AI-friendly: {"valid": …, "error": …}
+
+# (optional) Nickel-side validation — same checks, runs without daemon
 nix-shell -p nickel --run "cd /etc/heimdall && nickel export -f json heimdall.ncl > /dev/null"
 
 # 4. Apply
@@ -62,6 +66,17 @@ sudo systemctl restart heimdall
 heimdall status                          # verify connections=N pod_rules=M
 heimdall flows search --since 1m --json  # smoke-test a routing decision
 ```
+
+## Inspecting the live config
+
+```bash
+heimdall config path        # which file is auto-discovered (resolves --config / HEIMDALL_CONFIG)
+heimdall config show        # raw file content (matches `cat /etc/heimdall/heimdall.<ext>`)
+heimdall config show --json # JSON envelope: {"path": …, "format": "ncl"|…, "content": …}
+heimdall config validate    # parse + schema check, exit 0/1
+```
+
+These three are read-only and safe to call from CI / pre-commit hooks.
 
 ## Common edits
 

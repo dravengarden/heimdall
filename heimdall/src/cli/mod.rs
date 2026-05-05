@@ -4,6 +4,7 @@
 //! the daemon writes (`<runtime.stateDir>/flows.db`). No IPC needed for
 //! read-only queries — just open the database read-only and query.
 
+pub mod config;
 pub mod flows;
 pub mod init;
 pub mod run;

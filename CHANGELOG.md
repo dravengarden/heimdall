@@ -61,6 +61,14 @@ Versioning](https://semver.org/spec/v2.0.0.html) once it tags a
   stable field names (`flows_in_store`, `relay_reachable`, …) so AI
   agents and shell scripts don't have to scrape the labeled-text
   view. The `heimdall-status` skill documents both modes.
+- `heimdall config {validate, show, path}` subcommand:
+  - `validate` parses the auto-discovered config and runs schema
+    checks. Exits 0/1; `--json` emits `{"valid", "path", "error"}`
+    for CI / pre-commit hooks.
+  - `show` prints the resolved file's content (raw, or `--json`
+    envelope with `path` + `format` + `content`).
+  - `path` prints just the auto-discovered path on stdout —
+    convenient for `cd "$(heimdall config path | xargs dirname)"`.
 - `heimdall help [path…] [-v]` is now the single help entry point.
   Without `-v` it prints the same concise per-command help as
   `<sub> --help`; with `-v` it recurses through every subcommand

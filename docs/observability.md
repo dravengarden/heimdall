@@ -19,6 +19,106 @@ the application's own `SSL_*` / `crypto/tls.(*Conn).*` calls.
 | **JVM (`SunJSSE` provider)** | ❌ roadmap — see CHANGELOG | — | HotSpot's default TLS is pure Java (`sun.security.ssl.SSLEngineImpl.{wrap,unwrap}`), so existing libssl uprobes don't fire. Plan: a JVMTI agent (`-agentpath:`) that uses `RetransformClasses` to redirect those calls through a fixed-address native stub `heimdall_tls_observe(dir, buf, len)`, which we then uprobe like any libssl symbol. Requires modifying pod startup args (cleanest via mutating webhook injecting `JAVA_TOOL_OPTIONS`). |
 | **BoringSSL static** | ❌ not implemented | — | Pixie's BoringSSL pattern-matching would work; deferred. |
 
+## Limits and alternative approaches
+
+The matrix above reports *what is implemented*, not *what is possible*.
+Several implementations are hard for non-trivial reasons; this section
+records what we considered and why we chose what we chose.
+
+### JVM — why "not implemented" is "fundamentally hard"
+
+uprobes attach to fixed machine-code addresses in an ELF text segment.
+HotSpot's TLS implementation is **pure Java bytecode**
+(`sun.security.ssl.SSLEngineImpl.{wrap,unwrap}`), and four properties
+make it un-uprobable in the usual sense:
+
+| Obstacle | Effect |
+|---|---|
+| Bytecode is not machine code | At process start, `SSLEngineImpl.wrap` exists in no `.text` segment; uprobe has nothing to attach to. |
+| JIT addresses are unstable | After JIT, the method lives in the code cache at some address, but C1→C2 recompilation relocates it. |
+| Method inlining | C2 frequently inlines the SSL methods into hot callers; the standalone function disappears entirely. |
+| OSR (On-Stack Replacement) | A long loop can swap implementations mid-call; the address can move within a single invocation. |
+
+Workarounds surveyed:
+
+| Approach | Verdict |
+|---|---|
+| **`/tmp/perf-<pid>.map` + dynamic attach.** JVM emits JIT addresses via a `libperfmap.so` agent; user-space reads the file and re-attaches uprobes after every recompilation. | 🟡 Works in research demos, breaks on every recompilation. Production-fragile. This is the path `ecapture`'s experimental Java module took. |
+| **JVMTI agent + `RetransformClasses`.** Load a Java agent that rewrites `SSLEngineImpl` bytecode to redirect through a fixed-address native stub `heimdall_tls_observe(dir, buf, len)`, then uprobe that stub. | ✅ Chosen for the roadmap. Stable across JVM versions because the stub is in our own ELF, not the JVM's code cache. Cost: requires injecting `JAVA_TOOL_OPTIONS` via mutating webhook. |
+| **Hook native crypto libs.** If the JVM uses a native TLS provider (Conscrypt → BoringSSL, Wildfly Elytron → OpenSSL), uprobe `libssl.so` directly. | 🟡 Default OpenJDK uses pure-Java SunJSSE at the protocol layer; native is reached only for AES/SHA primitives, which is too low-level to recover frame boundaries. Useful only when a specific deployment opts in. |
+| **GraalVM native-image.** AOT-compiled Java becomes a real ELF binary with stable symbols. | 🟡 Would work like Go. Almost no production Spring Boot deployments use native-image yet. |
+| **ecapture-style keylog extraction.** uprobe internal JVM key-derivation paths to extract TLS master secrets, emit NSS keylog format, decrypt offline against a tcpdump pcap. | 🟡 Doesn't give real-time visibility — message bodies are recoverable only after the fact (capture + Wireshark). Disqualifies real-time routing and alerting on Java pods. Useful as a forensic complement, not a substitute for the JVMTI plan. Also fragile across JDK vendors/versions. |
+
+The JVMTI plan trades operational complexity (startup-arg injection)
+for engineering stability at the eBPF layer. Since heimdall already
+needs a mutating-webhook story for CA distribution (M5 below),
+reusing that mechanism to inject `JAVA_TOOL_OPTIONS` is cheap.
+
+### rustls — implemented, but ABI-fragile
+
+Listed ✅ above; restating the limits explicitly:
+
+- Symbols match by mangled-name pattern (`PlaintextSink$GT$5write17h…`).
+  New rustls major versions can rename or change visibility, silently
+  breaking the match.
+- Inlining at `-Crelease` with LTO can elide the function — the uprobe
+  attaches successfully but never fires. Detected only by the "no
+  events" symptom; there is no compile-time check.
+- Generic monomorphization produces multiple specialized copies of
+  `read`/`write` per binary. We attach all of them; binaries that
+  instantiate rustls with many cipher/hash combinations inflate the
+  attach count without inflating coverage.
+
+### BoringSSL static — pattern-matching deferred
+
+Pixie's approach (signature-match a stripped BoringSSL `.text` to
+recover `SSL_read`/`SSL_write` prologues) would work and is
+well-documented. Not implemented because the cluster's current
+workloads don't exercise it; if a tap-required Chromium-derived or
+custom-Node binary appears, this is the next module.
+
+### Alternative path: MITM (M5) and why uprobe is preferred
+
+The original observability plan (still on the roadmap as M5) was to
+terminate TLS at the relay, mint per-connection certs, and forward
+upstream over a fresh TLS session. That path has its own coverage
+matrix, **complementary to and not a superset of** the uprobe path:
+
+| Client | Reads OS truststore? | MITM viable? |
+|---|---|---|
+| Python `requests` / `httpx` / `pip` | ❌ uses `certifi` bundled CA list | Needs `REQUESTS_CA_BUNDLE` / `SSL_CERT_FILE` injection per pod |
+| Python stdlib `ssl` | ✅ | ✅ webhook-injected CA suffices |
+| Go (`x509.SystemCertPool`) | ✅ | ✅ (distroless images without `/etc/ssl/certs/` excepted) |
+| Node.js (default) | ❌ bundled roots; Node 23+ adds `--use-system-ca` | Needs `NODE_EXTRA_CA_CERTS` |
+| Rust `rustls` + `webpki-roots` | ❌ Mozilla list compiled in | Cannot be satisfied without a code change |
+| Rust `native-tls` | ✅ via OpenSSL/SChannel | ✅ |
+| JVM | ❌ separate `cacerts` keystore | Needs init container or `keytool` invocation per pod |
+| Anything with cert pinning | — | ❌ pinning rejects any synthetic cert |
+| mTLS (client auth) | — | ❌ relay can't forge a valid client cert |
+
+The uprobe path sidesteps all of this: heimdall never presents itself
+as a TLS endpoint, so truststore configuration, pinning, and mTLS are
+all transparent. The cost is the symbol-discovery problem the matrix
+above documents. M5 remains on the roadmap for cases uprobes can't
+reach (notably JVM, until JVMTI lands), but it is **complementary**,
+not a replacement.
+
+### Summary: when each path applies
+
+| Workload | Preferred path | Fallback |
+|---|---|---|
+| OpenSSL-using apps (Python, C/C++, Ruby, most curl/git, default Node) | Phase B uprobe | none needed |
+| Go services (any, including stripped via `.gopclntab`) | Phase B uprobe | none needed |
+| rustls services | Phase B uprobe with attach-time symbol detection | L4-only if symbols inlined or absent |
+| JVM services | JVMTI agent (planned) + uprobe on the injected stub | L4-only today; ecapture-style keylog as a forensic complement |
+| BoringSSL static (Chromium, some Node) | Pattern-matching uprobe (planned) | L4-only |
+| Apps with cert pinning or mTLS | Phase B uprobe (transparent regardless of pinning) | L4-only if uprobe symbols also unreachable |
+
+L4-only is not a degraded mode — it is the honest answer when the
+application's crypto boundary is opaque to us. Heimdall logs SNI,
+byte counts, and connection metadata in that case rather than
+pretending to see content it cannot.
+
 ## IPv4 / IPv6 / Unix-domain transport
 
 Tap is **transport-agnostic**: uprobes fire at the application's
