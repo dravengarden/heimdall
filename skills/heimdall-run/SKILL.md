@@ -157,15 +157,19 @@ syscall level via cgroup-attached eBPF programs (`connect4`,
 
 ### 1. v2raya host TPROXY would otherwise eat the redirected packet
 
-heimdall's connect4 rewrites the dst to the relay socket
-(cilium_host:12345). On a NixOS host running v2raya for system-wide
-proxying, v2raya's mangle-table TPROXY rules would see this as
-host-originated traffic and divert it to v2raya's port 52345 —
-heimdall relay never sees it. The NixOS module
-`services/k0s/default.nix:k8s-v2raya-fix` adds two iptables rules
-to TP_OUT / TP_PRE that whitelist the relay endpoint
-(`dst=10.244.0.41:12345 → RETURN/K8S_BYPASS`). Same idea for
-ip6tables and `[::1]:12345`.
+heimdall's connect4 rewrites the dst to the relay socket on the
+node-internal cilium-host address (e.g. `10.244.0.41:12345`). If the
+host also runs a transparent proxy that captures all egress via
+mangle-table TPROXY rules (e.g. v2raya in tproxy mode), those rules
+would see the redirected packet as host-originated and steal it
+before the heimdall relay can `accept()`.
+
+The fix is a single host-side iptables/ip6tables RETURN rule on the
+TPROXY chains that whitelists the relay endpoint —
+`dst=<cilium-host-ip>:12345 → RETURN`, plus the IPv6 sibling on
+`[::1]:12345`. Configure this in your host's firewall management
+layer (NixOS module, Ansible role, raw `iptables-restore`, etc.);
+heimdall documents the rule semantics, not the rule installer.
 
 ### 2. PolicyEngine reconcile would otherwise wipe the registration
 

@@ -13,11 +13,10 @@ injection, no per-application configuration. Single binary
 (relay + tap + HTTP API + Web UI), deployed on Kubernetes nodes
 via systemd or as a privileged DaemonSet.
 
-> **Status: alpha.** Used in production on a single-node k0s
-> cluster behind a corporate VPN; CI / release process / multi-node
-> deployment haven't been hardened yet. See
-> [CHANGELOG.md](CHANGELOG.md) for what's shipped, [docs/runbook.md](docs/runbook.md)
-> for the deploy story.
+> **Status: alpha.** Daily-driven on a single-node Kubernetes host;
+> CI, release process, and multi-node deployment haven't been
+> hardened yet. See [CHANGELOG.md](CHANGELOG.md) for what's shipped
+> and [docs/runbook.md](docs/runbook.md) for the deploy story.
 
 ---
 
