@@ -31,9 +31,9 @@ heimdall flows show   <FLOW_ID>            # single flow by id
 heimdall flows search [OPTIONS] [QUERY]    # filter by host/pod/connection
 ```
 
-Run `heimdall flows --help-all` for the complete option matrix
-(`--help-all` is the AI-friendly recursive dump; plain `--help` shows
-just the current subcommand).
+Run `heimdall help flows` for the complete option matrix (recursive
+AI-friendly dump including list/show/search). Plain `heimdall flows
+--help` shows just the parent verb.
 
 ## Common patterns
 

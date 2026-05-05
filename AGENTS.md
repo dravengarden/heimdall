@@ -114,11 +114,17 @@ remember to ask for more if needed.
 - `parking_lot::MutexGuard` is **not Send across `.await`**. Take
   what you need out of the lock into a local before any await point.
   This caused mysterious axum Handler trait failures historically.
-- Two help modes on every command: `--help` (concise, per-command —
-  the standard clap output) and `--help-all` (recursive dump rooted
-  at the current command, intended for AI agents that want the whole
-  tree in one read). Don't merge them back into a single mode; the
-  verbose dump on every `--help` was confusing for terminal users.
+- **Help discovery is split for two audiences.** Don't collapse them.
+  - `heimdall --help` / `-h` — concise per-command help (clap default).
+    What a human at a terminal expects.
+  - `heimdall help` — recursive dump of every subcommand and every
+    option in one read. **The canonical surface-discovery path for
+    AI agents.** Drill in with `heimdall help flows`, `heimdall help
+    flows list`, etc.
+  - `--help-all` — same content as `help`, available as a global flag
+    so it composes anywhere (`heimdall flows --help-all`, etc.).
+  The concise help has a footer line (`Tip: heimdall help …`) that
+  points AI agents at the recursive form. Don't strip the footer.
 - `heimdall init` always rewrites `lib.ncl` and `README.md`, but
   preserves `heimdall.<ext>` unless `--force`. Don't change this:
   losing live config to a doc refresh has bitten the user already.

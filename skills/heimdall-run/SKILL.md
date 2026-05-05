@@ -32,8 +32,9 @@ heimdall run [OPTIONS] -- <command> [args ...]
 ```
 
 The `--` separator is required when the wrapped command has its own
-flags. Run `heimdall run --help-all` for the full option list (or
-`heimdall --help-all` for every subcommand at once).
+flags. Run `heimdall help run` for the full option list (or
+`heimdall help` for every subcommand at once — both go through the
+recursive AI-friendly dump).
 
 ### Common options
 
