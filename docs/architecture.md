@@ -274,7 +274,10 @@ explicitly.
   it. We can still observe TLS plaintext (uprobes are independent of
   the relay path), but `bytes_up` / `bytes_down` stay zero on the
   synthetic flow row.
-- **No JVM TLS taps yet.** Needs a JVMTI agent + native stub.
+- **No JVM TLS taps yet.** HotSpot's default `SunJSSE` is pure-Java
+  so libssl uprobes don't fire. Roadmap: a JVMTI agent that
+  retransforms `sun.security.ssl.SSLEngineImpl.{wrap,unwrap}` to
+  redirect through a native stub we can uprobe. See CHANGELOG.
 - **No relay for arbitrary UDP.** eBPF DNS hijack catches UDP `:53`
   specifically (when `dns: fake` is in effect for the cgroup); other
   UDP traffic goes direct.

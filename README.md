@@ -280,7 +280,11 @@ heimdall/
 
 - **TCP only for relay.** UDP isn't proxied; eBPF DNS hijack catches
   port 53 specifically when `dns: fake` is in effect.
-- **JVM TLS not tapped.** Needs a JVMTI agent + native stub.
+- **JVM TLS not tapped** (roadmap, see [CHANGELOG.md](CHANGELOG.md)).
+  HotSpot's default `SunJSSE` provider is pure-Java, so libssl uprobes
+  don't fire on `SSLEngineImpl.{wrap,unwrap}`. The plan is a JVMTI
+  agent that retransforms those classes to call a fixed-address native
+  stub which we then uprobe like libssl.
 - **Linux only.** cgroup eBPF hooks are Linux-specific.
 - **IPv6 extension headers in `skb_egress`**: bounded walk handles
   Hop-by-Hop / Routing / Fragment / Destination Options / Mobility /
