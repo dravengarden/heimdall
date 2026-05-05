@@ -114,6 +114,15 @@ struct Cli {
     #[arg(long, env = "HEIMDALL_CONFIG", global = true)]
     config: Option<PathBuf>,
 
+    /// (AI-agent friendly) When combined with the `help` subcommand,
+    /// recurse into every nested subcommand and inline every option in
+    /// one shot. Without `help`, this flag is a no-op kept so it appears
+    /// in every subcommand's help listing — `heimdall help [path] -v`
+    /// is the canonical full-surface dump.
+    #[arg(short = 'v', long = "verbose", global = true,
+          action = clap::ArgAction::SetTrue)]
+    verbose: bool,
+
     #[command(subcommand)]
     cmd: Option<Cmd>,
 }
@@ -151,13 +160,7 @@ enum Cmd {
     ///     heimdall help flows        # concise flows help
     ///     heimdall help flows -v     # flows + list/show/search inlined
     Help {
-        /// Recurse into every subcommand and inline every option.
-        #[arg(short = 'v', long = "verbose")]
-        verbose: bool,
-
         /// Subcommand path to scope the help to (e.g. `flows list`).
-        /// No `trailing_var_arg` here so `-v` parses correctly even
-        /// when it appears after the path.
         #[arg(num_args = 0..)]
         path: Vec<String>,
     },
@@ -345,7 +348,7 @@ async fn main() -> Result<()> {
 
     let config_path = resolve_config_path(cli.config);
     match cli.cmd.unwrap() {
-        Cmd::Help { verbose, path } => {
+        Cmd::Help { path } => {
             // Validate the path against the known subcommand tree so
             // `heimdall help bogus` errors clearly instead of silently
             // printing the root help.
@@ -356,7 +359,9 @@ async fn main() -> Result<()> {
                 eprintln!("Try `heimdall --help` for the list of subcommands.");
                 std::process::exit(2);
             }
-            print_help_at(&strs, verbose);
+            // `-v` is global on Cli; it's how the verbose recursive
+            // dump is reachable from every subcommand's help listing.
+            print_help_at(&strs, cli.verbose);
             Ok(())
         }
         Cmd::Serve(args) => daemon_run(&config_path, args).await,
@@ -393,7 +398,11 @@ fn resolve_config_path(explicit: Option<PathBuf>) -> PathBuf {
 /// first unknown segment if not.
 fn validate_help_path(path: &[&str]) -> Result<(), String> {
     use clap::CommandFactory;
-    let mut root = Cli::command();
+    // Important: build() propagates globals (`--config`, `-v`, etc.)
+    // into every subcommand. Without it, walking the tree manually
+    // misses the global args that clap injects at runtime.
+    let mut root = Cli::command().clone();
+    let _ = root.build();
     let mut node: &mut clap::Command = &mut root;
     for (i, name) in path.iter().enumerate() {
         match node.find_subcommand_mut(*name) {
@@ -418,6 +427,9 @@ fn validate_help_path(path: &[&str]) -> Result<(), String> {
 fn print_help_at(path: &[&str], verbose: bool) {
     use clap::CommandFactory;
     let mut root = Cli::command();
+    // Propagate globals (`--config`, `-v`) into every subcommand so
+    // `heimdall help flows` lists them just like `flows --help` does.
+    let _ = root.build();
     let mut node: &mut clap::Command = &mut root;
     for name in path {
         node = node
