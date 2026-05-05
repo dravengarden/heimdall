@@ -30,6 +30,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Low-level socket options
 libc = "0.2"
 
+# Talk to systemd: READY=1 after init, WATCHDOG=1 heartbeats. Lets
+# downstream units (e.g. cilium-agent) wait for actual readiness, and
+# lets systemd kill+restart heimdall if the heartbeat stops. No-op
+# when not run under systemd — the crate degrades to functions that
+# return Ok(()).
+sd-notify = "0.4"
+
 # `heimdall run` cgroup management — fork/exec/waitpid + signal masking.
 # `process` for fork/wait, `signal` for SIGINT propagation to the child.
 nix = { version = "0.29", features = ["process", "signal", "fs", "mount", "sched"] }

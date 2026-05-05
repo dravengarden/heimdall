@@ -942,6 +942,39 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
     })?;
     info!(listen = %listen_for_bind, configured = %shared.cfg.runtime.listen, "heimdall ready");
 
+    // ─── systemd notify: READY + WATCHDOG ─────────────────────────────────
+    // `READY=1` lets `Type=notify` units depending on heimdall (e.g. an
+    // operator-installed cilium-agent override, or a deployment script
+    // running `systemctl is-active --wait heimdall`) actually wait for
+    // the relay to be accepting connections, instead of the Type=simple
+    // "ready the moment exec returns" lie. Safe to call when not under
+    // systemd — sd-notify returns Ok(()) silently.
+    if let Err(e) = sd_notify::notify(false, &[sd_notify::NotifyState::Ready]) {
+        warn!(error = %e, "sd_notify READY failed");
+    }
+    // Watchdog heartbeat: WATCHDOG=1 every 1/3 of WatchdogSec so a hung
+    // daemon (deadlocked tokio runtime, stalled tap, etc.) gets killed
+    // + restarted by systemd instead of holding eBPF state hostage.
+    // sd-notify exposes the configured period via WATCHDOG_USEC.
+    let mut watchdog_usec: u64 = 0;
+    if sd_notify::watchdog_enabled(false, &mut watchdog_usec) && watchdog_usec > 0 {
+        let beat = std::time::Duration::from_micros(watchdog_usec / 3);
+        info!(period_secs = beat.as_secs_f32(), "systemd watchdog heartbeat starting");
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(beat);
+            loop {
+                tick.tick().await;
+                if let Err(e) =
+                    sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog])
+                {
+                    warn!(error = %e, "sd_notify WATCHDOG failed");
+                }
+            }
+        });
+    } else {
+        debug!("systemd WATCHDOG_USEC unset; no heartbeat");
+    }
+
     loop {
         let (stream, peer) = listener.accept().await?;
         let map = port_map.clone();
