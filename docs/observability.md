@@ -76,11 +76,11 @@ Hit `GET http://127.0.0.1:9999/api/status` and read the `tap` field:
 
 For "given a flow, can I expect plaintext for it?", read the row directly:
 
-| `atyp` | `dst_host` | What it means |
-|---|---|---|
-| `domain` | non-NULL | fake-IP DNS hit; pod connected by hostname. Plaintext **likely** captured if the pod's binary has tap support. |
-| `ip` / `ip6` | non-NULL | **SNI fallback** fired — pod connected by IP literal but the TLS ClientHello carried `server_name`. Plaintext **not captured**; the hostname is the best we have. |
-| `ip` / `ip6` | NULL | Pod connected by IP literal **and** sent no SNI (per RFC 6066, browsers / curl / Bun's `fetch()` to an IP all do this). Plaintext almost certainly not captured. |
+| `atyp` | `dst_host` | `dst_ip` | What it means |
+|---|---|---|---|
+| `domain` | non-NULL | fake-IP from heimdall pool | Fake-IP DNS hit; pod connected by hostname (libc resolver returned a heimdall-allocated fake IP). Plaintext **likely** captured if the pod's binary has tap support. |
+| `sni` | non-NULL | original IP the pod connected to | **SNI fallback fired AND was used for routing.** Pod connected by IP literal (or stale fake IP); the TLS ClientHello carried `server_name`; the relay promoted the destination to that hostname so the SOCKS5 upstream gets ATYP=0x03 and can reach the real host. Plaintext capture depends on whether the pod's binary has tap support; routing succeeds regardless. |
+| `ip` / `ip6` | NULL | the IP the pod connected to | Pod connected by IP literal **and** sent no SNI (per RFC 6066, browsers / curl / Bun's `fetch()` to an IP all do this). Plaintext almost certainly not captured; relay forwards by IP. |
 
 Cross-check with `messages`:
 

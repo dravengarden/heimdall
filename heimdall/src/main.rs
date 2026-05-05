@@ -1067,19 +1067,34 @@ async fn relay(
         .unwrap_or_else(|| "unknown".to_string());
 
     // ─── SNI fallback for IP-literal destinations ─────────────────────────
-    // Pods that connect by literal IP (no DNS lookup) bypass heimdall's
-    // fake-IP machinery, so `dst` is `Dst::Ip4`/`Ip6` and we have no
-    // hostname for the flow row. Peek at the first TLS record on the
-    // accepted socket and try to extract SNI — costs one non-blocking
-    // read with a short timeout, leaves the bytes in the kernel buffer
-    // for the upstream forwarding stage.
+    // Pods can land here with `Dst::Ip*` for two distinct reasons:
+    //   (a) Genuinely connecting to a public IP literal (e.g. service
+    //       mesh, hardcoded `https://1.1.1.1/`).
+    //   (b) Connecting to a stale or out-of-pool fake IP — the pod's
+    //       application-level DNS cache (Java InetAddress, Python
+    //       `dns.resolver`, runtime libs that bypass libc, etc.) holds
+    //       an IP that heimdall's fake-IP map no longer recognises.
     //
-    // Why the relay needs this: tap modules are blind to stripped
-    // BoringSSL / rustls binaries (Bun, Deno, Envoy, Chromium-derived).
-    // SNI fallback lets us at least record where they were going, even
-    // when plaintext is impossible. The atyp stays "ip"/"ip6" — we
-    // don't change the SOCKS5 ATYP we send upstream, since we still
-    // address by the original IP literal the pod chose.
+    // For (b) the IP is unroutable (heimdall's pool sits in the IETF
+    // benchmark range 198.18.0.0/15), so forwarding by IP makes the
+    // upstream SOCKS5 server time out / reject with 0x04. To honour
+    // the "failure shouldn't break the network" principle, we peek
+    // the TLS ClientHello: if SNI gives us a hostname, *promote* the
+    // destination to `Dst::Domain(host)` so the SOCKS5 CONNECT goes
+    // out as ATYP=0x03 (DOMAINNAME). The upstream resolves the name
+    // through its own resolver (Mac scoped DNS, AnyConnect, etc.)
+    // and the connection lands cleanly.
+    //
+    // For (a) we still benefit: SOCKS5 ATYP=0x03 is no worse than
+    // 0x01 when the IP is routable, and arguably better for upstream
+    // observability ("this client wanted google.com, here's the IP
+    // they tried"). The `dst_ip` field in the flow record always
+    // preserves the original IP literal so a forensic chain stays
+    // intact.
+    //
+    // The peek is non-destructive (`TcpStream::peek`), 150 ms time-
+    // bounded, and silent on miss — non-TLS or zero-SNI clients
+    // simply fall through to the legacy IP path.
     let sni_host: Option<String> = match &dst {
         Dst::Domain(_) => None, // already have a hostname from fake-IP DNS
         Dst::Ip4(_) | Dst::Ip6(_) => {
@@ -1087,26 +1102,41 @@ async fn relay(
         }
     };
     if let Some(host) = sni_host.as_deref() {
-        // Log the recovery so journal grep finds it for AI-driven
-        // postmortems ("why does this flow have no plaintext?" →
-        // "because it took the SNI fallback path"). `dst_ip` is the
-        // post-`dst_ip_display` alias defined just above.
-        info!(%host, dst = %dst_ip, "relay: SNI fallback recovered hostname for IP-literal connection");
+        info!(%host, dst = %dst_ip, "relay: SNI fallback promoted IP-literal connection to hostname");
     }
+    // Capture the IP-literal (if any) for the flow record before we
+    // potentially overwrite `dst` with the SNI-derived domain. The
+    // `dst_ip` column always reflects what the pod actually connected
+    // to; `dst_host` reflects what we routed by (DNS hostname or
+    // SNI-recovered hostname).
+    let dst_ip_literal: Option<String> = match &dst {
+        Dst::Ip4(ip) => Some(ip.to_string()),
+        Dst::Ip6(ip) => Some(ip.to_string()),
+        Dst::Domain(_) => None,
+    };
+    let dst = match (dst, sni_host.clone()) {
+        (Dst::Ip4(_) | Dst::Ip6(_), Some(host)) => Dst::Domain(host),
+        (other, _) => other,
+    };
 
     let (dst_label, dst_host_for_store, atyp) = match &dst {
-        Dst::Ip4(ip) => (
-            ip.to_string(),
-            sni_host.clone(),
-            "ip",
+        Dst::Ip4(ip) => (ip.to_string(), None, "ip"),
+        Dst::Ip6(ip) => (ip.to_string(), None, "ip6"),
+        Dst::Domain(d) => (
+            d.clone(),
+            Some(d.clone()),
+            // SNI-derived → flag as `sni` so AI consumers can
+            // distinguish "fake-IP DNS hit" from "we sniffed it from
+            // the handshake". Both end up as ATYP=0x03 on the wire,
+            // but the provenance is different.
+            if sni_host.is_some() { "sni" } else { "domain" },
         ),
-        Dst::Ip6(ip) => (
-            ip.to_string(),
-            sni_host.clone(),
-            "ip6",
-        ),
-        Dst::Domain(d) => (d.clone(), Some(d.clone()), "domain"),
     };
+    // For `sni` flows, `dst_ip` records the original IP literal the
+    // pod connected to (forensic trail). For `domain` flows there
+    // wasn't an IP literal in the first place, so use the dst_ip
+    // alias from the dual-stack block above.
+    let dst_ip = dst_ip_literal.unwrap_or(dst_ip);
 
     // ─── Record flow start to store (best-effort) ─────────────────────────
     let flow_id = if let Some(s) = shared.store.as_ref() {
