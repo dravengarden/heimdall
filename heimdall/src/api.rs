@@ -231,6 +231,12 @@ struct StatusResp {
     state_dir: String,
     flow_retention_secs: i64,
     flows_count: i64,
+    /// What heimdall does with kubepods cgroups not in CGROUP_POLICY.
+    /// `"redirect"` (current production behaviour) routes traffic
+    /// through the relay; `"bypass"` is the fail-open emergency
+    /// override. Set via `runtime.defaultEgressPolicy` in heimdall's
+    /// config.
+    default_egress_policy: String,
     /// Live TLS-tap state. AI consumers read this to answer "did tap
     /// attach to pod X's binary?" / "is the rescan loop healthy?" /
     /// "what attaches recently failed?". See heimdall's
@@ -281,6 +287,10 @@ async fn status(State(s): State<AppState>) -> Result<Json<StatusResp>, ApiError>
         state_dir: cfg.runtime.state_dir.display().to_string(),
         flow_retention_secs: cfg.runtime.flow_retention_secs,
         flows_count: count,
+        default_egress_policy: match cfg.runtime.default_egress_policy {
+            heimdall_config::DefaultEgressPolicy::Redirect => "redirect".into(),
+            heimdall_config::DefaultEgressPolicy::Bypass => "bypass".into(),
+        },
         tap: s.tap_status.lock().unwrap().clone(),
         informer: s.informer.as_ref().map(|inf| InformerHealth {
             synced: inf.is_synced(),

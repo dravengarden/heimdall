@@ -693,6 +693,36 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
         info!(dns_port, "DNS hijack target written to BPF maps (loopback)");
     }
 
+    // ─── DEFAULT_POLICY_MAP — runtime-configurable fallback policy ─────────
+    // Drives what the eBPF programs do for kubepods cgroups not in
+    // CGROUP_POLICY. `Redirect` (default) writes a value with
+    // OBSERVE_OFF + NO_BYPASS_LOG (REDIRECT_OFF unset), so traffic
+    // gets redirected to the relay — current production semantics.
+    // `Bypass` writes OBSERVE_OFF + NO_BYPASS_LOG + REDIRECT_OFF, so
+    // unclassified pod traffic skips heimdall entirely (fail-open).
+    {
+        use heimdall_common::{POLICY_NO_BYPASS_LOG, POLICY_OBSERVE_OFF, POLICY_REDIRECT_OFF};
+        use heimdall_config::DefaultEgressPolicy;
+        let value: u8 = match shared.cfg.runtime.default_egress_policy {
+            DefaultEgressPolicy::Redirect => POLICY_OBSERVE_OFF | POLICY_NO_BYPASS_LOG,
+            DefaultEgressPolicy::Bypass => {
+                POLICY_OBSERVE_OFF | POLICY_NO_BYPASS_LOG | POLICY_REDIRECT_OFF
+            }
+        };
+        let mut default_policy_map: Array<&mut aya::maps::MapData, u8> = Array::try_from(
+            bpf.map_mut("DEFAULT_POLICY_MAP")
+                .context("DEFAULT_POLICY_MAP not found")?,
+        )?;
+        default_policy_map
+            .set(0, value, 0)
+            .context("DEFAULT_POLICY_MAP set")?;
+        info!(
+            policy = ?shared.cfg.runtime.default_egress_policy,
+            value_bits = format!("{value:#04x}"),
+            "default egress policy written to BPF map"
+        );
+    }
+
     let cgroup = std::fs::File::open(&shared.cfg.runtime.cgroup)
         .with_context(|| format!("failed to open cgroup path: {}", shared.cfg.runtime.cgroup))?;
 

@@ -21,7 +21,7 @@ use std::{
 };
 
 use regex::Regex;
-use serde::{de, Deserialize, Deserializer};
+use serde::{de, Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
 pub const DEFAULT_DIR: &str = "/etc/heimdall";
@@ -153,6 +153,18 @@ pub struct Runtime {
     pub api_listen: String,
     #[serde(default)]
     pub tap: TapConfig,
+
+    /// What to do with kubepods cgroups that aren't (yet) classified
+    /// by the policy engine. `redirect` (default) routes all such
+    /// traffic through the heimdall relay, then to the `default`
+    /// connection — current behaviour. `bypass` lets it skip the
+    /// relay entirely (fail-open emergency override).
+    ///
+    /// Switching to `bypass` is a runbook step for when heimdall is
+    /// misbehaving and you need pod traffic to flow direct without
+    /// stopping the daemon (which would also lose tap visibility).
+    #[serde(default, rename = "defaultEgressPolicy")]
+    pub default_egress_policy: DefaultEgressPolicy,
 }
 
 impl Default for Runtime {
@@ -170,8 +182,28 @@ impl Default for Runtime {
             flow_retention_secs: default_flow_retention_secs(),
             api_listen: default_api_listen(),
             tap: TapConfig::default(),
+            default_egress_policy: DefaultEgressPolicy::default(),
         }
     }
+}
+
+/// Policy for unclassified kubepods cgroups. Drives the value the
+/// daemon writes to the `DEFAULT_POLICY_MAP` BPF map at startup.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DefaultEgressPolicy {
+    /// Route through heimdall (current behaviour) — REDIRECT_OFF
+    /// stays unset, so the eBPF programs redirect every connect()
+    /// to the relay, which then either fakes-IP-resolves or routes
+    /// to the `default` connection.
+    #[default]
+    Redirect,
+    /// Skip heimdall entirely — REDIRECT_OFF set, OBSERVE_OFF set,
+    /// NO_BYPASS_LOG set. Pod traffic flows direct, heimdall sees
+    /// nothing. Use when something's wrong with the relay or
+    /// upstream and you need to fail-open without stopping the
+    /// daemon (which would also drop tap visibility).
+    Bypass,
 }
 
 fn default_cgroup() -> String { "/sys/fs/cgroup".into() }

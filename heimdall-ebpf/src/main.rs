@@ -88,11 +88,36 @@ static BYPASS_EVENTS: PerfEventArray<BypassEvent> = PerfEventArray::new(0);
 #[map]
 static CGROUP_POLICY: HashMap<u64, u8> = HashMap::with_max_entries(65536, 0);
 
+// Single-element map holding the policy applied to cgroups that aren't
+// in CGROUP_POLICY. Userspace writes index 0 at startup based on
+// `runtime.defaultEgressPolicy` in the config; this lets the operator
+// flip between fail-closed (redirect, the default) and fail-open
+// (bypass, emergency override) by editing the config + restarting
+// heimdall, instead of re-compiling the eBPF object.
+//
+// Initialised to 0 by the kernel; userspace must write before the
+// eBPF programs see real traffic. Until written, `policy_for`
+// short-circuits to the compile-time `DEFAULT_POLICY` const so we
+// don't accidentally bypass everything during the eBPF-loaded /
+// userspace-not-ready-yet window.
+#[map]
+static DEFAULT_POLICY_MAP: Array<u8> = Array::with_max_entries(1, 0);
+
 #[inline(always)]
 fn policy_for(cgroup_id: u64) -> u8 {
-    unsafe { CGROUP_POLICY.get(&cgroup_id) }
-        .copied()
-        .unwrap_or(DEFAULT_POLICY)
+    if let Some(p) = unsafe { CGROUP_POLICY.get(&cgroup_id) }.copied() {
+        return p;
+    }
+    // Userspace stores its desired default in DEFAULT_POLICY_MAP[0].
+    // A value of 0 means "not yet written" — fall back to the
+    // compile-time const which has REDIRECT_OFF unset (= redirect,
+    // current production behaviour).
+    let runtime_default = DEFAULT_POLICY_MAP.get(0).copied().unwrap_or(0);
+    if runtime_default == 0 {
+        DEFAULT_POLICY
+    } else {
+        runtime_default
+    }
 }
 
 // ---------------------------------------------------------------------------
