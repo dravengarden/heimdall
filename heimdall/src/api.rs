@@ -94,6 +94,11 @@ pub struct AppState {
     /// Late-bound policy engine handle. None until eBPF programs
     /// finish loading; the register endpoint returns 503 until then.
     pub policy_engine: Arc<parking_lot::Mutex<Option<Arc<PolicyEngine>>>>,
+    /// Live TLS-tap state for AI / human consumers. The handler clones
+    /// the inner snapshot under the mutex; reads never block writers
+    /// for more than a memcpy. When tap is disabled the snapshot still
+    /// renders — all counters stay zero, `rescan.enabled = false`.
+    pub tap_status: crate::tap::TapStatusHandle,
 }
 
 impl AppState {
@@ -226,6 +231,11 @@ struct StatusResp {
     state_dir: String,
     flow_retention_secs: i64,
     flows_count: i64,
+    /// Live TLS-tap state. AI consumers read this to answer "did tap
+    /// attach to pod X's binary?" / "is the rescan loop healthy?" /
+    /// "what attaches recently failed?". See heimdall's
+    /// `docs/observability.md` for the per-flow signal convention.
+    tap: crate::tap::TapStatus,
 }
 
 async fn status(State(s): State<AppState>) -> Result<Json<StatusResp>, ApiError> {
@@ -252,6 +262,7 @@ async fn status(State(s): State<AppState>) -> Result<Json<StatusResp>, ApiError>
         state_dir: cfg.runtime.state_dir.display().to_string(),
         flow_retention_secs: cfg.runtime.flow_retention_secs,
         flows_count: count,
+        tap: s.tap_status.lock().unwrap().clone(),
     }))
 }
 

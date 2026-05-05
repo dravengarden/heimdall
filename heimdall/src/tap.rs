@@ -12,7 +12,8 @@
 //!   AsyncPerfEventArray (one buffer per CPU) → mpsc::Sender<ObservedTap>
 //!
 //! Caveats / scope:
-//!  * libssl + Go only. rustls / Java need different program logic.
+//!  * libssl + Go + rustls + statically-linked BoringSSL. Java needs
+//!    different program logic (JVMTI, see docs/observability.md).
 //!  * Symbol resolution via the dynsym table (libssl exports SSL_write and
 //!    SSL_read). If a build strips them, attach fails for that file.
 //!  * We attach by *file path*, not pid. One attach catches every process
@@ -46,6 +47,8 @@ use std::{
     io::{BufRead, BufReader},
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
@@ -59,6 +62,103 @@ use bytes::BytesMut;
 use heimdall_common::{TapDir, TapEvent, TAP_DATA_LEN};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
+
+/// Set of `(dev, inode)` pairs whose binaries already have uprobes
+/// attached. Shared between `start()` and `spawn_rescan()` so the
+/// periodic re-scan only attaches to *newly* discovered binaries.
+pub type AttachedSet = Arc<Mutex<HashSet<(u64, u64)>>>;
+
+/// AI-queryable snapshot of what the tap layer has done. Surfaces via
+/// `/api/status`'s `tap` field. The whole struct is `Default` + `Clone`
+/// + `Serialize`, so the API handler just clones the locked snapshot.
+///
+/// Counters are running totals from daemon start; they include rescan
+/// activity. `recent_failures` is a circular buffer (cap 32) so memory
+/// can't grow unbounded on a binary-churn loop.
+#[derive(Debug, Default, Clone, serde::Serialize)]
+pub struct TapStatus {
+    /// Total live uprobe attaches across every scanner.
+    pub attached: usize,
+    /// Per-scanner attach counts.
+    pub scanners: TapScannerCounts,
+    /// Most-recent attach failures, oldest first. Useful for AI to
+    /// answer "why did pod X's TLS not get captured?" — search for
+    /// path components.
+    pub recent_failures: Vec<TapAttachFailure>,
+    /// Live re-scan loop health.
+    pub rescan: TapRescanStatus,
+}
+
+#[derive(Debug, Default, Clone, serde::Serialize)]
+pub struct TapScannerCounts {
+    pub libssl: usize,
+    pub go: usize,
+    pub rustls: usize,
+    pub boringssl_static: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TapAttachFailure {
+    pub scanner: &'static str,
+    pub path: String,
+    pub error: String,
+    pub ts_us: i64,
+}
+
+#[derive(Debug, Default, Clone, serde::Serialize)]
+pub struct TapRescanStatus {
+    /// `true` once `spawn_rescan` has been wired up; `false` means the
+    /// rescan task wasn't spawned (tap disabled, daemon misconfig).
+    pub enabled: bool,
+    pub period_secs: u64,
+    /// Ticks completed (including ticks that found 0 new probes).
+    pub ticks: u64,
+    /// Wall-clock micros of the most recent tick. AI can compute
+    /// `(now - last_tick_ts_us) / 1_000_000 > period_secs * 2` to flag
+    /// a stalled rescan loop.
+    pub last_tick_ts_us: i64,
+    /// Count of times the rescan body panicked and was caught. Any
+    /// non-zero value is a bug — the loop continues, but a Sentry-style
+    /// alert should fire.
+    pub panics: u64,
+}
+
+pub type TapStatusHandle = Arc<Mutex<TapStatus>>;
+
+/// Bump the right scanner's attach counter and the global total.
+fn record_attach_ok(status: &TapStatusHandle, scanner: &'static str) {
+    let mut s = status.lock().unwrap();
+    s.attached += 1;
+    match scanner {
+        "libssl" => s.scanners.libssl += 1,
+        "go" => s.scanners.go += 1,
+        "rustls" => s.scanners.rustls += 1,
+        "boringssl_static" => s.scanners.boringssl_static += 1,
+        _ => {}
+    }
+}
+
+/// Append an attach failure to the circular buffer (cap 32). Older
+/// entries get dropped from the front. The error string is the
+/// `Display` of the anyhow error chain — sufficient for grep but not
+/// enormous.
+fn record_attach_fail(
+    status: &TapStatusHandle,
+    scanner: &'static str,
+    path: PathBuf,
+    error: anyhow::Error,
+) {
+    let mut s = status.lock().unwrap();
+    s.recent_failures.push(TapAttachFailure {
+        scanner,
+        path: path.display().to_string(),
+        error: format!("{error:#}"),
+        ts_us: crate::store::now_micros(),
+    });
+    while s.recent_failures.len() > 32 {
+        s.recent_failures.remove(0);
+    }
+}
 
 /// One captured SSL_write call or SSL_read return, ready for the daemon
 /// to correlate with a flow via cgroup_id.
@@ -77,8 +177,14 @@ pub struct ObservedTap {
 /// Receiver end of the tap pipeline. Daemon owns this and reads events.
 pub struct TapHandle {
     pub events: mpsc::Receiver<ObservedTap>,
-    /// Number of unique libssl images we successfully attached uprobes to.
+    /// Number of unique TLS-bearing images attached at startup
+    /// (libssl + Go + rustls + BoringSSL static combined).
     pub attached_libs: usize,
+    /// `(dev, inode)` pairs of every binary that has uprobes attached.
+    /// Owned by `spawn_rescan` so periodic discovery skips already-
+    /// attached files. Shared via `Arc` so `main` can pass it to the
+    /// rescan task without taking it out of the handle.
+    pub attached_inodes: AttachedSet,
 }
 
 /// Initialize the tap: scan processes for libssl, attach uprobes, spawn
@@ -87,7 +193,9 @@ pub struct TapHandle {
 /// On any single-step error this returns an empty handle (0 attached libs)
 /// rather than failing — the relay should keep working even when the tap
 /// can't.
-pub fn start(bpf: &mut Ebpf) -> Result<TapHandle> {
+pub fn start(bpf: &mut Ebpf, status: &TapStatusHandle) -> Result<TapHandle> {
+    let attached_inodes: AttachedSet = Arc::new(Mutex::new(HashSet::new()));
+
     // ─── Discover libssl images ──────────────────────────────────────────
     let libs = scan_libssl();
     info!(count = libs.len(), "tap: libssl candidates discovered");
@@ -100,48 +208,94 @@ pub fn start(bpf: &mut Ebpf) -> Result<TapHandle> {
     let rs_bins = scan_rustls();
     info!(count = rs_bins.len(), "tap: rustls binaries discovered");
 
-    if libs.is_empty() && go_bins.is_empty() && rs_bins.is_empty() {
-        info!("tap: no libssl / Go TLS / rustls binaries found; nothing to attach");
+    // ─── Discover statically-linked BoringSSL binaries ───────────────────
+    let bssl_bins = scan_boringssl_static();
+    info!(count = bssl_bins.len(), "tap: BoringSSL static binaries discovered");
+
+    if libs.is_empty() && go_bins.is_empty() && rs_bins.is_empty() && bssl_bins.is_empty() {
+        info!("tap: no libssl / Go TLS / rustls / BoringSSL binaries found at startup; rescan loop will catch new pods");
         let (_, rx) = mpsc::channel(1);
-        return Ok(TapHandle { events: rx, attached_libs: 0 });
+        return Ok(TapHandle { events: rx, attached_libs: 0, attached_inodes });
     }
 
-    // ─── Attach uprobes per unique libssl ────────────────────────────────
     let mut attached: usize = 0;
+
+    // ─── Attach uprobes per unique libssl ────────────────────────────────
     for lib in &libs {
+        let key = (lib.dev, lib.inode);
+        if !attached_inodes.lock().unwrap().insert(key) {
+            continue;
+        }
         match attach_one(bpf, &lib.path) {
             Ok(()) => {
                 attached += 1;
+                record_attach_ok(status, "libssl");
                 info!(path = %lib.path.display(), "tap: libssl uprobes attached");
             }
             Err(e) => {
                 warn!(path = %lib.path.display(), error = %e, "tap: libssl uprobe attach failed");
+                attached_inodes.lock().unwrap().remove(&key);
+                record_attach_fail(status, "libssl", lib.path.clone(), e);
             }
         }
     }
 
     // ─── Attach Go TLS write probe per unique binary ─────────────────────
     for bin in &go_bins {
+        let key = (bin.dev, bin.inode);
+        if !attached_inodes.lock().unwrap().insert(key) {
+            continue;
+        }
         match attach_go_one(bpf, &bin.path) {
             Ok(()) => {
                 attached += 1;
+                record_attach_ok(status, "go");
                 info!(path = %bin.path.display(), "tap: go_tls_write attached");
             }
             Err(e) => {
                 warn!(path = %bin.path.display(), error = %e, "tap: go_tls_write attach failed");
+                attached_inodes.lock().unwrap().remove(&key);
+                record_attach_fail(status, "go", bin.path.clone(), e);
             }
         }
     }
 
     // ─── Attach rustls probes per unique binary ──────────────────────────
     for bin in &rs_bins {
+        let key = (bin.dev, bin.inode);
+        if !attached_inodes.lock().unwrap().insert(key) {
+            continue;
+        }
         match attach_rustls_one(bpf, bin) {
             Ok(()) => {
                 attached += 1;
+                record_attach_ok(status, "rustls");
                 info!(path = %bin.path.display(), "tap: rustls uprobes attached");
             }
             Err(e) => {
                 warn!(path = %bin.path.display(), error = %e, "tap: rustls uprobe attach failed");
+                attached_inodes.lock().unwrap().remove(&key);
+                record_attach_fail(status, "rustls", bin.path.clone(), e);
+            }
+        }
+    }
+
+    // ─── Attach BoringSSL static probes per unique binary ────────────────
+    for bin in &bssl_bins {
+        let key = (bin.dev, bin.inode);
+        if !attached_inodes.lock().unwrap().insert(key) {
+            continue;
+        }
+        match attach_boringssl_one(bpf, bin) {
+            Ok(()) => {
+                attached += 1;
+                record_attach_ok(status, "boringssl_static");
+                info!(path = %bin.path.display(), "tap: BoringSSL static uprobes attached");
+            }
+            Err(e) => {
+                warn!(path = %bin.path.display(), error = %e, "tap: BoringSSL static uprobe attach failed");
+                attached_inodes.lock().unwrap().remove(&key);
+                record_attach_fail(status, "boringssl_static", bin.path.clone(), e);
             }
         }
     }
@@ -163,7 +317,155 @@ pub fn start(bpf: &mut Ebpf) -> Result<TapHandle> {
         tokio::spawn(consumer_loop(buf, tx, cpu));
     }
 
-    Ok(TapHandle { events: rx, attached_libs: attached })
+    Ok(TapHandle { events: rx, attached_libs: attached, attached_inodes })
+}
+
+/// Periodic re-scan loop. Owns `bpf` so it can attach uprobes to pods
+/// that came up after `start()` ran. Skips files whose `(dev, inode)`
+/// already lives in the shared `AttachedSet`.
+///
+/// Failure isolation: each tick body is wrapped in `catch_unwind`; a
+/// panic in `rescan_once` (eBPF state corruption, /proc race, etc.)
+/// gets logged + counted in `TapRescanStatus.panics` and the loop
+/// keeps running. Without this, a single panic would silently kill
+/// the rescan task and pods deployed afterwards would be invisible
+/// until daemon restart — exactly the failure mode rescan was added
+/// to fix.
+pub fn spawn_rescan(
+    mut bpf: Ebpf,
+    attached: AttachedSet,
+    status: TapStatusHandle,
+    period: Duration,
+) {
+    {
+        let mut s = status.lock().unwrap();
+        s.rescan.enabled = true;
+        s.rescan.period_secs = period.as_secs();
+    }
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(period);
+        // First tick fires immediately; skip it — the initial scan
+        // already covered what `start()` saw.
+        tick.tick().await;
+        info!(period_secs = period.as_secs(), "tap: rescan loop started");
+        loop {
+            tick.tick().await;
+            // Run scans on the spawned task's blocking-friendly thread —
+            // each scan_* opens hundreds of files.
+            let result = tokio::task::block_in_place(|| {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    rescan_once(&mut bpf, &attached, &status)
+                }))
+            });
+            match result {
+                Ok(added) => {
+                    let mut s = status.lock().unwrap();
+                    s.rescan.ticks += 1;
+                    s.rescan.last_tick_ts_us = crate::store::now_micros();
+                    drop(s);
+                    if added > 0 {
+                        info!(added, "tap: rescan attached new probes");
+                    } else {
+                        debug!("tap: rescan found no new TLS binaries");
+                    }
+                }
+                Err(_panic) => {
+                    let mut s = status.lock().unwrap();
+                    s.rescan.panics += 1;
+                    s.rescan.ticks += 1;
+                    s.rescan.last_tick_ts_us = crate::store::now_micros();
+                    let total_panics = s.rescan.panics;
+                    drop(s);
+                    warn!(
+                        total_panics,
+                        "tap: rescan tick panicked; loop continuing (see TapStatus.rescan.panics in /api/status)"
+                    );
+                }
+            }
+        }
+    });
+}
+
+fn rescan_once(bpf: &mut Ebpf, attached: &AttachedSet, status: &TapStatusHandle) -> usize {
+    let mut added: usize = 0;
+
+    for lib in scan_libssl() {
+        let key = (lib.dev, lib.inode);
+        if !attached.lock().unwrap().insert(key) {
+            continue;
+        }
+        match attach_one(bpf, &lib.path) {
+            Ok(()) => {
+                info!(path = %lib.path.display(), "tap: rescan libssl attached");
+                record_attach_ok(status, "libssl");
+                added += 1;
+            }
+            Err(e) => {
+                warn!(path = %lib.path.display(), error = %e, "tap: rescan libssl attach failed");
+                attached.lock().unwrap().remove(&key);
+                record_attach_fail(status, "libssl", lib.path.clone(), e);
+            }
+        }
+    }
+
+    for bin in scan_go_tls() {
+        let key = (bin.dev, bin.inode);
+        if !attached.lock().unwrap().insert(key) {
+            continue;
+        }
+        match attach_go_one(bpf, &bin.path) {
+            Ok(()) => {
+                info!(path = %bin.path.display(), "tap: rescan go_tls_write attached");
+                record_attach_ok(status, "go");
+                added += 1;
+            }
+            Err(e) => {
+                warn!(path = %bin.path.display(), error = %e, "tap: rescan go_tls attach failed");
+                attached.lock().unwrap().remove(&key);
+                record_attach_fail(status, "go", bin.path.clone(), e);
+            }
+        }
+    }
+
+    for bin in scan_rustls() {
+        let key = (bin.dev, bin.inode);
+        if !attached.lock().unwrap().insert(key) {
+            continue;
+        }
+        match attach_rustls_one(bpf, &bin) {
+            Ok(()) => {
+                info!(path = %bin.path.display(), "tap: rescan rustls attached");
+                record_attach_ok(status, "rustls");
+                added += 1;
+            }
+            Err(e) => {
+                warn!(path = %bin.path.display(), error = %e, "tap: rescan rustls attach failed");
+                attached.lock().unwrap().remove(&key);
+                record_attach_fail(status, "rustls", bin.path.clone(), e);
+            }
+        }
+    }
+
+    for bin in scan_boringssl_static() {
+        let key = (bin.dev, bin.inode);
+        if !attached.lock().unwrap().insert(key) {
+            continue;
+        }
+        match attach_boringssl_one(bpf, &bin) {
+            Ok(()) => {
+                info!(path = %bin.path.display(), "tap: rescan BoringSSL static attached");
+                record_attach_ok(status, "boringssl_static");
+                added += 1;
+            }
+            Err(e) => {
+                warn!(path = %bin.path.display(), error = %e, "tap: rescan BoringSSL attach failed");
+                attached.lock().unwrap().remove(&key);
+                record_attach_fail(status, "boringssl_static", bin.path.clone(), e);
+            }
+        }
+    }
+
+    added
 }
 
 /// Per-CPU perf event consumer. Decodes raw TapEvent bytes into ObservedTap
@@ -331,6 +633,9 @@ struct GoBinary {
     /// Host-visible path (/proc/<pid>/root/...) — works for containerized
     /// processes since the relay runs in the host mount namespace.
     path: PathBuf,
+    /// `(dev, inode)` for `AttachedSet` dedup across rescan cycles.
+    dev: u64,
+    inode: u64,
 }
 
 fn scan_go_tls() -> Vec<GoBinary> {
@@ -392,7 +697,7 @@ fn scan_go_tls() -> Vec<GoBinary> {
             continue;
         }
 
-        by_inode.insert(key, GoBinary { path: host_path });
+        by_inode.insert(key, GoBinary { path: host_path, dev: meta.dev(), inode: meta.ino() });
     }
 
     debug!(
@@ -681,6 +986,9 @@ struct RustlsBinary {
     /// File offset of `<...Reader as std::io::Read>::read` (entry).
     /// None when the build inlined this away (some binaries do).
     read_offset: Option<u64>,
+    /// `(dev, inode)` for `AttachedSet` dedup across rescan cycles.
+    dev: u64,
+    inode: u64,
 }
 
 fn scan_rustls() -> Vec<RustlsBinary> {
@@ -725,7 +1033,9 @@ fn scan_rustls() -> Vec<RustlsBinary> {
         }
 
         match find_rustls_offsets(&host_path) {
-            Ok(Some(rb)) => {
+            Ok(Some(mut rb)) => {
+                rb.dev = meta.dev();
+                rb.inode = meta.ino();
                 by_inode.insert(key, rb);
             }
             Ok(None) => {} // Not a rustls binary; ignore.
@@ -741,14 +1051,23 @@ fn scan_rustls() -> Vec<RustlsBinary> {
 /// Inspect an ELF symtab for the canonical rustls plaintext-API
 /// symbols and return their file offsets.
 ///
-/// Symbol patterns we match (stable across compiler versions):
-///   write: contains `PlaintextSink$GT$5write17h`
-///   read:  contains `std..io..Read$GT$4read17h`
+/// Substring-tuple match (Coroot's approach), more robust than the
+/// exact mangled patterns we used to grep for:
 ///
-/// The numeric prefixes (`5`, `4`) are the lengths of the method
-/// names ("write", "read") in Rust's mangling, so they're stable.
-/// The `17h<HEX>E` suffix differs per binary but isn't part of our
-/// match.
+///   write: name contains "rustls" + ("Writer" OR "PlaintextSink") + "write"
+///   read:  name contains "rustls" + "Reader" + "read"
+///
+/// Why both `Writer` and `PlaintextSink`:
+///   - rustls 0.21 and earlier: write goes through the `PlaintextSink`
+///     trait (`<...PlaintextSink>::write`).
+///   - rustls 0.22+: `PlaintextSink` is gone; write goes through
+///     `<rustls::common_state::Writer<'_, ...> as std::io::Write>::write`.
+/// Heimdall's own kube-rs client and ClickHouse still link 0.21-style
+/// rustls; Deno alpine ships 0.23. Matching both terms covers both eras
+/// without needing version-specific patterns.
+///
+/// `read_to_end` / `write_vectored` etc. are excluded so we don't pick
+/// the wrong overload as the canonical entry.
 fn find_rustls_offsets(path: &Path) -> Result<Option<RustlsBinary>> {
     use object::{Object, ObjectSection, ObjectSymbol};
 
@@ -756,6 +1075,29 @@ fn find_rustls_offsets(path: &Path) -> Result<Option<RustlsBinary>> {
     let obj = match object::read::File::parse(&*data) {
         Ok(o) => o,
         Err(_) => return Ok(None),
+    };
+
+    // Helper: does `name` look like a rustls write entry?
+    let is_rustls_write = |name: &str| -> bool {
+        name.contains("rustls")
+            && (name.contains("Writer") || name.contains("PlaintextSink"))
+            && name.contains("write")
+            && !name.contains("write_vectored")
+            && !name.contains("write_all")
+            && !name.contains("write_fmt")
+            && !name.contains("write_str")
+    };
+
+    // Helper: does `name` look like a rustls read entry?
+    let is_rustls_read = |name: &str| -> bool {
+        name.contains("rustls")
+            && name.contains("Reader")
+            && name.contains("read")
+            && !name.contains("read_to_end")
+            && !name.contains("read_to_string")
+            && !name.contains("read_exact")
+            && !name.contains("read_buf")
+            && !name.contains("read_vectored")
     };
 
     let mut write_addr: Option<(u64, object::SectionIndex)> = None;
@@ -766,19 +1108,11 @@ fn find_rustls_offsets(path: &Path) -> Result<Option<RustlsBinary>> {
             Ok(n) => n,
             Err(_) => continue,
         };
-        if !name.contains("rustls") {
-            continue;
-        }
-        if write_addr.is_none()
-            && name.contains("PlaintextSink$GT$5write17h")
-            && !name.contains("write_vectored")
-        {
+        if write_addr.is_none() && is_rustls_write(name) {
             if let Some(idx) = sym.section_index() {
                 write_addr = Some((sym.address(), idx));
             }
-        } else if read_addr.is_none()
-            && name.contains("connection..Reader$u20$as$u20$std..io..Read$GT$4read17h")
-        {
+        } else if read_addr.is_none() && is_rustls_read(name) {
             if let Some(idx) = sym.section_index() {
                 read_addr = Some((sym.address(), idx));
             }
@@ -817,6 +1151,10 @@ fn find_rustls_offsets(path: &Path) -> Result<Option<RustlsBinary>> {
         path: path.to_path_buf(),
         write_offset,
         read_offset,
+        // Filled in by the caller (`scan_rustls`) which already has
+        // the cached `(dev, inode)` from the /proc walk.
+        dev: 0,
+        inode: 0,
     }))
 }
 
@@ -873,6 +1211,274 @@ fn attach_rustls_one(bpf: &mut Ebpf, bin: &RustlsBinary) -> Result<()> {
                 bin.path.display(), read_off))?;
     }
 
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// BoringSSL static discovery — scan /proc/*/exe for binaries that
+// statically link BoringSSL.
+//
+// BoringSSL preserves the OpenSSL C ABI: `int SSL_write(SSL*, void*, int)`
+// and `int SSL_read(SSL*, void*, int)`. The libssl uprobes (`ssl_write`,
+// `ssl_read_enter`, `ssl_read_exit`) attach unchanged — this scanner only
+// does the user-space half: detect a static-linked BoringSSL image and
+// resolve file offsets for the two symbols.
+//
+// Identification (two cheap stages):
+//
+//  1. Marker bytes. The literal "BoringSSL" appears in the
+//     `OPENSSL_VERSION_TEXT` constant and several internal error strings,
+//     all of which end up in `.rodata`. A static-linked BoringSSL build
+//     contains the bytes; vendored OpenSSL or no SSL at all does not.
+//     We restrict the search to `.rodata` to keep the scan O(rodata-size)
+//     rather than O(binary-size).
+//
+//  2. Symbol lookup in `.symtab` then `.dynsym` for `SSL_write` and
+//     `SSL_read`. Static linkage doesn't normally export these to
+//     `.dynsym` (LTO keeps them internal), but `.symtab` survives unless
+//     the binary was explicitly stripped.
+//
+// Caveats:
+//
+//  * Stripped binaries (`strip --strip-all` or `-Wl,-s`) lose both
+//    symbol tables; this scanner returns None for them. Recovery
+//    requires byte-pattern matching the function prologue (the
+//    Pixie / Stirling approach) — deferred until we have a stripped
+//    BoringSSL workload to validate signatures against.
+//
+//  * LTO can inline `SSL_write` / `SSL_read` into a single caller; the
+//    symbol then either disappears or points at code that is no longer
+//    the canonical entry. We attach blindly; non-firing is a silent
+//    failure mode, same as rustls.
+//
+//  * The marker check excludes statically-linked non-BoringSSL OpenSSL
+//    by design. If you want to capture those too, relax the marker —
+//    expect more false positives without it.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+struct BoringSSLBinary {
+    path: PathBuf,
+    /// File offset of `SSL_write` in the binary.
+    write_offset: u64,
+    /// File offset of `SSL_read` in the binary.
+    read_offset: u64,
+    /// `(dev, inode)` for `AttachedSet` dedup across rescan cycles.
+    dev: u64,
+    inode: u64,
+}
+
+fn scan_boringssl_static() -> Vec<BoringSSLBinary> {
+    let mut by_inode: StdHashMap<(u64, u64), BoringSSLBinary> = StdHashMap::new();
+
+    let entries = match fs::read_dir("/proc") {
+        Ok(d) => d,
+        Err(e) => {
+            warn!(error = %e, "tap: cannot read /proc for BoringSSL scan");
+            return Vec::new();
+        }
+    };
+
+    for entry in entries.flatten() {
+        let pid: u32 = match entry.file_name().to_str().and_then(|s| s.parse().ok()) {
+            Some(p) => p,
+            None => continue,
+        };
+
+        let exe_link = format!("/proc/{pid}/exe");
+        let exe_target = match fs::read_link(&exe_link) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let exe_str = match exe_target.to_str() {
+            Some(s) => s,
+            None => continue,
+        };
+        let host_path = if exe_str.starts_with('/') {
+            PathBuf::from(format!("/proc/{pid}/root{exe_str}"))
+        } else {
+            PathBuf::from(format!("/proc/{pid}/root/{exe_str}"))
+        };
+
+        let meta = match fs::metadata(&host_path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let key = (meta.dev(), meta.ino());
+        if by_inode.contains_key(&key) {
+            continue;
+        }
+
+        match find_boringssl_offsets(&host_path) {
+            Ok(Some(mut b)) => {
+                b.dev = meta.dev();
+                b.inode = meta.ino();
+                by_inode.insert(key, b);
+            }
+            Ok(None) => {} // Not a static-linked BoringSSL binary.
+            Err(e) => {
+                debug!(path = %host_path.display(), error = %e, "tap: BoringSSL scan failed");
+            }
+        }
+    }
+
+    by_inode.into_values().collect()
+}
+
+/// Two-stage check: marker bytes in `.rodata`, then symbol lookup in
+/// `.symtab` and `.dynsym`. Returns `Ok(None)` for binaries that are
+/// not static-linked BoringSSL or whose symbol tables have been
+/// stripped — neither is an error.
+fn find_boringssl_offsets(path: &Path) -> Result<Option<BoringSSLBinary>> {
+    use object::{Object, ObjectSection, ObjectSymbol};
+
+    let data = fs::read(path)?;
+    let obj = match object::read::File::parse(&*data) {
+        Ok(o) => o,
+        Err(_) => return Ok(None),
+    };
+
+    // Stage 1: marker bytes in .rodata. Scan only this section to keep
+    // the cost bounded; .rodata is usually a few MB even on large
+    // binaries, vs hundreds of MB for the full file.
+    let rodata = match obj.section_by_name(".rodata") {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+    let rodata_bytes = match rodata.data() {
+        Ok(b) => b,
+        Err(_) => return Ok(None),
+    };
+    if !contains_subseq(rodata_bytes, b"BoringSSL") {
+        return Ok(None);
+    }
+
+    // Stage 2: SSL_write / SSL_read in .symtab, falling back to .dynsym.
+    let mut write_addr: Option<(u64, object::SectionIndex)> = None;
+    let mut read_addr: Option<(u64, object::SectionIndex)> = None;
+
+    for sym in obj.symbols() {
+        let name = match sym.name() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+        if name == "SSL_write" && write_addr.is_none() {
+            if let Some(idx) = sym.section_index() {
+                write_addr = Some((sym.address(), idx));
+            }
+        } else if name == "SSL_read" && read_addr.is_none() {
+            if let Some(idx) = sym.section_index() {
+                read_addr = Some((sym.address(), idx));
+            }
+        }
+        if write_addr.is_some() && read_addr.is_some() {
+            break;
+        }
+    }
+    if write_addr.is_none() || read_addr.is_none() {
+        for sym in obj.dynamic_symbols() {
+            let name = match sym.name() {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+            if name == "SSL_write" && write_addr.is_none() {
+                if let Some(idx) = sym.section_index() {
+                    write_addr = Some((sym.address(), idx));
+                }
+            } else if name == "SSL_read" && read_addr.is_none() {
+                if let Some(idx) = sym.section_index() {
+                    read_addr = Some((sym.address(), idx));
+                }
+            }
+            if write_addr.is_some() && read_addr.is_some() {
+                break;
+            }
+        }
+    }
+
+    let (write_vaddr, write_section) = match write_addr {
+        Some(v) => v,
+        None => return Ok(None),
+    };
+    let (read_vaddr, read_section) = match read_addr {
+        Some(v) => v,
+        None => return Ok(None),
+    };
+
+    let to_file_offset = |vaddr: u64, sec_idx: object::SectionIndex| -> Result<u64> {
+        let section = obj
+            .section_by_index(sec_idx)
+            .map_err(|e| anyhow::anyhow!("section_by_index: {e}"))?;
+        let section_addr = section.address();
+        let (sec_file_off, _) = section
+            .file_range()
+            .ok_or_else(|| anyhow::anyhow!("section has no file range"))?;
+        vaddr
+            .checked_sub(section_addr)
+            .map(|d| sec_file_off + d)
+            .ok_or_else(|| anyhow::anyhow!("vaddr below section base"))
+    };
+
+    Ok(Some(BoringSSLBinary {
+        path: path.to_path_buf(),
+        write_offset: to_file_offset(write_vaddr, write_section)?,
+        read_offset: to_file_offset(read_vaddr, read_section)?,
+        // Filled in by the caller (`scan_boringssl_static`) which has
+        // the cached `(dev, inode)` from the /proc walk.
+        dev: 0,
+        inode: 0,
+    }))
+}
+
+/// Naive substring search. Avoids pulling in `memchr` for one call
+/// site; the haystack is a single `.rodata` section, typically a few
+/// MB, which `windows().any()` chews through in a few ms in release
+/// mode (Boyer-Moore-style autovectorization on `==`).
+fn contains_subseq(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return false;
+    }
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+/// Attach the libssl-style probes (write entry, read entry, read return)
+/// to a BoringSSL static binary at file offsets resolved by the scanner.
+/// Reuses the same eBPF programs as `attach_one` for libssl images,
+/// since BoringSSL preserves the OpenSSL C ABI.
+fn attach_boringssl_one(bpf: &mut Ebpf, bin: &BoringSSLBinary) -> Result<()> {
+    {
+        let prog: &mut UProbe = bpf
+            .program_mut("ssl_write")
+            .context("ssl_write program not found")?
+            .try_into()?;
+        let _ = prog.load();
+        prog.attach(None, bin.write_offset, &bin.path, None)
+            .with_context(|| format!(
+                "attach BoringSSL SSL_write at {} offset {:#x}",
+                bin.path.display(), bin.write_offset))?;
+    }
+    {
+        let prog: &mut UProbe = bpf
+            .program_mut("ssl_read_enter")
+            .context("ssl_read_enter program not found")?
+            .try_into()?;
+        let _ = prog.load();
+        prog.attach(None, bin.read_offset, &bin.path, None)
+            .with_context(|| format!(
+                "attach BoringSSL SSL_read entry at {} offset {:#x}",
+                bin.path.display(), bin.read_offset))?;
+    }
+    {
+        let prog: &mut UProbe = bpf
+            .program_mut("ssl_read_exit")
+            .context("ssl_read_exit program not found")?
+            .try_into()?;
+        let _ = prog.load();
+        prog.attach(None, bin.read_offset, &bin.path, None)
+            .with_context(|| format!(
+                "attach BoringSSL SSL_read return at {} offset {:#x}",
+                bin.path.display(), bin.read_offset))?;
+    }
     Ok(())
 }
 

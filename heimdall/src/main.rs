@@ -36,6 +36,7 @@ mod gosym;
 mod pod;
 mod policy;
 mod router;
+mod sni;
 mod store;
 mod tap;
 
@@ -578,6 +579,11 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
         Arc::new(parking_lot::RwLock::new(StdHashMap::new()));
     let policy_engine_slot: PolicyEngineSlot =
         Arc::new(parking_lot::Mutex::new(None));
+    // Live TLS-tap status, cloned by Arc into AppState so /api/status
+    // can render a snapshot to AI consumers, and into tap::start /
+    // spawn_rescan so they can populate it.
+    let tap_status: tap::TapStatusHandle =
+        Arc::new(std::sync::Mutex::new(tap::TapStatus::default()));
 
     if let Some(s) = store.as_ref() {
         let api_listen: SocketAddr = cfg
@@ -594,6 +600,7 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
             connections: cfg.connections.clone(),
             cli_overrides: cli_overrides.clone(),
             policy_engine: policy_engine_slot.clone(),
+            tap_status: tap_status.clone(),
         };
         tokio::spawn(async move {
             if let Err(e) = api::serve(app_state, api_listen).await {
@@ -863,9 +870,10 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
 
     // ─── Phase B: TLS plaintext tap (libssl uprobes) ──────────────────────
     if shared.cfg.runtime.tap.enabled {
-        match tap::start(&mut bpf) {
+        match tap::start(&mut bpf, &tap_status) {
             Ok(handle) => {
                 let persist = shared.cfg.runtime.tap.persist;
+                let attached_inodes = handle.attached_inodes.clone();
                 info!(
                     attached_libs = handle.attached_libs,
                     persist,
@@ -884,6 +892,17 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
                     }
                     (false, _) => tap::spawn_journal_logger(handle),
                 }
+                // Hand `bpf` to the rescan task — `main.rs` doesn't
+                // reference it after this point, so the move is safe.
+                // Period of 30s is a low-pressure default: pods born
+                // between ticks miss at most 30s of TLS correlation
+                // until the next pass picks them up.
+                tap::spawn_rescan(
+                    bpf,
+                    attached_inodes,
+                    tap_status.clone(),
+                    std::time::Duration::from_secs(30),
+                );
             }
             Err(e) => {
                 warn!(error = %e, "tap: failed to start; relay continues without it");
@@ -1047,9 +1066,45 @@ async fn relay(
         .map(|p| format!("{}/{}", p.namespace, p.name))
         .unwrap_or_else(|| "unknown".to_string());
 
+    // ─── SNI fallback for IP-literal destinations ─────────────────────────
+    // Pods that connect by literal IP (no DNS lookup) bypass heimdall's
+    // fake-IP machinery, so `dst` is `Dst::Ip4`/`Ip6` and we have no
+    // hostname for the flow row. Peek at the first TLS record on the
+    // accepted socket and try to extract SNI — costs one non-blocking
+    // read with a short timeout, leaves the bytes in the kernel buffer
+    // for the upstream forwarding stage.
+    //
+    // Why the relay needs this: tap modules are blind to stripped
+    // BoringSSL / rustls binaries (Bun, Deno, Envoy, Chromium-derived).
+    // SNI fallback lets us at least record where they were going, even
+    // when plaintext is impossible. The atyp stays "ip"/"ip6" — we
+    // don't change the SOCKS5 ATYP we send upstream, since we still
+    // address by the original IP literal the pod chose.
+    let sni_host: Option<String> = match &dst {
+        Dst::Domain(_) => None, // already have a hostname from fake-IP DNS
+        Dst::Ip4(_) | Dst::Ip6(_) => {
+            sni::peek_sni(&client, std::time::Duration::from_millis(150)).await
+        }
+    };
+    if let Some(host) = sni_host.as_deref() {
+        // Log the recovery so journal grep finds it for AI-driven
+        // postmortems ("why does this flow have no plaintext?" →
+        // "because it took the SNI fallback path"). `dst_ip` is the
+        // post-`dst_ip_display` alias defined just above.
+        info!(%host, dst = %dst_ip, "relay: SNI fallback recovered hostname for IP-literal connection");
+    }
+
     let (dst_label, dst_host_for_store, atyp) = match &dst {
-        Dst::Ip4(ip) => (ip.to_string(), None, "ip"),
-        Dst::Ip6(ip) => (ip.to_string(), None, "ip6"),
+        Dst::Ip4(ip) => (
+            ip.to_string(),
+            sni_host.clone(),
+            "ip",
+        ),
+        Dst::Ip6(ip) => (
+            ip.to_string(),
+            sni_host.clone(),
+            "ip6",
+        ),
         Dst::Domain(d) => (d.clone(), Some(d.clone()), "domain"),
     };
 

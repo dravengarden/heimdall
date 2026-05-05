@@ -32,7 +32,7 @@
 use std::{
     collections::{HashMap as StdHashMap, HashSet},
     fs,
-    net::Ipv4Addr,
+    net::{Ipv4Addr, Ipv6Addr},
     os::unix::fs::MetadataExt,
     sync::Arc,
 };
@@ -114,33 +114,56 @@ pub async fn synthesize(deps: Arc<Deps>) -> Result<usize> {
             None => continue,
         };
 
-        let conns = match read_tcp_v4(pid) {
+        let primary_cg = cgroups[0].0;
+        let all_cgs: Vec<u64> = cgroups.iter().map(|(cg, _)| *cg).collect();
+
+        // ── IPv4 pass ────────────────────────────────────────────────
+        let conns_v4 = match read_tcp_v4(pid) {
             Ok(v) => v,
             Err(e) => {
                 debug!(pid, uid, error = %e, "bootstrap: read /proc/<pid>/net/tcp failed");
-                continue;
+                Vec::new()
             }
         };
-
-        let mut seen: HashSet<(u16, u32, u16)> = HashSet::new();
-        for conn in conns {
-            if conn.state != TCP_ESTABLISHED {
-                continue;
-            }
-            if conn.remote_addr_be == 0 {
+        let mut seen4: HashSet<(u16, u32, u16)> = HashSet::new();
+        for conn in conns_v4 {
+            if conn.state != TCP_ESTABLISHED || conn.remote_addr_be == 0 {
                 continue;
             }
             let key = (conn.local_port, conn.remote_addr_be, conn.remote_port);
-            if !seen.insert(key) {
+            if !seen4.insert(key) {
                 continue;
             }
-
-            // Tag the row with the first cgroup; the open-flow index
-            // gets every cgroup so any container's tap events match.
-            let primary_cg = cgroups[0].0;
-            let all_cgs: Vec<u64> = cgroups.iter().map(|(cg, _)| *cg).collect();
             if let Err(e) = insert_one(&deps, primary_cg, &all_cgs, &pod, &conn).await {
-                warn!(error = %e, "bootstrap: insert_flow_start failed");
+                warn!(error = %e, "bootstrap: v4 insert_flow_start failed");
+                continue;
+            }
+            inserted += 1;
+        }
+
+        // ── IPv6 pass ────────────────────────────────────────────────
+        // /proc/<pid>/net/tcp6 also lists IPv4-mapped (::ffff:x.x.x.x)
+        // entries on dual-stack sockets, which would double-count
+        // against the v4 pass. read_tcp_v6 filters those out so the
+        // two seen-sets stay disjoint.
+        let conns_v6 = match read_tcp_v6(pid) {
+            Ok(v) => v,
+            Err(e) => {
+                debug!(pid, uid, error = %e, "bootstrap: read /proc/<pid>/net/tcp6 failed");
+                Vec::new()
+            }
+        };
+        let mut seen6: HashSet<(u16, [u8; 16], u16)> = HashSet::new();
+        for conn in conns_v6 {
+            if conn.state != TCP_ESTABLISHED || conn.remote_addr == [0u8; 16] {
+                continue;
+            }
+            let key = (conn.local_port, conn.remote_addr, conn.remote_port);
+            if !seen6.insert(key) {
+                continue;
+            }
+            if let Err(e) = insert_one_v6(&deps, primary_cg, &all_cgs, &pod, &conn).await {
+                warn!(error = %e, "bootstrap: v6 insert_flow_start failed");
                 continue;
             }
             inserted += 1;
@@ -319,4 +342,134 @@ fn parse_addr_port(s: &str) -> Option<(u32, u16)> {
     let addr_be = u32::from_str_radix(addr_hex, 16).ok()?;
     let port = u16::from_str_radix(port_hex, 16).ok()?;
     Some((addr_be, port))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TcpConn6 {
+    state: u32,
+    local_port: u16,
+    /// 16 bytes in network byte order — same layout as `Ipv6Addr::octets()`.
+    remote_addr: [u8; 16],
+    remote_port: u16,
+}
+
+/// Parse `/proc/<pid>/net/tcp6`. Same column layout as the v4 file but
+/// addresses are 32 hex chars (four `__be32` chunks printed via `%08X`
+/// each).
+///
+/// IPv4-mapped (`::ffff:x.x.x.x`) entries appear here on dual-stack
+/// sockets; they're filtered out so we don't double-count against the
+/// v4 pass.
+fn read_tcp_v6(pid: u32) -> Result<Vec<TcpConn6>> {
+    let raw = fs::read_to_string(format!("/proc/{pid}/net/tcp6"))?;
+    let mut out = Vec::new();
+    for line in raw.lines().skip(1) {
+        let mut fields = line.split_whitespace();
+        let _sl = fields.next();
+        let local = match fields.next() {
+            Some(s) => s,
+            None => continue,
+        };
+        let remote = match fields.next() {
+            Some(s) => s,
+            None => continue,
+        };
+        let state = match fields.next().and_then(|s| u32::from_str_radix(s, 16).ok()) {
+            Some(s) => s,
+            None => continue,
+        };
+        let (_local_addr, local_port) = match parse_v6_addr_port(local) {
+            Some(t) => t,
+            None => continue,
+        };
+        let (remote_addr, remote_port) = match parse_v6_addr_port(remote) {
+            Some(t) => t,
+            None => continue,
+        };
+        // Skip ::ffff:V4 — already covered by the v4 pass.
+        if is_v4_mapped(&remote_addr) {
+            continue;
+        }
+        out.push(TcpConn6 { state, local_port, remote_addr, remote_port });
+    }
+    Ok(out)
+}
+
+/// Parse `<32 hex>:<4 hex>` into ([u8; 16] in NBO, port).
+///
+/// Each 8-char chunk is the `%08X` of an `__be32` field. On x86_64 the
+/// kernel reads the `__be32` value as a host-LE `u32` for printing, so
+/// the printed hex is byte-swapped relative to the wire bytes. We undo
+/// that here: parse the 8 chars as a host u32, then `to_le_bytes()`
+/// gives back the four wire-NBO bytes the address actually carries.
+fn parse_v6_addr_port(s: &str) -> Option<([u8; 16], u16)> {
+    let (addr_hex, port_hex) = s.split_once(':')?;
+    if addr_hex.len() != 32 {
+        return None;
+    }
+    let mut bytes = [0u8; 16];
+    for i in 0..4 {
+        let chunk = &addr_hex[i * 8..(i + 1) * 8];
+        let host_value = u32::from_str_radix(chunk, 16).ok()?;
+        let wire = host_value.to_le_bytes();
+        bytes[i * 4..(i + 1) * 4].copy_from_slice(&wire);
+    }
+    let port = u16::from_str_radix(port_hex, 16).ok()?;
+    Some((bytes, port))
+}
+
+/// True if the 16-byte address is in the IPv4-mapped block
+/// (`::ffff:0:0/96` — first 10 bytes zero, next 2 bytes 0xFF).
+fn is_v4_mapped(b: &[u8; 16]) -> bool {
+    b[..10].iter().all(|&x| x == 0) && b[10] == 0xff && b[11] == 0xff
+}
+
+async fn insert_one_v6(
+    deps: &Deps,
+    primary_cgroup: u64,
+    all_cgroups: &[u64],
+    pod: &PodInfo,
+    conn: &TcpConn6,
+) -> Result<()> {
+    let dst_ip = Ipv6Addr::from(conn.remote_addr).to_string();
+    let dst_port = conn.remote_port;
+
+    let id = deps
+        .store
+        .insert_flow_start(FlowStart {
+            socket_cookie: None,
+            cgroup_id: Some(primary_cgroup),
+            pod_uid: Some(pod.uid.clone()),
+            namespace: Some(pod.namespace.clone()),
+            pod_name: Some(pod.name.clone()),
+            connection_name: "bootstrap".to_string(),
+            dst_host: None,
+            dst_ip,
+            dst_port,
+            upstream_addr: None,
+            atyp: Some("ip6"),
+        })
+        .await?;
+
+    {
+        let mut g = deps.open_flows.write();
+        for cg in all_cgroups {
+            g.entry(*cg).or_default().push(id);
+        }
+    }
+
+    let _ = deps
+        .store
+        .finish_flow(
+            id,
+            crate::store::FlowFinish {
+                bytes_up: 0,
+                bytes_down: 0,
+                error: None,
+            },
+        )
+        .await;
+
+    deps.events.publish(crate::api::FlowEvent { flow_id: id });
+    Ok(())
 }
