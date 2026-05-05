@@ -28,9 +28,9 @@ Two situations:
 sudo heimdall init [OPTIONS]
 ```
 
-Run `heimdall init --help` (concise) or `heimdall help init`
-(recursive / AI-friendly) for the complete option matrix; this skill
-covers the common flow.
+Run `heimdall help init` (concise) or `heimdall help init -v` (verbose,
+AI-friendly) for the complete option matrix; this skill covers the
+common flow.
 
 ### Options summary
 

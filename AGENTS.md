@@ -114,17 +114,16 @@ remember to ask for more if needed.
 - `parking_lot::MutexGuard` is **not Send across `.await`**. Take
   what you need out of the lock into a local before any await point.
   This caused mysterious axum Handler trait failures historically.
-- **Help discovery is split for two audiences.** Don't collapse them.
-  - `heimdall --help` / `-h` — concise per-command help (clap default).
-    What a human at a terminal expects.
-  - `heimdall help` — recursive dump of every subcommand and every
-    option in one read. **The canonical surface-discovery path for
-    AI agents.** Drill in with `heimdall help flows`, `heimdall help
-    flows list`, etc.
-  - `--help-all` — same content as `help`, available as a global flag
-    so it composes anywhere (`heimdall flows --help-all`, etc.).
-  The concise help has a footer line (`Tip: heimdall help …`) that
-  points AI agents at the recursive form. Don't strip the footer.
+- **One help command, two verbosity levels.** Don't multiply flags.
+  - `heimdall help [path…]` — concise per-command help (same content
+    as `<sub> --help`). Drill with `heimdall help flows list` etc.
+  - `heimdall help [path…] -v` — verbose: recurse into every
+    subcommand and inline every option. **AI agents that want the
+    full surface in one read should use this.**
+  - `heimdall --help` / `-h` — kept for muscle memory; identical to
+    `heimdall help` at the corresponding scope.
+  The concise help has a footer line (`Tip: heimdall help -v …`)
+  that points AI agents at the verbose form. Don't strip the footer.
 - `heimdall init` always rewrites `lib.ncl` and `README.md`, but
   preserves `heimdall.<ext>` unless `--force`. Don't change this:
   losing live config to a doc refresh has bitten the user already.

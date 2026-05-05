@@ -88,26 +88,23 @@ type PortMap = Arc<RwLock<HashMap<aya::maps::MapData, u32, OrigDst>>>;
 
 /// heimdall — transparent SOCKS5 egress proxy + observability for k8s pods.
 ///
-/// Help discovery is split for two audiences:
+/// Help has one entry point — `heimdall help [subcommand…] [-v]`:
 ///
-///   `heimdall --help` / `-h`   — concise per-command help (clap default).
-///                                What a human at a terminal expects.
-///   `heimdall help`            — recursive dump of every subcommand and
-///                                every option in one read. The canonical
-///                                surface-discovery path for AI agents.
-///   `heimdall help <subcmd>`   — same, scoped to one subcommand subtree.
-///   `heimdall --help-all`      — alias for `heimdall help`, kept so the
-///                                flag form composes anywhere.
+///   `heimdall help`              concise top-level (same as `--help`)
+///   `heimdall help -v`           verbose: every subcommand + option in one read
+///   `heimdall help flows`        concise help for the flows verb
+///   `heimdall help flows -v`     verbose: flows + list/show/search inlined
+///   `heimdall help flows list`   concise help for the leaf
+///
+/// `--help` / `-h` remain available everywhere (standard clap output).
 #[derive(Parser, Debug)]
 #[command(name = "heimdall", version, about, long_about = None,
           arg_required_else_help = true,
-          // Suppress clap's auto-generated `help` subcommand — we
-          // override it (`Cmd::Help`) to dispatch to the recursive dump
-          // instead of duplicating what `--help` already prints.
+          // Replace clap's auto-generated `help` subcommand with our
+          // own variant (Cmd::Help) so we can add the `-v` toggle.
           disable_help_subcommand = true,
-          after_help = "Tip: `heimdall help` (or `--help-all`) prints every \
-                        subcommand and option in one shot — designed for AI \
-                        agents discovering the CLI surface.")]
+          after_help = "Tip: `heimdall help -v` prints every subcommand and \
+                        option in one shot.")]
 struct Cli {
     /// Path to config file (yaml | json | toml | ncl — auto-detected by
     /// extension). When unset, probes
@@ -116,13 +113,6 @@ struct Cli {
     /// resulting "no such file" error names a real candidate.
     #[arg(long, env = "HEIMDALL_CONFIG", global = true)]
     config: Option<PathBuf>,
-
-    /// Alias for `heimdall help`: recursively print help for this
-    /// command and every subcommand beneath it, then exit. The
-    /// `help` subcommand is the canonical AI-discovery path; this
-    /// flag exists so the same behaviour composes anywhere.
-    #[arg(long = "help-all", global = true, action = clap::ArgAction::SetTrue)]
-    help_all: bool,
 
     #[command(subcommand)]
     cmd: Option<Cmd>,
@@ -151,16 +141,24 @@ enum Cmd {
     /// override.
     Run(cli::run::RunArgs),
 
-    /// Print recursive help — every subcommand and every option in
-    /// one read. AI-agent friendly. With trailing args, drills into
-    /// the named subcommand:
+    /// Print help. By default, concise per-command help (same as
+    /// `--help` on the resolved subcommand). With `-v`, recurse into
+    /// every subcommand beneath it and dump options too — useful for
+    /// AI agents discovering the full CLI surface in one read.
     ///
-    ///     heimdall help              # whole tree
-    ///     heimdall help flows        # just the flows subtree
-    ///     heimdall help flows list   # leaf
+    ///     heimdall help              # concise top-level
+    ///     heimdall help -v           # full tree, every option inlined
+    ///     heimdall help flows        # concise flows help
+    ///     heimdall help flows -v     # flows + list/show/search inlined
     Help {
-        /// Subcommand path to drill into (e.g. `flows list`).
-        #[arg(trailing_var_arg = true, num_args = 0..)]
+        /// Recurse into every subcommand and inline every option.
+        #[arg(short = 'v', long = "verbose")]
+        verbose: bool,
+
+        /// Subcommand path to scope the help to (e.g. `flows list`).
+        /// No `trailing_var_arg` here so `-v` parses correctly even
+        /// when it appears after the path.
+        #[arg(num_args = 0..)]
         path: Vec<String>,
     },
 }
@@ -331,18 +329,6 @@ enum Dst {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // `--help-all`: print recursive help rooted at the deepest subcommand
-    // the user actually invoked, then exit. Bare `heimdall --help-all`
-    // dumps the whole tree. Short-circuits before logger setup.
-    //
-    // The `heimdall help [path...]` subcommand handles the same case
-    // through a different parse shape (its arms are pre-extracted from
-    // `cli.cmd` below); this branch covers `<sub> --help-all` style use.
-    if cli.help_all {
-        print_help_all_at(&help_path(&cli));
-        return Ok(());
-    }
-
     // Only the daemon prints structured logs by default. CLI subcommands
     // stay quiet unless `RUST_LOG` overrides — they're meant to feed
     // stdout into pipes / `jq` / human eyes.
@@ -359,18 +345,18 @@ async fn main() -> Result<()> {
 
     let config_path = resolve_config_path(cli.config);
     match cli.cmd.unwrap() {
-        Cmd::Help { path } => {
+        Cmd::Help { verbose, path } => {
             // Validate the path against the known subcommand tree so
             // `heimdall help bogus` errors clearly instead of silently
-            // dumping the root tree.
+            // printing the root help.
             let strs: Vec<&str> = path.iter().map(String::as_str).collect();
             if let Err(err) = validate_help_path(&strs) {
                 eprintln!("error: {err}");
-                eprintln!("\nUsage: heimdall help [<subcommand> ...]");
+                eprintln!("\nUsage: heimdall help [<subcommand> ...] [-v]");
                 eprintln!("Try `heimdall --help` for the list of subcommands.");
                 std::process::exit(2);
             }
-            print_help_all_at(&strs);
+            print_help_at(&strs, verbose);
             Ok(())
         }
         Cmd::Serve(args) => daemon_run(&config_path, args).await,
@@ -402,27 +388,6 @@ fn resolve_config_path(explicit: Option<PathBuf>) -> PathBuf {
     explicit.unwrap_or_else(heimdall_config::default_config_path)
 }
 
-/// Build the chain of subcommand names the user typed, e.g.
-/// `["flows", "list"]` for `heimdall flows list --help-all`. Used by
-/// `--help-all` to drill into the tree before dumping.
-fn help_path(cli: &Cli) -> Vec<&'static str> {
-    use cli::flows::FlowsCmd;
-    match cli.cmd.as_ref() {
-        None => vec![],
-        Some(Cmd::Serve(_)) => vec!["serve"],
-        Some(Cmd::Status(_)) => vec!["status"],
-        Some(Cmd::Init(_)) => vec!["init"],
-        Some(Cmd::Run(_)) => vec!["run"],
-        Some(Cmd::Help { .. }) => vec![],
-        Some(Cmd::Flows(args)) => match args.cmd.as_ref() {
-            None => vec!["flows"],
-            Some(FlowsCmd::List(_)) => vec!["flows", "list"],
-            Some(FlowsCmd::Show(_)) => vec!["flows", "show"],
-            Some(FlowsCmd::Search(_)) => vec!["flows", "search"],
-        },
-    }
-}
-
 /// Walk the clap command tree and confirm every name in `path` resolves
 /// to a real subcommand. Returns a human-readable error pointing at the
 /// first unknown segment if not.
@@ -446,26 +411,30 @@ fn validate_help_path(path: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
-/// Walk the clap command tree to the requested node and print long-help
-/// for it plus every descendant. `heimdall --help-all` (path empty)
-/// dumps the whole tree; `heimdall flows --help-all` dumps just the
-/// flows subtree; leaf commands like `heimdall serve --help-all` print
-/// only that leaf (same as plain `--help`).
-fn print_help_all_at(path: &[&str]) {
+/// Print help for the resolved subcommand. With `verbose=false`,
+/// behaves like `<sub> --help` (clap's standard long-help). With
+/// `verbose=true`, recurse: dump this node's long-help plus every
+/// descendant's, with separators. Empty path = root.
+fn print_help_at(path: &[&str], verbose: bool) {
     use clap::CommandFactory;
     let mut root = Cli::command();
     let mut node: &mut clap::Command = &mut root;
     for name in path {
         node = node
             .find_subcommand_mut(*name)
-            .expect("typed enum guarantees this subcommand exists");
+            .expect("validate_help_path ran first");
     }
-    let prefix: Vec<&str> = if path.is_empty() {
-        vec![]
+    if verbose {
+        let prefix: Vec<&str> = if path.is_empty() {
+            vec![]
+        } else {
+            path[..path.len() - 1].to_vec()
+        };
+        print_command_recursive(node, &prefix);
     } else {
-        path[..path.len() - 1].to_vec()
-    };
-    print_command_recursive(node, &prefix);
+        let _ = node.print_long_help();
+        println!();
+    }
 }
 
 fn print_command_recursive(cmd: &mut clap::Command, path: &[&str]) {

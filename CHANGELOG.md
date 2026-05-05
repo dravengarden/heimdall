@@ -61,16 +61,14 @@ Versioning](https://semver.org/spec/v2.0.0.html) once it tags a
   stable field names (`flows_in_store`, `relay_reachable`, …) so AI
   agents and shell scripts don't have to scrape the labeled-text
   view. The `heimdall-status` skill documents both modes.
-- `heimdall help [subcommand…]` is now the canonical AI-discovery
-  path: a recursive dump of every subcommand and every option in
-  one read. `heimdall help flows` drills into one subtree;
-  `heimdall help flows list` lands on a leaf. Clap's auto-generated
-  `help` subcommand was removed in favour of this routing.
-- `--help-all` global flag kept as an alias of `help`, so the same
-  recursive output composes anywhere (`heimdall flows --help-all`,
-  `heimdall run --help-all`, etc.). Plain `--help` / `-h` remains
-  concise clap default + a footer line pointing at `heimdall help`
-  for AI agents that scan only the first response.
+- `heimdall help [path…] [-v]` is now the single help entry point.
+  Without `-v` it prints the same concise per-command help as
+  `<sub> --help`; with `-v` it recurses through every subcommand
+  and inlines every option (intended for AI agents discovering the
+  full CLI surface in one read). Drill with
+  `heimdall help flows list`, `heimdall help run -v`, etc. The
+  prior `--help-all` flag is gone — one verbosity toggle, not two.
+  `--help` / `-h` remain available everywhere (clap default).
 
 ### Changed
 - `--config` no longer hard-codes a `[default: heimdall.ncl]` value
