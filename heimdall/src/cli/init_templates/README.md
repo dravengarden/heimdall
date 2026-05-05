@@ -439,8 +439,9 @@ partial config.
 After any change, verify the routing decision via the flows API:
 
 ```bash
-# 1. Generate traffic from a pod that should match the rule under test
-sudo KUBECONFIG=/var/lib/k0s/pki/admin.conf kubectl exec -n <ns> <pod> -- \
+# 1. Generate traffic from a pod that should match the rule under test.
+#    `kubectl` uses your usual KUBECONFIG / kube context.
+kubectl exec -n <ns> <pod> -- \
   curl -ksSm 5 -o /dev/null https://www.cloudflare.com/
 
 # 2. Inspect the resulting flow

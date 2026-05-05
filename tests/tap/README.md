@@ -39,13 +39,16 @@ always matches the file on disk; no manual sync step.
 
 ## Apply
 
-Requires `timoni` and access to the cluster's kubeconfig.
+Prerequisites: `timoni` on `$PATH` (or run via `nix run nixpkgs#timoni`)
+and a `kubectl` context / `KUBECONFIG` that points at your cluster.
+Some k8s distros (e.g. k0s) keep the admin kubeconfig under
+`/var/lib/<distro>/...` with root-only permissions; in that case
+`sudo -E env KUBECONFIG=<path> …` works without copying the file.
+
+From the repo root:
 
 ```bash
-cd /home/draven/land/heimdall
-sudo nix run nixpkgs#timoni -- apply tap-fixture ./tests/tap/timoni \
-    --namespace tap-test \
-    --kubeconfig /var/lib/k0s/pki/admin.conf
+timoni apply tap-fixture ./tests/tap/timoni --namespace tap-test
 ```
 
 `timoni` creates the namespace, ConfigMap, and Pod, then waits for the
@@ -56,9 +59,9 @@ Pod to become Ready before returning.
 Both containers should be `Running` and emitting `OK 200 bytes=...` lines:
 
 ```bash
-sudo kubectl --kubeconfig=/var/lib/k0s/pki/admin.conf -n tap-test get pod tap-fixture
-sudo kubectl --kubeconfig=/var/lib/k0s/pki/admin.conf -n tap-test logs tap-fixture -c bun  --tail=5
-sudo kubectl --kubeconfig=/var/lib/k0s/pki/admin.conf -n tap-test logs tap-fixture -c deno --tail=5
+kubectl -n tap-test get pod tap-fixture
+kubectl -n tap-test logs tap-fixture -c bun  --tail=5
+kubectl -n tap-test logs tap-fixture -c deno --tail=5
 ```
 
 ### Sanity-check the runtimes use the expected TLS stack
@@ -75,22 +78,25 @@ sudo strings /proc/$DENO_PID/exe | grep -c rustls      # > 0
 
 ### Verify heimdall attached to each binary
 
-After the heimdall daemon has been (re)started while these pods are
-running, its startup log records every binary it attached uprobes to:
+The startup scan and the live-rescan ticks both log every uprobe
+attach. Either run the fixture against an existing daemon (the next
+30 s rescan tick picks up the new pod) or restart the daemon:
 
 ```bash
 # rustls scanner — should report 1 binary at the deno path.
 sudo journalctl -u heimdall --since "5 min ago" | \
-    grep -E "rustls binaries discovered|rustls uprobes attached"
+    grep -E "rustls binaries discovered|rustls uprobes attached|rescan rustls"
 
 # BoringSSL static scanner — should report 1 binary at the bun path.
 sudo journalctl -u heimdall --since "5 min ago" | \
-    grep -E "BoringSSL static binaries discovered|BoringSSL static uprobes attached"
+    grep -E "BoringSSL static binaries discovered|BoringSSL static uprobes attached|rescan BoringSSL"
 ```
 
-Heimdall scans `/proc/*/exe` once at startup (no live re-scan yet), so
-pods created *after* the daemon started won't be observed until
-heimdall is restarted.
+Or query `/api/status` for a JSON snapshot of all attached scanners:
+
+```bash
+curl -s http://127.0.0.1:9999/api/status | jq .tap
+```
 
 ### Verify plaintext capture
 
@@ -126,10 +132,8 @@ The fixture is meant to be ephemeral — leaving it running just burns
 upstream bandwidth. Remove it when you're done:
 
 ```bash
-sudo nix run nixpkgs#timoni -- delete tap-fixture \
-    --namespace tap-test \
-    --kubeconfig /var/lib/k0s/pki/admin.conf
-sudo kubectl --kubeconfig=/var/lib/k0s/pki/admin.conf delete namespace tap-test
+timoni delete tap-fixture --namespace tap-test
+kubectl delete namespace tap-test
 ```
 
 ## Why these specific runtimes
