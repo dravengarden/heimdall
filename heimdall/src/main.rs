@@ -95,12 +95,13 @@ type PortMap = Arc<RwLock<HashMap<aya::maps::MapData, u32, OrigDst>>>;
 #[command(name = "heimdall", version, about, long_about = None,
           disable_help_flag = true)]
 struct Cli {
-    /// Path to config file (yaml | json | toml | ncl — auto-detected by extension).
-    /// When unset, probes /etc/heimdall/heimdall.{ncl,toml,json,yaml} in order
-    /// and uses the first one that exists.
-    #[arg(long, default_value_os_t = heimdall_config::default_config_path(),
-          env = "HEIMDALL_CONFIG", global = true)]
-    config: PathBuf,
+    /// Path to config file (yaml | json | toml | ncl — auto-detected by
+    /// extension). When unset, probes
+    /// /etc/heimdall/heimdall.{ncl,toml,json,yaml} in order and uses the
+    /// first one that exists; falls back to heimdall.ncl if none do, so the
+    /// resulting "no such file" error names a real candidate.
+    #[arg(long, env = "HEIMDALL_CONFIG", global = true)]
+    config: Option<PathBuf>,
 
     /// Print the full recursive help (every subcommand + every option) and exit.
     #[arg(short = 'h', long = "help", global = true, action = clap::ArgAction::SetTrue,
@@ -121,7 +122,7 @@ enum Cmd {
     Flows(cli::flows::FlowsCmd),
 
     /// Daemon health and counts.
-    Status,
+    Status(StatusArgs),
 
     /// Bootstrap a config directory (writes starter heimdall.<ext> +
     /// AI-readable README.md; for Nickel format, also lib.ncl with
@@ -142,6 +143,16 @@ struct ServeArgs {
     /// All connections will use `routing.default`.
     #[arg(long, env = "HEIMDALL_NO_K8S")]
     no_k8s: bool,
+}
+
+#[derive(clap::Args, Debug, Default)]
+pub struct StatusArgs {
+    /// Emit a single JSON object instead of the labeled-text view.
+    /// Drops the "(daemon down)" warnings and uses null fields when
+    /// the daemon HTTP API is unreachable. Stable contract for AI
+    /// agents and the heimdall-status skill.
+    #[arg(long)]
+    pub json: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -300,13 +311,21 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
+    let config_path = resolve_config_path(cli.config);
     match cli.cmd.unwrap() {
-        Cmd::Serve(args) => daemon_run(&cli.config, args).await,
-        Cmd::Flows(sub) => cli::flows::run(&cli.config, sub).await,
-        Cmd::Status => cli::status::run(&cli.config).await,
+        Cmd::Serve(args) => daemon_run(&config_path, args).await,
+        Cmd::Flows(sub) => cli::flows::run(&config_path, sub).await,
+        Cmd::Status(args) => cli::status::run(&config_path, args).await,
         Cmd::Init(args) => cli::init::run(args),
-        Cmd::Run(args) => cli::run::run(&cli.config, args),
+        Cmd::Run(args) => cli::run::run(&config_path, args),
     }
+}
+
+/// Resolve the user-supplied `--config` (or `HEIMDALL_CONFIG`) into a
+/// concrete path. When neither was given, probe the standard layout via
+/// `heimdall_config::default_config_path()`.
+fn resolve_config_path(explicit: Option<PathBuf>) -> PathBuf {
+    explicit.unwrap_or_else(heimdall_config::default_config_path)
 }
 
 /// Walk the clap command tree and print long-help for every node.

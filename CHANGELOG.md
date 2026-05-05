@@ -57,8 +57,18 @@ Versioning](https://semver.org/spec/v2.0.0.html) once it tags a
   literals are bracketed (`[2606:4700::1]:443`) in the dst cell,
   hover tooltip, and `flows show` detail view so they can be
   copy-pasted into `curl` without fixup.
+- `heimdall status --json` emits a single-line JSON object with
+  stable field names (`flows_in_store`, `relay_reachable`, …) so AI
+  agents and shell scripts don't have to scrape the labeled-text
+  view. The `heimdall-status` skill documents both modes.
 
 ### Changed
+- `--config` no longer hard-codes a `[default: heimdall.ncl]` value
+  in the help text. The flag is now `Option<PathBuf>`; when unset,
+  the daemon and CLI subcommands auto-discover
+  `/etc/heimdall/heimdall.{ncl,toml,json,yaml}` (existing behaviour
+  unchanged, but the help text no longer lies for hosts that use a
+  non-Nickel format).
 - Daemon auto-discovers `/etc/heimdall/heimdall.{ncl,toml,json,yaml}`
   in that order; `--config` no longer needs to be spelled out in the
   systemd unit.
