@@ -430,7 +430,7 @@ mod tests {
         let (_d, s) = open_temp().await;
         s.insert_flow_start(sample("default", "a.example.com")).await.unwrap();
         s.insert_flow_start(sample("corp", "b.example.com")).await.unwrap();
-        s.insert_flow_start(sample("corp", "grafana.corp.com")).await.unwrap();
+        s.insert_flow_start(sample("corp", "grafana.corp.example.com")).await.unwrap();
 
         let all = s.list(ListQuery { limit: 100, ..Default::default() }).await.unwrap();
         assert_eq!(all.len(), 3);

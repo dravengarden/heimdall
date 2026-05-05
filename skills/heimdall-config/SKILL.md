@@ -10,7 +10,7 @@ description: |
   reference at /etc/heimdall/README.md as the authoritative spec.
 license: MIT
 metadata:
-  author: dravengarden
+  author: heimdall
   version: '0.1.0'
 ---
 

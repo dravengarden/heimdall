@@ -29,7 +29,8 @@ rustup component add rust-src --toolchain nightly
 # Bun for the UI
 curl -fsSL https://bun.sh/install | bash
 
-# (NixOS) `nix develop` from the host config repo provides the same toolchain.
+# (NixOS) define a flake/devShell that pins nightly + bpfel target
+# + bun to get the same toolchain reproducibly.
 ```
 
 ## Building

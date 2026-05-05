@@ -44,9 +44,10 @@ heimdall run -p corp -- curl https://internal.example.com/
 heimdall flows list --since 5m
 ```
 
-NixOS users: this repo's [`services/heimdall/`](https://github.com/your-org/your-nixos-config/tree/main/services/heimdall)
-in the [host](https://github.com/your-org/your-nixos-config) sibling repo gives
-a fully declarative deploy.
+NixOS users: a fully declarative deploy is straightforward — point
+`services.heimdall` (or your equivalent module) at the `heimdall`
+binary and provision `/etc/heimdall/heimdall.ncl` + the
+`/etc/heimdall/secrets/` dir.
 
 ---
 
@@ -188,7 +189,7 @@ interference, no MASQUERADE conflict.
 ## `heimdall run` — proxychains for the cgroup era
 
 ```bash
-heimdall run -p corp -- curl https://vault.prod.internal/   # corp-VPN host
+heimdall run -p corp -- curl https://vault.prod.internal/      # corp-VPN host
 heimdall run --connection direct -- git fetch origin           # public, observed
 ```
 

@@ -50,9 +50,9 @@ ones. Delete sections that don't apply.
 
 ## Privacy / security
 
-- [ ] No new private hostnames, IPs, paths, or emails committed
-      (`git diff origin/master | grep -iE 'gmail|corp|host|192.168'`
-      should be empty unless this PR is specifically about scrubbing)
+- [ ] No new private hostnames, IPs, paths, or org/employer-specific
+      identifiers in code or comments. See `AGENTS.md` ("No private
+      info in code") for the rule and recommended placeholders.
 - [ ] Doesn't open a network listener on a public address by default
 - [ ] Doesn't grant new ambient capabilities
 

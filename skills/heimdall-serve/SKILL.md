@@ -8,7 +8,7 @@ description: |
   reasoning about what `serve` is doing without trying to run it.
 license: MIT
 metadata:
-  author: dravengarden
+  author: heimdall
   version: '0.1.0'
 ---
 

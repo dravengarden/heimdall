@@ -9,7 +9,7 @@ description: |
   (otherwise: see heimdall-status).
 license: MIT
 metadata:
-  author: dravengarden
+  author: heimdall
   version: '0.1.0'
 ---
 

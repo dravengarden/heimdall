@@ -10,7 +10,7 @@ description: |
   default. Defaults from `cli.run` in heimdall.<ext>; flags override.
 license: MIT
 metadata:
-  author: dravengarden
+  author: heimdall
   version: '0.2.0'
 ---
 

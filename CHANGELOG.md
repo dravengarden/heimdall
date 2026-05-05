@@ -81,8 +81,8 @@ chronologically:
 - Schema rewrite + named connections + RFC 1929 SOCKS5 auth.
 - M3: pod identity (eBPF cgroup_id + kube-rs informer + cgroup walker).
 - M4: routing engine (annotation > label > rules > default).
-- Path C: fake-IP DNS + ATYP=0x03 hostname-mode SOCKS5 — Corp-internal
-  hostnames work without Mac-side DNS configuration.
+- Path C: fake-IP DNS + ATYP=0x03 hostname-mode SOCKS5 — internal /
+  VPN-scoped hostnames resolve at the upstream proxy, not on the cluster.
 - Phase B tap: libssl + Go (`crypto/tls.(*Conn).{Write,Read}` via
   `.gopclntab` + RET-offset uprobes) + rustls plaintext capture.
 - Multi-format config loader (YAML / JSON / TOML / Nickel) +

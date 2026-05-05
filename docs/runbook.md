@@ -83,15 +83,15 @@ curl -s http://127.0.0.1:9999/api/status | jq
 
 ```bash
 heimdall flows list --limit 20
-heimdall flows list --pod rancher
+heimdall flows list --pod my-app
 heimdall flows list --connection corp
-heimdall flows list --host kong-hf
+heimdall flows list --host example.com
 heimdall flows show 1234
 ```
 
 ### Watching live plaintext
 
-Web UI at `http://localhost:9999/` (or `127.0.0.1:9999` from the host).
+Web UI at `http://<host>:9999/` (or `http://127.0.0.1:9999/` from the host itself).
 
 - **Flows** tab — table of TCP flows with filters. Click a flow to
   open the side drawer; the **Plaintext** tab there shows
@@ -309,65 +309,19 @@ Refresh the schema docs without losing your live config by re-running
 
 Logs go to journalctl. There's no separate log file.
 
-## Cluster cases reference
+## Routing × observe combination matrix
 
-Every pod on this k0s node, individually. Update when adding /
-removing workloads (or run `kubectl get pods -A` and reconcile).
-
-### Silenced — `observe: false`
-
-| Namespace | Pod | `use` | Rule | Why |
-|---|---|---|---|---|
-| kube-system | cilium-8bwrt | `system` | cluster-infra | CNI agent |
-| kube-system | cilium-envoy-75h66 | `system` | cluster-infra | Cilium-managed Envoy sidecar |
-| kube-system | cilium-operator-746545f74c-4686b | `system` | cluster-infra | Cilium operator |
-| kube-system | coredns-6f57946586-tsz6n | `system` | cluster-infra | DNS |
-| kube-system | metrics-server-f69b6f4d7-pmgtl | `system` | cluster-infra | kubelet metrics scraper |
-| local-path-storage | local-path-provisioner-7bd467b8d5-nzmps | `system` | cluster-infra | PVC provisioner |
-| cattle-capi-system | capi-controller-manager-744bcd597f-x7n8s | `default` | cattle-controllers | leader-election leases |
-| cattle-turtles-system | rancher-turtles-controller-manager-66bb8b45dc-xw5rf | `default` | cattle-controllers | leader-election leases |
-| cattle-fleet-system | fleet-controller-85dcb74785-nfgdr | `default` | fleet-controller | leader-election leases |
-| cattle-system | rancher-webhook-65db7656c8-jssq5 | `default` | rancher-webhook | admission webhook only |
-| cert-manager | cert-manager-cainjector-5774787d46-hdmcn | `default` | cert-manager-noisy | CA bundle injection |
-| cert-manager | cert-manager-webhook-689df64959-978j9 | `default` | cert-manager-noisy | admission webhook only |
-| opik | opik-mysql-0 | `default` | data-stores | mysql wire protocol |
-| opik | opik-redis-master-0 | `default` | data-stores | redis wire protocol |
-| opik | opik-minio-5c9966fb6b-mwzv2 | `default` | data-stores | s3-compat object store |
-| opik | opik-zookeeper-0 | `default` | data-stores | coordination |
-
-### Observed — `observe: true`, `use: default` (the routing default)
-
-| Namespace | Pod | Why we want plaintext | Tap source |
-|---|---|---|---|
-| cattle-system | rancher-698f96874d-tqv5r | catalog APIs, hub, user webhooks, watch streams | Go (stripped → `.gopclntab`) |
-| cattle-fleet-local-system | fleet-agent-849974b847-7ttkl | GitOps reconcile, git clones | Go (stripped) |
-| cattle-fleet-system | gitjob-7c7447b4cb-jqccb | git clones | Go (stripped) |
-| cattle-fleet-system | helmops-7c4cf5bdd7-cmg48 | helm chart fetches | Go (stripped) |
-| cert-manager | cert-manager-6b6bf64d6c-59k88 | ACME → Let's Encrypt requests | Go (`manager` binary, has symbols) |
-| ingress-nginx | ingress-nginx-controller-6cc8797689-wkxm7 | tls-terminating gateway requests | libssl |
-| opik | opik-backend-64d7947f57-xq7fh | Java application API | Java — *currently no plaintext capture* |
-| opik | opik-python-backend-847f77fbd4-kbs4t | Python application | libssl |
-| opik | opik-frontend-8467675f55-dscrb | Node.js frontend API | libssl (Node) |
-| opik | chi-opik-clickhouse-cluster-0-0-0 | ClickHouse SQL traffic | libssl |
-| opik | opik-altinity-clickhouse-operator-856f68b7b4-zlfjg | operator's k8s API calls | Go |
-
-### Other / transient
-
-| Namespace | Pod | Status | Treatment |
-|---|---|---|---|
-| fleet-default | rke2-machineconfig-cleanup-cronjob-… | `Completed` (CronJob, runs once daily) | Falls into `routing.default` if running. Each new run gets `observe: true`; the run is too short-lived to matter for noise. |
-
-### Cases NOT currently exercised
-
-These are supported by the schema but no pod on this cluster
-matches them. Documented here so they're discoverable:
+Every pod gets two independent decisions: which connection to route
+through (`use`) and whether to capture TLS plaintext (`observe`). All
+four combinations are valid:
 
 | Combination | When you'd use it | How to set |
 |---|---|---|
-| `use: corp` + `observe: true` | Debug pod that needs to reach Corp-internal hosts via the Mac SOCKS5, with plaintext capture | annotate pod: `heimdall.io/connection: corp` |
-| `use: corp` + `observe: false` | Same routing, but suppress plaintext (e.g. running personal credentials through it) | both annotations |
-| `use: system` + `observe: true` | Pod that should not be redirected (e.g. uses host network or is otherwise architecturally outside the relay) but you still want to see its TLS plaintext | both annotations: `connection: system`, `observe: true` |
-| `use: default` + `observe: false` | Default route through v2raya but silenced — used today by the cattle-controllers / data-stores rules | rule with `observe: false` |
+| `use: <name>` + `observe: true` | App pod whose egress should go through a named upstream (corporate VPN, etc.) **and** whose plaintext you want to capture | annotation `heimdall.io/routing: <name>` (+ `heimdall.io/observe: "true"` if not the default) |
+| `use: <name>` + `observe: false` | Same routing, but plaintext suppressed (e.g. credentials in flight, regulatory) | both annotations |
+| `use: system` + `observe: true` | Host-network pod, or one architecturally outside the relay, but whose TLS plaintext is still useful | annotations: `routing: system`, `observe: "true"` |
+| `use: <name>` + `observe: false` (rule-based) | Cluster infra (CNI agents, controllers, data stores) — route normally but silence the noise | `podRouting.rules` entry with `observe: false` |
+| `use: system` + `observe: false` | Don't touch the pod at all (e.g. metrics scrapers on host network) | usually a `cluster-infra` rule |
 
 Use the API or sqlite to spot-check what's actually being captured:
 

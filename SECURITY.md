@@ -73,9 +73,8 @@ Out of scope today:
 - Bind `apiListen` to `127.0.0.1:9999` unless you need LAN access.
 - Run with the minimum capability set: `CAP_BPF`, `CAP_NET_ADMIN`,
   `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE`, `CAP_DAC_OVERRIDE`. No others.
-  The reference systemd unit in
-  [`services/heimdall/`](https://github.com/your-org/your-nixos-config/tree/main/services/heimdall)
-  is correct.
+  Drop anything else (e.g. `CAP_NET_RAW`, `CAP_SYS_RESOURCE`)
+  via `CapabilityBoundingSet=` in the systemd unit.
 - Set `runtime.tap.persist = false` if you don't need to retain
   plaintext on disk.
 - Audit `connections.<name>.auth.passwordFile` permissions

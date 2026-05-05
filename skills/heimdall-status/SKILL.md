@@ -7,7 +7,7 @@ description: |
   proxied", "what config is loaded right now". One-shot read-only command.
 license: MIT
 metadata:
-  author: dravengarden
+  author: heimdall
   version: '0.1.0'
 ---
 

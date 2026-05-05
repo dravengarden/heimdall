@@ -173,15 +173,15 @@ pub const DEFAULT_POLICY: u8 = POLICY_OBSERVE_OFF | POLICY_NO_BYPASS_LOG;
 /// | 0.0.0.0           | Invalid, never proxy                               |
 /// | 127.0.0.0/8       | Loopback (relay self, sidecars)                    |
 /// | 169.254.0.0/16    | Link-local (kubelet, AWS metadata, etc.)           |
-/// | 192.168.0.0/16    | LAN (router, host IP, Mac)                         |
+/// | 192.168.0.0/16    | LAN (router, host IP, upstream box)                |
 /// | 10.244.0.0/16     | k0s pod CIDR — pod-to-pod must be direct          |
 /// | 10.96.0.0/12      | k0s service CIDR — pod-to-service must be direct  |
 ///
 /// Notably, **the broader RFC-1918 ranges (other 10/8 + 172.16/12) are NOT
-/// bypassed** — those address spaces are commonly used by corporate VPNs
-/// (e.g. Corp-internal). Pod traffic to such IPs goes through heimdall,
-/// gets routed via the chosen connection (e.g. corp), and the upstream
-/// proxy decides how to reach them.
+/// bypassed** — those address spaces are commonly used by corporate VPNs.
+/// Pod traffic to such IPs goes through heimdall, gets routed via the
+/// chosen connection (e.g. `corp`), and the upstream proxy decides how
+/// to reach them.
 ///
 /// Userspace can extend the bypass set at runtime via `runtime.bypassCidrs`
 /// (not yet wired into the eBPF map; tracked for M5+).
