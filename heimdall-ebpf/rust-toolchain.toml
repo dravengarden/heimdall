@@ -1,0 +1,17 @@
+# Pinned nightly for the eBPF crate. Two reasons we need nightly here:
+#   1. `-Z build-std=core` (see ../.cargo/config.toml [unstable]) — eBPF
+#      runs in the kernel without alloc/std, so `core` has to be built
+#      from source for the bpfel-unknown-none target.
+#   2. The `rust-src` component to provide that `core` source tree.
+#
+# Date pinning gives us reproducible Nix builds (fenix's
+# fromToolchainFile turns this into a fixed-output download). Bump
+# manually when aya / build-std behaviour requires it.
+[toolchain]
+channel = "nightly-2026-03-13"
+components = ["rustc", "cargo", "rust-src"]
+# `bpfel-unknown-none` is a custom target with no rust-std download —
+# we provide it via `-Z build-std=core` (see ../.cargo/config.toml).
+# Listing it under `targets` here makes fenix try to fetch a non-
+# existent rust-std artifact.
+targets = []
