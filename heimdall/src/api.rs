@@ -236,6 +236,25 @@ struct StatusResp {
     /// "what attaches recently failed?". See heimdall's
     /// `docs/observability.md` for the per-flow signal convention.
     tap: crate::tap::TapStatus,
+    /// Pod informer health. `null` when the daemon isn't watching
+    /// Kubernetes (no kubeconfig, --no-k8s flag in future). When
+    /// non-null, AI consumers can detect a stalled apiserver
+    /// connection by watching `last_event_secs_ago > 60`.
+    informer: Option<InformerHealth>,
+}
+
+#[derive(Serialize)]
+struct InformerHealth {
+    /// `true` once `Event::InitDone` has been seen at least once.
+    /// Flips to `false` if the watcher reconnects (Init event
+    /// arrives before the next InitDone) — useful as an early
+    /// warning for "apiserver was just restarted, give us a moment".
+    synced: bool,
+    /// Number of pods currently in the informer cache.
+    pod_count: usize,
+    /// Wall-clock seconds since the most recent watcher event, or
+    /// `null` if no event has been seen yet.
+    last_event_secs_ago: Option<i64>,
 }
 
 async fn status(State(s): State<AppState>) -> Result<Json<StatusResp>, ApiError> {
@@ -263,6 +282,13 @@ async fn status(State(s): State<AppState>) -> Result<Json<StatusResp>, ApiError>
         flow_retention_secs: cfg.runtime.flow_retention_secs,
         flows_count: count,
         tap: s.tap_status.lock().unwrap().clone(),
+        informer: s.informer.as_ref().map(|inf| InformerHealth {
+            synced: inf.is_synced(),
+            pod_count: inf.snapshot().len(),
+            last_event_secs_ago: inf
+                .last_event_micros_ago()
+                .map(|us| us / 1_000_000),
+        }),
     }))
 }
 

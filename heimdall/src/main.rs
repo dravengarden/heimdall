@@ -942,13 +942,42 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
     })?;
     info!(listen = %listen_for_bind, configured = %shared.cfg.runtime.listen, "heimdall ready");
 
+    // ─── Wait for informer initial sync before READY=1 ────────────────────
+    // The relay listener is already accepting, so traffic isn't blocked —
+    // we just delay the systemd READY signal so units depending on
+    // heimdall (`After=heimdall.service` + `Type=notify` aware) wait for
+    // the pod cache to be loaded. Without this gate, downstream services
+    // observe heimdall as "ready" while the policy engine is still
+    // deciding routing for every pod from scratch, and the first few
+    // seconds of post-restart connections all fall back to the
+    // `default` connection regardless of the pod's intended routing.
+    //
+    // Bounded by 10s — if kube-apiserver is genuinely unreachable we
+    // come up anyway in degraded mode (router uses `default` connection
+    // until the informer eventually syncs in the background). Logging
+    // the timeout lets `journalctl` make this state debuggable.
+    if let Some(inf) = shared.informer.as_ref() {
+        let synced = inf
+            .wait_synced(std::time::Duration::from_secs(10))
+            .await;
+        if synced {
+            info!("informer initial sync complete; signalling READY=1");
+        } else {
+            warn!(
+                "informer not synced within 10s; signalling READY=1 in degraded mode \
+                 (router will fall back to `default` connection until sync catches up)"
+            );
+        }
+    }
+
     // ─── systemd notify: READY + WATCHDOG ─────────────────────────────────
     // `READY=1` lets `Type=notify` units depending on heimdall (e.g. an
     // operator-installed cilium-agent override, or a deployment script
     // running `systemctl is-active --wait heimdall`) actually wait for
-    // the relay to be accepting connections, instead of the Type=simple
-    // "ready the moment exec returns" lie. Safe to call when not under
-    // systemd — sd-notify returns Ok(()) silently.
+    // the relay to be accepting connections AND the informer to be
+    // loaded, instead of the Type=simple "ready the moment exec
+    // returns" lie. Safe to call when not under systemd — sd-notify
+    // returns Ok(()) silently.
     if let Err(e) = sd_notify::notify(false, &[sd_notify::NotifyState::Ready]) {
         warn!(error = %e, "sd_notify READY failed");
     }

@@ -16,7 +16,10 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, AtomicI64, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
@@ -249,11 +252,21 @@ pub struct PodInformer {
     /// without blocking the watcher loop. Capacity is generous —
     /// pod churn is low (tens per minute on a busy cluster).
     events: tokio::sync::broadcast::Sender<PodEvent>,
+    /// `true` once the watcher has seen `Event::InitDone`. Held as
+    /// `Arc<AtomicBool>` so health probes (`/api/status`, the daemon's
+    /// READY=1 gate) can read it without acquiring the broadcast.
+    synced: Arc<AtomicBool>,
+    /// Wall-clock micros of the most recent watcher event (Init,
+    /// Apply, Delete, InitDone). `0` until the first event lands.
+    /// Used to flag a stalled watcher (e.g. apiserver dropped the
+    /// connection and reconnect is wedged).
+    last_event_us: Arc<AtomicI64>,
 }
 
 impl PodInformer {
     /// Spawn a background task that watches all Pods cluster-wide and keeps
-    /// the cache in sync. Returns once the initial Init event has been seen.
+    /// the cache in sync. Returns immediately — call [`wait_synced`] to
+    /// block until the initial list is loaded.
     pub async fn spawn() -> Result<Self> {
         let client = Client::try_default()
             .await
@@ -263,14 +276,22 @@ impl PodInformer {
         let cache_for_task = cache.clone();
         let (tx, _rx) = tokio::sync::broadcast::channel::<PodEvent>(1024);
         let tx_for_task = tx.clone();
+        let synced = Arc::new(AtomicBool::new(false));
+        let synced_for_task = synced.clone();
+        let last_event_us = Arc::new(AtomicI64::new(0));
+        let last_event_us_for_task = last_event_us.clone();
 
         tokio::spawn(async move {
             let stream = watcher(api, watcher::Config::default()).default_backoff();
             futures::pin_mut!(stream);
             while let Some(ev) = stream.next().await {
+                last_event_us_for_task.store(now_micros(), Ordering::Relaxed);
                 match ev {
                     Ok(watcher::Event::Init) => {
+                        // Watcher is restarting — clear cache + flip
+                        // synced back to false until the next InitDone.
                         cache_for_task.write().clear();
+                        synced_for_task.store(false, Ordering::Release);
                     }
                     Ok(watcher::Event::InitApply(p)) | Ok(watcher::Event::Apply(p)) => {
                         if let Some(info) = pod_info(&p) {
@@ -286,6 +307,7 @@ impl PodInformer {
                     }
                     Ok(watcher::Event::InitDone) => {
                         info!(pods = cache_for_task.read().len(), "pod informer initial sync complete");
+                        synced_for_task.store(true, Ordering::Release);
                         let _ = tx_for_task.send(PodEvent::InitDone);
                     }
                     Err(e) => {
@@ -295,7 +317,7 @@ impl PodInformer {
             }
         });
 
-        Ok(Self { cache, events: tx })
+        Ok(Self { cache, events: tx, synced, last_event_us })
     }
 
     pub fn lookup(&self, uid: &str) -> Option<PodInfo> {
@@ -318,6 +340,59 @@ impl PodInformer {
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<PodEvent> {
         self.events.subscribe()
     }
+
+    /// `true` once the initial list (Event::InitDone) has been seen.
+    /// Flips back to `false` on a reconnect (Event::Init) until the
+    /// next InitDone — that's the apiserver-disconnect case where the
+    /// cache might temporarily be empty.
+    pub fn is_synced(&self) -> bool {
+        self.synced.load(Ordering::Acquire)
+    }
+
+    /// Microseconds since the most recent watcher event. Returns
+    /// `None` if no event has been seen yet (informer never ran or
+    /// kubeapi never responded).
+    pub fn last_event_micros_ago(&self) -> Option<i64> {
+        let last = self.last_event_us.load(Ordering::Relaxed);
+        if last == 0 {
+            None
+        } else {
+            Some(now_micros().saturating_sub(last))
+        }
+    }
+
+    /// Block (with timeout) until the initial sync completes. If the
+    /// timeout fires, returns `false` and the caller decides what to
+    /// do (typically: log a warning and continue, so the daemon
+    /// doesn't deadlock when kube-apiserver is slow / unreachable).
+    pub async fn wait_synced(&self, timeout: std::time::Duration) -> bool {
+        if self.is_synced() {
+            return true;
+        }
+        let mut rx = self.events.subscribe();
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            // Re-check every loop in case the InitDone event arrived
+            // between the initial check and our subscribe().
+            if self.is_synced() {
+                return true;
+            }
+            match tokio::time::timeout_at(deadline, rx.recv()).await {
+                Ok(Ok(PodEvent::InitDone)) => return true,
+                Ok(Ok(_)) => continue, // upsert / delete during sync — keep waiting
+                Ok(Err(_)) => return self.is_synced(), // channel closed/lagged
+                Err(_) => return false, // timeout
+            }
+        }
+    }
+}
+
+fn now_micros() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_micros() as i64)
+        .unwrap_or(0)
 }
 
 fn pod_info(p: &Pod) -> Option<PodInfo> {
