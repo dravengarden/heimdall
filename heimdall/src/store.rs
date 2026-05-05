@@ -50,6 +50,10 @@ const SCHEMA: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_flows_pod ON flows(pod_uid)",
     "CREATE INDEX IF NOT EXISTS idx_flows_connection ON flows(connection_name)",
     "CREATE INDEX IF NOT EXISTS idx_flows_dst_host ON flows(dst_host)",
+    // Filtering by address family ("ip" / "ip6" / "domain") is cheap with
+    // an index — atyp has very low cardinality so partial-index'ing only
+    // ip6 buys nothing extra over a plain index.
+    "CREATE INDEX IF NOT EXISTS idx_flows_atyp ON flows(atyp)",
     // ── Phase B: TLS plaintext messages, captured at libssl boundary.
     //
     // flow_id is nullable: tap events arrive before / after a flow's
@@ -127,6 +131,8 @@ pub struct ListQuery {
     pub pod_substr: Option<String>,
     pub connection: Option<String>,
     pub host_substr: Option<String>,
+    /// Exact match on the `atyp` column (`"ip"` / `"ip6"` / `"domain"`).
+    pub atyp: Option<String>,
 }
 
 // ─── Phase B: messages ──────────────────────────────────────────────────
@@ -261,6 +267,9 @@ impl Store {
         if q.host_substr.is_some() {
             sql.push_str(" AND dst_host LIKE ?");
         }
+        if q.atyp.is_some() {
+            sql.push_str(" AND atyp = ?");
+        }
         sql.push_str(" ORDER BY ts_start_us DESC LIMIT ?");
 
         let mut query = sqlx::query_as::<_, Flow>(&sql);
@@ -276,6 +285,9 @@ impl Store {
         }
         if let Some(h) = &q.host_substr {
             query = query.bind(format!("%{h}%"));
+        }
+        if let Some(a) = &q.atyp {
+            query = query.bind(a);
         }
         let rows = query.bind(limit).fetch_all(&self.pool).await?;
         Ok(rows)
@@ -450,6 +462,32 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(grafana.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn list_filter_by_atyp() {
+        let (_d, s) = open_temp().await;
+        let mut v6 = sample("default", "v6.example.com");
+        v6.dst_ip = "2606:4700::1".into();
+        v6.atyp = Some("ip6");
+        s.insert_flow_start(v6).await.unwrap();
+        let mut v4 = sample("default", "v4.example.com");
+        v4.atyp = Some("ip");
+        s.insert_flow_start(v4).await.unwrap();
+        s.insert_flow_start(sample("default", "domain.example.com")).await.unwrap();
+
+        let only_v6 = s
+            .list(ListQuery { limit: 100, atyp: Some("ip6".into()), ..Default::default() })
+            .await
+            .unwrap();
+        assert_eq!(only_v6.len(), 1);
+        assert_eq!(only_v6[0].dst_ip, "2606:4700::1");
+
+        let only_dns = s
+            .list(ListQuery { limit: 100, atyp: Some("domain".into()), ..Default::default() })
+            .await
+            .unwrap();
+        assert_eq!(only_dns.len(), 1);
     }
 
     #[tokio::test]

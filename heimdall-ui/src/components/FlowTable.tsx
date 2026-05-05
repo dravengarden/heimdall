@@ -116,19 +116,27 @@ export function FlowTable({ flows, selectedId, onSelect }: Props) {
         ),
       },
       {
+        field: "atyp",
+        headerName: t("table.cols.atyp"),
+        width: 60,
+        sortable: true,
+        valueGetter: (_v, row) => row.atyp ?? "",
+        renderCell: (params) => atypChip(params.row.atyp),
+      },
+      {
         field: "dst_host",
         headerName: t("table.cols.dst"),
         flex: 1.6,
         minWidth: 220,
         sortable: true,
-        valueGetter: (_v, row) => row.dst_host ?? row.dst_ip,
+        valueGetter: (_v, row) => row.dst_host ?? formatBareDst(row.dst_ip),
         renderCell: (params) => (
           <Tooltip
-            title={`${params.row.dst_ip}:${params.row.dst_port}`}
+            title={formatAddrPort(params.row.dst_ip, params.row.dst_port)}
             placement="top"
           >
             <Box sx={{ ...truncateSx, fontFamily: MONO }}>
-              {params.row.dst_host ?? params.row.dst_ip}
+              {params.row.dst_host ?? formatBareDst(params.row.dst_ip)}
             </Box>
           </Tooltip>
         ),
@@ -265,6 +273,42 @@ function humanBytes(n: number): string {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+// IPv6 literals contain `:` — wrap them in brackets so a reader can paste
+// the cell into a URL or curl invocation without ambiguity. dst_ip never
+// contains a `:` for IPv4 (sqlx renders u32 → "a.b.c.d"), so this check
+// is sufficient.
+function isV6Literal(ip: string): boolean {
+  return ip.includes(":");
+}
+
+function formatBareDst(ip: string): string {
+  return isV6Literal(ip) ? `[${ip}]` : ip;
+}
+
+function formatAddrPort(ip: string, port: number): string {
+  return isV6Literal(ip) ? `[${ip}]:${port}` : `${ip}:${port}`;
+}
+
+function atypChip(atyp: string | null) {
+  if (!atyp) {
+    return <Box sx={{ color: "text.disabled" }}>—</Box>;
+  }
+  // ip6 stands out (purple), domain/dns is informational (info), plain
+  // ip is the default — most-common case so we don't want it shouting.
+  const display = atyp === "domain" ? "dns" : atyp;
+  const color: "default" | "info" | "secondary" =
+    atyp === "ip6" ? "secondary" : atyp === "domain" ? "info" : "default";
+  return (
+    <Chip
+      label={display}
+      size="small"
+      color={color}
+      variant={atyp === "ip" ? "outlined" : "filled"}
+      sx={{ fontWeight: 500, height: 20, fontSize: 10.5, fontFamily: MONO }}
+    />
+  );
 }
 
 function NoRowsOverlay() {

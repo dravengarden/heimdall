@@ -38,6 +38,11 @@ pub struct ListArgs {
     #[arg(long, short = 'H')]
     host: Option<String>,
 
+    /// Filter by SOCKS5 ATYP class. One of `ip` (v4 literal),
+    /// `ip6` (v6 literal), or `domain` (hostname recovered via fake-IP DNS).
+    #[arg(long, value_parser = ["ip", "ip6", "domain"])]
+    atyp: Option<String>,
+
     /// Output JSON Lines (one flow per line). Useful for `jq` and AI tools.
     #[arg(long)]
     json: bool,
@@ -87,6 +92,7 @@ async fn list(store: &Store, args: ListArgs) -> Result<()> {
         connection: args.connection,
         pod_substr: args.pod,
         host_substr: args.host,
+        atyp: args.atyp,
         ..Default::default()
     };
     let rows = store.list(q).await?;
@@ -195,7 +201,7 @@ fn print_table(rows: &[Flow]) {
     t.load_preset(UTF8_FULL)
         .set_content_arrangement(ContentArrangement::Dynamic)
         .set_header(vec![
-            "id", "time", "pod", "conn", "dst", "port", "↑", "↓", "via",
+            "id", "time", "pod", "conn", "atyp", "dst", "port", "↑", "↓", "via",
         ]);
 
     for f in rows {
@@ -203,12 +209,22 @@ fn print_table(rows: &[Flow]) {
             (Some(n), Some(p)) => format!("{n}/{p}"),
             _ => "-".to_string(),
         };
-        let dst = f.dst_host.clone().unwrap_or_else(|| f.dst_ip.clone());
+        // dst column shows the hostname when fake-IP DNS produced one,
+        // otherwise the literal IP — bracketed for IPv6 so it parses
+        // unambiguously when the reader pastes it into curl etc.
+        let dst = f.dst_host.clone().unwrap_or_else(|| {
+            if f.dst_ip.contains(':') {
+                format!("[{}]", f.dst_ip)
+            } else {
+                f.dst_ip.clone()
+            }
+        });
         t.add_row(vec![
             Cell::new(f.id),
             Cell::new(format_short_us(f.ts_start_us)),
             Cell::new(pod),
             color_cell(&f.connection_name),
+            atyp_cell(f.atyp.as_deref()),
             Cell::new(truncate(&dst, 50)),
             Cell::new(f.dst_port),
             Cell::new(human_bytes(f.bytes_up)),
@@ -217,6 +233,15 @@ fn print_table(rows: &[Flow]) {
         ]);
     }
     println!("{t}");
+}
+
+fn atyp_cell(atyp: Option<&str>) -> Cell {
+    match atyp {
+        Some("ip6") => Cell::new("ip6").fg(Color::Magenta),
+        Some("domain") => Cell::new("dns").fg(Color::Blue),
+        Some(other) => Cell::new(other).fg(Color::DarkGrey),
+        None => Cell::new("-").fg(Color::DarkGrey),
+    }
 }
 
 fn print_detail(f: &Flow) {
@@ -237,7 +262,7 @@ fn print_detail(f: &Flow) {
     if let Some(h) = &f.dst_host {
         println!("  dst_host    {h}");
     }
-    println!("  dst         {}:{}", f.dst_ip, f.dst_port);
+    println!("  dst         {}", format_addr_port(&f.dst_ip, f.dst_port));
     println!("  bytes ↑↓    {} / {}", human_bytes(f.bytes_up), human_bytes(f.bytes_down));
     if let Some(u) = &f.upstream_addr {
         println!("  via         {u}");
@@ -262,6 +287,17 @@ fn color_cell(connection: &str) -> Cell {
 
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max { s.to_string() } else { format!("{}…", &s[..max - 1]) }
+}
+
+/// Render `ip:port` with IPv6 wrapped in `[...]:port`. We treat any IP
+/// containing a `:` as v6 — the only other place a colon shows up in
+/// `dst_ip` is inside an `Ipv6Addr::to_string()` output.
+fn format_addr_port(ip: &str, port: i64) -> String {
+    if ip.contains(':') {
+        format!("[{ip}]:{port}")
+    } else {
+        format!("{ip}:{port}")
+    }
 }
 
 fn human_bytes(n: i64) -> String {

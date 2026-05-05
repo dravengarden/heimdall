@@ -198,7 +198,9 @@ function Overview({ flow, onCopy }: OverviewProps) {
     },
     {
       k: "dst",
-      v: `${flow.dst_ip}:${flow.dst_port}`,
+      v: flow.dst_ip.includes(":")
+        ? `[${flow.dst_ip}]:${flow.dst_port}`
+        : `${flow.dst_ip}:${flow.dst_port}`,
       copyLabel: "ip:port",
     },
     { k: "upstream", v: flow.upstream_addr, copyLabel: "upstream" },

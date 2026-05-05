@@ -263,6 +263,11 @@ struct ListParams {
     pod: Option<String>,
     host: Option<String>,
     since_us: Option<i64>,
+    /// Filter by SOCKS5 ATYP class — `ip` (v4 literal), `ip6` (v6 literal),
+    /// or `domain` (hostname recovered via fake-IP DNS). Useful for
+    /// drilling into "show me only the v6 traffic" without a regex on
+    /// dst_ip.
+    atyp: Option<String>,
 }
 
 fn default_limit() -> u32 { 100 }
@@ -277,6 +282,7 @@ async fn list_flows(
         pod_substr: p.pod,
         connection: p.connection,
         host_substr: p.host,
+        atyp: p.atyp,
     };
     let rows = s.store.list(q).await.map_err(internal)?;
     Ok(Json(rows))

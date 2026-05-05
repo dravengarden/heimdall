@@ -48,6 +48,15 @@ Versioning](https://semver.org/spec/v2.0.0.html) once it tags a
   (`dst=relay_ip:12345 → RETURN/K8S_BYPASS` in TP_OUT/TP_PRE)
   shipped in the companion NixOS module
   (`services/k0s/k8s-v2raya-fix`).
+- `flows` table now has an `idx_flows_atyp` index, and the list
+  query / API / `heimdall flows list` accept an `atyp` filter
+  (`ip` / `ip6` / `domain`) so users can drill into "show only the
+  IPv6 traffic" or "show only DNS-hostname-resolved flows" without
+  a regex on `dst_ip`.
+- Flow table (CLI + Web UI) shows an `atyp` column; IPv6 dst
+  literals are bracketed (`[2606:4700::1]:443`) in the dst cell,
+  hover tooltip, and `flows show` detail view so they can be
+  copy-pasted into `curl` without fixup.
 
 ### Changed
 - Daemon auto-discovers `/etc/heimdall/heimdall.{ncl,toml,json,yaml}`
