@@ -31,8 +31,9 @@ heimdall flows show   <FLOW_ID>            # single flow by id
 heimdall flows search [OPTIONS] [QUERY]    # filter by host/pod/connection
 ```
 
-Run `heimdall --help` for the complete option matrix (all subcommands +
-options dump in one shot — heimdall's `--help` is recursive).
+Run `heimdall flows --help-all` for the complete option matrix
+(`--help-all` is the AI-friendly recursive dump; plain `--help` shows
+just the current subcommand).
 
 ## Common patterns
 

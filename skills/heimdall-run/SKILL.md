@@ -32,7 +32,8 @@ heimdall run [OPTIONS] -- <command> [args ...]
 ```
 
 The `--` separator is required when the wrapped command has its own
-flags. Run `heimdall --help` (recursive) for the full option list.
+flags. Run `heimdall run --help-all` for the full option list (or
+`heimdall --help-all` for every subcommand at once).
 
 ### Common options
 
@@ -211,7 +212,7 @@ because the parent runs deregister + rmdir explicitly.
 | Symptom | Cause | Fix |
 |---|---|---|
 | `unknown connection 'foo'` | Misspelled `--connection` or stale profile | Run with `--print-decision` to see resolution; check `connections:` in heimdall.<ext> |
-| `unknown profile 'foo'` | `--profile` doesn't match a key in `cli.run.profiles` | List declared profiles via `heimdall --help` (or read heimdall.<ext>) |
+| `unknown profile 'foo'` | `--profile` doesn't match a key in `cli.run.profiles` | Read `cli.run.profiles` in `/etc/heimdall/heimdall.<ext>` |
 | `Could not resolve host` (with `dns=fake`) | Mount-namespace shim failed (e.g. user namespaces disabled in the kernel) | Try `--dns system` as a workaround; check `unshare(CLONE_NEWUSER \| CLONE_NEWNS)` works for your user |
 | `Failed to connect ... port N after 0 ms` | Connection rewrote to relay but relay isn't accepting (daemon restart in progress) | `heimdall status` to confirm `relay ok (port reachable)` |
 | `mkdir … failed (parent must be user-writable …)` | systemd-user-unit not running for current user | `systemctl --user is-active default.target` should return active; if not, log out + back in |

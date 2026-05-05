@@ -114,10 +114,11 @@ remember to ask for more if needed.
 - `parking_lot::MutexGuard` is **not Send across `.await`**. Take
   what you need out of the lock into a local before any await point.
   This caused mysterious axum Handler trait failures historically.
-- `clap`'s `--help` is overridden in `heimdall/src/cli/` to dump
-  every subcommand + every option in one shot — `heimdall --help`
-  is meant for AI agents to discover the CLI surface without
-  drilling into subcommands. Don't undo that.
+- Two help modes on every command: `--help` (concise, per-command —
+  the standard clap output) and `--help-all` (recursive dump rooted
+  at the current command, intended for AI agents that want the whole
+  tree in one read). Don't merge them back into a single mode; the
+  verbose dump on every `--help` was confusing for terminal users.
 - `heimdall init` always rewrites `lib.ncl` and `README.md`, but
   preserves `heimdall.<ext>` unless `--force`. Don't change this:
   losing live config to a doc refresh has bitten the user already.

@@ -61,6 +61,11 @@ Versioning](https://semver.org/spec/v2.0.0.html) once it tags a
   stable field names (`flows_in_store`, `relay_reachable`, …) so AI
   agents and shell scripts don't have to scrape the labeled-text
   view. The `heimdall-status` skill documents both modes.
+- `--help-all` flag (global, every subcommand) for the recursive
+  per-command-and-descendants dump previously hardcoded onto
+  `--help`. Plain `--help` is now standard concise clap output.
+  Examples: `heimdall flows --help` (just the flows verb listing) vs
+  `heimdall flows --help-all` (flows + list/show/search inlined).
 
 ### Changed
 - `--config` no longer hard-codes a `[default: heimdall.ncl]` value

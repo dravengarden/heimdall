@@ -28,7 +28,8 @@ Two situations:
 sudo heimdall init [OPTIONS]
 ```
 
-Run `heimdall --help` for the complete option matrix; this skill
+Run `heimdall init --help` (concise) or `heimdall init --help-all`
+(verbose / AI-friendly) for the complete option matrix; this skill
 covers the common flow.
 
 ### Options summary
