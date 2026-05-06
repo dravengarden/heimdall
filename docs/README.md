@@ -21,23 +21,27 @@ and arbitrary CLI processes, built on eBPF and aya.
    reading the UI, capability requirements, and troubleshooting for
    tap attach failures, `heimdall run`, and GC.
 
-## Companion: agent skills
+## Companion: agent skill
 
-[`skills/`](../skills/) ships [skills.sh](https://skills.sh)-format
-agent skill packages so AI coding agents (Claude Code, Codex, Cursor,
-…) can discover heimdall's CLI surface without reading the source:
+[`skills/heimdall/`](../skills/heimdall/) is a single
+[skills.sh](https://skills.sh)-format Agent Skill following the
+progressive-disclosure pattern: one router `SKILL.md` (≈90 lines)
+plus six `references/<verb>.md` files that AI agents read on demand.
 
-| Skill | Subcommand it documents |
+| Reference | Subcommand it documents |
 |---|---|
-| `heimdall-init` | `heimdall init` — write/refresh `/etc/heimdall/{lib.ncl,heimdall.ncl,README.md}` |
-| `heimdall-serve` | `heimdall serve` — run the daemon (also the systemd unit's ExecStart) |
-| `heimdall-config` | `heimdall config validate` / `heimdall config show` |
-| `heimdall-status` | `heimdall status` — health snapshot of a running daemon |
-| `heimdall-flows` | `heimdall flows {list, show}` — query the flow store |
-| `heimdall-run` | `heimdall run [--connection N] [--dns fake\|system] -- cmd …` — proxychains-style wrap |
+| [`references/init.md`](../skills/heimdall/references/init.md) | `heimdall init` — write/refresh `/etc/heimdall/{lib.ncl,heimdall.ncl,README.md}` |
+| [`references/serve.md`](../skills/heimdall/references/serve.md) | `heimdall serve` — the daemon (read-only reference; normally systemd-managed) |
+| [`references/config.md`](../skills/heimdall/references/config.md) | `heimdall config {validate, show, path}` and editing `heimdall.<ext>` |
+| [`references/status.md`](../skills/heimdall/references/status.md) | `heimdall status` — health snapshot of a running daemon |
+| [`references/flows.md`](../skills/heimdall/references/flows.md) | `heimdall flows {list, search, show}` — query the flow store |
+| [`references/run.md`](../skills/heimdall/references/run.md) | `heimdall run [--connection N] [--dns fake\|system] -- cmd …` — proxychains-style wrap |
 
-Install once via `bunx skills add` (or copy the dirs); subsequent
-`bun run` invocations sync them into your agent's skill index.
+The single-skill layout follows Anthropic's [Agent Skills
+best-practices](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices):
+one `description` field for activation, one set of shared facts at
+the top of `SKILL.md`, and on-demand loading of each verb's
+deep-dive reference.
 
 ## What heimdall is, in 90 seconds
 

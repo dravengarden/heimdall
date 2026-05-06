@@ -204,7 +204,7 @@ Works with statically-linked Go binaries, setuid binaries, and
 connectionless UDP — all things `LD_PRELOAD` shims (proxychains-ng)
 miss.
 
-See [`skills/heimdall-run/SKILL.md`](skills/heimdall-run/SKILL.md)
+See [`skills/heimdall/references/run.md`](skills/heimdall/references/run.md)
 for the full mechanics + failure modes.
 
 ---

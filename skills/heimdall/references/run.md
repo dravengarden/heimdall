@@ -1,29 +1,18 @@
----
-name: heimdall-run
-description: |
-  Wrap a CLI command so its egress goes through a heimdall connection
-  (proxychains-style), without LD_PRELOAD. Triggers on "send this curl
-  through the corp VPN", "route this CLI tool's traffic via a specific
-  connection", "see plaintext for an ad-hoc command". Non-root: re-execs
-  itself under `systemd-run --user --scope` so it lands in a writable
-  cgroup. Resolves both IPv4 + IPv6 targets via heimdall fake-IP DNS by
-  default. Defaults from `cli.run` in heimdall.<ext>; flags override.
-license: MIT
-metadata:
-  author: heimdall
-  version: '0.2.0'
----
+# `heimdall run` — proxychains-style CLI proxy
 
-# heimdall run — proxychains-style CLI proxy
+Wrap a CLI command so its egress goes through a heimdall connection
+without LD_PRELOAD. Re-execs itself under `systemd-run --user
+--scope` when not already in a writable cgroup. Resolves both IPv4
+and IPv6 targets via heimdall fake-IP DNS by default.
 
 Use when:
-- An ad-hoc CLI tool (curl, git, wget, kubectl, vault, …) needs to
+- An ad-hoc CLI tool (curl, git, wget, kubectl, vault, …) needs
   egress through a specific named connection from `heimdall.<ext>`.
-- The destination hostname is only resolvable via the upstream proxy's
-  DNS scope (corp VPN, internal-only zones) — heimdall's fake-IP DNS
-  hijack covers this.
-- You want the tool's flows to appear in the heimdall flow log + tap
-  alongside pod traffic, with a label.
+- The destination hostname is only resolvable via the upstream
+  proxy's DNS scope (corp VPN, internal-only zones) — heimdall's
+  fake-IP DNS hijack covers this.
+- You want the tool's flows to appear in the heimdall flow log +
+  tap alongside pod traffic, with a label.
 
 ## Command
 
@@ -32,15 +21,15 @@ heimdall run [OPTIONS] -- <command> [args ...]
 ```
 
 The `--` separator is required when the wrapped command has its own
-flags. Run `heimdall help run` for the option list, or `heimdall help -v`
-for every subcommand at once (verbose / AI-friendly recursive dump).
+flags. `heimdall help run` for the option list, `heimdall help -v`
+for the recursive verbose dump.
 
 ### Common options
 
 | Option | Meaning |
 |---|---|
 | `-c, --connection <NAME>` | Connection name (or reserved `system`). Highest priority. |
-| `-p, --profile <NAME>` | Apply `cli.run.profiles.<NAME>` from heimdall.<ext> before flag overrides. |
+| `-p, --profile <NAME>` | Apply `cli.run.profiles.<NAME>` from `heimdall.<ext>` before flag overrides. |
 | `--observe <true\|false>` | Capture plaintext via the tap for this run. |
 | `--dns <fake\|system>` | DNS strategy. `fake` (default) hijacks `:53` lookups so the wrapped command resolves via heimdall's fake-IP DNS — the upstream proxy then resolves the hostname in its own scope (corp VPN). `system` skips the hijack and uses the host resolver. |
 | `--tag <STRING>` | Free-form label, surfaces in flow log entries. |
@@ -107,16 +96,18 @@ heimdall run --tag "release-build" -- cargo publish
 
 ## What happens under the hood
 
-1. Loads heimdall.<ext>, merges profile + flags into a `RunDecision`
-   (connection, observe, dns, tag).
+1. Loads `heimdall.<ext>`, merges profile + flags into a
+   `RunDecision` (connection, observe, dns, tag).
 2. Validates connection name against `connections:` (and the
    reserved `system` tag).
-3. Detects whether the current process is under `user@<UID>.service`
-   (where the user has cgroup write permission). If not, re-execs
-   `systemd-run --user --scope --quiet -- heimdall run --no-reentry …`
-   so it lands in `app.slice/run-<id>.scope/`.
-4. mkdir's a sibling cgroup `<parent>/heimdall-cli-<pid>-<rand>/`,
-   reads its inode → cgroup_id (cgroup v2 invariant).
+3. Detects whether the current process is under
+   `user@<UID>.service` (where the user has cgroup write
+   permission). If not, re-execs `systemd-run --user --scope
+   --quiet -- heimdall run --no-reentry …` so it lands in
+   `app.slice/run-<id>.scope/`.
+4. mkdir's a sibling cgroup
+   `<parent>/heimdall-cli-<pid>-<rand>/`, reads its inode →
+   cgroup_id (cgroup v2 invariant).
 5. POSTs `{ cgroup_id, connection, observe, dns }` to
    `/api/cli/register`. The daemon writes the userspace
    `cli_overrides` map (relay reads) and the `CGROUP_POLICY` BPF
@@ -127,19 +118,19 @@ heimdall run --tag "release-build" -- cargo publish
    (`/tmp/heimdall-cli-{nsswitch,resolv}-<id>.conf`).
 7. Forks. Child:
    - writes its PID to `cgroup.procs` (joins the new cgroup),
-   - strips proxy env vars (`http_proxy`, `https_proxy`, …) so the
-     wrapped command goes direct,
+   - strips proxy env vars (`http_proxy`, `https_proxy`, …) so
+     the wrapped command goes direct,
    - restores default `SIGINT`/`SIGTERM`,
-   - if `dns=fake`: `unshare(CLONE_NEWUSER | CLONE_NEWNS)`, sets up
-     uid/gid maps, makes `/` mounts private, bind-mounts the shim
-     `nsswitch.conf` + `resolv.conf` over `/etc/...`, AND bind-mounts
-     `/dev/null` over `/var/run/nscd/socket` so glibc's NSS doesn't
-     bypass our shimmed nsswitch via nscd,
+   - if `dns=fake`: `unshare(CLONE_NEWUSER | CLONE_NEWNS)`, sets
+     up uid/gid maps, makes `/` mounts private, bind-mounts the
+     shim `nsswitch.conf` + `resolv.conf` over `/etc/...`, AND
+     bind-mounts `/dev/null` over `/var/run/nscd/socket` so glibc's
+     NSS doesn't bypass our shimmed nsswitch via nscd,
    - `execvp` the wrapped command.
    Parent `waitpid`s.
 8. On child exit, POSTs `/api/cli/deregister?cgroup_id=N`, rmdirs
-   the cgroup, removes the tmp shim files. Forwards child exit code
-   (or `128 + signal`) as `heimdall run`'s own.
+   the cgroup, removes the tmp shim files. Forwards child exit
+   code (or `128 + signal`) as `heimdall run`'s own.
 
 ## Why this is non-trivial
 
@@ -183,14 +174,14 @@ skips them — see `policy.rs::register_external` /
 
 eBPF can rewrite UDP/TCP destinations but it can't intercept Unix
 domain sockets. Glibc's NSS dispatches to nscd first
-(`/var/run/nscd/socket`), which would resolve hostnames in its own
-mount namespace using the host's nsswitch.conf — bypassing our
-shimmed `/etc/nsswitch.conf` entirely. The `dns=fake` shim therefore
-also bind-mounts `/dev/null` over the nscd socket so glibc falls
-through to direct NSS lookup, hits our shimmed nsswitch
-(`hosts: files dns`), then nss-dns reads our shimmed resolv.conf
-(`nameserver 127.0.0.1`), then libc opens UDP `127.0.0.1:53` →
-eBPF DNS hijack → heimdall fake-IP DNS.
+(`/var/run/nscd/socket`), which would resolve hostnames in its
+own mount namespace using the host's nsswitch.conf — bypassing
+our shimmed `/etc/nsswitch.conf` entirely. The `dns=fake` shim
+therefore also bind-mounts `/dev/null` over the nscd socket so
+glibc falls through to direct NSS lookup, hits our shimmed
+nsswitch (`hosts: files dns`), then nss-dns reads our shimmed
+resolv.conf (`nameserver 127.0.0.1`), then libc opens UDP
+`127.0.0.1:53` → eBPF DNS hijack → heimdall fake-IP DNS.
 
 ## IPv6
 
@@ -215,16 +206,10 @@ because the parent runs deregister + rmdir explicitly.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `unknown connection 'foo'` | Misspelled `--connection` or stale profile | Run with `--print-decision` to see resolution; check `connections:` in heimdall.<ext> |
+| `unknown connection 'foo'` | Misspelled `--connection` or stale profile | `--print-decision` to see resolution; check `connections:` in heimdall.<ext> |
 | `unknown profile 'foo'` | `--profile` doesn't match a key in `cli.run.profiles` | Read `cli.run.profiles` in `/etc/heimdall/heimdall.<ext>` |
-| `Could not resolve host` (with `dns=fake`) | Mount-namespace shim failed (e.g. user namespaces disabled in the kernel) | Try `--dns system` as a workaround; check `unshare(CLONE_NEWUSER \| CLONE_NEWNS)` works for your user |
+| `Could not resolve host` (with `dns=fake`) | Mount-namespace shim failed (e.g. user namespaces disabled) | Try `--dns system`; check `unshare(CLONE_NEWUSER \| CLONE_NEWNS)` works |
 | `Failed to connect ... port N after 0 ms` | Connection rewrote to relay but relay isn't accepting (daemon restart in progress) | `heimdall status` to confirm `relay ok (port reachable)` |
-| `mkdir … failed (parent must be user-writable …)` | systemd-user-unit not running for current user | `systemctl --user is-active default.target` should return active; if not, log out + back in |
+| `mkdir … failed (parent must be user-writable …)` | systemd-user-unit not running for current user | `systemctl --user is-active default.target` should return active |
 | `policy engine not initialised … retry in a moment` | Daemon just started, k8s informer hadn't synced when register fired | Re-run after `heimdall status` confirms `connections=N` |
-| `exec systemd-run --user --scope … (is systemd-user running?)` | `systemd-user@<UID>.service` is masked or not configured | Same as above |
-
-## Related skills
-
-- `heimdall-flows` — see what your wrapped command actually sent
-- `heimdall-status` — confirm daemon health before debugging routing
-- `heimdall-config` — declare `cli.run.profiles` for new connection bundles
+| `exec systemd-run --user --scope … (is systemd-user running?)` | `systemd-user@<UID>.service` masked or not configured | Same as above |

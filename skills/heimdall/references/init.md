@@ -1,23 +1,8 @@
----
-name: heimdall-init
-description: |
-  Bootstrap or refresh the /etc/heimdall/ config directory — drops a
-  starter `heimdall.<ext>`, the auto-generated `lib.ncl` schema
-  contracts (Nickel only), and the AI-readable `README.md` reference.
-  Use on a fresh host or after `heimdall` upgrade to refresh the
-  reference files. User-owned `heimdall.<ext>` is preserved unless
-  --force is passed.
-license: MIT
-metadata:
-  author: heimdall
-  version: '0.1.0'
----
-
-# heimdall init — bootstrap the config dir
+# `heimdall init` — bootstrap or refresh `/etc/heimdall/`
 
 Two situations:
 
-1. **Fresh host** — no `/etc/heimdall/` yet. Generate the starter.
+1. **Fresh host** — no `/etc/heimdall/` yet. Drop the starter.
 2. **Post-upgrade** — refresh `lib.ncl` + `README.md` so the schema
    contract and AI reference match the new daemon binary. The
    user-owned `heimdall.<ext>` stays put.
@@ -28,11 +13,7 @@ Two situations:
 sudo heimdall init [OPTIONS]
 ```
 
-Run `heimdall help init` (concise) or `heimdall help init -v` (verbose,
-AI-friendly) for the complete option matrix; this skill covers the
-common flow.
-
-### Options summary
+`heimdall help init -v` for the complete option matrix. Common flags:
 
 | Flag | Meaning | Default |
 |---|---|---|
@@ -46,13 +27,13 @@ the daemon binary, not user-edited.
 
 ## What gets written
 
-For `--format nickel` (recommended, validates at evaluation time):
+For `--format nickel` (recommended; validates at evaluation time):
 
 | File | Owner | Purpose |
 |---|---|---|
 | `heimdall.ncl` | user-edited | Main config (connections + podRouting + cli defaults) |
 | `lib.ncl` | auto-generated | Nickel contracts mirroring the Rust schema |
-| `README.md` | auto-generated | AI-readable schema reference (this is your in-system doc) |
+| `README.md` | auto-generated | AI-readable schema reference (the in-system doc) |
 
 For `--format {yaml,json,toml}`: only `heimdall.<ext>` + `README.md`
 (no `lib.ncl` since contracts are Nickel-specific).
@@ -72,7 +53,7 @@ sudo chmod 0400 /etc/heimdall/secrets/<name>.pw
 
 ```bash
 sudo heimdall init --format nickel
-sudoedit /etc/heimdall/heimdall.ncl     # add your connections + rules
+sudoedit /etc/heimdall/heimdall.ncl     # add connections + rules
 nix-shell -p nickel --run "cd /etc/heimdall && nickel export -f json heimdall.ncl > /dev/null"
 sudo systemctl restart heimdall
 heimdall status                          # verify
@@ -106,17 +87,11 @@ Running `heimdall init` twice without `--force`:
 - Second run: refreshes `lib.ncl` + `README.md`; reports
   `heimdall.<ext>` as preserved.
 
-This makes it safe to call from a Nix activation script or a
-post-install hook.
+Safe to call from a Nix activation script or a post-install hook.
 
 ## Failure modes
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `Permission denied` | Not running as root, target dir not writable | `sudo` |
-| `... already exists; pass --force` | You asked to overwrite a user-owned file | Add `--force`, or back up the old file and rename |
-
-## Related skills
-
-- `heimdall-config` — edit `heimdall.<ext>` after init
-- `heimdall-status` — confirm daemon picked up the new config
+| `Permission denied` | Not running as root, or target dir not writable | `sudo` |
+| `... already exists; pass --force` | Asked to overwrite a user-owned file | Add `--force`, or back up + rename the old file |
