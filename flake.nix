@@ -285,7 +285,7 @@
 
         outputHashMode = "recursive";
         outputHashAlgo = "sha256";
-        outputHash = "sha256-rLF5x+xveSEg3hD5swGJP71BkGjsFrTasK6zQMlwPjo=";
+        outputHash = "sha256-PJpisZXWSuRFqXZgO9Gfoq9C8tpo3X6kHd+bdFU72D8=";
       };
 
       # ── heimdall: workspace daemon, embeds the two artifacts above ────
