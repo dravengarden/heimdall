@@ -723,8 +723,39 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
         );
     }
 
-    let cgroup = std::fs::File::open(&shared.cfg.runtime.cgroup)
-        .with_context(|| format!("failed to open cgroup path: {}", shared.cfg.runtime.cgroup))?;
+    // Wait for the cgroup to appear — kubelet may not have created it yet.
+    // Previous approach used an ExecStartPre bash script that checked `-d`,
+    // but it was racy: the directory could vanish between the shell test and
+    // File::open here. Retrying the actual open inside the daemon avoids
+    // full restart overhead (config reload, BPF load, BPF map writes) and
+    // eliminates the TOCTOU race.
+    let cgroup = {
+        let cgroup_path = &shared.cfg.runtime.cgroup;
+        let mut attempts = 0u32;
+        const MAX_WAIT_SECS: u32 = 60;
+        loop {
+            match std::fs::File::open(cgroup_path) {
+                Ok(f) => {
+                    if attempts > 0 {
+                        info!(path = %cgroup_path, waited_secs = attempts, "cgroup appeared");
+                    }
+                    break f;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound && attempts < MAX_WAIT_SECS => {
+                    if attempts == 0 {
+                        info!(path = %cgroup_path, "cgroup not found; waiting for kubelet");
+                    }
+                    attempts += 1;
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+                Err(e) => {
+                    return Err(e).with_context(|| {
+                        format!("failed to open cgroup path: {cgroup_path}")
+                    });
+                }
+            }
+        }
+    };
 
     // ─── eBPF attach (cgroup_sock_addr connect4 + cgroup_skb egress) ────────
     // Primary attach at runtime.cgroup (typically /sys/fs/cgroup/kubepods)

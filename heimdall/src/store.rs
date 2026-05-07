@@ -74,6 +74,14 @@ const SCHEMA: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_messages_flow ON messages(flow_id, ts_us)",
     "CREATE INDEX IF NOT EXISTS idx_messages_cgroup_ts ON messages(cgroup_id, ts_us)",
     "CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(ts_us DESC)",
+    // Tiny key/value table for runtime metadata that needs to persist
+    // across restarts so `heimdall status` (which opens its own
+    // read-only handle) can see them. Currently used for cleanup
+    // observability — last_cleanup_at_us, last_cleanup_deleted.
+    r#"CREATE TABLE IF NOT EXISTS heimdall_meta (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    )"#,
 ];
 
 #[derive(Debug, Clone)]
@@ -180,7 +188,45 @@ pub struct Store {
     pool: SqlitePool,
 }
 
+/// Result of a single cleanup pass — how many rows died, broken out
+/// by table, plus the union for callers that just want a heartbeat.
+#[derive(Debug, Clone, Copy)]
+pub struct CleanupOutcome {
+    pub deleted_flows: u64,
+    pub deleted_messages: u64,
+    pub total: u64,
+}
+
+/// On-disk file stats for the sqlite database. Surfaced on
+/// `heimdall status --json` so operators can answer "is the DB
+/// growing? is the freelist filling up?" without an SQL prompt.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+pub struct DbFileStats {
+    pub page_count: i64,
+    pub page_size: i64,
+    pub freelist_count: i64,
+}
+
+impl DbFileStats {
+    pub fn total_bytes(&self) -> i64 {
+        self.page_count * self.page_size
+    }
+}
+
+/// Read the auto_vacuum mode (0=NONE, 1=FULL, 2=INCREMENTAL). Used at
+/// startup to log which mode is in effect — pre-existing DBs created
+/// before the auto_vacuum=INCREMENTAL wiring landed will report 0.
+async fn current_auto_vacuum(pool: &SqlitePool) -> Result<i64> {
+    let row: (i64,) = sqlx::query_as("PRAGMA auto_vacuum")
+        .fetch_one(pool)
+        .await?;
+    Ok(row.0)
+}
+
 impl Store {
+    /// Open the store for the daemon's read-write use. Sets pragmas,
+    /// runs migrations, requires write access to the DB file. Use
+    /// `open_read_only` from CLI subcommands that just need to query.
     pub async fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -199,9 +245,45 @@ impl Store {
             .await
             .context("open sqlite pool")?;
         let store = Self { pool };
+        // auto_vacuum must be set BEFORE any table exists. For DBs
+        // created before this code shipped, the PRAGMA is a no-op
+        // (SQLite silently ignores it post-creation). The only way to
+        // migrate an existing DB to incremental vacuum is a full
+        // VACUUM, which we don't run automatically — too expensive on
+        // multi-GB stores. New deploys (fresh state dir) get it from
+        // day one.
+        let _ = sqlx::query("PRAGMA auto_vacuum = INCREMENTAL")
+            .execute(&store.pool)
+            .await;
         store.migrate().await?;
-        debug!(path = %path.display(), "flow store opened");
+        let mode = current_auto_vacuum(&store.pool).await.unwrap_or(0);
+        debug!(
+            path = %path.display(),
+            auto_vacuum = mode,
+            "flow store opened",
+        );
         Ok(store)
+    }
+
+    /// Open in true read-only mode — no migration, no pragma writes.
+    /// `heimdall status` (and any other CLI tool that doesn't run as
+    /// the daemon's user) uses this so it can query a root-owned DB
+    /// from a non-root shell.
+    pub async fn open_read_only(path: &Path) -> Result<Self> {
+        let url = format!("sqlite://{}", path.display());
+        let opts = SqliteConnectOptions::from_str(&url)
+            .with_context(|| format!("parse sqlite URL {url}"))?
+            .read_only(true)
+            // Keep journal_mode unset on a read-only handle — overriding
+            // it would require a write to the DB header. SQLite reads
+            // the existing journal_mode from the file metadata.
+            .busy_timeout(Duration::from_secs(2));
+        let pool = SqlitePoolOptions::new()
+            .max_connections(2)
+            .connect_with(opts)
+            .await
+            .context("open sqlite pool (read-only)")?;
+        Ok(Self { pool })
     }
 
     async fn migrate(&self) -> Result<()> {
@@ -301,22 +383,70 @@ impl Store {
         Ok(row)
     }
 
-    pub async fn cleanup_older_than(&self, secs: i64) -> Result<u64> {
+    pub async fn cleanup_older_than(&self, secs: i64) -> Result<CleanupOutcome> {
         let cutoff = now_micros() - secs.saturating_mul(1_000_000);
-        let mut total = 0u64;
         let r = sqlx::query("DELETE FROM flows WHERE ts_start_us < ?")
             .bind(cutoff)
             .execute(&self.pool)
             .await?;
-        total += r.rows_affected();
+        let deleted_flows = r.rows_affected();
         // Messages share the same retention. Delete by ts_us so we still
         // drop messages whose flow_id is NULL (host openssl, etc.).
         let r = sqlx::query("DELETE FROM messages WHERE ts_us < ?")
             .bind(cutoff)
             .execute(&self.pool)
             .await?;
-        total += r.rows_affected();
-        Ok(total)
+        let deleted_messages = r.rows_affected();
+        // Reclaim freed pages back to the OS. No-op when the DB was
+        // created before auto_vacuum=INCREMENTAL was wired up; on
+        // fresh DBs it actually shrinks the file. Cheap when there's
+        // nothing to free.
+        let _ = sqlx::query("PRAGMA incremental_vacuum")
+            .execute(&self.pool)
+            .await;
+        let total = deleted_flows + deleted_messages;
+        // Persist stats so `heimdall status` (read-only handle, no
+        // shared memory with the daemon) can surface them.
+        self.set_meta("last_cleanup_at_us", &now_micros().to_string()).await?;
+        self.set_meta("last_cleanup_deleted", &total.to_string()).await?;
+        Ok(CleanupOutcome { deleted_flows, deleted_messages, total })
+    }
+
+    // ── heimdall_meta helpers ──────────────────────────────────────────
+
+    pub async fn set_meta(&self, key: &str, value: &str) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO heimdall_meta (key, value) VALUES (?, ?) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_meta(&self, key: &str) -> Result<Option<String>> {
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT value FROM heimdall_meta WHERE key = ?")
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.map(|r| r.0))
+    }
+
+    /// On-disk file stats — page count, page size, freelist size.
+    /// Used by `heimdall status` to surface "DB is N MB, M MB free".
+    pub async fn file_stats(&self) -> Result<DbFileStats> {
+        async fn one(pool: &SqlitePool, sql: &str) -> Result<i64> {
+            let row: (i64,) = sqlx::query_as(sql).fetch_one(pool).await?;
+            Ok(row.0)
+        }
+        Ok(DbFileStats {
+            page_count: one(&self.pool, "PRAGMA page_count").await?,
+            page_size: one(&self.pool, "PRAGMA page_size").await?,
+            freelist_count: one(&self.pool, "PRAGMA freelist_count").await?,
+        })
     }
 
     pub async fn insert_message(&self, m: InsertMessage) -> Result<i64> {
@@ -369,17 +499,39 @@ impl Store {
     }
 }
 
-/// Spawn the periodic retention task. Runs forever; logs on each pass.
+/// Spawn the periodic retention task. Runs forever and logs on every
+/// tick — even when nothing was deleted, so an operator can verify the
+/// task is alive without grepping the DB. Heartbeat-style observability
+/// matters because cleanup is one of those things that "fails silently"
+/// when broken.
 pub fn spawn_cleanup(store: Arc<Store>, retention_secs: i64) {
     tokio::spawn(async move {
         let interval_secs = (retention_secs / 12).clamp(60, 6 * 3600) as u64;
+        info!(
+            interval_secs,
+            retention_secs,
+            "store cleanup task spawned",
+        );
         let mut tick = tokio::time::interval(Duration::from_secs(interval_secs));
         // First tick fires immediately; let it ride.
         loop {
             tick.tick().await;
             match store.cleanup_older_than(retention_secs).await {
-                Ok(0) => {}
-                Ok(n) => info!(deleted = n, "store cleanup"),
+                Ok(out) => {
+                    let stats = store.file_stats().await.ok();
+                    info!(
+                        deleted = out.total,
+                        deleted_flows = out.deleted_flows,
+                        deleted_messages = out.deleted_messages,
+                        db_mb = stats
+                            .map(|s| s.total_bytes() / (1024 * 1024))
+                            .unwrap_or(0),
+                        freelist_pages = stats
+                            .map(|s| s.freelist_count)
+                            .unwrap_or(0),
+                        "store cleanup",
+                    );
+                }
                 Err(e) => warn!(error = %e, "store cleanup failed"),
             }
         }
@@ -502,8 +654,29 @@ mod tests {
             .unwrap();
 
         // 1800s retention → should delete the row.
-        let n = s.cleanup_older_than(1800).await.unwrap();
-        assert_eq!(n, 1);
+        let out = s.cleanup_older_than(1800).await.unwrap();
+        assert_eq!(out.total, 1);
+        assert_eq!(out.deleted_flows, 1);
+        assert_eq!(out.deleted_messages, 0);
         assert!(s.get(id).await.unwrap().is_none());
+
+        // Stats should round-trip via heimdall_meta — `heimdall status`
+        // opens its own read-only handle and reads from this table.
+        let last = s.get_meta("last_cleanup_deleted").await.unwrap();
+        assert_eq!(last.as_deref(), Some("1"));
+        let ts = s.get_meta("last_cleanup_at_us").await.unwrap();
+        assert!(ts.is_some());
+    }
+
+    #[tokio::test]
+    async fn file_stats_reasonable() {
+        let (_d, s) = open_temp().await;
+        s.insert_flow_start(sample("default", "x.com")).await.unwrap();
+        let st = s.file_stats().await.unwrap();
+        assert!(st.page_size >= 512);
+        assert!(st.page_count > 0);
+        assert!(st.freelist_count >= 0);
+        assert!(st.total_bytes() >= 0);
+        assert!(st.total_bytes() >= st.freelist_count * st.page_size);
     }
 }
