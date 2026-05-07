@@ -12,14 +12,15 @@
     "format": "bunx prettier --write 'src/**/*.{ts,tsx}'"
   },
   "dependencies": {
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "@mui/material": "^6.4.0",
-    "@mui/icons-material": "^6.4.0",
-    "@mui/x-data-grid": "^7.27.0",
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.0",
-    "dayjs": "^1.11.13"
+    "@mui/icons-material": "^6.4.0",
+    "@mui/material": "^6.4.0",
+    "@mui/x-data-grid": "^7.27.0",
+    "dayjs": "^1.11.13",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-hotkeys-hook": "^5.3.2"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",

@@ -81,6 +81,8 @@ export function FilterBar({
           variant="outlined"
           value={filters.query}
           onChange={(e) => onChange({ ...filters, query: e.target.value })}
+          data-vim-hint=""
+          data-vim-hint-action="focus"
           sx={{ flex: 1, maxWidth: 420 }}
           slotProps={{
             input: {
@@ -200,7 +202,12 @@ export function FilterBar({
           <Divider orientation="vertical" flexItem sx={{ mx: 0.5, my: 0.5 }} />
           <WsStatusBadge status={wsStatus} />
           <Tooltip title={t("filter.refetch")}>
-            <IconButton size="small" onClick={onRefresh} aria-label="refresh">
+            <IconButton
+              size="small"
+              onClick={onRefresh}
+              aria-label="refresh"
+              data-vim-hint=""
+            >
               <RefreshIcon fontSize="small" />
             </IconButton>
           </Tooltip>

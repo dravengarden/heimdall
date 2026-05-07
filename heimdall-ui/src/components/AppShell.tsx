@@ -91,15 +91,22 @@ export function AppShell({
               value="flows"
               label={t("nav.flows")}
               sx={{ minHeight: 36, py: 0.5 }}
+              data-vim-hint=""
             />
             <Tab
               value="tap"
               label={t("nav.tap")}
               sx={{ minHeight: 36, py: 0.5 }}
+              data-vim-hint=""
             />
           </Tabs>
           <Tooltip title={t("settings.title")}>
-            <IconButton size="small" onClick={onOpenSettings} aria-label="settings">
+            <IconButton
+              size="small"
+              onClick={onOpenSettings}
+              aria-label="settings"
+              data-vim-hint=""
+            >
               <SettingsIcon fontSize="small" />
             </IconButton>
           </Tooltip>

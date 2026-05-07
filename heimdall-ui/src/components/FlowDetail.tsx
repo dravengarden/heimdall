@@ -121,7 +121,12 @@ export function FlowDetail({ flowId, onClose, fallback }: Props) {
               </Tooltip>
             </>
           )}
-          <IconButton size="small" onClick={onClose} aria-label="close">
+          <IconButton
+            size="small"
+            onClick={onClose}
+            aria-label="close"
+            data-vim-hint=""
+          >
             <CloseIcon />
           </IconButton>
         </Box>
