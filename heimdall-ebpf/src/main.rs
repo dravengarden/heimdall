@@ -28,7 +28,7 @@ use aya_ebpf::{
         bpf_ktime_get_ns, gen::bpf_probe_read_user,
     },
     macros::{cgroup_skb, cgroup_sock_addr, map, uprobe, uretprobe},
-    maps::{Array, HashMap, PerfEventArray},
+    maps::{Array, HashMap, LruHashMap, PerfEventArray},
     programs::{ProbeContext, RetProbeContext, SkBuffContext, SockAddrContext},
     EbpfContext,
 };
@@ -68,13 +68,31 @@ static DNS_PORT_V6: Array<u32> = Array::with_max_entries(1, 0);
 
 // Stage-1 map: socket_cookie → original destination
 // Populated in connect4, consumed in skb_egress.
+//
+// LRU because skb_egress doesn't always fire to consume an entry —
+// e.g. a connect() that fails before sending its first SYN, or a
+// rewrite to a v6 relay address the source can't actually route to —
+// would leak forever in a regular HashMap. Past incident: opik-frontend
+// nginx hammered an OTLP v6 fake-IP, every connect6 added a cookie that
+// skb_egress never reaped, the map filled at 65536, and connect4's
+// `insert(...)?` started early-returning *before the dst rewrite* —
+// so EVERY new flow on the host (incl. `heimdall run`) silently went
+// to its un-rewritten original IP and got TPROXY-trapped by v2raya.
+// LRU evicts the oldest cookie under pressure; a stale cookie loses its
+// PORT_MAP correlation but the rewrite still happens, which is the
+// correct trade-off (lose tap-correlation > lose redirect entirely).
 #[map]
-static COOKIE_MAP: HashMap<u64, OrigDst> = HashMap::with_max_entries(65536, 0);
+static COOKIE_MAP: LruHashMap<u64, OrigDst> = LruHashMap::with_max_entries(65536, 0);
 
 // Stage-2 map: client_ephemeral_port → original destination
 // Populated in skb_egress, consumed by the userspace relay after accept().
+//
+// LRU for the same reason as COOKIE_MAP: an entry can leak if the
+// relay never accepts the redirected connection (relay died /
+// listener torn down mid-connect / connection RST'd between SYN and
+// accept). LRU keeps the map self-healing under those edge cases.
 #[map]
-static PORT_MAP: HashMap<u32, OrigDst> = HashMap::with_max_entries(65536, 0);
+static PORT_MAP: LruHashMap<u32, OrigDst> = LruHashMap::with_max_entries(65536, 0);
 
 // Phase B: bypass notifications. Connect4 emits one event per bypassed
 // connection (loopback / LAN / k0s pod-or-service CIDR) so userspace can
@@ -267,7 +285,13 @@ fn try_connect4(ctx: SockAddrContext) -> Result<(), ()> {
     orig.addr[1] = ip_bytes[1];
     orig.addr[2] = ip_bytes[2];
     orig.addr[3] = ip_bytes[3];
-    COOKIE_MAP.insert(&cookie, &orig, 0).map_err(|_| ())?;
+    // Best-effort cookie store. If insert fails (-EAGAIN under LRU
+    // pressure, verifier weirdness), proceed with the rewrite anyway —
+    // losing cookie→origdst correlation costs us tap-flow correlation
+    // for this one connection, but skipping the rewrite would break
+    // the whole connection. Past incident: a `?` here on a full
+    // (non-LRU) map silently broke every new redirect on the host.
+    let _ = COOKIE_MAP.insert(&cookie, &orig, 0);
 
     unsafe {
         (*sa).user_ip4 = relay_ip_be;
@@ -358,7 +382,10 @@ fn try_connect6(ctx: SockAddrContext) -> Result<(), ()> {
         cgroup_id,
         socket_cookie: cookie,
     };
-    COOKIE_MAP.insert(&cookie, &orig, 0).map_err(|_| ())?;
+    // Best-effort: see the matching comment in `try_connect4`. The
+    // rewrite below MUST run regardless of whether the cookie was
+    // recorded.
+    let _ = COOKIE_MAP.insert(&cookie, &orig, 0);
 
     unsafe {
         // Rewrite destination to the relay's v6 address. user_ip6 takes
@@ -528,7 +555,11 @@ fn try_skb_egress(ctx: &SkBuffContext) -> Result<(), ()> {
     let src_port_be: u16 = ctx.load(tcp_off).map_err(|_| ())?;
     let src_port = u16::from_be(src_port_be) as u32;
 
-    PORT_MAP.insert(&src_port, &orig, 0).map_err(|_| ())?;
+    // Best-effort. PORT_MAP is LRU so insert won't fail under
+    // pressure; if it does (-EAGAIN race), we still want to clear the
+    // cookie below so the same connection's next packet doesn't retry
+    // forever on a stale entry.
+    let _ = PORT_MAP.insert(&src_port, &orig, 0);
     let _ = COOKIE_MAP.remove(&cookie);
 
     Ok(())
