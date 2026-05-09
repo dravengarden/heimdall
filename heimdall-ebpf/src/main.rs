@@ -27,9 +27,9 @@ use aya_ebpf::{
         bpf_get_current_cgroup_id, bpf_get_current_pid_tgid, bpf_get_socket_cookie,
         bpf_ktime_get_ns, gen::bpf_probe_read_user,
     },
-    macros::{cgroup_skb, cgroup_sock_addr, map, uprobe, uretprobe},
+    macros::{cgroup_skb, cgroup_sock, cgroup_sock_addr, map, uprobe, uretprobe},
     maps::{Array, HashMap, LruHashMap, PerfEventArray},
-    programs::{ProbeContext, RetProbeContext, SkBuffContext, SockAddrContext},
+    programs::{ProbeContext, RetProbeContext, SkBuffContext, SockAddrContext, SockContext},
     EbpfContext,
 };
 use heimdall_common::{
@@ -425,6 +425,37 @@ fn try_connect6(ctx: SockAddrContext) -> Result<(), ()> {
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// sock_release — reap COOKIE_MAP entries on socket destruction.
+//
+// connect4 / connect6 store `(socket_cookie → orig_dst)` in COOKIE_MAP at
+// connect() time. Normally skb_egress consumes the entry on the first
+// outgoing packet, moving it to PORT_MAP. But many `connect()` calls never
+// produce an outgoing packet:
+//
+//   • glibc's RFC 6724 source-address probe (UDP connect to dst:0,
+//     getsockname(), close — see the dst_port=0 short-circuit above).
+//   • Synchronous routing failures (ENETUNREACH, EHOSTUNREACH).
+//   • Application aborts the socket between connect() and first send.
+//   • TCP_FASTOPEN_CONNECT probes that never carry data.
+//
+// In all those cases skb_egress never fires, leaving the cookie pinned in
+// COOKIE_MAP forever. cgroup_sock_release fires the moment the kernel
+// destroys the socket — same socket cookie heimdall stored at connect time
+// — giving us a clean reap point that doesn't depend on packet flow.
+//
+// Same hook Cilium uses (`cil_sock_release` shows up in `bpftool cgroup
+// show` on this host). Available since kernel 5.13. The return value is
+// ignored by the kernel for this attach type; we return 1 by convention.
+// ---------------------------------------------------------------------------
+
+#[cgroup_sock(sock_release)]
+pub fn sock_release(ctx: SockContext) -> i32 {
+    let cookie = unsafe { bpf_get_socket_cookie(ctx.as_ptr()) };
+    let _ = COOKIE_MAP.remove(&cookie);
+    1
 }
 
 // ---------------------------------------------------------------------------

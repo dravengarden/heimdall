@@ -50,7 +50,9 @@ use std::{
 use anyhow::{Context, Result};
 use aya::{
     maps::{Array, HashMap},
-    programs::{CgroupAttachMode, CgroupSkb, CgroupSkbAttachType, CgroupSockAddr},
+    programs::{
+        CgroupAttachMode, CgroupSkb, CgroupSkbAttachType, CgroupSock, CgroupSockAddr,
+    },
     Ebpf,
 };
 use clap::Parser;
@@ -804,6 +806,32 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
             match connect6.attach(user_cg, CgroupAttachMode::default()) {
                 Ok(_) => info!(cgroup = USER_SLICE, "eBPF connect6 attached (extra)"),
                 Err(e) => warn!(error = %e, cgroup = USER_SLICE, "extra connect6 attach failed"),
+            }
+        }
+    }
+    // sock_release: reap COOKIE_MAP entries when the kernel destroys a
+    // socket, regardless of whether it ever sent a packet. Without this,
+    // sockets that connect() but never egress (glibc src-addr probes,
+    // failed routing, abort-before-send) leak cookies forever — past
+    // incident filled the map at 65536 in a few hours and silently broke
+    // every new redirect on the host. See the matching comment on the
+    // sock_release program in heimdall-ebpf for the kernel-hook details.
+    {
+        let sock_release: &mut CgroupSock = bpf
+            .program_mut("sock_release")
+            .context("sock_release eBPF program not found")?
+            .try_into()?;
+        sock_release.load().context("failed to load sock_release")?;
+        sock_release
+            .attach(&cgroup, CgroupAttachMode::default())
+            .context("failed to attach sock_release")?;
+        info!(cgroup = %shared.cfg.runtime.cgroup, "eBPF sock_release attached");
+        if let Some(user_cg) = user_slice_file.as_ref() {
+            match sock_release.attach(user_cg, CgroupAttachMode::default()) {
+                Ok(_) => info!(cgroup = USER_SLICE, "eBPF sock_release attached (extra)"),
+                Err(e) => {
+                    warn!(error = %e, cgroup = USER_SLICE, "extra sock_release attach failed")
+                }
             }
         }
     }
