@@ -235,6 +235,20 @@ fn try_connect4(ctx: SockAddrContext) -> Result<(), ()> {
         return Ok(());
     }
 
+    // Skip dst_port=0. This is the glibc "connected-UDP source-address
+    // discovery" idiom (RFC 6724 src-addr selection): connect a UDP
+    // socket to the destination with port 0, getsockname(), close.
+    // No SYN/datagram ever leaves the socket, so skb_egress never
+    // fires and any COOKIE_MAP entry from this connect would leak.
+    // Past incident: opik-frontend nginx-otel emitted ~hundreds of
+    // these per second per worker, filling COOKIE_MAP in a few
+    // hours. Short-circuiting here keeps the map healthy *and* avoids
+    // pointlessly rewriting a connect that isn't going to send a
+    // packet.
+    if u16::from_be(dst_port_be) == 0 {
+        return Ok(());
+    }
+
     let cookie = unsafe { bpf_get_socket_cookie(ctx.as_ptr()) };
     let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
     let policy = policy_for(cgroup_id);
@@ -343,6 +357,12 @@ fn try_connect6(ctx: SockAddrContext) -> Result<(), ()> {
 
     // Self-loop check — already going to the relay's v6 address+port.
     if dst_addr == relay6 && u16::from_be(dst_port_be) == PROXY_PORT {
+        return Ok(());
+    }
+
+    // Skip dst_port=0 — see the matching comment in try_connect4 for
+    // the glibc src-address-discovery rationale.
+    if u16::from_be(dst_port_be) == 0 {
         return Ok(());
     }
 
