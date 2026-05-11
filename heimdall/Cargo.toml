@@ -87,7 +87,7 @@ bytes = "1"
 # `object` in transitively, but we use it directly for the pre-attach
 # scan so we can filter non-Go binaries before paying the symbol
 # resolution cost.
-object = { version = "0.36", default-features = false, features = ["read", "elf", "std"] }
+object = { version = "0.39", default-features = false, features = ["read", "elf", "std"] }
 
 # Pure-Rust x86-64 disassembler. Phase B uses it to walk the body of
 # crypto/tls.(*Conn).Read and find every RET instruction, since Go's
