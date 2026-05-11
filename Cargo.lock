@@ -246,7 +246,7 @@ dependencies = [
  "bytes",
  "libc",
  "log",
- "object",
+ "object 0.36.7",
  "once_cell",
  "thiserror 1.0.69",
  "tokio",
@@ -285,7 +285,7 @@ dependencies = [
  "core-error",
  "hashbrown 0.15.5",
  "log",
- "object",
+ "object 0.36.7",
  "thiserror 1.0.69",
 ]
 
@@ -954,7 +954,7 @@ dependencies = [
  "libc",
  "mime_guess",
  "nix",
- "object",
+ "object 0.39.1",
  "parking_lot",
  "rust-embed",
  "sd-notify",
@@ -1670,6 +1670,15 @@ dependencies = [
  "crc32fast",
  "hashbrown 0.15.5",
  "indexmap",
+ "memchr",
+]
+
+[[package]]
+name = "object"
+version = "0.39.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e5a6c098c7a3b6547378093f5cc30bc54fd361ce711e05293a5cc589562739b"
+dependencies = [
  "memchr",
 ]
 
