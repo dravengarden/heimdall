@@ -15,7 +15,7 @@ jobs:
     name: rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -26,7 +26,7 @@ jobs:
     name: eBPF build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@nightly
         with:
           targets: bpfel-unknown-none
@@ -40,7 +40,7 @@ jobs:
           cargo +nightly build -Z build-std=core \
                                --target bpfel-unknown-none --release
       - name: Upload eBPF artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: heimdall-ebpf
           path: heimdall-ebpf/target/bpfel-unknown-none/release/heimdall-ebpf
@@ -50,7 +50,7 @@ jobs:
     name: UI typecheck + build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
@@ -64,7 +64,7 @@ jobs:
         working-directory: heimdall-ui
         run: bun run build
       - name: Upload UI bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: heimdall-ui-dist
           path: heimdall-ui/dist
@@ -75,18 +75,18 @@ jobs:
     needs: [ebpf, ui]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Download eBPF artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: heimdall-ebpf
           path: heimdall-ebpf/target/bpfel-unknown-none/release
       - name: Download UI bundle
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: heimdall-ui-dist
           path: heimdall-ui/dist
