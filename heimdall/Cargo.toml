@@ -39,7 +39,7 @@ sd-notify = "0.4"
 
 # `heimdall run` cgroup management — fork/exec/waitpid + signal masking.
 # `process` for fork/wait, `signal` for SIGINT propagation to the child.
-nix = { version = "0.29", features = ["process", "signal", "fs", "mount", "sched"] }
+nix = { version = "0.31", features = ["process", "signal", "fs", "mount", "sched"] }
 
 # Sync HTTP client for `heimdall run` → daemon /api/cli/register.
 # Sync (not reqwest) because the run subcommand is itself sync — it
