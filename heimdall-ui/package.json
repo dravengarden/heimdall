@@ -28,7 +28,7 @@
     "@types/bun": "latest",
     "typescript": "^5.7.0",
     "vite": "^6.0.0",
-    "@vitejs/plugin-react": "^4.3.4",
+    "@vitejs/plugin-react": "^6.0.1",
     "babel-plugin-react-compiler": "19.0.0-beta-decd7b8-20250118",
     "eslint-plugin-react-compiler": "19.0.0-beta-decd7b8-20250118",
     "oxlint": "^0.16.0",
