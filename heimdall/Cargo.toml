@@ -67,7 +67,7 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 # Pretty CLI table output
 comfy-table = "7"
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
+serde_json = "1.0.150"
 
 # HTTP API + future Web UI
 axum = { version = "0.8", features = ["ws", "macros"] }
