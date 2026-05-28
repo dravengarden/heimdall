@@ -2,7 +2,7 @@
   "apiVersion": "heimdall.io/v1alpha1",
   "kind": "HeimdallConfig",
   "runtime": {
-    "cgroup": "/sys/fs/cgroup/kubepods",
+    "cgroup": "/sys/fs/cgroup/system.slice",
     "listen": "0.0.0.0:12345",
     "relayIp": "127.0.0.1",
     "dnsListen": "0.0.0.0:5358",
@@ -25,9 +25,7 @@
       "type": "direct"
     }
   },
-  "podRouting": {
-    "routingKey": "heimdall.io/routing",
-    "observeKey": "heimdall.io/observe",
+  "routing": {
     "rules": [],
     "default": {
       "use": "default",

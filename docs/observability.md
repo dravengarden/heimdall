@@ -1,3 +1,5 @@
+> **Note:** heimdall is mid-refactor from a k8s-coupled model to a systemd-first model. The schema renamed `podRouting`→`routing`, the selector grammar moved from pod labels/namespaces to `units` / `slices`, and the daemon no longer talks to a kube-apiserver. Some examples below still show the old k8s model and are being updated. See `/etc/heimdall/README.md` for the current schema reference.
+
 # Observability — TLS plaintext capture (Phase B)
 
 Heimdall's observability layer captures decrypted TLS payloads at
@@ -494,6 +496,6 @@ sudo bpftool map dump name CGROUP_POLICY \
   | awk '/value:/ {print $NF}' | sort | uniq -c
 ```
 
-Healthy values: ~30+ attached_libs on a typical k0s node, growth
+Healthy values: ~30+ attached_libs on a typical node, growth
 rate of 10–100 messages/sec across observed pods, BPF map size
 matching pod count × ~3 cgroups each.

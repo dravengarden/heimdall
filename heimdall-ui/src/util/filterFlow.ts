@@ -31,8 +31,8 @@ export function flowMatches(f: Flow, filters: FlowFilters, nowUs: number): boole
     const fields: ReadonlyArray<string | null> = [
       f.dst_host,
       f.dst_ip,
-      f.pod_name,
-      f.namespace,
+      f.unit,
+      f.slice,
       f.connection_name,
       f.upstream_addr,
     ];

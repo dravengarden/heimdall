@@ -1,3 +1,5 @@
+> **Note:** mid-refactor from k8s-coupled to systemd-first. Schema renamed `podRouting`→`routing`; selector grammar moved from pod labels/namespaces to `units` / `slices`. Examples below may still show the old k8s model. See `/etc/heimdall/README.md` for current schema.
+
 # `heimdall run` — proxychains-style CLI proxy
 
 Wrap a CLI command so its egress goes through a heimdall connection
@@ -149,7 +151,7 @@ syscall level via cgroup-attached eBPF programs (`connect4`,
 ### 1. v2raya host TPROXY would otherwise eat the redirected packet
 
 heimdall's connect4 rewrites the dst to the relay socket on the
-node-internal cilium-host address (e.g. `10.244.0.41:12345`). If the
+host relay address (e.g. `127.0.0.1:12345`). If the
 host also runs a transparent proxy that captures all egress via
 mangle-table TPROXY rules (e.g. v2raya in tproxy mode), those rules
 would see the redirected packet as host-originated and steal it
@@ -157,7 +159,7 @@ before the heimdall relay can `accept()`.
 
 The fix is a single host-side iptables/ip6tables RETURN rule on the
 TPROXY chains that whitelists the relay endpoint —
-`dst=<cilium-host-ip>:12345 → RETURN`, plus the IPv6 sibling on
+`dst=<relay-ip>:12345 → RETURN`, plus the IPv6 sibling on
 `[::1]:12345`. Configure this in your host's firewall management
 layer (NixOS module, Ansible role, raw `iptables-restore`, etc.);
 heimdall documents the rule semantics, not the rule installer.

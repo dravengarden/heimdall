@@ -18,7 +18,7 @@
 //!    SSL_read). If a build strips them, attach fails for that file.
 //!  * We attach by *file path*, not pid. One attach catches every process
 //!    that maps that libssl image (including pods and the host). Userspace
-//!    can later filter events by tgid → cgroup_id → pod_uid.
+//!    can later filter events by tgid → cgroup_id → unit.
 //!
 //! Future work tracked elsewhere:
 //!

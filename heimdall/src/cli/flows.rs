@@ -16,7 +16,7 @@ pub enum FlowsCmd {
     List(ListArgs),
     /// Show a single flow by id.
     Show(ShowArgs),
-    /// Search flows by hostname / pod / connection.
+    /// Search flows by hostname / unit / connection.
     Search(SearchArgs),
 }
 
@@ -30,9 +30,9 @@ pub struct ListArgs {
     #[arg(long, short = 'c')]
     connection: Option<String>,
 
-    /// Filter by pod name / namespace substring.
-    #[arg(long, short = 'p')]
-    pod: Option<String>,
+    /// Filter by unit / slice substring (e.g. `nginx`, `system.slice`).
+    #[arg(long, short = 'u')]
+    unit: Option<String>,
 
     /// Filter by destination hostname substring.
     #[arg(long, short = 'H')]
@@ -90,7 +90,7 @@ async fn list(store: &Store, args: ListArgs) -> Result<()> {
     let q = ListQuery {
         limit: args.limit,
         connection: args.connection,
-        pod_substr: args.pod,
+        unit_substr: args.unit,
         host_substr: args.host,
         atyp: args.atyp,
         ..Default::default()
@@ -151,7 +151,7 @@ struct FlowJson<'a> {
     id: i64,
     ts: String,                 // RFC3339
     duration_ms: Option<i64>,
-    pod: Option<String>,        // "ns/name"
+    unit: Option<String>,       // "slice/unit"
     connection: &'a str,
     dst_host: Option<&'a str>,
     dst_ip: &'a str,
@@ -165,15 +165,12 @@ struct FlowJson<'a> {
 
 impl<'a> From<&'a Flow> for FlowJson<'a> {
     fn from(f: &'a Flow) -> Self {
-        let pod = match (&f.namespace, &f.pod_name) {
-            (Some(n), Some(p)) => Some(format!("{n}/{p}")),
-            _ => None,
-        };
+        let unit = unit_label(f);
         Self {
             id: f.id,
             ts: format_us(f.ts_start_us),
             duration_ms: f.ts_end_us.map(|e| (e - f.ts_start_us) / 1000),
-            pod,
+            unit,
             connection: &f.connection_name,
             dst_host: f.dst_host.as_deref(),
             dst_ip: &f.dst_ip,
@@ -184,6 +181,17 @@ impl<'a> From<&'a Flow> for FlowJson<'a> {
             atyp: f.atyp.as_deref(),
             error: f.error.as_deref(),
         }
+    }
+}
+
+/// Render a flow's systemd identity as `slice/unit`, or whichever half
+/// is present. None when neither was resolved.
+fn unit_label(f: &Flow) -> Option<String> {
+    match (&f.slice, &f.unit) {
+        (Some(s), Some(u)) => Some(format!("{s}/{u}")),
+        (_, Some(u)) => Some(u.clone()),
+        (Some(s), None) => Some(s.clone()),
+        (None, None) => None,
     }
 }
 
@@ -201,14 +209,11 @@ fn print_table(rows: &[Flow]) {
     t.load_preset(UTF8_FULL)
         .set_content_arrangement(ContentArrangement::Dynamic)
         .set_header(vec![
-            "id", "time", "pod", "conn", "atyp", "dst", "port", "↑", "↓", "via",
+            "id", "time", "unit", "conn", "atyp", "dst", "port", "↑", "↓", "via",
         ]);
 
     for f in rows {
-        let pod = match (&f.namespace, &f.pod_name) {
-            (Some(n), Some(p)) => format!("{n}/{p}"),
-            _ => "-".to_string(),
-        };
+        let unit = unit_label(f).unwrap_or_else(|| "-".to_string());
         // dst column shows the hostname when fake-IP DNS produced one,
         // otherwise the literal IP — bracketed for IPv6 so it parses
         // unambiguously when the reader pastes it into curl etc.
@@ -222,7 +227,7 @@ fn print_table(rows: &[Flow]) {
         t.add_row(vec![
             Cell::new(f.id),
             Cell::new(format_short_us(f.ts_start_us)),
-            Cell::new(pod),
+            Cell::new(unit),
             color_cell(&f.connection_name),
             atyp_cell(f.atyp.as_deref()),
             Cell::new(truncate(&dst, 50)),
@@ -252,11 +257,8 @@ fn print_detail(f: &Flow) {
     } else {
         println!("  ts_end      (open)");
     }
-    if let (Some(ns), Some(n)) = (&f.namespace, &f.pod_name) {
-        println!("  pod         {ns}/{n}");
-    }
-    if let Some(uid) = &f.pod_uid {
-        println!("  pod_uid     {uid}");
+    if let Some(label) = unit_label(f) {
+        println!("  unit        {label}");
     }
     println!("  connection  {}", f.connection_name);
     if let Some(h) = &f.dst_host {

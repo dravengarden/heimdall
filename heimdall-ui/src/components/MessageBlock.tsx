@@ -50,10 +50,10 @@ export function MessageBlock({ msg, showCgroup = false }: Props) {
         >
           {ts}
         </Typography>
-        {msg.pod_namespace && msg.pod_name ? (
+        {msg.slice && msg.unit ? (
           <Chip
             size="small"
-            label={`${msg.pod_namespace}/${msg.pod_name}`}
+            label={`${msg.slice}/${msg.unit}`}
             variant="outlined"
             color="info"
             sx={{

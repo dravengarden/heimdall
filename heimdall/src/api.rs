@@ -26,13 +26,13 @@ use axum::{
     Json, Router,
 };
 use rust_embed::Embed;
-use heimdall_config::{Connection, HeimdallConfig, PodDecision, SYSTEM_TAG};
+use heimdall_config::{Connection, Decision, HeimdallConfig, SYSTEM_TAG};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{info, warn};
 
-use crate::pod::{CgroupResolver, PodInformer};
+use crate::unit::UnitResolver;
 use crate::policy::PolicyEngine;
 use crate::store::{Flow, ListQuery, Message as StoreMessage, MessageQuery, Store};
 
@@ -77,12 +77,10 @@ pub struct AppState {
     pub store: Arc<Store>,
     pub events: EventBus,
     pub cfg_path: std::path::PathBuf,
-    /// Optional pod-identity resolvers — mirror the relay's runtime
-    /// state. When either is None (e.g. --no-k8s, or the informer
-    /// failed at startup) the API returns messages with the pod_label
-    /// fields left null.
-    pub cgroup_resolver: Option<Arc<CgroupResolver>>,
-    pub informer: Option<Arc<PodInformer>>,
+    /// Optional unit-identity resolver — mirrors the relay's runtime
+    /// state. When None (resolver failed at startup) the API returns
+    /// messages with the unit / slice fields left null.
+    pub units: Option<Arc<UnitResolver>>,
     /// Snapshot of `connections:` from the loaded config — used by
     /// `POST /api/cli/register` to validate the requested connection
     /// name without re-reading the config file.
@@ -90,7 +88,7 @@ pub struct AppState {
     /// Shared with the relay's `Shared.cli_overrides`. The HTTP
     /// register endpoints write here and the relay reads on every
     /// new flow.
-    pub cli_overrides: Arc<parking_lot::RwLock<std::collections::HashMap<u64, PodDecision>>>,
+    pub cli_overrides: Arc<parking_lot::RwLock<std::collections::HashMap<u64, Decision>>>,
     /// Late-bound policy engine handle. None until eBPF programs
     /// finish loading; the register endpoint returns 503 until then.
     pub policy_engine: Arc<parking_lot::Mutex<Option<Arc<PolicyEngine>>>>,
@@ -102,14 +100,11 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Look up the pod identity for a cgroup_id. Returns None when
-    /// either resolver is unavailable, the cgroup is not a pod, or
-    /// the pod isn't in the informer's snapshot yet.
-    fn pod_for_cgroup(&self, cgroup_id: i64) -> Option<crate::pod::PodInfo> {
-        let cr = self.cgroup_resolver.as_ref()?;
-        let inf = self.informer.as_ref()?;
-        let uid = cr.resolve(cgroup_id as u64)?;
-        inf.lookup(&uid)
+    /// Look up the unit identity for a cgroup_id. Returns None when
+    /// the resolver is unavailable or the cgroup isn't a recognizable
+    /// unit/slice.
+    fn unit_for_cgroup(&self, cgroup_id: i64) -> Option<crate::unit::UnitInfo> {
+        self.units.as_ref()?.resolve(cgroup_id as u64)
     }
 }
 
@@ -231,7 +226,7 @@ struct StatusResp {
     state_dir: String,
     flow_retention_secs: i64,
     flows_count: i64,
-    /// What heimdall does with kubepods cgroups not in CGROUP_POLICY.
+    /// What heimdall does with cgroups in the attached subtree not yet in CGROUP_POLICY.
     /// `"redirect"` (current production behaviour) routes traffic
     /// through the relay; `"bypass"` is the fail-open emergency
     /// override. Set via `runtime.defaultEgressPolicy` in heimdall's
@@ -242,25 +237,6 @@ struct StatusResp {
     /// "what attaches recently failed?". See heimdall's
     /// `docs/observability.md` for the per-flow signal convention.
     tap: crate::tap::TapStatus,
-    /// Pod informer health. `null` when the daemon isn't watching
-    /// Kubernetes (no kubeconfig, --no-k8s flag in future). When
-    /// non-null, AI consumers can detect a stalled apiserver
-    /// connection by watching `last_event_secs_ago > 60`.
-    informer: Option<InformerHealth>,
-}
-
-#[derive(Serialize)]
-struct InformerHealth {
-    /// `true` once `Event::InitDone` has been seen at least once.
-    /// Flips to `false` if the watcher reconnects (Init event
-    /// arrives before the next InitDone) — useful as an early
-    /// warning for "apiserver was just restarted, give us a moment".
-    synced: bool,
-    /// Number of pods currently in the informer cache.
-    pod_count: usize,
-    /// Wall-clock seconds since the most recent watcher event, or
-    /// `null` if no event has been seen yet.
-    last_event_secs_ago: Option<i64>,
 }
 
 async fn status(State(s): State<AppState>) -> Result<Json<StatusResp>, ApiError> {
@@ -278,9 +254,9 @@ async fn status(State(s): State<AppState>) -> Result<Json<StatusResp>, ApiError>
         version: env!("CARGO_PKG_VERSION"),
         config: s.cfg_path.display().to_string(),
         connections: cfg.connections.len(),
-        rules: cfg.pod_routing.rules.len(),
-        default_connection: cfg.pod_routing.default.use_,
-        default_observe: cfg.pod_routing.default.observe,
+        rules: cfg.routing.rules.len(),
+        default_connection: cfg.routing.default.use_,
+        default_observe: cfg.routing.default.observe,
         relay_listen: cfg.runtime.listen,
         dns_listen: cfg.runtime.dns_listen,
         fake_ip_cidr: cfg.runtime.fake_ip_cidr,
@@ -292,13 +268,6 @@ async fn status(State(s): State<AppState>) -> Result<Json<StatusResp>, ApiError>
             heimdall_config::DefaultEgressPolicy::Bypass => "bypass".into(),
         },
         tap: s.tap_status.lock().unwrap().clone(),
-        informer: s.informer.as_ref().map(|inf| InformerHealth {
-            synced: inf.is_synced(),
-            pod_count: inf.snapshot().len(),
-            last_event_secs_ago: inf
-                .last_event_micros_ago()
-                .map(|us| us / 1_000_000),
-        }),
     }))
 }
 
@@ -307,7 +276,7 @@ struct ListParams {
     #[serde(default = "default_limit")]
     limit: u32,
     connection: Option<String>,
-    pod: Option<String>,
+    unit: Option<String>,
     host: Option<String>,
     since_us: Option<i64>,
     /// Filter by SOCKS5 ATYP class — `ip` (v4 literal), `ip6` (v6 literal),
@@ -326,7 +295,7 @@ async fn list_flows(
     let q = ListQuery {
         limit: p.limit,
         since_us: p.since_us,
-        pod_substr: p.pod,
+        unit_substr: p.unit,
         connection: p.connection,
         host_substr: p.host,
         atyp: p.atyp,
@@ -375,20 +344,20 @@ struct ApiMessage {
     total_len: i64,
     captured_len: i64,
     body: Vec<u8>,
-    pod_namespace: Option<String>,
-    pod_name: Option<String>,
+    unit: Option<String>,
+    slice: Option<String>,
 }
 
 fn enrich_messages(rows: Vec<StoreMessage>, s: &AppState) -> Vec<ApiMessage> {
-    // Cache cgroup → pod within the response so a flood of messages
-    // from the same pod doesn't redo the cgroup walk per row.
-    let mut cache: std::collections::HashMap<i64, Option<crate::pod::PodInfo>> =
+    // Cache cgroup → unit within the response so a flood of messages
+    // from the same unit doesn't redo the cgroup walk per row.
+    let mut cache: std::collections::HashMap<i64, Option<crate::unit::UnitInfo>> =
         std::collections::HashMap::new();
     rows.into_iter()
         .map(|m| {
-            let pod = cache
+            let unit = cache
                 .entry(m.cgroup_id)
-                .or_insert_with(|| s.pod_for_cgroup(m.cgroup_id))
+                .or_insert_with(|| s.unit_for_cgroup(m.cgroup_id))
                 .clone();
             ApiMessage {
                 id: m.id,
@@ -400,8 +369,8 @@ fn enrich_messages(rows: Vec<StoreMessage>, s: &AppState) -> Vec<ApiMessage> {
                 total_len: m.total_len,
                 captured_len: m.captured_len,
                 body: m.body,
-                pod_namespace: pod.as_ref().map(|p| p.namespace.clone()),
-                pod_name: pod.as_ref().map(|p| p.name.clone()),
+                unit: unit.as_ref().and_then(|u| u.unit.clone()),
+                slice: unit.as_ref().and_then(|u| u.slice.clone()),
             }
         })
         .collect()
@@ -537,9 +506,9 @@ async fn register_cli(
         ));
     }
 
-    // PolicyEngine handle is populated only after eBPF attach succeeds
-    // and only when the k8s informer is up. If absent, the eBPF map
-    // can't receive the policy byte → registration is meaningless.
+    // PolicyEngine handle is populated only after eBPF attach succeeds.
+    // If absent, the eBPF map can't receive the policy byte →
+    // registration is meaningless.
     // Take the Option<Arc<…>> out of the parking_lot Mutex *before*
     // any .await — the guard is !Send and would poison the future.
     let engine_opt: Option<Arc<PolicyEngine>> = {
@@ -551,14 +520,14 @@ async fn register_cli(
         None => {
             return Err(ApiError(
                 StatusCode::SERVICE_UNAVAILABLE,
-                "policy engine not initialised (k8s informer down or eBPF attach pending); \
+                "policy engine not initialised (eBPF attach pending); \
                  retry in a moment or check `heimdall status`"
                     .into(),
             ));
         }
     };
 
-    let decision = PodDecision {
+    let decision = Decision {
         use_: req.connection.clone(),
         observe: req.observe,
     };

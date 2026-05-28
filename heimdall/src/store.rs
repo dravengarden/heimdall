@@ -31,9 +31,8 @@ const SCHEMA: &[&str] = &[
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
         socket_cookie   INTEGER,
         cgroup_id       INTEGER,
-        pod_uid         TEXT,
-        namespace       TEXT,
-        pod_name        TEXT,
+        unit            TEXT,
+        slice           TEXT,
         connection_name TEXT NOT NULL,
         dst_host        TEXT,
         dst_ip          TEXT NOT NULL,
@@ -47,7 +46,7 @@ const SCHEMA: &[&str] = &[
         error           TEXT
     )"#,
     "CREATE INDEX IF NOT EXISTS idx_flows_ts ON flows(ts_start_us DESC)",
-    "CREATE INDEX IF NOT EXISTS idx_flows_pod ON flows(pod_uid)",
+    "CREATE INDEX IF NOT EXISTS idx_flows_unit ON flows(unit)",
     "CREATE INDEX IF NOT EXISTS idx_flows_connection ON flows(connection_name)",
     "CREATE INDEX IF NOT EXISTS idx_flows_dst_host ON flows(dst_host)",
     // Filtering by address family ("ip" / "ip6" / "domain") is cheap with
@@ -88,9 +87,8 @@ const SCHEMA: &[&str] = &[
 pub struct FlowStart {
     pub socket_cookie: Option<u64>,
     pub cgroup_id: Option<u64>,
-    pub pod_uid: Option<String>,
-    pub namespace: Option<String>,
-    pub pod_name: Option<String>,
+    pub unit: Option<String>,
+    pub slice: Option<String>,
     pub connection_name: String,
     pub dst_host: Option<String>,
     pub dst_ip: String,
@@ -116,9 +114,8 @@ pub struct Flow {
     pub id: i64,
     pub socket_cookie: Option<i64>,
     pub cgroup_id: Option<i64>,
-    pub pod_uid: Option<String>,
-    pub namespace: Option<String>,
-    pub pod_name: Option<String>,
+    pub unit: Option<String>,
+    pub slice: Option<String>,
     pub connection_name: String,
     pub dst_host: Option<String>,
     pub dst_ip: String,
@@ -136,7 +133,7 @@ pub struct Flow {
 pub struct ListQuery {
     pub limit: u32,
     pub since_us: Option<i64>,
-    pub pod_substr: Option<String>,
+    pub unit_substr: Option<String>,
     pub connection: Option<String>,
     pub host_substr: Option<String>,
     /// Exact match on the `atyp` column (`"ip"` / `"ip6"` / `"domain"`).
@@ -296,16 +293,15 @@ impl Store {
     pub async fn insert_flow_start(&self, f: FlowStart) -> Result<i64> {
         let r = sqlx::query(
             r#"INSERT INTO flows (
-                socket_cookie, cgroup_id, pod_uid, namespace, pod_name,
+                socket_cookie, cgroup_id, unit, slice,
                 connection_name, dst_host, dst_ip, dst_port, ts_start_us,
                 upstream_addr, atyp
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
         )
         .bind(f.socket_cookie.map(|v| v as i64))
         .bind(f.cgroup_id.map(|v| v as i64))
-        .bind(&f.pod_uid)
-        .bind(&f.namespace)
-        .bind(&f.pod_name)
+        .bind(&f.unit)
+        .bind(&f.slice)
         .bind(&f.connection_name)
         .bind(&f.dst_host)
         .bind(&f.dst_ip)
@@ -340,8 +336,8 @@ impl Store {
         if q.since_us.is_some() {
             sql.push_str(" AND ts_start_us >= ?");
         }
-        if q.pod_substr.is_some() {
-            sql.push_str(" AND (pod_name LIKE ? OR namespace LIKE ?)");
+        if q.unit_substr.is_some() {
+            sql.push_str(" AND (unit LIKE ? OR slice LIKE ?)");
         }
         if q.connection.is_some() {
             sql.push_str(" AND connection_name = ?");
@@ -358,7 +354,7 @@ impl Store {
         if let Some(t) = q.since_us {
             query = query.bind(t);
         }
-        if let Some(p) = &q.pod_substr {
+        if let Some(p) = &q.unit_substr {
             let like = format!("%{p}%");
             query = query.bind(like.clone()).bind(like);
         }
@@ -564,9 +560,8 @@ mod tests {
         FlowStart {
             socket_cookie: Some(0xCAFE),
             cgroup_id: Some(42),
-            pod_uid: Some("uid-1".into()),
-            namespace: Some("default".into()),
-            pod_name: Some("nginx".into()),
+            unit: Some("nginx.service".into()),
+            slice: Some("system.slice".into()),
             connection_name: connection_name.into(),
             dst_host: Some(dst_host.into()),
             dst_ip: "198.19.0.7".into(),

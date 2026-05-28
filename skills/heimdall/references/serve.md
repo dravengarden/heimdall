@@ -1,3 +1,5 @@
+> **Note:** mid-refactor from k8s-coupled to systemd-first. Schema renamed `podRouting`→`routing`; selector grammar moved from pod labels/namespaces to `units` / `slices`. Examples below may still show the old k8s model. See `/etc/heimdall/README.md` for current schema.
+
 # `heimdall serve` — the daemon (read-only reference)
 
 > **Don't run this manually.** The daemon attaches eBPF programs to

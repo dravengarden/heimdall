@@ -41,7 +41,7 @@ always matches the file on disk; no manual sync step.
 
 Prerequisites: `timoni` on `$PATH` (or run via `nix run nixpkgs#timoni`)
 and a `kubectl` context / `KUBECONFIG` that points at your cluster.
-Some k8s distros (e.g. k0s) keep the admin kubeconfig under
+Some k8s distros keep the admin kubeconfig under
 `/var/lib/<distro>/...` with root-only permissions; in that case
 `sudo -E env KUBECONFIG=<path> …` works without copying the file.
 

@@ -3,7 +3,7 @@ apiVersion = "heimdall.io/v1alpha1"
 kind = "HeimdallConfig"
 
 [runtime]
-cgroup = "/sys/fs/cgroup/kubepods"
+cgroup = "/sys/fs/cgroup/system.slice"
 listen = "0.0.0.0:12345"
 relayIp = "127.0.0.1"
 dnsListen = "0.0.0.0:5358"
@@ -24,16 +24,14 @@ addr = "127.0.0.1:1080"
 [connections.direct]
 type = "direct"
 
-[podRouting]
-routingKey = "heimdall.io/routing"
-observeKey = "heimdall.io/observe"
+[routing]
 rules = []
 
-[podRouting.default]
+[routing.default]
 use = "default"
 observe = false
 
-# Defaults for `heimdall <subcommand>` (consumed by planned `heimdall run`).
+# Defaults for `heimdall <subcommand>` (consumed by `heimdall run`).
 [cli.run.default]
 connection = "default"
 observe = true

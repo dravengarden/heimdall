@@ -100,7 +100,7 @@ static PORT_MAP: LruHashMap<u32, OrigDst> = LruHashMap::with_max_entries(65536, 
 #[map]
 static BYPASS_EVENTS: PerfEventArray<BypassEvent> = PerfEventArray::new(0);
 
-// Per-cgroup policy. Userspace populates this from PodInformer + routing
+// Per-cgroup policy. Userspace populates this from UnitResolver + routing
 // rules; eBPF programs read it once per syscall to decide whether to
 // redirect / observe / log.
 #[map]

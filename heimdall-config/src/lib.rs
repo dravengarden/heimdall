@@ -2,16 +2,20 @@
 //!
 //! Single config file at `/etc/heimdall/heimdall.{yaml,json,toml,ncl}`
 //! declares everything: runtime knobs, named upstream `connections`,
-//! and `podRouting.rules` that map K8s pod selectors directly to a
+//! and `routing.rules` that map systemd-unit selectors directly to a
 //! connection name (or the reserved `system` tag for eBPF bypass).
 //!
-//! There is no destination-side routing — heimdall is a per-pod
+//! There is no destination-side routing — heimdall is a per-cgroup
 //! proxy chooser, not a per-domain router. If you need destination-
 //! based switching, build it into the upstream SOCKS5 server.
 //!
-//! Pod selectors mirror K8s `LabelSelector` exactly (`namespaces` +
-//! `matchLabels` + `matchExpressions`) plus optional `all` / `any` /
-//! `not` boolean composition.
+//! Selectors match the systemd identity heimdall derives from a
+//! process's cgroup path: the `units` it belongs to (e.g.
+//! `nginx.service`, a transient `*.scope`) and the enclosing `slices`
+//! (e.g. `system.slice`, `user.slice`). Each list entry is a
+//! `MatchValue` (exact / `regexp:` / `prefix:` / `suffix:` /
+//! `keyword:`), plus optional `all` / `any` / `not` boolean
+//! composition.
 
 use std::{
     collections::BTreeMap,
@@ -25,8 +29,6 @@ use serde::{de, Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
 pub const DEFAULT_DIR: &str = "/etc/heimdall";
-pub const ROUTING_KEY_DEFAULT: &str = "heimdall.io/routing";
-pub const OBSERVE_KEY_DEFAULT: &str = "heimdall.io/observe";
 
 /// Probe `/etc/heimdall/heimdall.{ncl,toml,json,yaml}` and return the
 /// first one that exists. Falls back to `heimdall.ncl` (the canonical
@@ -43,9 +45,10 @@ pub fn default_config_path() -> PathBuf {
     dir.join("heimdall.ncl")
 }
 
-/// Reserved `use` value — when a pod resolves to `system`, the eBPF
+/// Reserved `use` value — when a unit resolves to `system`, the eBPF
 /// connect4 hook skips redirection entirely. Cannot be used as a
-/// connection name.
+/// connection name. Orthogonal to `system.slice`: this is a routing
+/// tag, not a slice name.
 pub const SYSTEM_TAG: &str = "system";
 
 #[derive(Debug, Error)]
@@ -64,9 +67,9 @@ pub enum ConfigError {
     UnsupportedKind(String),
     #[error("connections must define `default`")]
     MissingDefaultConnection,
-    #[error("podRouting.default.use refers to unknown connection `{0}`")]
+    #[error("routing.default.use refers to unknown connection `{0}`")]
     DefaultRoutingUnknown(String),
-    #[error("podRouting.rules[{index}] (`{name}`) refers to unknown connection `{tag}`")]
+    #[error("routing.rules[{index}] (`{name}`) refers to unknown connection `{tag}`")]
     RuleRoutingUnknown { index: usize, name: String, tag: String },
     #[error("connection name `{0}` is reserved")]
     ReservedConnectionName(String),
@@ -95,8 +98,8 @@ pub struct HeimdallConfig {
     #[serde(default)]
     pub connections: BTreeMap<String, Connection>,
 
-    #[serde(rename = "podRouting", default)]
-    pub pod_routing: PodRouting,
+    #[serde(default)]
+    pub routing: Routing,
 
     /// Defaults for `heimdall <subcommand>` invocations (currently
     /// only `cli.run` is consumed). Optional — empty config = empty
@@ -154,14 +157,14 @@ pub struct Runtime {
     #[serde(default)]
     pub tap: TapConfig,
 
-    /// What to do with kubepods cgroups that aren't (yet) classified
-    /// by the policy engine. `redirect` (default) routes all such
-    /// traffic through the heimdall relay, then to the `default`
-    /// connection — current behaviour. `bypass` lets it skip the
-    /// relay entirely (fail-open emergency override).
+    /// What to do with cgroups under the attached subtree that aren't
+    /// (yet) classified by the policy engine. `redirect` (default)
+    /// routes all such traffic through the heimdall relay, then to the
+    /// `default` connection — current behaviour. `bypass` lets it skip
+    /// the relay entirely (fail-open emergency override).
     ///
     /// Switching to `bypass` is a runbook step for when heimdall is
-    /// misbehaving and you need pod traffic to flow direct without
+    /// misbehaving and you need traffic to flow direct without
     /// stopping the daemon (which would also lose tap visibility).
     #[serde(default, rename = "defaultEgressPolicy")]
     pub default_egress_policy: DefaultEgressPolicy,
@@ -187,8 +190,9 @@ impl Default for Runtime {
     }
 }
 
-/// Policy for unclassified kubepods cgroups. Drives the value the
-/// daemon writes to the `DEFAULT_POLICY_MAP` BPF map at startup.
+/// Policy for unclassified cgroups in the attached subtree. Drives the
+/// value the daemon writes to the `DEFAULT_POLICY_MAP` BPF map at
+/// startup.
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DefaultEgressPolicy {
@@ -199,14 +203,18 @@ pub enum DefaultEgressPolicy {
     #[default]
     Redirect,
     /// Skip heimdall entirely — REDIRECT_OFF set, OBSERVE_OFF set,
-    /// NO_BYPASS_LOG set. Pod traffic flows direct, heimdall sees
+    /// NO_BYPASS_LOG set. Traffic flows direct, heimdall sees
     /// nothing. Use when something's wrong with the relay or
     /// upstream and you need to fail-open without stopping the
     /// daemon (which would also drop tap visibility).
     Bypass,
 }
 
-fn default_cgroup() -> String { "/sys/fs/cgroup".into() }
+// On a systemd host, services live under system.slice and interactive
+// / `heimdall run` processes under user.slice. The daemon attaches the
+// primary cgroup target here plus user.slice as a secondary (see
+// main.rs); system.slice is the default primary.
+fn default_cgroup() -> String { "/sys/fs/cgroup/system.slice".into() }
 fn default_listen() -> String { "0.0.0.0:12345".into() }
 fn default_relay_ip() -> Ipv4Addr { Ipv4Addr::new(127, 0, 0, 1) }
 fn default_relay_ip6() -> Ipv6Addr { Ipv6Addr::LOCALHOST }
@@ -346,63 +354,31 @@ impl<'de> Deserialize<'de> for MatchValue {
 }
 
 // ---------------------------------------------------------------------------
-// MatchExpression — K8s LabelSelector compatible
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MatchExpression {
-    pub key: String,
-    pub operator: MatchOperator,
-    #[serde(default)]
-    pub values: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-pub enum MatchOperator {
-    In,
-    NotIn,
-    Exists,
-    DoesNotExist,
-}
-
-impl MatchExpression {
-    pub fn matches(&self, labels: &BTreeMap<String, String>) -> bool {
-        let val = labels.get(&self.key);
-        match self.operator {
-            MatchOperator::Exists => val.is_some(),
-            MatchOperator::DoesNotExist => val.is_none(),
-            MatchOperator::In => val
-                .map(|v| self.values.iter().any(|x| x == v))
-                .unwrap_or(false),
-            MatchOperator::NotIn => val
-                .map(|v| !self.values.iter().any(|x| x == v))
-                .unwrap_or(true),
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // MatchTarget trait + MatchCond evaluator
 // ---------------------------------------------------------------------------
 
+/// The systemd identity a routing rule evaluates against. Both axes
+/// are derived from the process's cgroup path; either may be absent
+/// for a cgroup that isn't a recognizable unit/slice.
 pub trait MatchTarget {
-    fn pod_namespace(&self) -> Option<&str>;
-    fn pod_labels(&self) -> &BTreeMap<String, String>;
+    /// Leaf unit name (e.g. `nginx.service`, `run-r1234.scope`).
+    fn unit_name(&self) -> Option<&str>;
+    /// Enclosing slice (e.g. `system.slice`, `user.slice`).
+    fn slice(&self) -> Option<&str>;
 }
 
-/// Recursive boolean condition over pod selectors. Field-level AND
+/// Recursive boolean condition over unit selectors. Field-level AND
 /// across populated fields, value-level OR within each list, plus
 /// explicit `all` / `any` / `not` for arbitrary boolean composition.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MatchCond {
+    /// Match the leaf unit name.
     #[serde(default)]
-    pub namespaces: Vec<MatchValue>,
-    #[serde(default, rename = "matchLabels")]
-    pub match_labels: BTreeMap<String, String>,
-    #[serde(default, rename = "matchExpressions")]
-    pub match_expressions: Vec<MatchExpression>,
+    pub units: Vec<MatchValue>,
+    /// Match the enclosing slice.
+    #[serde(default)]
+    pub slices: Vec<MatchValue>,
 
     #[serde(default)]
     pub all: Vec<MatchCond>,
@@ -414,9 +390,8 @@ pub struct MatchCond {
 
 impl MatchCond {
     pub fn is_empty(&self) -> bool {
-        self.namespaces.is_empty()
-            && self.match_labels.is_empty()
-            && self.match_expressions.is_empty()
+        self.units.is_empty()
+            && self.slices.is_empty()
             && self.all.is_empty()
             && self.any.is_empty()
             && self.not.is_none()
@@ -427,32 +402,23 @@ impl MatchCond {
             return true;
         }
 
-        if !self.namespaces.is_empty() {
-            let ns = match target.pod_namespace() {
+        if !self.units.is_empty() {
+            let unit = match target.unit_name() {
                 Some(s) => s,
                 None => return false,
             };
-            if !self.namespaces.iter().any(|m| m.matches(ns)) {
+            if !self.units.iter().any(|m| m.matches(unit)) {
                 return false;
             }
         }
 
-        if !self.match_labels.is_empty() {
-            let labels = target.pod_labels();
-            for (k, v) in &self.match_labels {
-                match labels.get(k) {
-                    Some(actual) if actual == v => continue,
-                    _ => return false,
-                }
-            }
-        }
-
-        if !self.match_expressions.is_empty() {
-            let labels = target.pod_labels();
-            for expr in &self.match_expressions {
-                if !expr.matches(labels) {
-                    return false;
-                }
+        if !self.slices.is_empty() {
+            let slice = match target.slice() {
+                Some(s) => s,
+                None => return false,
+            };
+            if !self.slices.iter().any(|m| m.matches(slice)) {
+                return false;
             }
         }
 
@@ -473,72 +439,63 @@ impl MatchCond {
 }
 
 // ---------------------------------------------------------------------------
-// podRouting
+// routing
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PodRouting {
-    #[serde(default = "default_routing_key", rename = "routingKey")]
-    pub routing_key: String,
-    #[serde(default = "default_observe_key", rename = "observeKey")]
-    pub observe_key: String,
+pub struct Routing {
     #[serde(default)]
-    pub rules: Vec<PodRule>,
+    pub rules: Vec<Rule>,
     #[serde(default)]
-    pub default: PodDecision,
+    pub default: Decision,
 }
 
-impl Default for PodRouting {
+impl Default for Routing {
     fn default() -> Self {
         Self {
-            routing_key: default_routing_key(),
-            observe_key: default_observe_key(),
             rules: Vec::new(),
-            default: PodDecision::default(),
+            default: Decision::default(),
         }
     }
 }
 
-fn default_routing_key() -> String { ROUTING_KEY_DEFAULT.into() }
-fn default_observe_key() -> String { OBSERVE_KEY_DEFAULT.into() }
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PodRule {
+pub struct Rule {
     #[serde(default)]
     pub name: Option<String>,
-    /// When None or empty, the rule matches every pod (catchall).
+    /// When None or empty, the rule matches every unit (catchall).
     #[serde(default, rename = "match")]
     pub match_: Option<MatchCond>,
     /// Connection name (must exist in `connections`) or the
     /// reserved `system` keyword.
     #[serde(rename = "use")]
     pub use_: String,
-    /// When None, falls back to `PodRouting.default.observe`.
+    /// When None, falls back to `Routing.default.observe`.
     #[serde(default)]
     pub observe: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PodDecision {
-    #[serde(rename = "use", default = "default_pod_use")]
+pub struct Decision {
+    #[serde(rename = "use", default = "default_use")]
     pub use_: String,
     #[serde(default)]
     pub observe: bool,
 }
 
-impl Default for PodDecision {
+impl Default for Decision {
     fn default() -> Self {
         Self {
-            use_: default_pod_use(),
+            use_: default_use(),
             observe: false,
         }
     }
 }
 
-fn default_pod_use() -> String { "default".into() }
+fn default_use() -> String { "default".into() }
 
 // ---------------------------------------------------------------------------
 // cli — defaults for `heimdall <subcommand>` invocations
@@ -672,7 +629,7 @@ impl HeimdallConfig {
         }
 
         // Each rule's `use` must be `system` or a known connection.
-        for (i, rule) in self.pod_routing.rules.iter().enumerate() {
+        for (i, rule) in self.routing.rules.iter().enumerate() {
             if !self.is_valid_use(&rule.use_) {
                 return Err(ConfigError::RuleRoutingUnknown {
                     index: i,
@@ -681,9 +638,9 @@ impl HeimdallConfig {
                 });
             }
         }
-        if !self.is_valid_use(&self.pod_routing.default.use_) {
+        if !self.is_valid_use(&self.routing.default.use_) {
             return Err(ConfigError::DefaultRoutingUnknown(
-                self.pod_routing.default.use_.clone(),
+                self.routing.default.use_.clone(),
             ));
         }
 
@@ -772,74 +729,29 @@ mod tests {
               default: { type: socks5, addr: 127.0.0.1:20170 }
         "#};
         let cfg = parse(yaml).unwrap();
-        assert_eq!(cfg.pod_routing.default.use_, "default");
+        assert_eq!(cfg.routing.default.use_, "default");
     }
 
     #[test]
     fn match_value_prefixes() {
-        assert!(MatchValue::parse("kube-system").unwrap().matches("kube-system"));
-        assert!(MatchValue::parse("regexp:^cattle-.*$").unwrap().matches("cattle-system"));
-        assert!(MatchValue::parse("prefix:cattle-").unwrap().matches("cattle-system"));
-        assert!(MatchValue::parse("suffix:-system").unwrap().matches("cattle-system"));
-        assert!(MatchValue::parse("keyword:tle-sys").unwrap().matches("cattle-system"));
+        assert!(MatchValue::parse("nginx.service").unwrap().matches("nginx.service"));
+        assert!(MatchValue::parse("regexp:^postgres.*\\.service$").unwrap().matches("postgresql.service"));
+        assert!(MatchValue::parse("prefix:docker-").unwrap().matches("docker-abc.scope"));
+        assert!(MatchValue::parse("suffix:.scope").unwrap().matches("run-r1.scope"));
+        assert!(MatchValue::parse("keyword:nginx").unwrap().matches("nginx.service"));
     }
 
-    #[test]
-    fn match_expressions_all_operators() {
-        let labels: BTreeMap<String, String> = [
-            ("app".to_string(), "rancher".to_string()),
-            ("tier".to_string(), "backend".to_string()),
-        ]
-        .into_iter()
-        .collect();
-
-        let in_op = MatchExpression {
-            key: "app".into(),
-            operator: MatchOperator::In,
-            values: vec!["rancher".into(), "fleet".into()],
-        };
-        assert!(in_op.matches(&labels));
-
-        let notin = MatchExpression {
-            key: "app".into(),
-            operator: MatchOperator::NotIn,
-            values: vec!["mysql".into()],
-        };
-        assert!(notin.matches(&labels));
-
-        let exists = MatchExpression {
-            key: "tier".into(),
-            operator: MatchOperator::Exists,
-            values: vec![],
-        };
-        assert!(exists.matches(&labels));
-
-        let absent = MatchExpression {
-            key: "missing".into(),
-            operator: MatchOperator::DoesNotExist,
-            values: vec![],
-        };
-        assert!(absent.matches(&labels));
+    struct TestUnit {
+        unit: &'static str,
+        slice: &'static str,
     }
 
-    struct TestPod {
-        ns: &'static str,
-        labels: BTreeMap<String, String>,
-    }
-
-    impl MatchTarget for TestPod {
-        fn pod_namespace(&self) -> Option<&str> {
-            Some(self.ns)
+    impl MatchTarget for TestUnit {
+        fn unit_name(&self) -> Option<&str> {
+            Some(self.unit)
         }
-        fn pod_labels(&self) -> &BTreeMap<String, String> {
-            &self.labels
-        }
-    }
-
-    fn pod(ns: &'static str, labels: &[(&str, &str)]) -> TestPod {
-        TestPod {
-            ns,
-            labels: labels.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+        fn slice(&self) -> Option<&str> {
+            Some(self.slice)
         }
     }
 
@@ -848,51 +760,48 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_namespaces_and_match_labels() {
-        let p = pod("opik", &[("app.kubernetes.io/name", "mysql")]);
+    fn evaluate_units_and_slices() {
+        let u = TestUnit { unit: "nginx.service", slice: "system.slice" };
         let c = cond_yaml(indoc! {r#"
-            namespaces: [opik, kube-system]
-            matchLabels:
-              "app.kubernetes.io/name": mysql
+            units: [nginx.service, caddy.service]
+            slices: [system.slice]
         "#});
-        assert!(c.evaluate(&p));
+        assert!(c.evaluate(&u));
+
+        let c2 = cond_yaml("slices: [user.slice]");
+        assert!(!c2.evaluate(&u));
     }
 
     #[test]
-    fn evaluate_match_expressions() {
-        let p = pod("cattle-fleet-system", &[("app", "fleet-agent")]);
-        let c = cond_yaml(indoc! {"
-            matchExpressions:
-              - { key: app, operator: In, values: [fleet-agent, gitjob] }
-        "});
-        assert!(c.evaluate(&p));
+    fn evaluate_unit_prefix() {
+        let u = TestUnit { unit: "docker-abc123.scope", slice: "system.slice" };
+        let c = cond_yaml("units: [prefix:docker-]");
+        assert!(c.evaluate(&u));
     }
 
     #[test]
     fn evaluate_any_or() {
-        let p = pod("cattle-system", &[("app", "rancher")]);
+        let u = TestUnit { unit: "rancher.service", slice: "system.slice" };
         let c = cond_yaml(indoc! {"
             any:
-              - namespaces: [cattle-system]
-                matchLabels: { app: rancher }
-              - namespaces: [cattle-fleet-system]
+              - units: [rancher.service]
+              - units: [fleet.service]
         "});
-        assert!(c.evaluate(&p));
+        assert!(c.evaluate(&u));
     }
 
     #[test]
     fn evaluate_all_and_not() {
-        let p_app = pod("opik", &[("app.kubernetes.io/name", "opik")]);
-        let p_db = pod("opik", &[("app.kubernetes.io/name", "mysql")]);
+        let app = TestUnit { unit: "app.service", slice: "system.slice" };
+        let db = TestUnit { unit: "mysql.service", slice: "system.slice" };
         let c = cond_yaml(indoc! {r#"
             all:
-              - namespaces: [opik]
+              - slices: [system.slice]
               - not:
-                  matchExpressions:
-                    - { key: "app.kubernetes.io/name", operator: In, values: [mysql, redis] }
+                  units: [mysql.service, redis.service]
         "#});
-        assert!(c.evaluate(&p_app));
-        assert!(!c.evaluate(&p_db));
+        assert!(c.evaluate(&app));
+        assert!(!c.evaluate(&db));
     }
 
     #[test]
@@ -914,9 +823,9 @@ mod tests {
             kind: HeimdallConfig
             connections:
               default: { type: socks5, addr: 127.0.0.1:20170 }
-            podRouting:
+            routing:
               rules:
-                - match: { namespaces: [foo] }
+                - match: { slices: [system.slice] }
                   use: ghost
         "#};
         assert!(matches!(parse(yaml), Err(ConfigError::RuleRoutingUnknown { .. })));
@@ -929,13 +838,13 @@ mod tests {
             kind: HeimdallConfig
             connections:
               default: { type: socks5, addr: 127.0.0.1:20170 }
-            podRouting:
+            routing:
               rules:
-                - match: { namespaces: [kube-system] }
+                - match: { units: [sshd.service] }
                   use: system
         "#};
         let cfg = parse(yaml).unwrap();
-        assert_eq!(cfg.pod_routing.rules[0].use_, "system");
+        assert_eq!(cfg.routing.rules[0].use_, "system");
     }
 
     #[test]

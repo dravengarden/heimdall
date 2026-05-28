@@ -5,13 +5,13 @@ const base = "";
 export async function fetchFlows(params: {
   limit?: number;
   connection?: string;
-  pod?: string;
+  unit?: string;
   host?: string;
 } = {}): Promise<Flow[]> {
   const qs = new URLSearchParams();
   qs.set("limit", String(params.limit ?? 200));
   if (params.connection) qs.set("connection", params.connection);
-  if (params.pod) qs.set("pod", params.pod);
+  if (params.unit) qs.set("unit", params.unit);
   if (params.host) qs.set("host", params.host);
 
   const res = await fetch(`${base}/api/flows?${qs}`);

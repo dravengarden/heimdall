@@ -5,7 +5,7 @@ apiVersion: heimdall.io/v1alpha1
 kind: HeimdallConfig
 
 runtime:
-  cgroup: /sys/fs/cgroup/kubepods
+  cgroup: /sys/fs/cgroup/system.slice
   listen: 0.0.0.0:12345
   relayIp: 127.0.0.1
   dnsListen: 0.0.0.0:5358
@@ -26,19 +26,20 @@ connections:
     type: direct
 
 # Each rule:
-#   match:    pod selector (K8s LabelSelector style); omit for catchall
+#   match:    systemd identity selector — `units` (leaf unit) and/or
+#             `slices` (enclosing slice), each a list of MatchValues
+#             (exact / `regexp:` / `prefix:` / `suffix:` / `keyword:`).
+#             Omit `match` for a catchall.
 #   use:      connection name from `connections:`, or "system" to skip relay
-#   observe:  override podRouting.default.observe; omit to inherit
-podRouting:
-  routingKey: heimdall.io/routing
-  observeKey: heimdall.io/observe
+#   observe:  override routing.default.observe; omit to inherit
+routing:
   rules: []
   default:
     use: default
     observe: false
 
 # Defaults for `heimdall <subcommand>` invocations. Consumed by the
-# planned `heimdall run` CLI proxy. All fields optional.
+# `heimdall run` CLI proxy. All fields optional.
 cli:
   run:
     default:

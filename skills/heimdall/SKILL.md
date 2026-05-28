@@ -2,36 +2,42 @@
 name: heimdall
 description: |
   Configure, inspect, and query the heimdall eBPF egress proxy + TLS
-  observability daemon for Kubernetes pods. Covers `heimdall init`
+  observability daemon for systemd units. Covers `heimdall init`
   (bootstrap /etc/heimdall/), `heimdall config {validate,show,path}`
-  (edit heimdall.<ext>: connections, podRouting, CLI defaults),
+  (edit heimdall.<ext>: connections, routing, CLI defaults),
   `heimdall status` (daemon health, eBPF attach, flow store),
-  `heimdall flows {list,search,show}` (k8s pod egress log),
+  `heimdall flows {list,search,show}` (per-unit egress log),
   `heimdall serve` (the daemon, normally systemd-managed), and
   `heimdall run` (proxychains-style CLI wrapper). TRIGGER when the
   user mentions heimdall, /etc/heimdall/, heimdall.service,
-  /api/status's `tap`/`informer`/`default_egress_policy` fields,
-  heimdall.{ncl,yaml,json,toml}, podRouting, fake-IP DNS, or asks
-  why a pod's traffic isn't being proxied / which connection a pod
-  is using / what egress a namespace made / how to send a CLI
-  command through a named connection. SKIP: generic eBPF questions
-  unrelated to heimdall, generic SOCKS5 tooling, generic Kubernetes
-  networking, v2raya / cilium / k0s questions that don't involve
-  heimdall config or flow inspection.
+  /api/status's `tap`/`default_egress_policy` fields,
+  heimdall.{ncl,yaml,json,toml}, routing rules, fake-IP DNS, or asks
+  why a unit's traffic isn't being proxied / which connection a unit
+  is using / what egress a slice made / how to send a CLI command
+  through a named connection. SKIP: generic eBPF questions unrelated
+  to heimdall, generic SOCKS5 tooling, generic proxy/networking
+  questions that don't involve heimdall config or flow inspection.
 license: MIT
 metadata:
   author: heimdall
-  version: '0.2.0'
+  version: '0.3.0'
 ---
 
-# heimdall — eBPF egress proxy + TLS observability for Kubernetes pods
+# heimdall — eBPF egress proxy + TLS observability for systemd units
 
-heimdall sits between every pod on a node and the outside world.
-eBPF cgroup hooks intercept `connect()` / `sendmsg`, fake-IP DNS
-recovers hostnames the kernel only sees as IPs, a Tokio relay
-forwards over SOCKS5 to a per-pod-selected upstream. A side channel
+heimdall sits between every systemd unit on a host and the outside
+world. eBPF cgroup hooks intercept `connect()` / `sendmsg`, fake-IP
+DNS recovers hostnames the kernel only sees as IPs, a Tokio relay
+forwards over SOCKS5 to a per-unit-selected upstream. A side channel
 (Phase B) attaches uprobes to libssl / Go / rustls / BoringSSL for
 plaintext capture.
+
+> **Schema note (v0.3.0):** the routing model is now systemd-unit
+> based. `podRouting`→`routing`; the `MatchCond` grammar uses
+> `units` (`*.service` / `*.scope`) + `slices` (`*.slice`) instead of
+> `namespaces` / `matchLabels` / `matchExpressions`. There is no
+> kube-apiserver / informer / annotation-override path — identity
+> comes directly from the cgroup path.
 
 This skill is a router. The deep material lives under
 [`references/`](references/) — load only the reference file matching
@@ -49,6 +55,7 @@ the user's intent.
 | HTTP API | `127.0.0.1:9999` — `/api/health`, `/api/status`, `/api/flows`, `/api/ws/flows`, `/api/cli/{register,deregister}` |
 | Relay listener | `0.0.0.0:12345` (eBPF redirect target) |
 | Fake-IP DNS | `0.0.0.0:5358/udp` — answers from `runtime.fakeIpCidr` (default `198.19.0.0/16`) and `runtime.fakeIp6Cidr` (default `fc00:198:19::/96`) |
+| eBPF attach | primary `runtime.cgroup` (default `/sys/fs/cgroup/system.slice`) + secondary `/sys/fs/cgroup/user.slice` for `heimdall run` |
 
 The CLI is self-documenting: `heimdall help` for the concise tree,
 `heimdall help -v` for a recursive verbose dump (AI-friendly), or
@@ -63,11 +70,11 @@ self-contained; cross-references are explicit when they exist.
 | The user wants to… | Read |
 |---|---|
 | bootstrap `/etc/heimdall/` on a fresh host or refresh schema files after a daemon upgrade | [`references/init.md`](references/init.md) |
-| add a SOCKS5 upstream / podRouting rule / change `heimdall run` defaults — anything that lives in `heimdall.<ext>` | [`references/config.md`](references/config.md) |
-| "is heimdall up", "why isn't pod X being proxied", read-only health snapshot | [`references/status.md`](references/status.md) |
-| query the egress log: which pods talked where, errors, byte counts, plaintext messages | [`references/flows.md`](references/flows.md) |
+| add a SOCKS5 upstream / routing rule / change `heimdall run` defaults — anything that lives in `heimdall.<ext>` | [`references/config.md`](references/config.md) |
+| "is heimdall up", "why isn't unit X being proxied", read-only health snapshot | [`references/status.md`](references/status.md) |
+| query the egress log: which units talked where, errors, byte counts, plaintext messages | [`references/flows.md`](references/flows.md) |
 | diagnose `heimdall.service` journal output, understand startup sequence + capabilities, decode failed-startup errors | [`references/serve.md`](references/serve.md) |
-| route an ad-hoc CLI process (curl, git, kubectl, vault, …) through a named connection | [`references/run.md`](references/run.md) |
+| route an ad-hoc CLI process (curl, git, vault, …) through a named connection | [`references/run.md`](references/run.md) |
 
 ## Common diagnostic flow
 
@@ -75,19 +82,27 @@ When something's wrong, this is the order to read in:
 
 1. `heimdall status --json` — one-shot daemon health (→ `status.md`)
 2. If daemon down: `journalctl -u heimdall --since "10 min ago"` (→ `serve.md`)
-3. If daemon up but flows missing: `heimdall flows search --pod <name> --since 1h --json` (→ `flows.md`)
+3. If daemon up but flows missing: `heimdall flows search --unit <name> --since 1h --json` (→ `flows.md`)
 4. If routing wrong: re-read the live config alongside `config.md`
-5. `curl -s 127.0.0.1:9999/api/status | jq .` — full state (tap, informer, default-egress-policy, recent failures)
+5. `curl -s 127.0.0.1:9999/api/status | jq .` — full state (tap, default-egress-policy, recent failures)
 
-## Per-pod routing precedence (just so you don't have to load `config.md` for this)
+## Per-unit routing precedence
 
 ```
-pod.metadata.annotations["heimdall.io/routing"]    ← chart-author override
-  > pod.metadata.labels["heimdall.io/routing"]     ← chart-author declarative
-  > podRouting.rules[*]  (first match wins)        ← admin policy
-  > podRouting.default                              ← final fallback
+routing.rules[*]  (first match wins)   ← admin policy
+  > routing.default                     ← final fallback
 ```
+
+Selectors match on the systemd identity heimdall derives from the
+process's cgroup path: the leaf `units` (`*.service` / `*.scope`) and
+the enclosing `slices` (`*.slice`). Each list entry is a MatchValue
+(exact / `regexp:` / `prefix:` / `suffix:` / `keyword:`).
 
 Reserved values:
-- `system` — eBPF skips redirect entirely (no relay involvement, no flow row)
-- `default` — required connection name, daemon refuses to start without it
+- `system` — eBPF skips redirect entirely (no relay involvement, no
+  flow row). Orthogonal to `system.slice` (the systemd slice).
+- `default` — required connection name, daemon refuses to start
+  without it.
+
+For ad-hoc per-process overrides, use `heimdall run` (which registers
+a transient cgroup with its own routing decision via the HTTP API).

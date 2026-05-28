@@ -1,11 +1,10 @@
 //! Phase B — synthetic flows for bypassed connections.
 //!
-//! The relay only sees connections it actively redirects. Pod traffic
-//! to addresses inside `is_default_bypass` (loopback, LAN, k0s pod /
-//! service CIDR) skips the relay entirely, so plaintext captured by
-//! the libssl / Go uprobes for those connections has no flow row to
-//! correlate against — every cluster-internal HTTP/2 frame ends up
-//! with `flow_id = NULL` in `messages`.
+//! The relay only sees connections it actively redirects. Traffic to
+//! addresses inside `is_default_bypass` (loopback, LAN) skips the relay
+//! entirely, so plaintext captured by the libssl / Go uprobes for those
+//! connections has no flow row to correlate against — every such HTTP/2
+//! frame ends up with `flow_id = NULL` in `messages`.
 //!
 //! This module fixes that by consuming a perf event array that the
 //! eBPF connect4 hook fills on bypass. Each event becomes a flow row
@@ -33,20 +32,19 @@ use tracing::{info, warn};
 
 use crate::{
     api::{EventBus, FlowEvent},
-    pod::{CgroupResolver, PodInformer, PodInfo},
     store::{FlowFinish, FlowStart, Store},
+    unit::{UnitInfo, UnitResolver},
 };
 
 /// Snapshot of state the consumer needs to materialize a synthetic
 /// flow. We pass these by Arc rather than threading the whole
 /// `Shared` struct here so the dependency direction stays clean
-/// (bypass -> store/pod, not bypass -> main).
+/// (bypass -> store/unit, not bypass -> main).
 #[derive(Clone)]
 pub struct Deps {
     pub store: Arc<Store>,
     pub events: EventBus,
-    pub cgroup_resolver: Option<Arc<CgroupResolver>>,
-    pub informer: Option<Arc<PodInformer>>,
+    pub units: Option<Arc<UnitResolver>>,
     /// Same `open_flows` map shared with the relay; we push synthetic
     /// flow ids here so the tap consumer's correlate() finds them.
     pub open_flows:
@@ -144,14 +142,13 @@ async fn insert_one(deps: &Deps, ev: BypassEvent) {
     };
     let dst_port = u16::from_be(ev.dst_port_be);
 
-    let pod = lookup_pod(deps, ev.cgroup_id);
+    let unit = lookup_unit(deps, ev.cgroup_id);
 
     let start = FlowStart {
         socket_cookie: Some(ev.socket_cookie),
         cgroup_id: Some(ev.cgroup_id),
-        pod_uid: pod.as_ref().map(|p| p.uid.clone()),
-        namespace: pod.as_ref().map(|p| p.namespace.clone()),
-        pod_name: pod.as_ref().map(|p| p.name.clone()),
+        unit: unit.as_ref().and_then(|u| u.unit.clone()),
+        slice: unit.as_ref().and_then(|u| u.slice.clone()),
         connection_name: "bypass".to_string(),
         dst_host: None,
         dst_ip: dst_str,
@@ -196,11 +193,8 @@ async fn insert_one(deps: &Deps, ev: BypassEvent) {
     deps.events.publish(FlowEvent { flow_id: id });
 }
 
-fn lookup_pod(deps: &Deps, cgroup_id: u64) -> Option<PodInfo> {
-    let cr = deps.cgroup_resolver.as_ref()?;
-    let inf = deps.informer.as_ref()?;
-    let uid = cr.resolve(cgroup_id)?;
-    inf.lookup(&uid)
+fn lookup_unit(deps: &Deps, cgroup_id: u64) -> Option<UnitInfo> {
+    deps.units.as_ref()?.resolve(cgroup_id)
 }
 
 #[allow(dead_code)]

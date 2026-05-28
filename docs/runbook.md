@@ -1,3 +1,5 @@
+> **Note:** heimdall is mid-refactor from a k8s-coupled model to a systemd-first model. The schema renamed `podRouting`→`routing`, the selector grammar moved from pod labels/namespaces to `units` / `slices`, and the daemon no longer talks to a kube-apiserver. Some examples below still show the old k8s model and are being updated. See `/etc/heimdall/README.md` for the current schema reference.
+
 # Runbook
 
 ## Daily ops

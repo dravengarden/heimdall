@@ -1,10 +1,10 @@
 //! heimdall — transparent SOCKS5 egress proxy driven by eBPF.
 //!
-//! Works as a standalone CLI tool or as a Kubernetes DaemonSet.
+//! Runs as a systemd service; routes per systemd unit / cgroup.
 //!
 //! ## How it works
 //!
-//!   Pod connect(external_ip:port)
+//!   process connect(external_ip:port)
 //!       │
 //!       │  [eBPF BPF_CGROUP_INET4_CONNECT]
 //!       │  Rewrites dst → relay_ip:12345
@@ -16,8 +16,8 @@
 //!       ▼
 //!   heimdall daemon
 //!     1. accept() → src_port → PORT_MAP → (orig_ip, orig_port, cgroup_id)
-//!     2. cgroup_id → pod_uid → PodInfo (labels + annotations)
-//!     3. PodInfo → connection name (annotation > rules > default)
+//!     2. cgroup_id → UnitInfo (systemd unit + slice, from cgroup path)
+//!     3. UnitInfo → connection name (rules > default)
 //!     4. SOCKS5 CONNECT orig_ip:orig_port via chosen connection's upstream
 //!
 //! ## Configuration
@@ -33,12 +33,12 @@ mod cli;
 mod dns;
 mod gc;
 mod gosym;
-mod pod;
 mod policy;
 mod router;
 mod sni;
 mod store;
 mod tap;
+mod unit;
 
 use std::{
     collections::HashMap as StdHashMap,
@@ -66,7 +66,7 @@ use tokio::{
 use tracing::{debug, info, warn};
 
 use crate::dns::DnsResolver;
-use crate::pod::{CgroupResolver, PodInformer};
+use crate::unit::UnitResolver;
 
 // eBPF object compiled from heimdall-ebpf, embedded at build time.
 //
@@ -89,7 +89,7 @@ type PortMap = Arc<RwLock<HashMap<aya::maps::MapData, u32, OrigDst>>>;
 // CLI — top level
 // ---------------------------------------------------------------------------
 
-/// heimdall — transparent SOCKS5 egress proxy + observability for k8s pods.
+/// heimdall — transparent SOCKS5 egress proxy + observability for systemd units.
 ///
 /// Help has one entry point — `heimdall help [subcommand…] [-v]`:
 ///
@@ -174,13 +174,8 @@ enum Cmd {
     },
 }
 
-#[derive(clap::Args, Debug)]
-struct ServeArgs {
-    /// Disable Kubernetes API integration entirely.
-    /// All connections will use `routing.default`.
-    #[arg(long, env = "HEIMDALL_NO_K8S")]
-    no_k8s: bool,
-}
+#[derive(clap::Args, Debug, Default)]
+struct ServeArgs {}
 
 /// `heimdall flows` is a parent verb; the actual work happens in
 /// `flows {list,show,search}`. We wrap the inner enum in `Option` so
@@ -259,10 +254,9 @@ fn resolve_all(cfg: &HeimdallConfig) -> Result<StdHashMap<String, Arc<Upstream>>
 struct Shared {
     cfg: HeimdallConfig,
     upstreams: StdHashMap<String, Arc<Upstream>>,
-    /// None when --no-k8s or informer init failed.
-    informer: Option<Arc<PodInformer>>,
-    /// None when running outside k8s.
-    cgroup_resolver: Option<Arc<CgroupResolver>>,
+    /// cgroup_id → systemd unit/slice resolver. None only if the
+    /// resolver failed to construct at startup.
+    units: Option<Arc<UnitResolver>>,
     /// Fake-IP DNS resolver. None when DNS server failed to bind
     /// (relay degrades to plain IP-mode SOCKS5 in that case).
     dns: Option<Arc<DnsResolver>>,
@@ -275,10 +269,10 @@ struct Shared {
     /// to correlate libssl uprobe events with the flow row written by
     /// the relay. Empty when the tap is disabled.
     open_flows: Arc<parking_lot::RwLock<StdHashMap<u64, Vec<i64>>>>,
-    /// `heimdall run` registers a (cgroup_id → PodDecision) entry here
+    /// `heimdall run` registers a (cgroup_id → Decision) entry here
     /// before exec'ing the wrapped command. Relay checks this map
-    /// first; if hit, takes precedence over pod routing rules and
-    /// over `podRouting.default`. Empty when no CLI process is
+    /// first; if hit, takes precedence over routing rules and
+    /// over `routing.default`. Empty when no CLI process is
     /// currently registered. Cleared by the matching DELETE call
     /// after the wrapped command exits.
     ///
@@ -288,12 +282,12 @@ struct Shared {
     cli_overrides: CliOverrides,
 }
 
-/// Shared (cgroup_id → PodDecision) override map for `heimdall run`
+/// Shared (cgroup_id → Decision) override map for `heimdall run`
 /// CLI processes. See `Shared.cli_overrides` for semantics.
-pub type CliOverrides = Arc<parking_lot::RwLock<StdHashMap<u64, heimdall_config::PodDecision>>>;
+pub type CliOverrides = Arc<parking_lot::RwLock<StdHashMap<u64, heimdall_config::Decision>>>;
 
-/// Late-bound policy engine slot. Constructed only when k8s informer
-/// is up; the HTTP API holds an Arc clone of this slot so register
+/// Late-bound policy engine slot. Constructed after eBPF attach
+/// succeeds; the HTTP API holds an Arc clone of this slot so register
 /// endpoints can call `engine.write_one()` once it's populated.
 type PolicyEngineSlot = Arc<parking_lot::Mutex<Option<Arc<policy::PolicyEngine>>>>;
 
@@ -498,9 +492,9 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
     info!(
         path = %config_path.display(),
         connections = cfg.connections.len(),
-        pod_rules = cfg.pod_routing.rules.len(),
-        default_use = %cfg.pod_routing.default.use_,
-        default_observe = cfg.pod_routing.default.observe,
+        rules = cfg.routing.rules.len(),
+        default_use = %cfg.routing.default.use_,
+        default_observe = cfg.routing.default.observe,
         "config loaded"
     );
 
@@ -526,26 +520,12 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
         }
     };
 
-    // ─── Pod identity (cgroup → uid → labels) ─────────────────────────────
-    let cgroup_resolver = if args.no_k8s {
-        None
-    } else {
-        Some(Arc::new(CgroupResolver::new(&cfg.runtime.cgroup)))
-    };
-    let informer = if args.no_k8s {
-        None
-    } else {
-        match PodInformer::spawn().await {
-            Ok(i) => {
-                info!("pod informer started");
-                Some(Arc::new(i))
-            }
-            Err(e) => {
-                warn!(error = %e, "pod informer failed to start; routing falls back to default");
-                None
-            }
-        }
-    };
+    // ─── Unit identity (cgroup → systemd unit + slice) ────────────────────
+    // Scan the whole cgroup v2 root so the resolver covers system.slice,
+    // user.slice, and the transient `heimdall run` scopes regardless of
+    // where the eBPF programs attach.
+    let _ = &args; // ServeArgs currently carries no fields
+    let units = Some(Arc::new(UnitResolver::new("/sys/fs/cgroup")));
 
     // ─── Fake-IP DNS server ──────────────────────────────────────────────
     let dns = match DnsResolver::new(&cfg.runtime.fake_ip_cidr, &cfg.runtime.fake_ip6_cidr) {
@@ -597,8 +577,7 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
             store: s.clone(),
             events: events.clone(),
             cfg_path: config_path.clone(),
-            cgroup_resolver: cgroup_resolver.clone(),
-            informer: informer.clone(),
+            units: units.clone(),
             connections: cfg.connections.clone(),
             cli_overrides: cli_overrides.clone(),
             policy_engine: policy_engine_slot.clone(),
@@ -616,8 +595,7 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
     let shared = Arc::new(Shared {
         cfg,
         upstreams,
-        informer,
-        cgroup_resolver,
+        units,
         dns,
         store,
         events,
@@ -696,8 +674,8 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
     }
 
     // ─── DEFAULT_POLICY_MAP — runtime-configurable fallback policy ─────────
-    // Drives what the eBPF programs do for kubepods cgroups not in
-    // CGROUP_POLICY. `Redirect` (default) writes a value with
+    // Drives what the eBPF programs do for cgroups in the attached
+    // subtree not yet in CGROUP_POLICY. `Redirect` (default) writes a value with
     // OBSERVE_OFF + NO_BYPASS_LOG (REDIRECT_OFF unset), so traffic
     // gets redirected to the relay — current production semantics.
     // `Bypass` writes OBSERVE_OFF + NO_BYPASS_LOG + REDIRECT_OFF, so
@@ -725,7 +703,8 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
         );
     }
 
-    // Wait for the cgroup to appear — kubelet may not have created it yet.
+    // Wait for the cgroup to appear — system.slice exists from early
+    // boot, but retrying keeps startup robust if the unit races ahead.
     // Previous approach used an ExecStartPre bash script that checked `-d`,
     // but it was racy: the directory could vanish between the shell test and
     // File::open here. Retrying the actual open inside the daemon avoids
@@ -745,7 +724,7 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound && attempts < MAX_WAIT_SECS => {
                     if attempts == 0 {
-                        info!(path = %cgroup_path, "cgroup not found; waiting for kubelet");
+                        info!(path = %cgroup_path, "cgroup not found; waiting");
                     }
                     attempts += 1;
                     std::thread::sleep(std::time::Duration::from_secs(1));
@@ -760,16 +739,15 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
     };
 
     // ─── eBPF attach (cgroup_sock_addr connect4 + cgroup_skb egress) ────────
-    // Primary attach at runtime.cgroup (typically /sys/fs/cgroup/kubepods)
-    // covers k8s pods. Optional secondary at /sys/fs/cgroup/user.slice
-    // covers `heimdall run` / interactive user processes. Host services
-    // under system.slice intentionally stay outside scope.
+    // Primary attach at runtime.cgroup (defaults to
+    // /sys/fs/cgroup/system.slice) covers host services. Secondary at
+    // /sys/fs/cgroup/user.slice covers `heimdall run` / interactive
+    // user processes.
     //
-    // Earlier root-cgroup attach was tried — it appeared to attach
-    // successfully but no longer fired connect4 for any cgroup, even
-    // pods. Suspected interaction with cilium attaching its own progs
-    // at root in cgroup v2 hierarchical mode. Falling back to the
-    // dual-attach approach which is verified working for pods.
+    // A single root-cgroup attach (/sys/fs/cgroup) would cover both in
+    // one shot, but historically appeared to attach yet never fire
+    // connect4 in cgroup v2 hierarchical mode. The dual-attach approach
+    // is the verified-working path; keep it.
     const USER_SLICE: &str = "/sys/fs/cgroup/user.slice";
     let user_slice_file = std::path::Path::new(USER_SLICE)
         .exists()
@@ -880,17 +858,16 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
         HashMap::try_from(bpf.take_map("PORT_MAP").context("PORT_MAP not found")?)?,
     ));
 
-    // ─── PolicyEngine — keeps CGROUP_POLICY in sync with rules + pods ───
+    // ─── PolicyEngine — keeps CGROUP_POLICY in sync with rules + units ──
     // Started before bypass / tap so the eBPF map is populated by the
     // time real traffic starts hitting connect4.
-    if let (Some(inf), Some(cgr)) = (shared.informer.as_ref(), shared.cgroup_resolver.as_ref()) {
+    if let Some(ur) = shared.units.as_ref() {
         let policy_map = HashMap::try_from(
             bpf.take_map("CGROUP_POLICY").context("CGROUP_POLICY not found")?,
         )?;
         let engine = std::sync::Arc::new(policy::PolicyEngine::new(
             std::sync::Arc::new(shared.cfg.clone()),
-            inf.clone(),
-            cgr.clone(),
+            ur.clone(),
             policy_map,
         ));
         // Hand a clone to the HTTP API so /api/cli/register endpoints
@@ -909,7 +886,7 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
         info!("orphan-cgroup GC spawned (interval 30s)");
     } else {
         warn!(
-            "policy engine not started (no informer / cgroup resolver); \
+            "policy engine not started (no unit resolver); \
              eBPF will use default policy (observe OFF) for every cgroup. \
              `heimdall run` register endpoints will reject."
         );
@@ -917,12 +894,12 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
 
     // ─── Phase B: synthetic flows for bypassed connections ──────────────
     // Drains the BYPASS_EVENTS perf array (always populated by connect4)
-    // and creates flow rows for cluster-internal traffic that the relay
-    // never sees. Without this, Plaintext-tab correlation is empty for
-    // pods talking to kube-apiserver / pod-CIDR services.
+    // and creates flow rows for bypassed traffic the relay never sees
+    // (loopback / LAN). Without this, Plaintext-tab correlation is empty
+    // for those connections.
     //
     // Gated on tap.enabled: when tap is off, the synthetic rows would
-    // never be useful and would flood the flows table with k8s probe
+    // never be useful and would flood the flows table with probe
     // chatter. (The kernel-side perf buffer just gets overwritten when
     // nobody is consuming it.)
     if shared.cfg.runtime.tap.enabled {
@@ -930,15 +907,13 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
             let deps = std::sync::Arc::new(bypass::Deps {
                 store: s.clone(),
                 events: shared.events.clone(),
-                cgroup_resolver: shared.cgroup_resolver.clone(),
-                informer: shared.informer.clone(),
+                units: shared.units.clone(),
                 open_flows: shared.open_flows.clone(),
             });
             // Bootstrap pass first: synthesize flows for connections
-            // that were already established when heimdall started.
-            // This ensures rancher / kubelet / controller TLS streams
-            // (long-lived) get a flow_id for tap correlation. Wait
-            // briefly so the policy engine has populated the eBPF map.
+            // that were already established when heimdall started, so
+            // long-lived TLS streams get a flow_id for tap correlation.
+            // Wait briefly so the policy engine has populated the eBPF map.
             let deps_for_bootstrap = deps.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -1031,42 +1006,15 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
     })?;
     info!(listen = %listen_for_bind, configured = %shared.cfg.runtime.listen, "heimdall ready");
 
-    // ─── Wait for informer initial sync before READY=1 ────────────────────
-    // The relay listener is already accepting, so traffic isn't blocked —
-    // we just delay the systemd READY signal so units depending on
-    // heimdall (`After=heimdall.service` + `Type=notify` aware) wait for
-    // the pod cache to be loaded. Without this gate, downstream services
-    // observe heimdall as "ready" while the policy engine is still
-    // deciding routing for every pod from scratch, and the first few
-    // seconds of post-restart connections all fall back to the
-    // `default` connection regardless of the pod's intended routing.
-    //
-    // Bounded by 10s — if kube-apiserver is genuinely unreachable we
-    // come up anyway in degraded mode (router uses `default` connection
-    // until the informer eventually syncs in the background). Logging
-    // the timeout lets `journalctl` make this state debuggable.
-    if let Some(inf) = shared.informer.as_ref() {
-        let synced = inf
-            .wait_synced(std::time::Duration::from_secs(10))
-            .await;
-        if synced {
-            info!("informer initial sync complete; signalling READY=1");
-        } else {
-            warn!(
-                "informer not synced within 10s; signalling READY=1 in degraded mode \
-                 (router will fall back to `default` connection until sync catches up)"
-            );
-        }
-    }
-
     // ─── systemd notify: READY + WATCHDOG ─────────────────────────────────
-    // `READY=1` lets `Type=notify` units depending on heimdall (e.g. an
-    // operator-installed cilium-agent override, or a deployment script
+    // `READY=1` lets `Type=notify` units depending on heimdall (e.g. a
+    // downstream unit, or a deployment script
     // running `systemctl is-active --wait heimdall`) actually wait for
-    // the relay to be accepting connections AND the informer to be
-    // loaded, instead of the Type=simple "ready the moment exec
-    // returns" lie. Safe to call when not under systemd — sd-notify
-    // returns Ok(()) silently.
+    // the relay to be accepting connections, instead of the Type=simple
+    // "ready the moment exec returns" lie. The unit resolver and policy
+    // engine populate from the local cgroup tree synchronously at
+    // startup, so there's no external sync to wait on. Safe to call when
+    // not under systemd — sd-notify returns Ok(()) silently.
     if let Err(e) = sd_notify::notify(false, &[sd_notify::NotifyState::Ready]) {
         warn!(error = %e, "sd_notify READY failed");
     }
@@ -1168,43 +1116,40 @@ async fn relay(
     // Backward-compat alias used by older log lines below.
     let dst_ip = dst_ip_display;
 
-    // ─── Resolve pod identity ──────────────────────────────────────────────
-    let pod_info = match (&shared.cgroup_resolver, &shared.informer) {
-        (Some(cr), Some(inf)) => cr
-            .resolve(orig.cgroup_id)
-            .and_then(|uid| inf.lookup(&uid)),
-        _ => None,
-    };
+    // ─── Resolve unit identity ─────────────────────────────────────────────
+    let unit_info = shared
+        .units
+        .as_ref()
+        .and_then(|ur| ur.resolve(orig.cgroup_id));
 
-    // ─── Resolve pod-side decision → connection name directly ────────────
+    // ─── Resolve decision → connection name directly ─────────────────────
     // `heimdall run` registers a per-cgroup override here before exec.
-    // When present it bypasses the pod_routing rules entirely (useful
-    // for ad-hoc CLI proxying that doesn't fit any rule). When absent,
-    // fall back to the standard pod-selector resolution.
+    // When present it bypasses the routing rules entirely (useful for
+    // ad-hoc CLI proxying that doesn't fit any rule). When absent, fall
+    // back to the standard unit-selector resolution.
     //
-    // No destination-side routing layer: `pod_decision.use_` is itself
+    // No destination-side routing layer: `decision.use_` is itself
     // either a connection name from `connections:` or the reserved
     // `system` keyword.
-    let pod_decision = if let Some(ovr) =
+    let decision = if let Some(ovr) =
         shared.cli_overrides.read().get(&orig.cgroup_id).cloned()
     {
         ovr
     } else {
-        router::resolve_pod_decision(&shared.cfg, pod_info.as_ref())
+        router::resolve_decision(&shared.cfg, unit_info.as_ref())
     };
 
     // If the decision is `system`, the connection should never have
     // reached the relay (eBPF should have skipped redirect). Race
     // window — fall back to `default` so we don't drop the request.
-    let conn_name = if pod_decision.use_ == heimdall_config::SYSTEM_TAG {
+    let conn_name = if decision.use_ == heimdall_config::SYSTEM_TAG {
         warn!(
-            pod = %pod_info.as_ref().map(|p| format!("{}/{}", p.namespace, p.name))
-                .unwrap_or_else(|| "unknown".into()),
+            unit = %unit_info.as_ref().map(|u| u.label()).unwrap_or_else(|| "unknown".into()),
             "relay saw a connection that should have been bypassed (system); falling back to default"
         );
         "default".to_string()
     } else {
-        pod_decision.use_.clone()
+        decision.use_.clone()
     };
     let upstream = shared
         .upstreams
@@ -1212,9 +1157,9 @@ async fn relay(
         .with_context(|| format!("resolved connection `{conn_name}` not in registry"))?
         .clone();
 
-    let pod_label = pod_info
+    let unit_label = unit_info
         .as_ref()
-        .map(|p| format!("{}/{}", p.namespace, p.name))
+        .map(|u| u.label())
         .unwrap_or_else(|| "unknown".to_string());
 
     // ─── SNI fallback for IP-literal destinations ─────────────────────────
@@ -1299,9 +1244,8 @@ async fn relay(
             .insert_flow_start(store::FlowStart {
                 socket_cookie: Some(orig.socket_cookie),
                 cgroup_id: Some(orig.cgroup_id),
-                pod_uid: pod_info.as_ref().map(|p| p.uid.clone()),
-                namespace: pod_info.as_ref().map(|p| p.namespace.clone()),
-                pod_name: pod_info.as_ref().map(|p| p.name.clone()),
+                unit: unit_info.as_ref().and_then(|u| u.unit.clone()),
+                slice: unit_info.as_ref().and_then(|u| u.slice.clone()),
                 connection_name: conn_name.clone(),
                 dst_host: dst_host_for_store,
                 dst_ip: dst_ip.to_string(),
@@ -1336,7 +1280,7 @@ async fn relay(
                     .await
                     .with_context(|| format!("SOCKS5 CONNECT {dst_label}:{dst_port} via {addr}"))?;
                 info!(
-                    pod = %pod_label,
+                    unit = %unit_label,
                     connection = %conn_name,
                     dst = %dst_label,
                     dst_port,
@@ -1356,7 +1300,7 @@ async fn relay(
                     .await
                     .with_context(|| format!("direct connect to {target}"))?;
                 info!(
-                    pod = %pod_label,
+                    unit = %unit_label,
                     connection = %conn_name,
                     dst = %dst_label,
                     dst_port,

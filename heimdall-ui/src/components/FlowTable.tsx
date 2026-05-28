@@ -82,15 +82,15 @@ export function FlowTable({ flows, selectedId, onSelect }: Props) {
         ),
       },
       {
-        field: "pod",
-        headerName: t("table.cols.pod"),
+        field: "unit",
+        headerName: t("table.cols.unit"),
         flex: 1,
         minWidth: 220,
         sortable: true,
         valueGetter: (_v, row) =>
-          row.pod_name && row.namespace
-            ? `${row.namespace}/${row.pod_name}`
-            : "",
+          row.slice && row.unit
+            ? `${row.slice}/${row.unit}`
+            : row.unit ?? row.slice ?? "",
         renderCell: (params) => {
           const label = params.value as string;
           return label ? (

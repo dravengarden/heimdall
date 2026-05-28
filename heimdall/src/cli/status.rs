@@ -18,7 +18,7 @@ use crate::StatusArgs;
 struct StatusJson<'a> {
     config: String,
     connections: usize,
-    pod_rules: usize,
+    rules: usize,
     default_use: &'a str,
     default_observe: bool,
     relay_listen: &'a str,
@@ -62,9 +62,9 @@ pub async fn run(config_path: &Path, args: StatusArgs) -> Result<()> {
         let out = StatusJson {
             config: config_path.display().to_string(),
             connections: cfg.connections.len(),
-            pod_rules: cfg.pod_routing.rules.len(),
-            default_use: &cfg.pod_routing.default.use_,
-            default_observe: cfg.pod_routing.default.observe,
+            rules: cfg.routing.rules.len(),
+            default_use: &cfg.routing.default.use_,
+            default_observe: cfg.routing.default.observe,
             relay_listen: &cfg.runtime.listen,
             dns_listen: &cfg.runtime.dns_listen,
             fake_ip_cidr: &cfg.runtime.fake_ip_cidr,
@@ -83,9 +83,9 @@ pub async fn run(config_path: &Path, args: StatusArgs) -> Result<()> {
 
     println!("config         {}", config_path.display());
     println!("connections    {}", cfg.connections.len());
-    println!("pod rules      {}", cfg.pod_routing.rules.len());
-    println!("default use    {}", cfg.pod_routing.default.use_);
-    println!("default observe {}", cfg.pod_routing.default.observe);
+    println!("rules          {}", cfg.routing.rules.len());
+    println!("default use    {}", cfg.routing.default.use_);
+    println!("default observe {}", cfg.routing.default.observe);
     println!("relay listen   {}", cfg.runtime.listen);
     println!("dns listen     {}", cfg.runtime.dns_listen);
     println!("fake-IP CIDR   {}", cfg.runtime.fake_ip_cidr);

@@ -8,21 +8,13 @@
 #   let h = import "lib.ncl" in
 #   { ... } | h.HeimdallConfig
 
-let MatchOperator_ = std.contract.from_predicate (fun v =>
-  v == "In" || v == "NotIn" || v == "Exists" || v == "DoesNotExist"
-) in
-
-let MatchExpression_ = {
-  key | String,
-  operator | MatchOperator_,
-  values | Array String | optional,
-} in
-
 let rec MatchCond_ = {
-  # Pod selectors — K8s LabelSelector compatible
-  namespaces       | Array String | optional,
-  matchLabels      | { _ : String } | optional,
-  matchExpressions | Array MatchExpression_ | optional,
+  # systemd identity selectors — match the leaf unit and/or the
+  # enclosing slice the cgroup path implies. Each entry is a
+  # MatchValue (exact / `regexp:` / `prefix:` / `suffix:` /
+  # `keyword:`).
+  units            | Array String | optional,
+  slices           | Array String | optional,
 
   # Boolean composition
   all              | Array MatchCond_ | optional,
@@ -30,23 +22,21 @@ let rec MatchCond_ = {
   "not"            | MatchCond_ | optional,
 } in
 
-let PodRule_ = {
+let Rule_ = {
   name      | String | optional,
   "match"   | MatchCond_ | optional,
   use       | String,
   observe   | Bool | optional,
 } in
 
-let PodDecision_ = {
+let Decision_ = {
   use     | String,
   observe | Bool,
 } in
 
-let PodRouting_ = {
-  routingKey | String | default = "heimdall.io/routing",
-  observeKey | String | default = "heimdall.io/observe",
-  rules      | Array PodRule_ | default = [],
-  "default"  | PodDecision_,
+let Routing_ = {
+  rules     | Array Rule_ | default = [],
+  "default" | Decision_,
 } in
 
 let SocksAuth_ = {
@@ -73,7 +63,7 @@ let TapConfig_ = {
 } in
 
 let Runtime_ = {
-  cgroup            | String | default = "/sys/fs/cgroup",
+  cgroup            | String | default = "/sys/fs/cgroup/system.slice",
   listen            | String | default = "0.0.0.0:12345",
   relayIp           | String | default = "127.0.0.1",
   bypassCidrs       | Array String | default = [],
@@ -112,7 +102,7 @@ let HeimdallConfig_ = {
   kind        | String | default = "HeimdallConfig",
   runtime     | Runtime_ | default = {},
   connections | { _ : Connection_ },
-  podRouting  | PodRouting_,
+  routing     | Routing_,
   cli         | Cli_ | default = {},
 } in
 
@@ -121,12 +111,10 @@ let HeimdallConfig_ = {
 # (`regexp:foo` etc.) are interpreted by the daemon at parse time.
 {
   MatchValue       = String,
-  MatchOperator    = MatchOperator_,
-  MatchExpression  = MatchExpression_,
   MatchCond        = MatchCond_,
-  PodRule          = PodRule_,
-  PodDecision      = PodDecision_,
-  PodRouting       = PodRouting_,
+  Rule             = Rule_,
+  Decision         = Decision_,
+  Routing          = Routing_,
   SocksAuth        = SocksAuth_,
   ConnectionType   = ConnectionType_,
   Connection       = Connection_,

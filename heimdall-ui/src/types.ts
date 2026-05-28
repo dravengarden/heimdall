@@ -3,9 +3,8 @@ export interface Flow {
   id: number;
   socket_cookie: number | null;
   cgroup_id: number | null;
-  pod_uid: string | null;
-  namespace: string | null;
-  pod_name: string | null;
+  unit: string | null;
+  slice: string | null;
   connection_name: string;
   dst_host: string | null;
   dst_ip: string;
@@ -34,9 +33,9 @@ export interface Status {
 }
 
 // Wire type — must match heimdall::api::ApiMessage. `body` is serialized
-// by serde_json as a JSON array of byte values. The pod_* fields are
-// resolved at API time from the daemon's cgroup → pod cache; null for
-// host processes or pods the informer hasn't seen yet.
+// by serde_json as a JSON array of byte values. The unit / slice fields
+// are resolved at API time from the daemon's cgroup → unit cache; null
+// for cgroups that aren't a recognizable systemd unit/slice.
 export interface Message {
   id: number;
   flow_id: number | null;
@@ -48,14 +47,14 @@ export interface Message {
   total_len: number;
   captured_len: number;
   body: readonly number[];
-  pod_namespace: string | null;
-  pod_name: string | null;
+  unit: string | null;
+  slice: string | null;
 }
 
 export type ErrorMode = "all" | "ok" | "errors-only";
 
 export interface FlowFilters {
-  /** free-text substring match across host / IP / pod / connection / upstream */
+  /** free-text substring match across host / IP / unit / connection / upstream */
   query: string;
   /** empty array = all connections; otherwise rows must match one of these */
   connections: readonly string[];

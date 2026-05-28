@@ -193,8 +193,7 @@ function Overview({ flow, onCopy }: OverviewProps) {
     copyValue?: string;
     copyLabel?: string;
   }> = [
-    { k: "pod", v: podLabel(flow), copyLabel: "pod" },
-    { k: "pod_uid", v: flow.pod_uid, copyLabel: "pod_uid" },
+    { k: "unit", v: unitLabel(flow), copyLabel: "unit" },
     { k: "connection", v: flow.connection_name },
     {
       k: "dst host",
@@ -442,8 +441,9 @@ function Plaintext({ flowId }: { flowId: number }) {
     </Box>
   );
 }
-function podLabel(flow: Flow): string | null {
-  if (flow.namespace && flow.pod_name)
-    return `${flow.namespace}/${flow.pod_name}`;
+function unitLabel(flow: Flow): string | null {
+  if (flow.slice && flow.unit) return `${flow.slice}/${flow.unit}`;
+  if (flow.unit) return flow.unit;
+  if (flow.slice) return flow.slice;
   return null;
 }

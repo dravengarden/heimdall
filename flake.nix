@@ -345,7 +345,8 @@
           pkgs.bun
           pkgs.pkg-config
           pkgs.cargo-watch
-          pkgs.bpftool
+          pkgs.bpftools
+          pkgs.nickel
         ];
       };
     };

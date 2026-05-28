@@ -12,7 +12,7 @@ let h = import "lib.ncl" in
   kind       = "HeimdallConfig",
 
   runtime = {
-    cgroup            = "/sys/fs/cgroup/kubepods",
+    cgroup            = "/sys/fs/cgroup/system.slice",
     listen            = "0.0.0.0:12345",
     relayIp           = "127.0.0.1",
     dnsListen         = "0.0.0.0:5358",
@@ -32,14 +32,22 @@ let h = import "lib.ncl" in
     direct = { type = "direct" },
   },
 
-  podRouting = {
+  # ─── Routing rules ────────────────────────────────────────────────
+  # First match wins. `match` selectors filter on the systemd identity
+  # heimdall derives from the process's cgroup path: the leaf `units`
+  # (e.g. `nginx.service`, a transient `*.scope`) and the enclosing
+  # `slices` (e.g. `system.slice`, `user.slice`). Each list entry is a
+  # MatchValue (exact / `regexp:` / `prefix:` / `suffix:` / `keyword:`).
+  # `use` is either a connection name or the reserved `system` keyword
+  # (eBPF bypass — skip the relay entirely).
+  routing = {
     rules = [],
     "default" = { use = "default", observe = false },
   },
 
   # ─── Defaults for `heimdall <subcommand>` ────────────────────────
-  # Currently consumed by the planned `heimdall run` (proxychains-style
-  # CLI proxy). All fields optional — empty cli = compiled-in fallbacks.
+  # Currently consumed by `heimdall run` (proxychains-style CLI proxy).
+  # All fields optional — empty cli = compiled-in fallbacks.
   cli = {
     run = {
       "default" = {

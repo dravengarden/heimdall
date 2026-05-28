@@ -1,6 +1,6 @@
 # heimdall
 
-Transparent egress proxy + TLS observability for Kubernetes pods,
+Transparent egress proxy + TLS observability for systemd units,
 powered by eBPF cgroup hooks and uprobes.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
@@ -10,13 +10,19 @@ powered by eBPF cgroup hooks and uprobes.
 Routes outbound TCP through a SOCKS5 upstream **and** captures
 decrypted TLS payloads at the application boundary — no MITM, no CA
 injection, no per-application configuration. Single binary
-(relay + tap + HTTP API + Web UI), deployed on Kubernetes nodes
-via systemd or as a privileged DaemonSet.
+(relay + tap + HTTP API + Web UI), runs as a systemd service; routes
+per-cgroup, identifying workloads by their systemd unit + slice.
 
-> **Status: alpha.** Daily-driven on a single-node Kubernetes host;
-> CI, release process, and multi-node deployment haven't been
-> hardened yet. See [CHANGELOG.md](CHANGELOG.md) for what's shipped
-> and [docs/runbook.md](docs/runbook.md) for the deploy story.
+> **Status: alpha.** Daily-driven on a single NixOS host; CI, release
+> process, and multi-host deployment haven't been hardened yet. See
+> [CHANGELOG.md](CHANGELOG.md) for what's shipped and
+> [docs/runbook.md](docs/runbook.md) for the deploy story.
+>
+> **Migrating from the k8s-coupled v0**: the schema renamed
+> `podRouting`→`routing`, the selector grammar moved from pod
+> labels/namespaces to `units` / `slices`, and the daemon no longer
+> talks to a kube-apiserver. Some prose in `docs/` still references
+> the old k8s model and is being updated.
 
 ---
 
@@ -32,7 +38,7 @@ cargo build --release
 # 2. Bootstrap a config directory
 sudo ./target/release/heimdall init --dir /etc/heimdall --format nickel
 
-# 3. Edit /etc/heimdall/heimdall.ncl (declares connections + podRouting rules).
+# 3. Edit /etc/heimdall/heimdall.ncl (declares connections + routing rules).
 #    /etc/heimdall/README.md is auto-generated and dense; AI agents read it.
 
 # 4. Run the daemon (systemd in production; ad-hoc here for testing)
@@ -57,22 +63,22 @@ both — internalize the distinction once and the rest follows.
 
 ### Flow — one TCP connection
 
-A **flow** is a single TCP connection from a pod (or a wrapped CLI
-process) to some destination, tracked from `connect()` to close. One
-row in the `flows` sqlite table per flow.
+A **flow** is a single TCP connection from a systemd unit (or a wrapped
+`heimdall run` process) to some destination, tracked from `connect()`
+to close. One row in the `flows` sqlite table per flow.
 
-Captured fields: `pod_namespace/pod_name`, `cgroup_id`, `dst_ip:port`,
-`dst_host` (when fake-IP DNS gave us a hostname), `connection_name`
-(`default` / `corp` / `bypass` / `bootstrap`), `upstream_addr`,
-`bytes_up/down`, start + end timestamps, error.
+Captured fields: `slice` + `unit` (systemd identity), `cgroup_id`,
+`dst_ip:port`, `dst_host` (when fake-IP DNS gave us a hostname),
+`connection_name` (`default` / `corp` / `bypass` / `bootstrap`),
+`upstream_addr`, `bytes_up/down`, start + end timestamps, error.
 
 A flow row is created in one of three places:
 
 | Origin | `connection_name` | When |
 |---|---|---|
 | Relay path | `default`, `corp`, … | eBPF redirected the connect to the relay; relay opens SOCKS5 to the named upstream |
-| Bypass path | `bypass` | Connection is in the kernel-bypass CIDR set OR pod opted into `use: system`; relay never sees it but eBPF emits a perf event so we still record the metadata |
-| Bootstrap pass | `bootstrap` | One-shot scan at daemon startup that synthesizes flows for connections already established before heimdall came up (rancher Watch streams, kubelet, controllers) |
+| Bypass path | `bypass` | Connection is in the kernel-bypass CIDR set OR the unit opted into `use: system`; relay never sees it but eBPF emits a perf event so we still record the metadata |
+| Bootstrap pass | `bootstrap` | One-shot scan at daemon startup that synthesizes flows for connections already established before heimdall came up (long-lived TLS streams from existing services) |
 
 ### Tap (message) — one decrypted SSL_write / SSL_read
 

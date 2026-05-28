@@ -22,7 +22,7 @@ const en: Catalog = {
   "nav.tap": "Live Tap",
 
   "livetap.title": "Live plaintext",
-  "livetap.podFilter": "filter by namespace/pod…",
+  "livetap.unitFilter": "filter by slice/unit…",
   "livetap.cgroupFilter": "filter by cgroup_id…",
   "livetap.pause": "Pause polling",
   "livetap.resume": "Resume polling",
@@ -30,9 +30,9 @@ const en: Catalog = {
   "livetap.empty":
     "No plaintext yet. Hit an HTTPS endpoint from any libssl-using process; events appear within ~1s.",
   "livetap.noMatch":
-    "No messages match the current pod filter. Clear the filter or wait for new traffic.",
+    "No messages match the current unit filter. Clear the filter or wait for new traffic.",
 
-  "filter.placeholder": "filter by host / pod / IP / connection…  (press /)",
+  "filter.placeholder": "filter by host / unit / IP / connection…  (press /)",
   "filter.connections": "connections",
   "filter.allConnections": "all connections",
   "filter.all": "all",
@@ -62,10 +62,10 @@ const en: Catalog = {
   "filter.adv.ageLabel": "age ≤",
 
   "table.empty.title": "no flows match the current filter",
-  "table.empty.hint": "triggered traffic from a pod will appear here automatically",
+  "table.empty.hint": "triggered traffic from a unit will appear here automatically",
   "table.cols.id": "id",
   "table.cols.time": "time",
-  "table.cols.pod": "pod",
+  "table.cols.unit": "unit",
   "table.cols.conn": "conn",
   "table.cols.atyp": "atyp",
   "table.cols.dst": "dst",
@@ -88,7 +88,7 @@ const en: Catalog = {
   "detail.section.internals": "Internals",
   "detail.copy": "Copy {0}",
   "detail.plaintext.empty":
-    "No plaintext captured for this flow. The eBPF tap only sees libssl-using processes; pods that statically link Go's crypto/tls or rustls do not surface here yet.",
+    "No plaintext captured for this flow. The eBPF tap only sees libssl-using processes; units that statically link Go's crypto/tls or rustls do not surface here yet.",
   "detail.plaintext.send": "SEND",
   "detail.plaintext.recv": "RECV",
 
@@ -122,7 +122,7 @@ const zhCN: Catalog = {
   "nav.tap": "实时明文",
 
   "livetap.title": "实时明文",
-  "livetap.podFilter": "按 namespace/pod 过滤…",
+  "livetap.unitFilter": "按 slice/unit 过滤…",
   "livetap.cgroupFilter": "按 cgroup_id 过滤…",
   "livetap.pause": "暂停轮询",
   "livetap.resume": "恢复轮询",
@@ -130,9 +130,9 @@ const zhCN: Catalog = {
   "livetap.empty":
     "暂无明文。从任意使用 libssl 的进程发起 HTTPS 请求,~1 秒内会出现事件。",
   "livetap.noMatch":
-    "当前 pod 过滤条件下没有匹配。清除过滤或等待新流量。",
+    "当前 unit 过滤条件下没有匹配。清除过滤或等待新流量。",
 
-  "filter.placeholder": "搜索 hostname / pod / IP / connection…  (按 / 聚焦)",
+  "filter.placeholder": "搜索 hostname / unit / IP / connection…  (按 / 聚焦)",
   "filter.connections": "连接",
   "filter.allConnections": "全部 connection",
   "filter.all": "全部",
@@ -162,10 +162,10 @@ const zhCN: Catalog = {
   "filter.adv.ageLabel": "时间 ≤",
 
   "table.empty.title": "当前筛选条件下没有匹配的流量",
-  "table.empty.hint": "pod 触发流量后会自动显示在这里",
+  "table.empty.hint": "unit 触发流量后会自动显示在这里",
   "table.cols.id": "id",
   "table.cols.time": "时间",
-  "table.cols.pod": "pod",
+  "table.cols.unit": "unit",
   "table.cols.conn": "连接",
   "table.cols.atyp": "类型",
   "table.cols.dst": "目标",
@@ -188,7 +188,7 @@ const zhCN: Catalog = {
   "detail.section.internals": "内部",
   "detail.copy": "复制 {0}",
   "detail.plaintext.empty":
-    "此 flow 未抓到明文。eBPF tap 仅能看到使用 libssl 的进程;静态链接 Go crypto/tls 或 rustls 的 pod 暂不支持。",
+    "此 flow 未抓到明文。eBPF tap 仅能看到使用 libssl 的进程;静态链接 Go crypto/tls 或 rustls 的 unit 暂不支持。",
   "detail.plaintext.send": "发送",
   "detail.plaintext.recv": "接收",
 
