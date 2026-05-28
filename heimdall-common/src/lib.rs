@@ -11,8 +11,8 @@
 /// significant (rest are zero); for IPv6 all 16 bytes.
 ///
 /// `cgroup_id` is the leaf cgroup id of the calling process (from
-/// `bpf_get_current_cgroup_id`), used by userspace to resolve pod
-/// identity (labels / annotations). `socket_cookie` is the kernel's
+/// `bpf_get_current_cgroup_id`), used by userspace to resolve the
+/// systemd unit / slice identity. `socket_cookie` is the kernel's
 /// per-socket identifier (`bpf_get_socket_cookie`); the userspace
 /// relay uses it to correlate a flow with TLS plaintext events
 /// emitted by the tap (Phase B uprobes).
@@ -29,7 +29,7 @@ pub struct OrigDst {
     pub family: u8,
     pub _pad: u8,
     /// Leaf cgroup id of the process that called connect().
-    /// 0 if not captured (older builds; treat as "unknown pod").
+    /// 0 if not captured (older builds; treat as "unknown unit").
     pub cgroup_id: u64,
     /// Kernel socket cookie of the underlying TCP socket (set by
     /// `bpf_get_socket_cookie` in connect4 / connect6). Stable for the
@@ -124,22 +124,24 @@ pub struct BypassEvent {
 unsafe impl aya::Pod for BypassEvent {}
 
 // ---------------------------------------------------------------------------
-// Per-cgroup policy flags. Userspace evaluates routing rules against pod
-// labels/annotations and writes the resulting flag bits into the BPF
-// CGROUP_POLICY map keyed by cgroup_id; eBPF programs read it per syscall.
+// Per-cgroup policy flags. Userspace evaluates routing rules against the
+// unit / slice resolved from each cgroup's path and writes the resulting
+// flag bits into the BPF CGROUP_POLICY map keyed by cgroup_id; eBPF
+// programs read it per syscall.
 //
 // Map miss → DEFAULT_POLICY (observe OFF, redirect ON). The "observe OFF
-// on miss" choice means host processes that aren't pods don't get tapped
-// unless `runtime.tap.hostObserve` explicitly populates them.
+// on miss" choice means cgroups outside the rule set don't get tapped
+// unless an explicit entry opts them in.
 // ---------------------------------------------------------------------------
 
 /// Skip eBPF connect4 redirect — let the kernel route the connection
-/// natively. Used for pods opting into `proxy: system`.
+/// natively. Used for units / `heimdall run` profiles resolving to
+/// `use: system`.
 pub const POLICY_REDIRECT_OFF: u8 = 1 << 0;
 
 /// Suppress tap events from this cgroup — both libssl uprobes and Go
-/// uprobes check the bit before emitting. Used for noisy infrastructure
-/// pods (controllers, webhooks, data stores).
+/// uprobes check the bit before emitting. Used for noisy units
+/// (background daemons, data stores).
 pub const POLICY_OBSERVE_OFF: u8 = 1 << 1;
 
 /// When set on an `is_kernel_bypass` or `REDIRECT_OFF` connection,
@@ -158,8 +160,8 @@ pub const POLICY_NO_BYPASS_LOG: u8 = 1 << 2;
 pub const POLICY_DNS_HIJACK: u8 = 1 << 3;
 
 /// Default for cgroups not present in `CGROUP_POLICY`. Observe is OFF
-/// by default — pods we know about get explicit entries, host processes
-/// don't get observed unless opted in.
+/// by default — units the rules match get explicit entries; everything
+/// else stays unobserved unless opted in.
 pub const DEFAULT_POLICY: u8 = POLICY_OBSERVE_OFF | POLICY_NO_BYPASS_LOG;
 
 /// Returns true if the given IPv4 address (network byte order) should bypass
@@ -171,15 +173,13 @@ pub const DEFAULT_POLICY: u8 = POLICY_OBSERVE_OFF | POLICY_NO_BYPASS_LOG;
 /// | CIDR              | Why                                                |
 /// |-------------------|----------------------------------------------------|
 /// | 0.0.0.0           | Invalid, never proxy                               |
-/// | 127.0.0.0/8       | Loopback (relay self, sidecars)                    |
-/// | 169.254.0.0/16    | Link-local (kubelet, AWS metadata, etc.)           |
+/// | 127.0.0.0/8       | Loopback (relay self, host-local services)         |
+/// | 169.254.0.0/16    | Link-local (cloud metadata, etc.)                  |
 /// | 192.168.0.0/16    | LAN (router, host IP, upstream box)                |
-/// | 10.244.0.0/16     | k0s pod CIDR — pod-to-pod must be direct          |
-/// | 10.96.0.0/12      | k0s service CIDR — pod-to-service must be direct  |
 ///
-/// Notably, **the broader RFC-1918 ranges (other 10/8 + 172.16/12) are NOT
+/// Notably, **the broader RFC-1918 ranges (10/8 + 172.16/12) are NOT
 /// bypassed** — those address spaces are commonly used by corporate VPNs.
-/// Pod traffic to such IPs goes through heimdall, gets routed via the
+/// Traffic to such IPs goes through heimdall, gets routed via the
 /// chosen connection (e.g. `corp`), and the upstream proxy decides how
 /// to reach them.
 ///
@@ -191,8 +191,6 @@ pub fn is_default_bypass(ip_be: u32) -> bool {
     || ip >> 24 == 127                   // 127.0.0.0/8     loopback
     || ip >> 16 == 0xA9FE                // 169.254.0.0/16  link-local
     || ip >> 16 == 0xC0A8                // 192.168.0.0/16  LAN
-    || ip >> 16 == 0x0AF4                // 10.244.0.0/16   k0s pod CIDR
-    || ip >> 20 == 0x0A6                 // 10.96.0.0/12    k0s service CIDR
 }
 
 /// IPv6 sibling of [`is_default_bypass`]. Bytes are the on-wire IPv6
@@ -213,7 +211,7 @@ pub fn is_default_bypass(ip_be: u32) -> bool {
 /// IPv6 fake-IP pool defaults to `fc00:198:19::/96` which sits inside
 /// the ULA range, so blanket-bypassing fc00::/7 would short-circuit
 /// every fake-IP redirect. Mirrors the v4 narrow-bypass philosophy
-/// (10.x outside k0s CIDRs is NOT bypassed either).
+/// (RFC-1918 10/8 + 172.16/12 are NOT bypassed either).
 pub fn is_default_bypass6(addr: &[u8; 16]) -> bool {
     // ::1 (loopback) — all zero except final byte == 1.
     let all_but_last_zero = addr[..15].iter().all(|&b| b == 0);
@@ -270,27 +268,14 @@ mod tests {
     }
 
     #[test]
-    fn bypasses_k0s_pod_cidr() {
-        assert!(is_default_bypass(be(10, 244, 0, 1)));      // pod CIDR start
-        assert!(is_default_bypass(be(10, 244, 255, 254)));  // pod CIDR end
-    }
-
-    #[test]
-    fn bypasses_k0s_service_cidr() {
-        assert!(is_default_bypass(be(10, 96, 0, 10)));      // CoreDNS
-        assert!(is_default_bypass(be(10, 96, 0, 1)));       // apiserver
-        assert!(is_default_bypass(be(10, 111, 255, 254)));  // /12 last
-    }
-
-    #[test]
-    fn does_not_bypass_corporate_10_space() {
-        // The whole point of narrowing the bypass list: 10.x.x.x outside
-        // the cluster's two CIDRs must hit heimdall, so a routing rule
-        // can send it via a corp-VPN-aware connection.
+    fn does_not_bypass_rfc1918_10_space() {
+        // The whole point of the narrow bypass list: 10/8 and 172.16/12
+        // must hit heimdall so a routing rule can send them via a
+        // corp-VPN-aware connection.
         assert!(!is_default_bypass(be(10, 0, 0, 1)));
         assert!(!is_default_bypass(be(10, 50, 1, 2)));
-        assert!(!is_default_bypass(be(10, 112, 0, 1)));   // just past 10.96/12
-        assert!(!is_default_bypass(be(10, 245, 0, 1)));   // just past 10.244/16
+        assert!(!is_default_bypass(be(10, 96, 0, 1)));
+        assert!(!is_default_bypass(be(10, 244, 0, 1)));
         assert!(!is_default_bypass(be(10, 255, 255, 254)));
     }
 

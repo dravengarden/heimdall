@@ -32,12 +32,11 @@ forwards over SOCKS5 to a per-unit-selected upstream. A side channel
 (Phase B) attaches uprobes to libssl / Go / rustls / BoringSSL for
 plaintext capture.
 
-> **Schema note (v0.3.0):** the routing model is now systemd-unit
-> based. `podRouting`→`routing`; the `MatchCond` grammar uses
-> `units` (`*.service` / `*.scope`) + `slices` (`*.slice`) instead of
-> `namespaces` / `matchLabels` / `matchExpressions`. There is no
-> kube-apiserver / informer / annotation-override path — identity
-> comes directly from the cgroup path.
+Identity comes straight from the cgroup path: the daemon parses the
+leaf unit (`*.service` / `*.scope`) and enclosing slice (`*.slice`)
+out of `/sys/fs/cgroup/...` — no external API, no informer. Routing
+rules select on `units` / `slices` (with `MatchValue` strategies
+`exact` / `regexp:` / `prefix:` / `suffix:` / `keyword:`).
 
 This skill is a router. The deep material lives under
 [`references/`](references/) — load only the reference file matching

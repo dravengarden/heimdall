@@ -89,7 +89,7 @@ file (`gc:`, `dns:`, `policy:`, `docs:`, `ebpf:`).
 
 Use the GitHub issue template. Include:
 - Kernel version (`uname -r`)
-- `heimdall status` output (config path + connection / pod-rule counts)
+- `heimdall status` output (config path + connection / rule counts)
 - Relevant journal entries (`journalctl -u heimdall --since "5min ago"`)
 - For routing problems: a flow log row from
   `curl http://127.0.0.1:9999/api/flows?limit=20`

@@ -188,7 +188,7 @@ impl PolicyEngine {
     /// `dns_hijack=true` ORs in `POLICY_DNS_HIJACK` so eBPF redirects
     /// :53 traffic to heimdall's fake-IP DNS server. Used by
     /// `heimdall run` invocations whose profile resolves to
-    /// `dns: fake`; pod-side reconcile never sets this bit.
+    /// `dns: fake`; the per-unit reconcile path never sets this bit.
     pub async fn register_external(
         &self,
         cgroup_id: u64,

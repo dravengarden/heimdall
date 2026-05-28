@@ -1,9 +1,7 @@
-> **Note:** mid-refactor from k8s-coupled to systemd-first. Schema renamed `podRouting`→`routing`; selector grammar moved from pod labels/namespaces to `units` / `slices`. Examples below may still show the old k8s model. See `/etc/heimdall/README.md` for current schema.
-
 # `heimdall flows` — query the egress log
 
-Use to see *what a pod (or proxied CLI process) connected to
-externally* — destination hostname, port, which upstream
+Use to see *what a systemd unit (or proxied CLI process) connected
+to externally* — destination hostname, port, which upstream
 connection was picked, byte counts, errors. Plaintext messages
 when the routing decision said `observe = true`.
 
@@ -16,17 +14,17 @@ CLI is a read-only window into it.
 ```bash
 heimdall flows list   [OPTIONS]            # most-recent flows, newest first
 heimdall flows show   <FLOW_ID>            # single flow by id
-heimdall flows search [OPTIONS] [QUERY]    # filter by host/pod/connection
+heimdall flows search [OPTIONS] [QUERY]    # filter by host/unit/connection
 ```
 
 `heimdall help flows -v` for the full option matrix.
 
 ## Common patterns
 
-### "What did pod X talk to in the last hour?"
+### "What did unit X talk to in the last hour?"
 
 ```bash
-heimdall flows search --pod my-pod-7c5d4 --since 1h --json
+heimdall flows search --unit nginx.service --since 1h --json
 ```
 
 `--since` accepts `Nm`, `Nh`, `Nd`. Default output is a column
@@ -40,11 +38,11 @@ heimdall flows search --host grafana.example.com --json
 heimdall flows search --host-contains corp
 ```
 
-### "Which pods used the `corp` upstream?"
+### "Which units used the `corp` upstream?"
 
 ```bash
 heimdall flows search --connection corp --since 24h --json | \
-  jq -r '"\(.namespace)/\(.pod_name) -> \(.dst_host // .dst_ip)"' | sort -u
+  jq -r '"\(.slice // "?")/\(.unit // "?") -> \(.dst_host // .dst_ip)"' | sort -u
 ```
 
 ### "Inspect one flow in detail (incl. tap messages if observe=true)"
@@ -52,7 +50,7 @@ heimdall flows search --connection corp --since 24h --json | \
 ```bash
 heimdall flows show 19368
 # Includes plaintext messages from the Phase B uprobe tap when
-# `observe = true` was in effect for that pod's routing decision.
+# `observe = true` was in effect for that unit's routing decision.
 ```
 
 ## Output schema (when `--json`)
@@ -61,11 +59,11 @@ heimdall flows show 19368
 |---|---|
 | `id` | flow id (use with `flows show`) |
 | `socket_cookie` | kernel cookie pinning this connection |
-| `cgroup_id` | source cgroup (pod or `heimdall run` cgroup) |
-| `pod_uid` / `namespace` / `pod_name` | resolved via PodInformer; null for non-pod cgroups |
+| `cgroup_id` | source cgroup (systemd unit or `heimdall run` cgroup) |
+| `unit` / `slice` | resolved from the cgroup path via `UnitResolver`; null when the cgroup has no enclosing unit/slice |
 | `connection_name` | the upstream used; special values: `bypass` (eBPF skipped relay), `default` / `corp` / ... (real relay flow) |
 | `dst_host` | hostname (when fake-IP DNS round-tripped, ATYP=0x03) |
-| `dst_ip` | IPv4/IPv6 used by the pod's `connect(2)` |
+| `dst_ip` | IPv4/IPv6 used by the client's `connect(2)` |
 | `dst_port` | port |
 | `ts_start_us` / `ts_end_us` | microsecond Unix timestamps |
 | `bytes_up` / `bytes_down` | byte counters (closed flows only) |
@@ -80,14 +78,14 @@ whether plaintext capture is expected:
 
 | `atyp` | `dst_host` | What it means |
 |---|---|---|
-| `domain` | non-NULL, fake-IP from heimdall pool | Fake-IP DNS hit; pod connected by hostname. Plaintext **likely** captured if the binary has tap support. |
-| `sni` | non-NULL, original IP in `dst_ip` | **SNI fallback fired AND was used for routing.** Pod connected by IP literal (or stale fake IP); ClientHello carried `server_name`; relay promoted the destination to that hostname so the SOCKS5 upstream gets ATYP=0x03. Plaintext capture depends on the binary's tap support; routing succeeds regardless. |
-| `ip` / `ip6` | NULL | Pod connected by IP literal **and** sent no SNI (per RFC 6066, browsers / curl / Bun's `fetch()` to an IP all do this). Plaintext almost certainly not captured; relay forwards by IP. |
+| `domain` | non-NULL, fake-IP from heimdall pool | Fake-IP DNS hit; client connected by hostname. Plaintext **likely** captured if the binary has tap support. |
+| `sni` | non-NULL, original IP in `dst_ip` | **SNI fallback fired AND was used for routing.** Client connected by IP literal (or stale fake IP); ClientHello carried `server_name`; relay promoted the destination to that hostname so the SOCKS5 upstream gets ATYP=0x03. Plaintext capture depends on the binary's tap support; routing succeeds regardless. |
+| `ip` / `ip6` | NULL | Client connected by IP literal **and** sent no SNI (per RFC 6066, browsers / curl / Bun's `fetch()` to an IP all do this). Plaintext almost certainly not captured; relay forwards by IP. |
 
 ## Filtering tips for AI agents
 
-- **Skip bypass noise**: most flows are intra-cluster (pod ↔
-  Service) and show `connection_name: "bypass"`. To see real egress
+- **Skip bypass noise**: most flows are link-local / LAN / loopback
+  and show `connection_name: "bypass"`. To see real egress
   traffic only:
   `... | jq 'select(.connection_name != "bypass")'`.
 - **External-only**: filter on `dst_host != null` to see what
@@ -108,4 +106,4 @@ schema.
 |---|---|---|
 | `error opening flow store` | daemon not running, or `state_dir` wrong | see `status.md` |
 | empty results despite traffic | route was `use: system` (eBPF bypass) — no flow recorded | check the routing decision in `heimdall.<ext>` (see `config.md`) |
-| `dst_host` always null and `atyp` is `ip` | pod connected by IP literal, no SNI | check CoreDNS forward target, or accept this as the honest L4-only state |
+| `dst_host` always null and `atyp` is `ip` | client connected by IP literal, no SNI | upstream resolver didn't get a chance to answer; acceptable as the honest L4-only state |

@@ -110,7 +110,7 @@ pub fn run(args: InitArgs) -> Result<()> {
     println!();
     println!("Next steps:");
     println!("  1. Read README.md — it's the AI-readable schema reference.");
-    println!("  2. Edit the config to declare your `connections` and `podRouting.rules`.");
+    println!("  2. Edit the config to declare your `connections` and `routing.rules`.");
     println!(
         "  3. Run `heimdall serve` (the daemon auto-discovers {}; pass\n     --config <PATH> only if the file lives elsewhere).",
         main_target.display()

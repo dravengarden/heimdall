@@ -1,5 +1,3 @@
-> **Note:** mid-refactor from k8s-coupled to systemd-first. Schema renamed `podRouting`→`routing`; selector grammar moved from pod labels/namespaces to `units` / `slices`. Examples below may still show the old k8s model. See `/etc/heimdall/README.md` for current schema.
-
 # `heimdall run` — proxychains-style CLI proxy
 
 Wrap a CLI command so its egress goes through a heimdall connection
@@ -8,13 +6,13 @@ without LD_PRELOAD. Re-execs itself under `systemd-run --user
 and IPv6 targets via heimdall fake-IP DNS by default.
 
 Use when:
-- An ad-hoc CLI tool (curl, git, wget, kubectl, vault, …) needs
-  egress through a specific named connection from `heimdall.<ext>`.
+- An ad-hoc CLI tool (curl, git, wget, vault, …) needs egress
+  through a specific named connection from `heimdall.<ext>`.
 - The destination hostname is only resolvable via the upstream
   proxy's DNS scope (corp VPN, internal-only zones) — heimdall's
   fake-IP DNS hijack covers this.
 - You want the tool's flows to appear in the heimdall flow log +
-  tap alongside pod traffic, with a label.
+  tap alongside long-running systemd unit traffic, with a label.
 
 ## Command
 
@@ -166,11 +164,10 @@ heimdall documents the rule semantics, not the rule installer.
 
 ### 2. PolicyEngine reconcile would otherwise wipe the registration
 
-The reconcile loop (5s tick) drops `CGROUP_POLICY` entries it
-doesn't recognise as belonging to a current pod. CLI-registered
-entries are flagged via a separate `external` set so reconcile
-skips them — see `policy.rs::register_external` /
-`deregister_external`.
+The reconcile loop (5s tick) drops `CGROUP_POLICY` entries that no
+longer correspond to a known unit cgroup. CLI-registered entries
+are flagged via a separate `external` set so reconcile skips them
+— see `policy.rs::register_external` / `deregister_external`.
 
 ### 3. NixOS NSS goes via nscd → systemd-resolved over D-Bus
 
@@ -213,5 +210,5 @@ because the parent runs deregister + rmdir explicitly.
 | `Could not resolve host` (with `dns=fake`) | Mount-namespace shim failed (e.g. user namespaces disabled) | Try `--dns system`; check `unshare(CLONE_NEWUSER \| CLONE_NEWNS)` works |
 | `Failed to connect ... port N after 0 ms` | Connection rewrote to relay but relay isn't accepting (daemon restart in progress) | `heimdall status` to confirm `relay ok (port reachable)` |
 | `mkdir … failed (parent must be user-writable …)` | systemd-user-unit not running for current user | `systemctl --user is-active default.target` should return active |
-| `policy engine not initialised … retry in a moment` | Daemon just started, k8s informer hadn't synced when register fired | Re-run after `heimdall status` confirms `connections=N` |
+| `policy engine not initialised … retry in a moment` | Daemon just started; UnitResolver hadn't finished its first scan when register fired | Re-run after `heimdall status` confirms `connections=N` |
 | `exec systemd-run --user --scope … (is systemd-user running?)` | `systemd-user@<UID>.service` masked or not configured | Same as above |

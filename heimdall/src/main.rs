@@ -679,7 +679,7 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
     // OBSERVE_OFF + NO_BYPASS_LOG (REDIRECT_OFF unset), so traffic
     // gets redirected to the relay — current production semantics.
     // `Bypass` writes OBSERVE_OFF + NO_BYPASS_LOG + REDIRECT_OFF, so
-    // unclassified pod traffic skips heimdall entirely (fail-open).
+    // unclassified cgroup traffic skips heimdall entirely (fail-open).
     {
         use heimdall_common::{POLICY_NO_BYPASS_LOG, POLICY_OBSERVE_OFF, POLICY_REDIRECT_OFF};
         use heimdall_config::DefaultEgressPolicy;
@@ -918,7 +918,7 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 match bootstrap::synthesize(deps_for_bootstrap).await {
-                    Ok(0) => debug!("bootstrap: no pre-existing pod connections to synthesize"),
+                    Ok(0) => debug!("bootstrap: no pre-existing connections to synthesize"),
                     Ok(n) => info!(synthesized = n, "bootstrap: pre-existing connections recorded"),
                     Err(e) => warn!(error = %e, "bootstrap: synthesis failed"),
                 }
@@ -958,9 +958,9 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
                 }
                 // Hand `bpf` to the rescan task — `main.rs` doesn't
                 // reference it after this point, so the move is safe.
-                // Period of 30s is a low-pressure default: pods born
-                // between ticks miss at most 30s of TLS correlation
-                // until the next pass picks them up.
+                // Period of 30s is a low-pressure default: units
+                // started between ticks miss at most 30s of TLS
+                // correlation until the next pass picks them up.
                 tap::spawn_rescan(
                     bpf,
                     attached_inodes,
@@ -1057,7 +1057,7 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Per-connection relay: pod identity → routing → upstream
+// Per-connection relay: unit identity → routing → upstream
 // ---------------------------------------------------------------------------
 
 async fn relay(
@@ -1163,10 +1163,10 @@ async fn relay(
         .unwrap_or_else(|| "unknown".to_string());
 
     // ─── SNI fallback for IP-literal destinations ─────────────────────────
-    // Pods can land here with `Dst::Ip*` for two distinct reasons:
+    // Clients can land here with `Dst::Ip*` for two distinct reasons:
     //   (a) Genuinely connecting to a public IP literal (e.g. service
     //       mesh, hardcoded `https://1.1.1.1/`).
-    //   (b) Connecting to a stale or out-of-pool fake IP — the pod's
+    //   (b) Connecting to a stale or out-of-pool fake IP — the unit's
     //       application-level DNS cache (Java InetAddress, Python
     //       `dns.resolver`, runtime libs that bypass libc, etc.) holds
     //       an IP that heimdall's fake-IP map no longer recognises.
@@ -1202,7 +1202,7 @@ async fn relay(
     }
     // Capture the IP-literal (if any) for the flow record before we
     // potentially overwrite `dst` with the SNI-derived domain. The
-    // `dst_ip` column always reflects what the pod actually connected
+    // `dst_ip` column always reflects what the client actually connected
     // to; `dst_host` reflects what we routed by (DNS hostname or
     // SNI-recovered hostname).
     let dst_ip_literal: Option<String> = match &dst {
@@ -1229,7 +1229,7 @@ async fn relay(
         ),
     };
     // For `sni` flows, `dst_ip` records the original IP literal the
-    // pod connected to (forensic trail). For `domain` flows there
+    // client connected to (forensic trail). For `domain` flows there
     // wasn't an IP literal in the first place, so use the dst_ip
     // alias from the dual-stack block above.
     let dst_ip = dst_ip_literal.unwrap_or(dst_ip);

@@ -1,5 +1,3 @@
-> **Note:** mid-refactor from k8s-coupled to systemd-first. Schema renamed `podRouting`→`routing`; selector grammar moved from pod labels/namespaces to `units` / `slices`. Examples below may still show the old k8s model. See `/etc/heimdall/README.md` for current schema.
-
 # `heimdall serve` — the daemon (read-only reference)
 
 > **Don't run this manually.** The daemon attaches eBPF programs to
@@ -23,59 +21,52 @@ For a concise health snapshot use `status.md` instead.
 ```
 1. Resolve config path: --config, $HEIMDALL_CONFIG, or auto-discover
    /etc/heimdall/heimdall.{ncl,toml,json,yaml} in that order.
-2. Parse + validate (apiVersion, kind, connections, podRouting).
+2. Parse + validate (apiVersion, kind, connections, routing).
 3. Resolve every connection (read auth.passwordFile when present).
 4. Open the flow store at runtime.stateDir/flows.db.
-5. Init Kubernetes informer (PodInformer + CgroupResolver) unless
-   --no-k8s. If k8s is unreachable, logs a warning and falls back
-   to podRouting.default for every cgroup.
+5. Init UnitResolver: scan /sys/fs/cgroup once, build the
+   cgroup_id → (unit, slice) map. No external API call — identity
+   is read straight off the cgroup hierarchy.
 6. Bind fake-IP DNS (UDP runtime.dnsListen).
 7. Bind HTTP API (TCP runtime.apiListen) — REST + WebSocket.
 8. Bind relay (TCP runtime.listen).
-9. Reconcile policy: write CGROUP_POLICY map for every existing pod
+9. Reconcile policy: write CGROUP_POLICY map for every known cgroup
    based on the routing rules.
-10. Attach eBPF connect4/connect6 + skb_egress to runtime.cgroup.
+10. Attach eBPF connect4/connect6 + skb_egress to runtime.cgroup
+    (default /sys/fs/cgroup/system.slice) and to /sys/fs/cgroup/user.slice
+    for heimdall run.
 11. Start tap (Phase B uprobes) if runtime.tap.enabled.
-12. Wait for informer initial sync (10 s timeout, then degraded mode).
-13. sd_notify(READY=1) — systemd marks the unit "active (running)".
-14. Spawn watchdog heartbeat (sd_notify WATCHDOG=1 every ~3.3 s
+12. sd_notify(READY=1) — systemd marks the unit "active (running)".
+13. Spawn watchdog heartbeat (sd_notify WATCHDOG=1 every ~3.3 s
     to satisfy WatchdogSec=10s).
 ```
 
 A successful startup ends with `INFO heimdall: heimdall ready
-listen=0.0.0.0:12345` followed by `informer initial sync complete;
-signalling READY=1`.
+listen=0.0.0.0:12345`.
 
 ## Flags
 
-```
-heimdall serve [OPTIONS]
-  --no-k8s          Disable Kubernetes informer; every cgroup
-                    falls back to podRouting.default
-                    (HEIMDALL_NO_K8S env var)
-```
-
 `--config <PATH>` is *global* (every subcommand accepts it). When
-unset, the daemon auto-discovers the config.
+unset, the daemon auto-discovers the config. `heimdall help serve -v`
+lists any additional flags.
 
 ## Notable log lines
 
 | Line | Meaning |
 |---|---|
-| `config loaded path=... connections=N pod_rules=M` | Parse OK |
+| `config loaded path=... connections=N rules=M` | Parse OK |
 | `all connections resolved connections=N` | Auth files read OK |
 | `flow store ready path=...` | sqlite open + migrations done |
-| `pod informer started` | watching kube-apiserver |
-| `pod informer initial sync complete pods=K` | first reconcile possible |
+| `unit resolver ready cgroups=K` | UnitResolver finished its initial scan |
 | `eBPF connect4 attached cgroup=...` | redirect hook live |
 | `eBPF skb_egress attached cgroup=...` | egress hook live |
 | `default egress policy written to BPF map policy=Redirect value_bits=0x06` | DEFAULT_POLICY_MAP populated |
-| `policy: reconciled writes=N deletes=0 pods=K cgroups=N` | per-pod policy bytes pushed to BPF |
+| `policy: reconciled writes=N deletes=0 cgroups=K` | per-cgroup policy bytes pushed to BPF |
 | `tap: started (Phase B) attached_libs=N` | uprobe tap attached |
 | `tap: rescan loop started period_secs=30` | live re-scan ticking |
-| `informer initial sync complete; signalling READY=1` | startup gate satisfied |
+| `heimdall ready listen=...` | startup gate satisfied |
 | `systemd watchdog heartbeat starting period_secs=3.33` | sd_notify watchdog active |
-| `tunnel established pod=... connection=... dst=... via=...` | per-flow info-level log |
+| `tunnel established unit=... connection=... dst=... via=...` | per-flow info-level log |
 | `relay: SNI fallback promoted IP-literal connection to hostname` | SNI fallback recovered hostname for an unmapped fake IP |
 | `relay error ...` | per-flow failure (SOCKS5 auth, conn refused, etc.) |
 | `tap: rescan tick panicked; loop continuing` | rescan caught a panic — bug, but loop continues |
@@ -85,11 +76,10 @@ unset, the daemon auto-discovers the config.
 | Journal line | Cause |
 |---|---|
 | `connections registry: 'system' is reserved` | Don't declare `connections.system`; use `use: "system"` in a rule |
-| `unknown use 'foo' in pod rule` | Misspelled or removed connection name |
+| `unknown use 'foo' in routing rule` | Misspelled or removed connection name |
 | `cannot read passwordFile: ...` | Missing or wrong-perms `secrets/<name>.pw` |
 | `failed to attach connect4` | Cgroup doesn't exist or insufficient capabilities |
-| `informer init failed: ... falling back to default decision` | k8s unreachable; daemon still serves with default routing |
-| `informer not synced within 10s; signalling READY=1 in degraded mode` | Apiserver too slow during startup; daemon comes up but routing falls back to `default` until sync catches up |
+| `unit resolver: /sys/fs/cgroup not a cgroup v2 mount` | Host is on legacy cgroup v1 or unified hierarchy isn't mounted at the expected path |
 
 ## Required capabilities (in the systemd unit)
 

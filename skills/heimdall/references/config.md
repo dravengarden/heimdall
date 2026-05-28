@@ -1,5 +1,3 @@
-> **Note:** mid-refactor from k8s-coupled to systemd-first. Schema renamed `podRouting`→`routing`; selector grammar moved from pod labels/namespaces to `units` / `slices`. Examples below may still show the old k8s model. See `/etc/heimdall/README.md` for current schema.
-
 # Editing `heimdall.{ncl,yaml,json,toml}`
 
 The single config file declares everything heimdall does:
@@ -7,7 +5,7 @@ The single config file declares everything heimdall does:
 ```
 runtime     — eBPF + listener + retention + tap + defaultEgressPolicy
 connections — named SOCKS5 / direct upstreams
-podRouting  — pod-selector → connection (annotation/label/rule/default)
+routing     — unit/slice selector → connection (rule → default)
 cli         — defaults for `heimdall <subcommand>` invocations
 ```
 
@@ -23,9 +21,9 @@ This file is an entry-point pointer, not the spec.
 ## Recommended format: Nickel
 
 `heimdall.ncl` is recommended because it imports `lib.ncl` and
-validates the whole record at evaluation time. Typos
-(`namespace` instead of `namespaces`) and wrong types fail at
-`nickel export`, before the daemon ever loads the file.
+validates the whole record at evaluation time. Typos (`unit`
+instead of `units`) and wrong types fail at `nickel export`, before
+the daemon ever loads the file.
 
 YAML / JSON / TOML are accepted (extension-detected), validated by
 `serde(deny_unknown_fields)` at daemon load time.
@@ -48,7 +46,7 @@ nix-shell -p nickel --run "cd /etc/heimdall && nickel export -f json heimdall.nc
 
 # 4. Apply
 sudo systemctl restart heimdall
-heimdall status                          # connections=N pod_rules=M
+heimdall status                          # connections=N rules=M
 heimdall flows search --since 1m --json  # smoke-test routing
 ```
 
@@ -91,36 +89,32 @@ sudo chmod 0400 /etc/heimdall/secrets/myproxy.pw
 sudo chown root:root /etc/heimdall/secrets/myproxy.pw
 ```
 
-### Route a namespace / label-selector to that upstream
+### Route a unit / slice to that upstream
 
-Append to `podRouting.rules` (first match wins, top-down):
+Append to `routing.rules` (first match wins, top-down):
 
 ```nickel
 {
   name    = "my-rule",
   "match" = {
-    namespaces  = [ "tenant-a" ],
-    matchLabels = { "app.kubernetes.io/part-of" = "tenant-a" },
+    slices = [ "app.slice" ],
+    units  = [ "prefix:tenant-a-" ],
   },
   use     = "myproxy",
   observe = true,                     # capture plaintext via tap
 }
 ```
 
-For boolean composition (`all` / `any` / `not`) and the four
-`matchExpressions` operators (`In` / `NotIn` / `Exists` /
-`DoesNotExist`), see `/etc/heimdall/README.md`.
+`units` and `slices` are lists of `MatchValue`: bare exact strings,
+or one of `regexp:` / `prefix:` / `suffix:` / `keyword:`. For
+boolean composition (`all` / `any` / `not`), see
+`/etc/heimdall/README.md`.
 
-### Per-pod override (no config edit)
+### Per-process override (no config edit)
 
-Annotation wins over label, both win over rules:
-
-```yaml
-metadata:
-  annotations:
-    heimdall.io/routing: myproxy
-    heimdall.io/observe: "false"
-```
+For ad-hoc CLI work use `heimdall run` — it registers a transient
+cgroup with its own decision via `POST /api/cli/register`. See
+`run.md`.
 
 ### Change `heimdall run` defaults
 
@@ -151,12 +145,12 @@ runtime = {
 }
 ```
 
-`redirect` is current production behaviour: unclassified kubepods
-cgroups go through the relay, falling back to `connections.default`.
-`bypass` makes them skip the relay entirely — emergency override
-when the relay or upstream is misbehaving and you need pods to flow
-direct without stopping the daemon (which would also drop tap
-visibility). Restart heimdall after the change.
+`redirect` is current production behaviour: unclassified cgroups
+under `runtime.cgroup` go through the relay, falling back to
+`connections.default`. `bypass` makes them skip the relay entirely
+— emergency override when the relay or upstream is misbehaving and
+you need traffic to flow direct without stopping the daemon (which
+would also drop tap visibility). Restart heimdall after the change.
 
 ## Reserved values
 

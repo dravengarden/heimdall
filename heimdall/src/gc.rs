@@ -16,8 +16,7 @@
 //! populated 0` — no live procs), and reaps everything in one shot.
 //! The walk is bounded depth-first; depth ≤ 6 is enough to reach
 //! `/sys/fs/cgroup/user.slice/user-<UID>.slice/user@<UID>.service/
-//! app.slice/heimdall-cli-*/` without descending into kubepods or
-//! system.slice.
+//! app.slice/heimdall-cli-*/` without descending into system.slice.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

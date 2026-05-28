@@ -2,7 +2,7 @@
 //!
 //! - `GET  /api/health`            — daemon liveness
 //! - `GET  /api/status`            — config summary + counts
-//! - `GET  /api/flows`             — list with filters (limit, conn, pod, host)
+//! - `GET  /api/flows`             — list with filters (limit, conn, unit, host)
 //! - `GET  /api/flows/:id`         — single flow detail
 //! - `GET  /api/ws/flows`          — WebSocket pushing every new flow
 //!
@@ -233,7 +233,7 @@ struct StatusResp {
     /// config.
     default_egress_policy: String,
     /// Live TLS-tap state. AI consumers read this to answer "did tap
-    /// attach to pod X's binary?" / "is the rescan loop healthy?" /
+    /// attach to unit X's binary?" / "is the rescan loop healthy?" /
     /// "what attaches recently failed?". See heimdall's
     /// `docs/observability.md` for the per-flow signal convention.
     tap: crate::tap::TapStatus,
@@ -330,9 +330,9 @@ struct MessageParams {
 fn default_msg_limit() -> u32 { 200 }
 
 /// Wire shape for messages — pass-through of the stored row plus
-/// pod identity resolved at API time. The DB schema deliberately
-/// stores cgroup_id only; pods can change identity (rolling update,
-/// restart) and recomputing on read avoids stale labels.
+/// unit identity resolved at API time. The DB schema deliberately
+/// stores cgroup_id only; units can change identity (restart) and
+/// recomputing on read avoids stale labels.
 #[derive(Serialize)]
 struct ApiMessage {
     id: i64,
@@ -397,7 +397,7 @@ async fn flow_messages(
 }
 
 /// Free-form messages query — useful for the "all plaintext for this
-/// pod" view, or for host-side libssl events with no flow correlation.
+/// unit" view, or for host-side libssl events with no flow correlation.
 async fn list_messages(
     State(s): State<AppState>,
     Query(p): Query<MessageParams>,

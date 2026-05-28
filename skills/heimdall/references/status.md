@@ -1,9 +1,7 @@
-> **Note:** mid-refactor from k8s-coupled to systemd-first. Schema renamed `podRouting`→`routing`; selector grammar moved from pod labels/namespaces to `units` / `slices`. Examples below may still show the old k8s model. See `/etc/heimdall/README.md` for current schema.
-
 # `heimdall status` — daemon health snapshot
 
 First step when:
-- A pod's external connection isn't behaving as expected
+- A unit's external connection isn't behaving as expected
 - You're not sure if heimdall is running, or which config it loaded
 - You need a quick "everything OK?" check before deeper investigation
 
@@ -22,7 +20,7 @@ a probe of the relay listener.
 ```
 config         /etc/heimdall/heimdall.ncl
 connections    3
-pod rules      3
+routing rules  3
 default use    default
 default observe false
 relay listen   0.0.0.0:12345
@@ -40,7 +38,7 @@ relay         ok (port reachable)
 {
   "config": "/etc/heimdall/heimdall.ncl",
   "connections": 3,
-  "pod_rules": 3,
+  "rules": 3,
   "default_use": "default",
   "default_observe": false,
   "relay_listen": "0.0.0.0:12345",
@@ -61,7 +59,7 @@ TCP. Both are independent of the daemon's HTTP API state.
 |---|---|
 | `config` | which file the daemon loaded |
 | `connections` | count of named upstreams in `connections:` |
-| `pod_rules` | count of `podRouting.rules` entries |
+| `rules` | count of `routing.rules` entries |
 | `default_use` / `default_observe` | the catchall decision |
 | `relay_listen` / `dns_listen` | eBPF redirect target + fake-IP DNS port |
 | `flows_in_store` | row count in `flows.db` (use `flows.md` for content) |
@@ -70,11 +68,11 @@ TCP. Both are independent of the daemon's HTTP API state.
 ## Richer state via the HTTP API
 
 `heimdall status` is the CLI snapshot. For everything else (per-tap
-attached count, informer health, `default_egress_policy`, recent
-attach failures, panics) hit the API:
+attached count, `default_egress_policy`, recent attach failures,
+panics) hit the API:
 
 ```bash
-curl -s 127.0.0.1:9999/api/status | jq '.tap, .informer, .default_egress_policy'
+curl -s 127.0.0.1:9999/api/status | jq '.tap, .default_egress_policy'
 ```
 
 Notable JSON fields the CLI doesn't surface:
@@ -82,11 +80,6 @@ Notable JSON fields the CLI doesn't surface:
 ```jsonc
 {
   "default_egress_policy": "redirect",          // or "bypass"
-  "informer": {
-    "synced": true,
-    "pod_count": 38,
-    "last_event_secs_ago": 18                   // > 60 = stalled
-  },
   "tap": {
     "attached": 48,
     "scanners": { "libssl": 10, "go": 35, "rustls": 2, "boringssl_static": 1 },
@@ -98,8 +91,7 @@ Notable JSON fields the CLI doesn't surface:
 }
 ```
 
-`tap.rescan.panics > 0` is always a bug. `informer.last_event_secs_ago
-> period_secs * 2` indicates a stalled apiserver connection.
+`tap.rescan.panics > 0` is always a bug.
 
 ## Failure interpretation
 

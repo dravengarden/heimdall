@@ -1,5 +1,3 @@
-> **Note:** heimdall is mid-refactor from a k8s-coupled model to a systemd-first model. The schema renamed `podRouting`→`routing`, the selector grammar moved from pod labels/namespaces to `units` / `slices`, and the daemon no longer talks to a kube-apiserver. Some examples below still show the old k8s model and are being updated. See `/etc/heimdall/README.md` for the current schema reference.
-
 # Runbook
 
 ## Daily ops
@@ -36,24 +34,23 @@ A clean restart should print roughly, in order:
 config loaded                           ← /etc/heimdall/heimdall.{ncl,toml,json,yaml} auto-discovered
 all connections resolved
 flow store ready
-pod informer started
+unit resolver ready
 fake-IP DNS server ready
 HTTP API listening
-pod informer initial sync complete pods=N
 relay IP written to BPF map
 relay IPv6 written to BPF map
 DNS hijack target written to BPF maps   ← DNS_ADDR_V4 + DNS_ADDR_V6 + DNS_PORT_V6
-eBPF connect4 attached cgroup=...
+eBPF connect4 attached cgroup=/sys/fs/cgroup/system.slice
 eBPF connect4 attached (extra) cgroup=/sys/fs/cgroup/user.slice
-eBPF connect6 attached cgroup=...
+eBPF connect6 attached cgroup=/sys/fs/cgroup/system.slice
 eBPF connect6 attached (extra) cgroup=/sys/fs/cgroup/user.slice
 eBPF sendmsg attached prog=udp4_sendmsg
 eBPF sendmsg attached prog=udp6_sendmsg
-eBPF skb_egress attached cgroup=...
+eBPF skb_egress attached cgroup=/sys/fs/cgroup/system.slice
 eBPF skb_egress attached (extra) cgroup=/sys/fs/cgroup/user.slice
 policy engine started
 orphan-cgroup GC spawned (interval 30s)
-policy: reconciled writes=N deletes=0 pods=M cgroups=K
+policy: reconciled writes=N deletes=0 cgroups=K
 bypass: synthetic flow consumer started
 tap: libssl candidates discovered count=A
 tap: Go TLS binaries discovered count=B
@@ -85,7 +82,7 @@ curl -s http://127.0.0.1:9999/api/status | jq
 
 ```bash
 heimdall flows list --limit 20
-heimdall flows list --pod my-app
+heimdall flows list --unit nginx.service
 heimdall flows list --connection corp
 heimdall flows list --host example.com
 heimdall flows show 1234
@@ -99,7 +96,7 @@ Web UI at `http://<host>:9999/` (or `http://127.0.0.1:9999/` from the host itsel
   open the side drawer; the **Plaintext** tab there shows
   hex+ASCII dumps of the captured TLS payloads bound to that flow.
 - **Live Tap** tab — every captured plaintext message in real time,
-  filterable by `namespace/pod` substring or `cgroup_id`.
+  filterable by `slice/unit` substring or `cgroup_id`.
 
 ## Troubleshooting
 
@@ -145,10 +142,8 @@ then rebuild + restart the unit.
 Check the per-cgroup policy:
 
 ```bash
-# Find the cgroup_id for a specific pod
-uid=$(kubectl get pod -n NS POD -o jsonpath='{.metadata.uid}')
-find /sys/fs/cgroup/kubepods -path "*pod${uid}*" -type d \
-  | xargs -I{} stat -c "%i %n" {}
+# Find the cgroup_id for a specific unit (inode == cgroup_id in cgroup v2)
+stat -c '%i %n' /sys/fs/cgroup/system.slice/nginx.service
 ```
 
 Then look up that inode in `CGROUP_POLICY`:
@@ -159,57 +154,55 @@ nix shell nixpkgs#bpftools -c sudo bpftool map dump name CGROUP_POLICY \
 ```
 
 If value is `0x06` or `0x07`, observe is off. Check the matching
-rule in `/etc/heimdall/config.yaml` and the pod's labels:
+rule in `/etc/heimdall/heimdall.ncl` and confirm the unit's
+identity:
 
 ```bash
-kubectl get pod -n NS POD -o jsonpath='{.metadata.labels}'
-kubectl get pod -n NS POD -o jsonpath='{.metadata.annotations}'
+systemctl show -p Slice,FragmentPath,ControlGroup nginx.service
 ```
 
-To force-observe a specific pod:
-
-```bash
-kubectl annotate pod -n NS POD heimdall.io/observe=true
-```
-
-The PolicyEngine reconciles within 5 seconds of the annotation
-change.
+To force-observe a specific unit, add or amend a `routing.rules`
+entry with `observe = true` and either restart the unit or wait
+≤5 s for the next reconcile.
 
 ### Messages exist but `flow_id = NULL`
 
 Three causes, in priority order:
 
-1. **Host process** firing the uprobe (e.g. dnscrypt-proxy). Expected
-   — `DEFAULT_POLICY` should drop these but doesn't always
+1. **Host process** firing the uprobe (e.g. a local resolver).
+   Expected — `DEFAULT_POLICY` should drop these but doesn't always
    completely.
 2. **Pre-existing connection** that wasn't seen by `bootstrap`.
-   Check the bootstrap log line; if `synthesized=` was 0 or your
-   pod isn't in the BPF map yet at boot time, restart the daemon.
-3. **Race window** for connections opened during startup. New
-   tap events that arrive after both PolicyEngine reconcile and
+   Check the bootstrap log line; if `synthesized=` was 0 or the
+   unit's cgroup wasn't in the resolver cache at boot time, restart
+   the daemon.
+3. **Race window** for connections opened during startup. Tap
+   events that arrive after both PolicyEngine reconcile and
    bootstrap will correlate.
 
 The /api/messages endpoint and Live Tap UI both attribute the
-message to the right pod via `cgroup_id → informer.lookup(uid)`
+message to the right unit via `cgroup_id → UnitResolver.resolve()`
 even when flow_id is NULL, so the user-facing experience is fine.
 
-### "policy: reconciled writes=N deletes=0 pods=M cgroups=K"
+### "policy: reconciled writes=N deletes=0 cgroups=K"
 
 - `writes` should be 0 on most ticks once startup converged.
-- `pods` should match `kubectl get pods -A --field-selector spec.nodeName=NODE | wc -l`.
-- `cgroups` ≈ `pods × 3` (parent + container + pause). If much
-  lower, CgroupResolver isn't seeing them — check
-  `/sys/fs/cgroup/kubepods` mount and `runtime.cgroup` config.
+- `cgroups` should match the unit count under `runtime.cgroup`
+  (default `system.slice`), roughly `systemctl list-units --type=service --state=running | wc -l`.
+  If much lower, `UnitResolver` isn't seeing them — check
+  `runtime.cgroup` config and that `/sys/fs/cgroup` is the cgroup
+  v2 unified hierarchy.
 
 ### Restart hangs / takes >10s
 
 Two long operations at startup:
 
-1. **CgroupResolver scan** of `/sys/fs/cgroup/kubepods` — should
-   finish in <100ms even on busy nodes.
+1. **UnitResolver scan** of `/sys/fs/cgroup` — should finish in
+   <100 ms even on busy hosts.
 2. **Tap binary scan** of every `/proc/<pid>/exe`. Each Go binary
-   triggers a `.gopclntab` walk; on a node with stripped 200MB
-   binaries (rancher, cilium-envoy) this can take ~2 seconds.
+   triggers a `.gopclntab` walk; on a host with several stripped
+   100–200 MB binaries (e.g. containerd, large server processes)
+   this can take ~2 seconds.
 
 Look for `tap: Go Read RET sites found` lines — they're paced by
 the per-binary scan.
@@ -217,17 +210,18 @@ the per-binary scan.
 ### Bypass flow rows out of control
 
 If `flows` table is growing fast with `connection_name='bypass'`,
-some pod is opening many short-lived connections you don't actually
-want to record. Add a rule:
+some unit is opening many short-lived connections you don't
+actually want to record. Add a rule:
 
-```yaml
-- name: chatty-pod
-  match: { namespaces: [the-noisy-ns] }
-  use: default
-  observe: false   # disables both tap events and bypass flow inserts
+```nickel
+{ name = "chatty-noise",
+  match = { units = [ "noisy-collector.service" ] },
+  use     = "default",
+  observe = false,   # disables both tap events and bypass flow inserts
+}
 ```
 
-The `observe: false` path is gated in eBPF so the bypass event
+The `observe = false` path is gated in eBPF so the bypass event
 itself never fires for those cgroups (no perf-buffer overhead).
 
 ### `heimdall run` — child process can't reach its target
@@ -247,9 +241,8 @@ Most failures fall into one of three buckets:
    probably failed — check `dmesg | tail` and
    `/proc/sys/user/max_user_namespaces` (must be > 0).
 
-2. **Pod-style label/annotation didn't take.** `heimdall run` does
-   NOT use pod labels — it registers via `POST /api/cli/register`.
-   Confirm the daemon saw the registration:
+2. **Registration didn't reach the daemon.** `heimdall run` registers
+   via `POST /api/cli/register`. Confirm the daemon saw it:
 
    ```bash
    sudo bpftool map dump name CGROUP_POLICY | tail
@@ -313,22 +306,22 @@ Logs go to journalctl. There's no separate log file.
 
 ## Routing × observe combination matrix
 
-Every pod gets two independent decisions: which connection to route
-through (`use`) and whether to capture TLS plaintext (`observe`). All
-four combinations are valid:
+Every unit gets two independent decisions: which connection to route
+through (`use`) and whether to capture TLS plaintext (`observe`).
+All four combinations are valid:
 
 | Combination | When you'd use it | How to set |
 |---|---|---|
-| `use: <name>` + `observe: true` | App pod whose egress should go through a named upstream (corporate VPN, etc.) **and** whose plaintext you want to capture | annotation `heimdall.io/routing: <name>` (+ `heimdall.io/observe: "true"` if not the default) |
-| `use: <name>` + `observe: false` | Same routing, but plaintext suppressed (e.g. credentials in flight, regulatory) | both annotations |
-| `use: system` + `observe: true` | Host-network pod, or one architecturally outside the relay, but whose TLS plaintext is still useful | annotations: `routing: system`, `observe: "true"` |
-| `use: <name>` + `observe: false` (rule-based) | Cluster infra (CNI agents, controllers, data stores) — route normally but silence the noise | `podRouting.rules` entry with `observe: false` |
-| `use: system` + `observe: false` | Don't touch the pod at all (e.g. metrics scrapers on host network) | usually a `cluster-infra` rule |
+| `use: <name>` + `observe: true` | App unit whose egress should go through a named upstream (corp VPN, etc.) **and** whose plaintext you want to capture | `routing.rules` entry with `use = "<name>"`, `observe = true` |
+| `use: <name>` + `observe: false` | Same routing, plaintext suppressed (credentials in flight, regulatory) | `routing.rules` entry with `observe = false` |
+| `use: system` + `observe: true` | Host-bound infrastructure whose TLS plaintext is still useful even though the relay must not see it | `routing.rules` entry with `use = "system"`, `observe = true` |
+| `use: <name>` + `observe: false` (rule-based) | Host-internal infra (containerd, log shippers) — route normally but silence the noise | `routing.rules` entry with `observe = false` |
+| `use: system` + `observe: false` | Don't touch the unit at all (e.g. local node-exporter) | a catch-all `host-infra` rule |
 
 Use the API or sqlite to spot-check what's actually being captured:
 
 ```bash
 curl -s 'http://127.0.0.1:9999/api/messages?limit=200' \
-  | jq -r '.[] | "\(.pod_namespace)/\(.pod_name) dir=\(.dir) cap=\(.captured_len)"' \
+  | jq -r '.[] | "\(.slice // "?")/\(.unit // "?") dir=\(.dir) cap=\(.captured_len)"' \
   | sort | uniq -c | sort -rn | head
 ```

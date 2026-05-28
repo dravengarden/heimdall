@@ -1,16 +1,16 @@
 //! SNI extraction from a TLS ClientHello on a freshly-accepted client
 //! socket. Used by the relay to recover a hostname for connections
-//! that bypassed heimdall's fake-IP DNS (i.e. the pod connected by
-//! literal IP, not via name resolution).
+//! that bypassed heimdall's fake-IP DNS (i.e. the client connected
+//! by literal IP, not via name resolution).
 //!
 //! Why this exists: tap modules don't cover stripped binaries (Bun,
 //! Deno, Envoy data plane, Chromium-derived crawlers). For those,
 //! plaintext capture is impossible — but we can still surface the
 //! destination hostname by peeking at the first TLS record, which is
 //! always the ClientHello with its `server_name` extension. That gets
-//! us "rancher couldn't decrypt this Bun pod's traffic, but it was
-//! talking to api.openai.com" instead of "rancher saw an opaque blob
-//! to 104.18.6.83".
+//! us "heimdall couldn't decrypt this Bun process's traffic, but it
+//! was talking to api.openai.com" instead of "heimdall saw an opaque
+//! blob to 104.18.6.83".
 //!
 //! Cost: one non-blocking peek + ~150 lines of byte parsing. Time-
 //! bounded so a non-TLS client doesn't stall the relay's accept loop.

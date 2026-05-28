@@ -1,5 +1,3 @@
-> **Note:** heimdall is mid-refactor from a k8s-coupled model to a systemd-first model. The schema renamed `podRouting`→`routing`, the selector grammar moved from pod labels/namespaces to `units` / `slices`, and the daemon no longer talks to a kube-apiserver. Some examples below still show the old k8s model and are being updated. See `/etc/heimdall/README.md` for the current schema reference.
-
 # Architecture
 
 ## Components
@@ -7,15 +5,15 @@
 | Component | Crate / module | Role |
 |---|---|---|
 | eBPF programs | `heimdall-ebpf` | `connect4`, `connect6`, `udp4_sendmsg`, `udp6_sendmsg`, `skb_egress`, libssl uprobes, Go TLS uprobes, rustls uprobes — all in one ELF, embedded into the daemon binary |
-| Userspace daemon | `heimdall` | loads / attaches eBPF, runs the relay (dual-stack), talks to k8s, drives the policy engine, GCs orphan CLI cgroups, serves the HTTP API |
+| Userspace daemon | `heimdall` | loads / attaches eBPF, runs the relay (dual-stack), watches `/sys/fs/cgroup` for unit identity, drives the policy engine, GCs orphan CLI cgroups, serves the HTTP API |
 | Web UI | `heimdall-ui` | React 19 / MUI, `bun run build`, bundled into the daemon binary via `rust-embed` |
 | Shared types | `heimdall-common` | `OrigDst`, `TapEvent`, `BypassEvent`, `is_default_bypass{,6}`, policy flag bits — `#![no_std]` so the eBPF crate can use them |
-| Config schema | `heimdall-config` | YAML / JSON / TOML / Nickel schema + validator — pure Rust, no kubernetes deps |
+| Config schema | `heimdall-config` | YAML / JSON / TOML / Nickel schema + validator — pure Rust, no orchestrator deps |
 
 ## End-to-end data flow
 
 ```
-            ┌───────────────────────────── Pod ─────────────────────────────┐
+            ┌──────────────────── Unit cgroup ──────────────────────────────┐
             │                                                               │
             │   app process                                                 │
             │     │                                                         │
@@ -63,17 +61,17 @@
    │     │ accept() → src_port → PORT_MAP[src_port] → OrigDst                │
    │     │   (OrigDst.family discriminates v4 vs v6 destination)              │
    │     ▼                                                                    │
-   │   PodInformer + CgroupResolver                                          │
-   │     │  cgroup_id → pod_uid → labels/annotations  (None for non-pod)     │
+   │   UnitResolver                                                          │
+   │     │  cgroup_id → (unit, slice) from /sys/fs/cgroup path                │
    │     ▼                                                                    │
    │   cli_overrides.get(cgroup_id)                                          │
    │     │  hit → use heimdall-run-registered RunDecision                    │
-   │     │  miss → router::resolve_pod_decision(cfg, pod) → PodDecision      │
+   │     │  miss → router::resolve_decision(cfg, unit_info) → Decision        │
    │     ▼                                                                    │
    │   fake-IP reverse lookup on OrigDst → SOCKS5 ATYP=0x03 hostname         │
    │     │  (when miss, fall back to ATYP=0x01 IPv4 / 0x04 IPv6 literal)     │
    │     ▼                                                                    │
-   │   SOCKS5 CONNECT to upstream → copy_bidirectional with the pod's stream │
+   │   SOCKS5 CONNECT to upstream → copy_bidirectional with the client stream│
    │     │                                                                    │
    │     │ insert flow_start row                                              │
    │     │ push flow_id to OpenFlowIndex[cgroup_id]                           │
@@ -118,28 +116,25 @@ process calls SSL_write(buf, n)  /  Go (*Conn).Write  /  rustls write
 ### Policy plane
 
 Independent control loop populating `CGROUP_POLICY` so the kernel
-programs above can gate per-pod.
+programs above can gate per-cgroup.
 
 ```
    /etc/heimdall/heimdall.{ncl,toml,json,yaml}   (auto-discovered)
         │
         ▼
-   HeimdallConfig (PodRouting.rules + PodRouting.default + cli.run)
+   HeimdallConfig (Routing.rules + Routing.default + cli.run)
         │
-   PodInformer (k8s watcher) + CgroupResolver (/sys/fs/cgroup walk)
-        │      │
-        │      └── cgroup_id ↔ pod_uid mapping
+   UnitResolver (/sys/fs/cgroup walk; cgroup_id → unit + slice)
         │
         ▼
    PolicyEngine (heimdall/src/policy.rs)
-     - subscribes to PodEvent stream (Upsert / Delete / InitDone)
-     - reconciles every 5s as a safety net
-     - encodes PodDecision → u8 flags (REDIRECT_OFF / OBSERVE_OFF /
-                                        NO_BYPASS_LOG / DNS_HIJACK)
+     - reconciles every 5s, walking known cgroups
+     - encodes Decision → u8 flags (REDIRECT_OFF / OBSERVE_OFF /
+                                     NO_BYPASS_LOG / DNS_HIJACK)
      - writes BPF CGROUP_POLICY[cgroup_id] = flags
      - tracks `external` set so reconcile never wipes
        heimdall-run-registered cgroups (those are owned by the
-       HTTP register/deregister lifecycle, not the pod informer)
+       HTTP register/deregister lifecycle)
 ```
 
 ### Bootstrap pass
@@ -148,11 +143,11 @@ One-shot, runs 2s after PolicyEngine is up. Closes the gap for
 connections that already existed when the daemon started.
 
 ```
-   for pod in informer.snapshot():
-      pid = first proc in any of pod's cgroups
+   for cgroup in UnitResolver.snapshot():
+      pid = first proc in cgroup.procs
       for conn in /proc/<pid>/net/tcp where state == ESTABLISHED:
-         insert_flow_start(connection_name="bootstrap", pod, dst)
-         OpenFlowIndex[every cgroup of pod].push(flow_id)
+         insert_flow_start(connection_name="bootstrap", unit, dst)
+         OpenFlowIndex[cgroup_id].push(flow_id)
 ```
 
 After this pass, tap events from those long-lived connections find a
@@ -241,8 +236,8 @@ explicitly.
 | eBPF maps (`COOKIE_MAP`, `PORT_MAP`, `CGROUP_POLICY`, `BYPASS_EVENTS`, `TAP_EVENTS`, `RELAY_ADDR{,6}`, `DNS_ADDR_V4`, `DNS_ADDR_V6`, `DNS_PORT_V6`, `GO_READ_STATE`, `SSL_READ_STATE`, `RUSTLS_READ_STATE`) | kernel | until daemon exits |
 | `flows` table | `<runtime.stateDir>/flows.db` | `runtime.flowRetentionSecs` (default 3 days) |
 | `messages` table | same db | shared retention window |
-| Pod label / cgroup cache | in-memory in daemon | refreshed by informer + 5s reconcile |
-| `cli_overrides` (`heimdall run` registrations) | in-memory `Arc<RwLock<HashMap<u64, PodDecision>>>` shared with HTTP API | until deregister or GC reap |
+| Unit / cgroup cache | in-memory in daemon (`UnitResolver`) | refreshed at startup + on-miss + 5s reconcile |
+| `cli_overrides` (`heimdall run` registrations) | in-memory `Arc<RwLock<HashMap<u64, Decision>>>` shared with HTTP API | until deregister or GC reap |
 | `PolicyEngine.external` set | in-memory `Arc<RwLock<HashSet<u64>>>` | until deregister or GC reap |
 | OpenFlowIndex | in-memory `parking_lot::RwLock<HashMap>` | populated by relay + bypass + bootstrap, used by tap consumer |
 | Per-cgroup mount-ns shim files | `/tmp/heimdall-cli-{nsswitch,resolv}-<cgroup_id>.conf` | written by `heimdall run` parent before fork; deleted after waitpid |
@@ -268,14 +263,14 @@ explicitly.
   uprobes that observe the application's `SSL_*` / Go / rustls calls
   before encryption / after decryption.
 - **No per-connection filtering.** Policy granularity is per-cgroup
-  (per-pod for k8s pods, per-`heimdall run` for CLI processes).
-  Different connections from the same cgroup can't have different
-  policies.
-- **No pod-side reverse routing.** When `use: system` is chosen, the
-  pod's connection bypasses heimdall entirely; the relay never sees
-  it. We can still observe TLS plaintext (uprobes are independent of
-  the relay path), but `bytes_up` / `bytes_down` stay zero on the
-  synthetic flow row.
+  (per-unit for systemd-managed services, per-`heimdall run` for CLI
+  processes). Different connections from the same cgroup can't have
+  different policies.
+- **No client-side reverse routing.** When `use: system` is chosen,
+  the unit's connection bypasses heimdall entirely; the relay never
+  sees it. We can still observe TLS plaintext (uprobes are
+  independent of the relay path), but `bytes_up` / `bytes_down`
+  stay zero on the synthetic flow row.
 - **No JVM TLS taps yet.** HotSpot's default `SunJSSE` is pure-Java
   so libssl uprobes don't fire. Roadmap: a JVMTI agent that
   retransforms `sun.security.ssl.SSLEngineImpl.{wrap,unwrap}` to

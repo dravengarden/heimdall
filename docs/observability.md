@@ -1,5 +1,3 @@
-> **Note:** heimdall is mid-refactor from a k8s-coupled model to a systemd-first model. The schema renamed `podRouting`→`routing`, the selector grammar moved from pod labels/namespaces to `units` / `slices`, and the daemon no longer talks to a kube-apiserver. Some examples below still show the old k8s model and are being updated. See `/etc/heimdall/README.md` for the current schema reference.
-
 # Observability — TLS plaintext capture (Phase B)
 
 Heimdall's observability layer captures decrypted TLS payloads at
@@ -18,13 +16,13 @@ What heimdall's TLS observability does and doesn't do, today.
 | Capability | Status | Mechanism |
 |---|---|---|
 | **Plaintext capture: OpenSSL `libssl.so` (1.1, 3.x)** | ✅ shipped | dynsym lookup of `SSL_read`/`SSL_write`; both directions captured |
-| **Plaintext capture: Go `crypto/tls`** | ✅ shipped | `.gopclntab` parsing + RET-offset uprobes; works on stripped Go binaries (rancher / cilium / kubelet) |
+| **Plaintext capture: Go `crypto/tls`** | ✅ shipped | `.gopclntab` parsing + RET-offset uprobes; works on stripped Go binaries (containerd, rancher, etc.) |
 | **Plaintext capture: rustls (unstripped)** | ✅ shipped | Coroot-style substring match (`rustls` + `Reader`/`Writer` + `read`/`write`); covers rustls 0.21 (`PlaintextSink`) through current (`Writer<>`) |
 | **Plaintext capture: BoringSSL static (unstripped)** | ✅ shipped | `.rodata` `BoringSSL` marker + `.symtab`/`.dynsym` lookup; reuses the existing OpenSSL eBPF programs since the C ABI is bit-identical |
 | **Plaintext capture: stripped static binaries (Bun / Deno / Envoy / Chromium-derived)** | 🟡 not attempted | No OSS tool ships a working answer here — see *Limits and alternative approaches* |
 | **Plaintext capture: JVM** | 🟡 deferred | Roadmap: JVMTI agent + native uprobe stub |
 | **SNI hostname fallback** | ✅ shipped | TLS ClientHello peek in the relay; recovers hostname for IP-literal connections that skipped fake-IP DNS, regardless of how stripped the binary is |
-| **Live re-scan** | ✅ shipped | 30 s tokio interval re-runs all four TLS scanners; pods born after daemon startup are picked up automatically |
+| **Live re-scan** | ✅ shipped | 30 s tokio interval re-runs all four TLS scanners; units started after daemon startup are picked up automatically |
 | **Bootstrap of pre-existing connections (IPv4 + IPv6)** | ✅ shipped | `/proc/<pid>/net/{tcp,tcp6}` parse; `::ffff:V4` mapped entries filtered to avoid double-counting |
 | **Cert pinning / mTLS** | ✅ transparent | uprobe path reads the application's own buffer; no MITM, no synthetic cert, no truststore manipulation |
 | **MITM observability path (M5)** | 🟡 planned | Complementary to uprobe — see *Limits and alternative approaches* |
@@ -69,8 +67,8 @@ Hit `GET http://127.0.0.1:9999/api/status` and read the `tap` field:
 | Field | Use it for |
 |---|---|
 | `attached` / `scanners.<name>` | "How many TLS endpoints does heimdall currently observe, broken out by implementation?" |
-| `recent_failures` (cap 32) | "Why didn't pod X's binary get attached?" — search for path components. Stripped binary errors land here as soon as the scanner detects them (well-known shape: `*write symbol absent`). |
-| `rescan.enabled` | False = pods born after daemon start are NOT being picked up. Indicates a misconfig or `tap.enabled = false`. |
+| `recent_failures` (cap 32) | "Why didn't unit X's binary get attached?" — search for path components. Stripped binary errors land here as soon as the scanner detects them (well-known shape: `*write symbol absent`). |
+| `rescan.enabled` | False = units started after daemon boot are NOT being picked up. Indicates a misconfig or `tap.enabled = false`. |
 | `rescan.last_tick_ts_us` + `rescan.period_secs` | Health probe: `(now_us - last_tick_ts_us) / 1_000_000 > period_secs * 2` means rescan stalled. |
 | `rescan.panics` | `> 0` is always a bug — the rescan loop caught and recovered, but something is structurally wrong. Open an issue. |
 
@@ -80,9 +78,9 @@ For "given a flow, can I expect plaintext for it?", read the row directly:
 
 | `atyp` | `dst_host` | `dst_ip` | What it means |
 |---|---|---|---|
-| `domain` | non-NULL | fake-IP from heimdall pool | Fake-IP DNS hit; pod connected by hostname (libc resolver returned a heimdall-allocated fake IP). Plaintext **likely** captured if the pod's binary has tap support. |
-| `sni` | non-NULL | original IP the pod connected to | **SNI fallback fired AND was used for routing.** Pod connected by IP literal (or stale fake IP); the TLS ClientHello carried `server_name`; the relay promoted the destination to that hostname so the SOCKS5 upstream gets ATYP=0x03 and can reach the real host. Plaintext capture depends on whether the pod's binary has tap support; routing succeeds regardless. |
-| `ip` / `ip6` | NULL | the IP the pod connected to | Pod connected by IP literal **and** sent no SNI (per RFC 6066, browsers / curl / Bun's `fetch()` to an IP all do this). Plaintext almost certainly not captured; relay forwards by IP. |
+| `domain` | non-NULL | fake-IP from heimdall pool | Fake-IP DNS hit; client connected by hostname (libc resolver returned a heimdall-allocated fake IP). Plaintext **likely** captured if the unit's binary has tap support. |
+| `sni` | non-NULL | original IP the client connected to | **SNI fallback fired AND was used for routing.** Client connected by IP literal (or stale fake IP); the TLS ClientHello carried `server_name`; the relay promoted the destination to that hostname so the SOCKS5 upstream gets ATYP=0x03 and can reach the real host. Plaintext capture depends on whether the unit's binary has tap support; routing succeeds regardless. |
+| `ip` / `ip6` | NULL | the IP the client connected to | Client connected by IP literal **and** sent no SNI (per RFC 6066, browsers / curl / Bun's `fetch()` to an IP all do this). Plaintext almost certainly not captured; relay forwards by IP. |
 
 Cross-check with `messages`:
 
@@ -101,8 +99,8 @@ Together: `(atyp, dst_host, message-count)` gives AI a complete view of "what th
 | **OpenSSL `libssl.so.1.1`** | ✅ working | same | Older Kong / older distros. Same symbol set. |
 | **Go `crypto/tls.(*Conn).Write`** | ✅ working | uprobe at function entry | ABI Internal: receiver in RAX, slice (data, len, cap) in RBX/RCX/RDI. |
 | **Go `crypto/tls.(*Conn).Read`** | ✅ working | uprobe at entry + uprobe at every RET site (no uretprobe) | uretprobes break Go's movable stacks, so we disassemble the function body with iced-x86 and attach a normal uprobe at every `FlowControl::Return` instruction. |
-| **Go binaries built with `-ldflags="-s -w"`** | ✅ working | symbols come from `.gopclntab` instead of `.symtab` | rancher, kubelet, kube-apiserver, cilium, fleet, etc. — the runtime's own symbol table survives stripping. |
-| **rustls (unstripped)** | ✅ implemented | uprobe at the rustls write entry; uprobe + uretprobe at the rustls read entry | Substring-tuple symbol match (Coroot's approach): write needs `rustls` + (`Writer` ∨ `PlaintextSink`) + `write` (excluding `write_vectored`/`write_all`/`write_fmt`/`write_str`); read needs `rustls` + `Reader` + `read` (excluding `read_to_end`/`read_to_string`/`read_exact`/`read_buf`/`read_vectored`). Covers rustls 0.21's `PlaintextSink` API and the post-0.22 `Writer<>` API in one filter. ABI: `RSI=buf.ptr`, `RDX=buf.len`; return is 16-byte `(RAX=tag, RDX=value)`. **Caveat:** symbol presence ≠ runtime usage — ClickHouse links rustls but its TLS path goes through statically-linked OpenSSL, so tap attaches successfully but never fires for that binary. Vector / edge-runtime / heimdall's own kube-rs client actually exercise it. |
+| **Go binaries built with `-ldflags="-s -w"`** | ✅ working | symbols come from `.gopclntab` instead of `.symtab` | containerd, rancher, vault, prometheus, etc. — the runtime's own symbol table survives stripping. |
+| **rustls (unstripped)** | ✅ implemented | uprobe at the rustls write entry; uprobe + uretprobe at the rustls read entry | Substring-tuple symbol match (Coroot's approach): write needs `rustls` + (`Writer` ∨ `PlaintextSink`) + `write` (excluding `write_vectored`/`write_all`/`write_fmt`/`write_str`); read needs `rustls` + `Reader` + `read` (excluding `read_to_end`/`read_to_string`/`read_exact`/`read_buf`/`read_vectored`). Covers rustls 0.21's `PlaintextSink` API and the post-0.22 `Writer<>` API in one filter. ABI: `RSI=buf.ptr`, `RDX=buf.len`; return is 16-byte `(RAX=tag, RDX=value)`. **Caveat:** symbol presence ≠ runtime usage — ClickHouse links rustls but its TLS path goes through statically-linked OpenSSL, so tap attaches successfully but never fires for that binary. Vector and edge-runtime actually exercise it. |
 | **BoringSSL static (unstripped)** | ✅ implemented | reuse OpenSSL `ssl_write`/`ssl_read_enter`/`ssl_read_exit` programs at file offsets resolved from `.symtab`/`.dynsym` | Two-stage detection: (1) `BoringSSL` literal in `.rodata` (high-confidence marker for static-linked BoringSSL; absent from non-BoringSSL OpenSSL builds); (2) `SSL_write`/`SSL_read` symbol lookup. ABI is bit-identical to OpenSSL so no new eBPF programs are needed. Hits e.g. RedisInsight's bundled Node binary. |
 | **rustls / BoringSSL (stripped static)** | ❌ not attempted | — | Both symbol tables are gone in production builds (Bun, Deno, current Node releases, Envoy, Chromium-derived). No OSS tool ships a working answer for this — see *Limits and alternative approaches*. SNI fallback covers these binaries' hostnames at the relay layer. |
 | **JVM (`SunJSSE` provider)** | ❌ not implemented | — | HotSpot's default TLS is pure Java (`sun.security.ssl.SSLEngineImpl.{wrap,unwrap}`), so existing libssl uprobes don't fire. See *Limits and alternative approaches* below. |
@@ -135,12 +133,12 @@ Workarounds surveyed:
 | **JVMTI agent + `RetransformClasses`.** Load a Java agent that rewrites `SSLEngineImpl` bytecode to redirect through a fixed-address native stub `heimdall_tls_observe(dir, buf, len)`, then uprobe that stub. | ✅ Chosen for the roadmap. Stable across JVM versions because the stub is in our own ELF, not the JVM's code cache. Cost: requires injecting `JAVA_TOOL_OPTIONS` via mutating webhook. |
 | **Hook native crypto libs.** If the JVM uses a native TLS provider (Conscrypt → BoringSSL, Wildfly Elytron → OpenSSL), uprobe `libssl.so` directly. | 🟡 Default OpenJDK uses pure-Java SunJSSE at the protocol layer; native is reached only for AES/SHA primitives, which is too low-level to recover frame boundaries. Useful only when a specific deployment opts in. |
 | **GraalVM native-image.** AOT-compiled Java becomes a real ELF binary with stable symbols. | 🟡 Would work like Go. Almost no production Spring Boot deployments use native-image yet. |
-| **ecapture-style keylog extraction.** uprobe internal JVM key-derivation paths to extract TLS master secrets, emit NSS keylog format, decrypt offline against a tcpdump pcap. | 🟡 Doesn't give real-time visibility — message bodies are recoverable only after the fact (capture + Wireshark). Disqualifies real-time routing and alerting on Java pods. Useful as a forensic complement, not a substitute for the JVMTI plan. Also fragile across JDK vendors/versions. |
+| **ecapture-style keylog extraction.** uprobe internal JVM key-derivation paths to extract TLS master secrets, emit NSS keylog format, decrypt offline against a tcpdump pcap. | 🟡 Doesn't give real-time visibility — message bodies are recoverable only after the fact (capture + Wireshark). Disqualifies real-time routing and alerting on JVM workloads. Useful as a forensic complement, not a substitute for the JVMTI plan. Also fragile across JDK vendors/versions. |
 
 The JVMTI plan trades operational complexity (startup-arg injection)
-for engineering stability at the eBPF layer. Since heimdall already
-needs a mutating-webhook story for CA distribution (M5 below),
-reusing that mechanism to inject `JAVA_TOOL_OPTIONS` is cheap.
+for engineering stability at the eBPF layer. The startup-arg
+injection itself is per-unit `Environment=JAVA_TOOL_OPTIONS=...` in
+the service drop-in; no orchestrator-side machinery required.
 
 ### rustls — substring-tuple match, ABI-fragile
 
@@ -157,10 +155,10 @@ rather than exact mangled-name patterns:
 Covers both eras of the rustls public API: 0.21 and earlier expose a
 `PlaintextSink` trait, 0.22+ replaced it with a `Writer<'_, T>`
 struct that implements `std::io::Write`. The substring tuple is
-strictly more permissive than the old exact pattern — measurable side
-effect: heimdall's own kube-rs binary used to log "rustls Read::read
-symbol absent (likely inlined); recv-side skipped"; with substring
-matching the recv-side now attaches.
+strictly more permissive than the old exact pattern — early
+deployments logged "rustls Read::read symbol absent (likely
+inlined); recv-side skipped" against rustls-using daemons; with
+substring matching the recv-side now attaches.
 
 Remaining limits:
 
@@ -213,8 +211,8 @@ What's still not covered:
 ### SNI fallback — hostname recovery for opaque TLS
 
 When the relay's fake-IP DNS doesn't have a hostname for the
-destination IP (i.e. the pod connected by literal IP, not via name
-resolution), heimdall now peeks at the first TLS record on the
+destination IP (i.e. the client connected by literal IP, not via
+name resolution), heimdall now peeks at the first TLS record on the
 accepted client socket and parses the SNI server_name extension.
 Implementation: `src/sni.rs` (~200 LoC including unit tests).
 
@@ -226,8 +224,8 @@ Properties:
   clients return `None` rather than stalling the relay's accept
   fan-out.
 - **Stripped-binary-friendly.** Doesn't depend on any symbol or
-  eBPF state in the pod. Works regardless of which TLS library is
-  in use.
+  eBPF state in the unit's process. Works regardless of which TLS
+  library is in use.
 - **Covers the gap exactly where the tap layer fails.** Bun,
   Deno, Envoy, Chromium-derived crawlers — even when their
   binaries are stripped and we can't decode plaintext, the flow
@@ -243,7 +241,7 @@ Limits:
   service meshes and apps with hard-coded `host → IP` mappings.
 - TLS 1.3 ClientHello can be encrypted (ECH); when ECH is in use,
   the outer SNI is a generic alias and the real hostname is
-  unrecoverable. Not an issue against current cluster workloads.
+  unrecoverable. Not an issue against current workloads.
 
 ### Live re-scan
 
@@ -252,18 +250,17 @@ Limits:
 `scan_boringssl_static()` and attaching uprobes only to binaries
 whose `(dev, inode)` is not already in the shared `AttachedSet`.
 Replaces the previous "scanned once at startup, restart heimdall to
-pick up new pods" behaviour.
+pick up new units" behaviour.
 
-Trade-off accepted: pods born between ticks miss up to 30 s of TLS
-correlation before the next pass attaches. Per-flow correlation
+Trade-off accepted: units started between ticks miss up to 30 s of
+TLS correlation before the next pass attaches. Per-flow correlation
 catches up retroactively once attached, since the BPF programs only
-need to be live by the time the pod issues a TLS call worth
-capturing — long-lived TLS streams (apiserver Watch, leader
-election) benefit immediately.
+need to be live by the time the unit issues a TLS call worth
+capturing — long-lived TLS streams benefit immediately.
 
-Inotify / fanotify on `/sys/fs/cgroup/kubepods` would be more
+Inotify / fanotify on `/sys/fs/cgroup/system.slice` would be more
 responsive but adds significant complexity (cgroup-event correlation
-across pod lifecycles). 30 s polling is the simpler-than-Pixie
+across unit restarts). 30 s polling is the simpler-than-Pixie
 approach that works in practice.
 
 ### Alternative path: MITM (M5) and why uprobe is preferred
@@ -275,13 +272,13 @@ matrix, **complementary to and not a superset of** the uprobe path:
 
 | Client | Reads OS truststore? | MITM viable? |
 |---|---|---|
-| Python `requests` / `httpx` / `pip` | ❌ uses `certifi` bundled CA list | Needs `REQUESTS_CA_BUNDLE` / `SSL_CERT_FILE` injection per pod |
-| Python stdlib `ssl` | ✅ | ✅ webhook-injected CA suffices |
+| Python `requests` / `httpx` / `pip` | ❌ uses `certifi` bundled CA list | Needs `REQUESTS_CA_BUNDLE` / `SSL_CERT_FILE` injection per unit |
+| Python stdlib `ssl` | ✅ | ✅ host CA store suffices |
 | Go (`x509.SystemCertPool`) | ✅ | ✅ (distroless images without `/etc/ssl/certs/` excepted) |
 | Node.js (default) | ❌ bundled roots; Node 23+ adds `--use-system-ca` | Needs `NODE_EXTRA_CA_CERTS` |
 | Rust `rustls` + `webpki-roots` | ❌ Mozilla list compiled in | Cannot be satisfied without a code change |
 | Rust `native-tls` | ✅ via OpenSSL/SChannel | ✅ |
-| JVM | ❌ separate `cacerts` keystore | Needs init container or `keytool` invocation per pod |
+| JVM | ❌ separate `cacerts` keystore | Needs `keytool` invocation or `Environment=` truststore override per unit |
 | Anything with cert pinning | — | ❌ pinning rejects any synthetic cert |
 | mTLS (client auth) | — | ❌ relay can't forge a valid client cert |
 
@@ -307,15 +304,16 @@ not a replacement.
 
 L4-only is not a degraded mode — it is the honest answer when the
 application's crypto boundary is opaque to us. The flow row still
-carries the SNI hostname (when sent), pod identity, byte counts,
+carries the SNI hostname (when sent), unit identity, byte counts,
 and timing; only the message body is unrecoverable.
 
 ## IPv4 / IPv6 / Unix-domain transport
 
 Tap is **transport-agnostic**: uprobes fire at the application's
 `SSL_*` / Go / rustls call boundary, before the bytes hit any socket.
-A pod that opens a v6 TLS connection produces identical `TapEvent`
-rows to one using v4; the tap layer never inspects the socket family.
+A process that opens a v6 TLS connection produces identical
+`TapEvent` rows to one using v4; the tap layer never inspects the
+socket family.
 Address-family details enter the picture only on the relay side
 (see `architecture.md`'s data flow), where `OrigDst.family` is
 preserved through `COOKIE_MAP` / `PORT_MAP` and surfaces as the
@@ -323,11 +321,10 @@ preserved through `COOKIE_MAP` / `PORT_MAP` and surfaces as the
 
 ## How a tap event becomes a row
 
-1. App makes a TLS call (e.g. `rancher` writes an HTTP/2 frame to
-   apiserver).
+1. App makes a TLS call (e.g. a Go service writes an HTTP/2 frame).
 2. uprobe fires: `emit_tap()` reads `bpf_get_current_cgroup_id()` and
    checks `CGROUP_POLICY[cgroup_id] & POLICY_OBSERVE_OFF`. If set,
-   returns immediately — no perf-buffer overhead for silenced pods.
+   returns immediately — no perf-buffer overhead for silenced units.
 3. Otherwise allocates a `TapEvent` on the stack, copies up to 256
    bytes of plaintext via `bpf_probe_read_user`, calls
    `TAP_EVENTS.output()`.
@@ -353,20 +350,15 @@ entry in the in-memory `OpenFlowIndex`. Three writers populate it:
    synthetic flow row tagged `connection_name = "bypass"` and
    pushes the id.
 3. **Bootstrap pass** (`bootstrap.rs`): one-shot scan at daemon
-   startup that reads each pod's `/proc/<pid>/net/tcp` **and**
-   `/proc/<pid>/net/tcp6` and synthesizes a flow per ESTABLISHED
-   connection. Tagged `connection_name = "bootstrap"`, with `atyp`
-   set to `"ip"` or `"ip6"` depending on the source file. The v6
-   parser drops `::ffff:V4` mapped entries to avoid double-counting
-   against the v4 pass on dual-stack sockets. Without this,
-   long-lived pre-existing connections (cluster controllers ↔
-   apiserver, kubelet's watch stream, dual-stack ingresses) would
-   never get a flow_id.
-
-Multi-container pods: bootstrap pushes the synthetic flow_id to
-**every** cgroup of the pod, not just the one that owned the listing
-pid, because the pause sandbox holds the netns while plaintext fires
-from the application container.
+   startup that reads each known cgroup's `/proc/<pid>/net/tcp`
+   **and** `/proc/<pid>/net/tcp6` and synthesizes a flow per
+   ESTABLISHED connection. Tagged `connection_name = "bootstrap"`,
+   with `atyp` set to `"ip"` or `"ip6"` depending on the source
+   file. The v6 parser drops `::ffff:V4` mapped entries to avoid
+   double-counting against the v4 pass on dual-stack sockets.
+   Without this, long-lived pre-existing connections (long-running
+   gRPC streams, watch loops, dual-stack ingresses) would never get
+   a flow_id.
 
 ## When `flow_id = NULL` is expected
 
@@ -376,12 +368,12 @@ from the application container.
   this case is rare.
 - Race window: connect4 fires, tap fires before the bypass consumer's
   perf event drains. Order of milliseconds. Acceptable.
-- Pods scheduled after daemon startup before bootstrap completes —
+- Units started after daemon startup before bootstrap completes —
   also a small race window.
 
 In all cases, the API response still attributes the message to the
-correct pod via the cgroup_id → informer lookup, so the UI labels
-remain useful.
+correct unit via the cgroup_id → `UnitResolver` lookup, so the UI
+labels remain useful.
 
 ## Uprobe attach details
 
@@ -483,19 +475,19 @@ How to gauge whether the tap is healthy:
 # Reported once at startup as `attached_libs=N`.
 journalctl -u heimdall --since "10 minutes ago" | grep "tap: started"
 
-# Per-pod message rate (last 60s):
+# Per-unit message rate (last 60s):
 sqlite3 /var/lib/heimdall/flows.db "
-  SELECT f.namespace || '/' || f.pod_name AS pod, COUNT(*)
+  SELECT COALESCE(f.slice, '?') || '/' || COALESCE(f.unit, '?') AS unit, COUNT(*)
   FROM messages m LEFT JOIN flows f ON m.flow_id = f.id
   WHERE m.ts_us > strftime('%s','now') * 1000000 - 60000000
-  GROUP BY pod ORDER BY 2 DESC;
+  GROUP BY unit ORDER BY 2 DESC;
 "
 
-# eBPF policy map state (which pods are silenced):
+# eBPF policy map state (which cgroups are silenced):
 sudo bpftool map dump name CGROUP_POLICY \
   | awk '/value:/ {print $NF}' | sort | uniq -c
 ```
 
-Healthy values: ~30+ attached_libs on a typical node, growth
-rate of 10–100 messages/sec across observed pods, BPF map size
-matching pod count × ~3 cgroups each.
+Healthy values on a typical host: ~30+ attached_libs, growth rate of
+10–100 messages/sec across observed units, BPF map size matching the
+unit count under `runtime.cgroup` (default `system.slice`).

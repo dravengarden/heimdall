@@ -1,5 +1,3 @@
-> **Note:** mid-refactor from k8s-coupled to systemd-first. Schema renamed `podRouting`→`routing`; selector grammar moved from pod labels/namespaces to `units` / `slices`. Examples below may still show the old k8s model. See `/etc/heimdall/README.md` for current schema.
-
 # `heimdall init` — bootstrap or refresh `/etc/heimdall/`
 
 Two situations:
@@ -33,7 +31,7 @@ For `--format nickel` (recommended; validates at evaluation time):
 
 | File | Owner | Purpose |
 |---|---|---|
-| `heimdall.ncl` | user-edited | Main config (connections + podRouting + cli defaults) |
+| `heimdall.ncl` | user-edited | Main config (connections + routing + cli defaults) |
 | `lib.ncl` | auto-generated | Nickel contracts mirroring the Rust schema |
 | `README.md` | auto-generated | AI-readable schema reference (the in-system doc) |
 

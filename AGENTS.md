@@ -7,7 +7,8 @@ file just happens to be the standardized place agents look first.
 ## Project at a glance
 
 - **What**: per-cgroup transparent egress proxy + TLS observability
-  for Kubernetes pods and CLI processes, written in Rust + aya eBPF.
+  for systemd units and ad-hoc CLI processes (`heimdall run`), written
+  in Rust + aya eBPF.
 - **Where to start reading**: [`README.md`](README.md) for the
   90-second pitch, [`docs/architecture.md`](docs/architecture.md) for
   the data flow + control loops.
@@ -50,7 +51,7 @@ includes a checklist box for this.
 
 A reader can read the code. Comment hidden constraints, past
 incidents, kernel quirks, surprising invariants. Skip narration
-("loop over pods", "handle error case"). The eBPF programs in
+("loop over units", "handle error case"). The eBPF programs in
 `heimdall-ebpf/src/main.rs` and the cgroup/iptables glue in
 `heimdall/src/{policy,bypass}.rs` are the reference style — every
 non-obvious line has a "Why:" block.
@@ -129,11 +130,11 @@ remember to ask for more if needed.
   losing live config to a doc refresh has bitten the user already.
 - The daemon uses a **dual-stack** TCP listener (`[::]:12345`) but
   the config defaults to `0.0.0.0:12345`. The bind path rewrites the
-  v4 form to `[::]:` so v6 pods reach the relay. Don't "fix" the
+  v4 form to `[::]:` so v6 clients reach the relay. Don't "fix" the
   rewrite; don't change the default.
 - IPv6 ULA range `fc00::/7` is **not** in the default bypass list,
   because the fake-IP v6 pool (`fc00:198:19::/96`) lives inside it.
-  Bypassing fc00::/7 would break v6 pod redirect.
+  Bypassing fc00::/7 would break v6 redirect.
 - v2raya (or any other transparent-host-proxy) on the same node will
   TPROXY-trap heimdall's relay traffic unless you whitelist
   `dst=relay_ip:12345` in the host's iptables/ip6tables. Document

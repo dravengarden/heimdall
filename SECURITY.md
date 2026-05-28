@@ -17,7 +17,7 @@ through GitHub's Security Advisories feature. Include:
 - The version (`heimdall --version`) or commit hash
 - Kernel version (`uname -r`) and distribution
 - A minimal reproduction (eBPF program loaded, config snippet, the
-  exact command / pod that triggers the issue)
+  exact command / unit that triggers the issue)
 - Impact assessment (does it leak traffic? crash the host? escalate
   caps from a wrapped CLI to root?)
 - Whether you'd like credit in the advisory and under what name

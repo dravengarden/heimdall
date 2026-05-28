@@ -95,8 +95,8 @@ static COOKIE_MAP: LruHashMap<u64, OrigDst> = LruHashMap::with_max_entries(65536
 static PORT_MAP: LruHashMap<u32, OrigDst> = LruHashMap::with_max_entries(65536, 0);
 
 // Phase B: bypass notifications. Connect4 emits one event per bypassed
-// connection (loopback / LAN / k0s pod-or-service CIDR) so userspace can
-// record a synthetic flow row and let tap events correlate to it.
+// connection (loopback / link-local / LAN) so userspace can record a
+// synthetic flow row and let tap events correlate to it.
 #[map]
 static BYPASS_EVENTS: PerfEventArray<BypassEvent> = PerfEventArray::new(0);
 

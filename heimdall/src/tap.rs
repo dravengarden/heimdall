@@ -17,8 +17,8 @@
 //!  * Symbol resolution via the dynsym table (libssl exports SSL_write and
 //!    SSL_read). If a build strips them, attach fails for that file.
 //!  * We attach by *file path*, not pid. One attach catches every process
-//!    that maps that libssl image (including pods and the host). Userspace
-//!    can later filter events by tgid → cgroup_id → unit.
+//!    that maps that libssl image. Userspace can later filter events by
+//!    tgid → cgroup_id → unit.
 //!
 //! Future work tracked elsewhere:
 //!
@@ -82,7 +82,7 @@ pub struct TapStatus {
     /// Per-scanner attach counts.
     pub scanners: TapScannerCounts,
     /// Most-recent attach failures, oldest first. Useful for AI to
-    /// answer "why did pod X's TLS not get captured?" — search for
+    /// answer "why did unit X's TLS not get captured?" — search for
     /// path components.
     pub recent_failures: Vec<TapAttachFailure>,
     /// Live re-scan loop health.
@@ -213,7 +213,7 @@ pub fn start(bpf: &mut Ebpf, status: &TapStatusHandle) -> Result<TapHandle> {
     info!(count = bssl_bins.len(), "tap: BoringSSL static binaries discovered");
 
     if libs.is_empty() && go_bins.is_empty() && rs_bins.is_empty() && bssl_bins.is_empty() {
-        info!("tap: no libssl / Go TLS / rustls / BoringSSL binaries found at startup; rescan loop will catch new pods");
+        info!("tap: no libssl / Go TLS / rustls / BoringSSL binaries found at startup; rescan loop will catch new units");
         let (_, rx) = mpsc::channel(1);
         return Ok(TapHandle { events: rx, attached_libs: 0, attached_inodes });
     }
@@ -320,7 +320,7 @@ pub fn start(bpf: &mut Ebpf, status: &TapStatusHandle) -> Result<TapHandle> {
     Ok(TapHandle { events: rx, attached_libs: attached, attached_inodes })
 }
 
-/// Periodic re-scan loop. Owns `bpf` so it can attach uprobes to pods
+/// Periodic re-scan loop. Owns `bpf` so it can attach uprobes to units
 /// that came up after `start()` ran. Skips files whose `(dev, inode)`
 /// already lives in the shared `AttachedSet`.
 ///
@@ -328,7 +328,7 @@ pub fn start(bpf: &mut Ebpf, status: &TapStatusHandle) -> Result<TapHandle> {
 /// panic in `rescan_once` (eBPF state corruption, /proc race, etc.)
 /// gets logged + counted in `TapRescanStatus.panics` and the loop
 /// keeps running. Without this, a single panic would silently kill
-/// the rescan task and pods deployed afterwards would be invisible
+/// the rescan task and units started afterwards would be invisible
 /// until daemon restart — exactly the failure mode rescan was added
 /// to fix.
 pub fn spawn_rescan(
@@ -714,8 +714,8 @@ fn scan_go_tls() -> Vec<GoBinary> {
 
 /// Return true iff this ELF is a Go binary that links `crypto/tls`.
 ///
-/// Stripped Go binaries (rancher, cilium, fleet — anything built with
-/// `-ldflags="-s -w"`) have no ELF symbol table, so we can't use
+/// Stripped Go binaries (containerd, rancher, vault — anything built
+/// with `-ldflags="-s -w"`) have no ELF symbol table, so we can't use
 /// `obj.symbols()` to check. Instead we do a two-stage probe:
 ///
 ///   1. `.gopclntab` section exists → Go binary.
@@ -1062,9 +1062,9 @@ fn scan_rustls() -> Vec<RustlsBinary> {
 ///     trait (`<...PlaintextSink>::write`).
 ///   - rustls 0.22+: `PlaintextSink` is gone; write goes through
 ///     `<rustls::common_state::Writer<'_, ...> as std::io::Write>::write`.
-/// Heimdall's own kube-rs client and ClickHouse still link 0.21-style
-/// rustls; Deno alpine ships 0.23. Matching both terms covers both eras
-/// without needing version-specific patterns.
+/// ClickHouse still links 0.21-style rustls; Deno alpine ships 0.23.
+/// Matching both terms covers both eras without needing version-
+/// specific patterns.
 ///
 /// `read_to_end` / `write_vectored` etc. are excluded so we don't pick
 /// the wrong overload as the canonical entry.
