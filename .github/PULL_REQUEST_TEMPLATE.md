@@ -21,13 +21,13 @@ ones. Delete sections that don't apply.
 
 ## Test plan
 
-<!-- What did you run? `cargo test`, `bun run typecheck`, end-to-end
+<!-- What did you run? `cargo test`, `deno task typecheck`, end-to-end
      smoke against a real cluster, manual verification of a failure
      mode, etc. -->
 
 - [ ] `cargo test` (workspace)
 - [ ] `cargo +nightly build -Zbuild-std=core --target bpfel-unknown-none --release` (if BPF source changed)
-- [ ] `cd heimdall-ui && bun run typecheck` (if UI changed)
+- [ ] `cd heimdall-ui && deno task typecheck` (if UI changed)
 - [ ] Manual smoke test described above
 
 ## Schema / config changes

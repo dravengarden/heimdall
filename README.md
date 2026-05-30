@@ -26,7 +26,7 @@ per-cgroup, identifying workloads by their systemd unit + slice.
 # 1. Build (eBPF first, then userspace; see Build section for the why)
 ( cd heimdall-ebpf && cargo +nightly build -Z build-std=core \
                                           --target bpfel-unknown-none --release )
-( cd heimdall-ui && bun install && bun run build )
+( cd heimdall-ui && deno install --allow-scripts && deno task build )
 cargo build --release
 
 # 2. Bootstrap a config directory
@@ -239,7 +239,7 @@ user-owned `heimdall-cli-*` directories under `user.slice`.
                                           --target bpfel-unknown-none --release )
 
 # UI (only when components or hooks change)
-( cd heimdall-ui && bun install && bun run build )
+( cd heimdall-ui && deno install --allow-scripts && deno task build )
 
 # Daemon (embeds the eBPF object + UI bundle via rust-embed)
 cargo build --release
@@ -273,7 +273,7 @@ heimdall/
 │   └── src/main.rs       # connect4, connect6, udp4_sendmsg, udp6_sendmsg, skb_egress, uprobes
 ├── heimdall-common/      # shared types (no_std + std features)
 ├── heimdall-config/      # YAML/JSON/TOML/Nickel schema + validator
-├── heimdall-ui/          # React 19 + MUI + bun + Vite
+├── heimdall-ui/          # React 19 + MUI + deno + Vite
 ├── docs/                 # design + ops documentation
 └── skills/               # agentskills.io SKILL.md per CLI subcommand
 ```

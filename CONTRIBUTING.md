@@ -26,11 +26,11 @@ rustup toolchain install nightly        # eBPF needs nightly + build-std
 rustup target add bpfel-unknown-none --toolchain nightly
 rustup component add rust-src --toolchain nightly
 
-# Bun for the UI
-curl -fsSL https://bun.sh/install | bash
+# Deno for the UI
+curl -fsSL https://deno.land/install.sh | sh
 
 # (NixOS) define a flake/devShell that pins nightly + bpfel target
-# + bun to get the same toolchain reproducibly.
+# + deno to get the same toolchain reproducibly.
 ```
 
 ## Building
@@ -41,7 +41,7 @@ embeds the eBPF object via `include_bytes!`.
 ```bash
 ( cd heimdall-ebpf && cargo +nightly build -Z build-std=core \
                                           --target bpfel-unknown-none --release )
-( cd heimdall-ui && bun install && bun run build )
+( cd heimdall-ui && deno install --allow-scripts && deno task build )
 cargo build --release
 ```
 
@@ -49,7 +49,7 @@ Tests:
 
 ```bash
 cargo test                          # workspace (heimdall + heimdall-config + heimdall-common)
-cd heimdall-ui && bun run typecheck
+cd heimdall-ui && deno task typecheck
 ```
 
 ## Code style
@@ -77,7 +77,7 @@ file (`gc:`, `dns:`, `policy:`, `docs:`, `ebpf:`).
 
 ## PR checklist
 
-- [ ] Tests pass: `cargo test` + `cd heimdall-ui && bun run typecheck`
+- [ ] Tests pass: `cargo test` + `cd heimdall-ui && deno task typecheck`
 - [ ] eBPF rebuild not skipped if the BPF source changed
 - [ ] Schema changes propagated to `lib.ncl` + `init_templates/README.md`
 - [ ] User-visible behaviour change documented in `CHANGELOG.md`

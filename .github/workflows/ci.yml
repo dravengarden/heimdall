@@ -51,18 +51,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: denoland/setup-deno@v2
         with:
-          bun-version: latest
-      - name: bun install
+          deno-version: "2.8.1"
+      - name: deno install
         working-directory: heimdall-ui
-        run: bun install --frozen-lockfile
-      - name: bun typecheck
+        run: deno install --frozen --allow-scripts
+      - name: deno typecheck
         working-directory: heimdall-ui
-        run: bun run typecheck
-      - name: bun build
+        run: deno task typecheck
+      - name: deno build
         working-directory: heimdall-ui
-        run: bun run build
+        run: deno task build
       - name: Upload UI bundle
         uses: actions/upload-artifact@v4
         with:

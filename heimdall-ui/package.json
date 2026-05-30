@@ -4,12 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bun --bun vite",
-    "build": "bun --bun vite build",
-    "preview": "bun --bun vite preview",
-    "typecheck": "bun --bun tsc --noEmit",
-    "lint": "bunx oxlint src",
-    "format": "bunx prettier --write 'src/**/*.{ts,tsx}'"
+    "dev": "deno task dev",
+    "build": "deno task build",
+    "preview": "deno task preview",
+    "typecheck": "deno task typecheck",
+    "lint": "deno task lint",
+    "format": "deno run -A npm:prettier --write 'src/**/*.{ts,tsx}'"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",
@@ -25,7 +25,6 @@
   "devDependencies": {
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "@types/bun": "latest",
     "typescript": "^5.7.0",
     "vite": "^6.0.0",
     "@vitejs/plugin-react": "^4.3.4",

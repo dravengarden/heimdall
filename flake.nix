@@ -1,19 +1,19 @@
 # Heimdall flake — pure-Nix build of the eBPF object, the React/MUI
 # UI bundle, and the userspace daemon. `nix build` produces a binary
-# byte-identical to `cargo build --release` followed by `bun run build`,
+# byte-identical to `cargo build --release` followed by `deno task build`,
 # without an external build orchestration step.
 #
 # Three derivations:
 #
 #   • heimdall-ebpf    — nightly Rust + bpfel-unknown-none + build-std,
 #                        produces an ELF with embedded BTF.
-#   • heimdall-ui      — Bun + Vite, produces dist/ static bundle.
+#   • heimdall-ui      — Deno + Vite, produces dist/ static bundle.
 #   • heimdall         — stable Rust workspace build, embeds both via
 #                        include_bytes! and rust-embed.
 #
 # Inputs:
-#   • nixpkgs unstable for current bun (≥1.2 with text bun.lock support)
-#     and bpf-linker.
+#   • nixpkgs unstable for bpf-linker; the UI toolchain is a vendored
+#     Deno 2.8.1 prebuilt (see the `deno` derivation below).
 #   • fenix for nightly Rust pinned to heimdall-ebpf/rust-toolchain.toml
 #     (its fromToolchainFile reader handles channel + components +
 #     targets in one shot).
@@ -43,6 +43,25 @@
         overlays = [ fenix.overlays.default ];
       };
       lib = pkgs.lib;
+
+      # Deno 2.8.1 — nixpkgs `nixos-unstable` only ships 2.7.14 today, so we
+      # pull the official prebuilt binary directly (fetchurl → unzip →
+      # autoPatchelfHook fixes the dynamic linker). Once nixpkgs catches up,
+      # delete this and use `pkgs.deno`. Matches the pin used by every other
+      # columbus project (cowboy/omega/liveview/dashboard/theia/argus).
+      deno = pkgs.stdenvNoCC.mkDerivation rec {
+        pname = "deno";
+        version = "2.8.1";
+        src = pkgs.fetchurl {
+          url = "https://github.com/denoland/deno/releases/download/v${version}/deno-x86_64-unknown-linux-gnu.zip";
+          hash = "sha256-LXu2GVImrIMuC/cQmhFfCvZe5prHl6S73lsnoGzCQtk=";
+        };
+        nativeBuildInputs = [ pkgs.unzip pkgs.autoPatchelfHook ];
+        buildInputs = [ pkgs.stdenv.cc.cc.lib pkgs.zlib ];
+        unpackPhase = "unzip $src";
+        installPhase = "install -Dm755 deno $out/bin/deno";
+        meta.mainProgram = "deno";
+      };
 
       # Nightly pinned via heimdall-ebpf/rust-toolchain.toml. The
       # fakeHash gets replaced on first `nix build` — fenix prints the
@@ -232,15 +251,14 @@
         '';
       };
 
-      # ── heimdall-ui: bun install + vite build ─────────────────────────
-      # Two-stage: a fixed-output FOD that runs `bun install` (needs
-      # network for npm registry), then an offline `bun run build`.
-      # Single-step UI build inside one fixed-output derivation: bun
-      # install + bun run build, with network access (FOD allows it),
-      # outputs the dist/ tree. Avoids the two-stage FOD-then-build
-      # split where copying the deps tree out of the FOD lost file
-      # contents under Nix's read-only mount semantics.
-      heimdall-ui = pkgs.stdenv.mkDerivation {
+      # ── heimdall-ui: deno install + vite build ────────────────────────
+      # Single fixed-output derivation: `deno install` needs the npm
+      # registry (FODs are allowed network), then an offline vite build,
+      # outputs the dist/ tree. Refresh the hash with `lib.fakeHash` →
+      # build → copy the "got" hash back. --allow-scripts so esbuild's
+      # npm postinstall fetches its platform binary; --frozen because
+      # deno.lock is committed in-tree.
+      heimdall-ui = pkgs.stdenvNoCC.mkDerivation {
         pname = "heimdall-ui";
         version = "0.1.0";
 
@@ -251,24 +269,18 @@
             !(builtins.elem base [ "node_modules" "dist" ]);
         };
 
-        # nodejs is required because vite.js starts with `#!/usr/bin/env
-        # node` — even though `bun --bun` says "use bun runtime",
-        # bun still spawns the script via posix_spawn, which means
-        # the kernel honors the shebang and looks up `node` in PATH.
-        nativeBuildInputs = [ pkgs.bun pkgs.nodejs pkgs.cacert ];
+        # nodejs because some npm postinstall scripts (esbuild) shell out
+        # to `node`; deno's npm interop can't shim those.
+        nativeBuildInputs = [ deno pkgs.nodejs_24 pkgs.cacert ];
 
         buildPhase = ''
           runHook preBuild
           export HOME=$TMPDIR
-          export NODE_ENV=development
-          bun install --frozen-lockfile --no-progress
-          # Invoke vite directly via bun on the entry script. Going
-          # through `bun run build` (= `bun --bun vite build`) hits a
-          # bug in the inner bun's posix_spawn lookup that returns
-          # ENOENT on `node_modules/.bin/vite` even though the symlink
-          # exists. Direct invocation sidesteps the script-resolver
-          # path.
-          bun ./node_modules/vite/bin/vite.js build
+          export DENO_DIR=$TMPDIR/deno-cache
+          # Deno's bundled roots don't cover the sandbox; point TLS at cacert.
+          export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
+          deno install --frozen --allow-scripts
+          deno task build
           runHook postBuild
         '';
 
@@ -285,7 +297,7 @@
 
         outputHashMode = "recursive";
         outputHashAlgo = "sha256";
-        outputHash = "sha256-PJpisZXWSuRFqXZgO9Gfoq9C8tpo3X6kHd+bdFU72D8=";
+        outputHash = "sha256-+Dkkm2Y+YpEEUDAdKianaq43FrTtQoSTyKt7+BsL2ow=";
       };
 
       # ── heimdall: workspace daemon, embeds the two artifacts above ────
@@ -330,19 +342,20 @@
       };
     in {
       packages.${system} = {
-        inherit heimdall heimdall-ebpf heimdall-ui bpf-linker;
+        inherit heimdall heimdall-ebpf heimdall-ui bpf-linker deno;
         default = heimdall;
       };
 
       # `nix develop` shell with everything needed to iterate locally —
-      # nightly for eBPF, stable for userspace, bun for UI, plus the
+      # nightly for eBPF, stable for userspace, deno for UI, plus the
       # surrounding tooling the runbook expects.
       devShells.${system}.default = pkgs.mkShell {
         packages = [
           rustNightly
           rustStable
           pkgs.bpf-linker
-          pkgs.bun
+          deno
+          pkgs.nodejs_24
           pkgs.pkg-config
           pkgs.cargo-watch
           pkgs.bpftools

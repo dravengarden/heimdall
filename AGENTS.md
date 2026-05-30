@@ -71,7 +71,7 @@ canonical incantation.
 ```bash
 ( cd heimdall-ebpf && cargo +nightly build -Z build-std=core \
                                           --target bpfel-unknown-none --release )
-( cd heimdall-ui && bun install && bun run build )    # only when UI changed
+( cd heimdall-ui && deno install --allow-scripts && deno task build )  # only when UI changed
 cargo build --release                                  # daemon
 cargo test --release --workspace                       # gate before commit
 ```
@@ -98,7 +98,7 @@ The PR template has a checklist for this. CI doesn't enforce it yet.
 
 ### Testing UI changes
 
-`bun run typecheck` + `bun run build` are the lower-bar checks. For
+`deno task typecheck` + `deno task build` are the lower-bar checks. For
 anything touching components or hooks, also run the dev server and
 exercise the changed surface in a browser before declaring done. Type
 checks verify code correctness, not feature correctness.
