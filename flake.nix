@@ -33,9 +33,15 @@
     crane = {
       url = "github:ipetkov/crane";
     };
+    # Shared Nix builders (buildDenoViteApp) from the public shared-utils
+    # monorepo. The UI bundle is built via that shared builder — NOT a
+    # hand-rolled FOD here — so source changes always rebuild instead of
+    # silently reusing a stale dist.
+    shared-utils.url = "github:dravengarden/shared-utils";
+    shared-utils.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { self, nixpkgs, fenix, crane }:
+  outputs = { self, nixpkgs, fenix, crane, shared-utils }:
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs {
@@ -43,6 +49,7 @@
         overlays = [ fenix.overlays.default ];
       };
       lib = pkgs.lib;
+      shared = shared-utils.lib.${system};
 
       # Deno 2.8.1 — nixpkgs `nixos-unstable` only ships 2.7.14 today, so we
       # pull the official prebuilt binary directly (fetchurl → unzip →
@@ -252,52 +259,29 @@
       };
 
       # ── heimdall-ui: deno install + vite build ────────────────────────
-      # Single fixed-output derivation: `deno install` needs the npm
-      # registry (FODs are allowed network), then an offline vite build,
-      # outputs the dist/ tree. Refresh the hash with `lib.fakeHash` →
-      # build → copy the "got" hash back. --allow-scripts so esbuild's
-      # npm postinstall fetches its platform binary; --frozen because
-      # deno.lock is committed in-tree.
-      heimdall-ui = pkgs.stdenvNoCC.mkDerivation {
-        pname = "heimdall-ui";
+      # Built through shared-utils' footgun-free `buildDenoViteApp` — NOT a
+      # hand-rolled FOD. The old shape wrapped the whole `deno install + vite
+      # build` in a single fixed-output derivation, addressed ONLY by its
+      # declared outputHash; but the bundle's bytes vary with source, so Nix
+      # reused the cached dist whenever the hash wasn't manually rebumped and
+      # silently embedded a STALE UI. The builder splits that into a deps-only
+      # FOD (keyed by the lockfiles → depsHash) + a normal content-addressed
+      # offline build, so any UI source edit rebuilds automatically.
+      #
+      # stageShell = false: heimdall-ui has its own SDK (no shared
+      # @shared-utils/ui _shell seam). installArgs preserves --allow-scripts
+      # (esbuild's npm postinstall fetches its platform binary) + --frozen
+      # (deno.lock is committed). webRoot = heimdall-ui (deno.json/dist live
+      # there). depsHash refreshes only when heimdall-ui's deno.lock /
+      # package.json change (lib.fakeHash → build → copy "got").
+      heimdall-ui = shared.buildDenoViteApp {
+        pname = "heimdall";
         version = "0.1.0";
-
-        src = lib.cleanSourceWith {
-          src = ./heimdall-ui;
-          filter = path: type:
-            let base = baseNameOf (toString path); in
-            !(builtins.elem base [ "node_modules" "dist" ]);
-        };
-
-        # nodejs because some npm postinstall scripts (esbuild) shell out
-        # to `node`; deno's npm interop can't shim those.
-        nativeBuildInputs = [ deno pkgs.nodejs_24 pkgs.cacert ];
-
-        buildPhase = ''
-          runHook preBuild
-          export HOME=$TMPDIR
-          export DENO_DIR=$TMPDIR/deno-cache
-          # Deno's bundled roots don't cover the sandbox; point TLS at cacert.
-          export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
-          deno install --frozen --allow-scripts
-          deno task build
-          runHook postBuild
-        '';
-
-        installPhase = ''
-          runHook preInstall
-          # rust-embed reads `../heimdall-ui/dist/`, so $out is
-          # exactly the dist contents, no extra wrapping.
-          cp -r dist $out
-          runHook postInstall
-        '';
-
-        dontPatchShebangs = true;
-        dontFixup = true;
-
-        outputHashMode = "recursive";
-        outputHashAlgo = "sha256";
-        outputHash = "sha256-+Dkkm2Y+YpEEUDAdKianaq43FrTtQoSTyKt7+BsL2ow=";
+        src = pkgs.lib.cleanSource ./.;
+        webRoot = "heimdall-ui";
+        stageShell = false;
+        installArgs = "--frozen --allow-scripts";
+        depsHash = "sha256-N5g70zrmsXg8odNLDfxllgBoaFhN20JKec1QE22XyUc=";
       };
 
       # ── heimdall: workspace daemon, embeds the two artifacts above ────
