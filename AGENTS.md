@@ -1,8 +1,7 @@
 # AGENTS.md — heimdall
 
-Operating rules for AI coding agents (Claude Code, Codex, Cursor,
-Aider, …) working in this repo. Humans should also follow these — the
-file just happens to be the standardized place agents look first.
+Operating rules for Codex working in this repo. Humans should also follow
+these rules; this file is the standardized project entry point.
 
 ## Project at a glance
 
@@ -92,7 +91,7 @@ The PR template has a checklist for this. CI doesn't enforce it yet.
 - Optional `<scope>: ` prefix when touching one area (`tap: …`,
   `dns: …`, `runbook: …`, `ui: …`).
 - Body explains WHY when non-obvious; reference incidents/links.
-- Don't add `Co-Authored-By: Claude / Codex / …` lines. The agent
+- Don't add automated-agent `Co-Authored-By` lines. The agent
   isn't a coauthor in the legal sense and the noise piles up over
   time. Attribution belongs in the PR description if anywhere.
 
