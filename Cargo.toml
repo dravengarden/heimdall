@@ -12,8 +12,8 @@ rust-version = "1.95"
 publish = false
 
 [workspace.lints.rust]
+warnings = "deny"
 unsafe_code = "deny"
-unexpected_cfgs = "warn"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

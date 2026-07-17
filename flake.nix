@@ -395,7 +395,6 @@
             pkgs.nixfmt
           ];
 
-          RUSTC_WRAPPER = "sccache";
         };
 
         # eBPF is an intentionally separate toolchain: pinned nightly,
@@ -409,7 +408,6 @@
             pkgs.bpftools
           ];
 
-          RUSTC_WRAPPER = "sccache";
         };
       };
 
