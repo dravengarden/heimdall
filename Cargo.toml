@@ -6,3 +6,26 @@ members = [
     # heimdall-ebpf is compiled separately targeting bpfel-unknown-none
 ]
 resolver = "2"
+
+[workspace.package]
+rust-version = "1.95"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+unexpected_cfgs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+# Heimdall is not published to a package registry.
+cargo_common_metadata = { level = "allow", priority = 1 }
+# Aya, Axum, and SQLx bridge ecosystems that intentionally retain multiple
+# compatible major versions of small foundational crates.
+multiple_crate_versions = { level = "allow", priority = 1 }
+
+[profile.dev]
+debug = "line-tables-only"

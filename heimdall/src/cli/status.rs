@@ -74,8 +74,12 @@ pub async fn run(config_path: &Path, args: StatusArgs) -> Result<()> {
             relay_reachable,
             last_cleanup_at_us: store_view.as_ref().and_then(|v| v.last_cleanup_at_us),
             last_cleanup_deleted: store_view.as_ref().and_then(|v| v.last_cleanup_deleted),
-            db_size_bytes: store_view.as_ref().and_then(|v| v.file_stats.map(|s| s.total_bytes())),
-            db_freelist_pages: store_view.as_ref().and_then(|v| v.file_stats.map(|s| s.freelist_count)),
+            db_size_bytes: store_view
+                .as_ref()
+                .and_then(|v| v.file_stats.map(|s| s.total_bytes())),
+            db_freelist_pages: store_view
+                .as_ref()
+                .and_then(|v| v.file_stats.map(|s| s.freelist_count)),
         };
         println!("{}", serde_json::to_string(&out)?);
         return Ok(());
@@ -103,11 +107,7 @@ pub async fn run(config_path: &Path, args: StatusArgs) -> Result<()> {
             }
             match (v.last_cleanup_at_us, v.last_cleanup_deleted) {
                 (Some(ts), Some(n)) => {
-                    println!(
-                        "last cleanup   {} ago, deleted {}",
-                        ago(ts),
-                        n,
-                    );
+                    println!("last cleanup   {} ago, deleted {}", ago(ts), n,);
                 }
                 _ => println!("last cleanup   (none recorded yet)"),
             }
@@ -119,7 +119,11 @@ pub async fn run(config_path: &Path, args: StatusArgs) -> Result<()> {
     }
     println!(
         "relay         {}",
-        if relay_reachable { "ok (port reachable)" } else { "DOWN (port refused)" }
+        if relay_reachable {
+            "ok (port reachable)"
+        } else {
+            "DOWN (port refused)"
+        }
     );
 
     Ok(())
@@ -147,7 +151,10 @@ async fn read_store_view(store_path: &Path) -> Option<StoreView> {
         Err(_) => Store::open(store_path).await.ok()?,
     };
     let rows = s
-        .list(ListQuery { limit: 10_000, ..Default::default() })
+        .list(ListQuery {
+            limit: 10_000,
+            ..Default::default()
+        })
         .await
         .ok()?;
     let file_stats = s.file_stats().await.ok();
@@ -173,17 +180,29 @@ async fn read_store_view(store_path: &Path) -> Option<StoreView> {
 
 fn human_bytes(n: i64) -> String {
     let n = n as f64;
-    if n < 1024.0 { return format!("{} B", n as i64); }
-    if n < 1024.0 * 1024.0 { return format!("{:.1} KB", n / 1024.0); }
-    if n < 1024.0 * 1024.0 * 1024.0 { return format!("{:.1} MB", n / (1024.0 * 1024.0)); }
+    if n < 1024.0 {
+        return format!("{} B", n as i64);
+    }
+    if n < 1024.0 * 1024.0 {
+        return format!("{:.1} KB", n / 1024.0);
+    }
+    if n < 1024.0 * 1024.0 * 1024.0 {
+        return format!("{:.1} MB", n / (1024.0 * 1024.0));
+    }
     format!("{:.2} GB", n / (1024.0 * 1024.0 * 1024.0))
 }
 
 fn ago(ts_us: i64) -> String {
     let now = crate::store::now_micros();
     let dur_secs = ((now - ts_us) / 1_000_000).max(0);
-    if dur_secs < 60 { return format!("{dur_secs}s"); }
-    if dur_secs < 3600 { return format!("{}m", dur_secs / 60); }
-    if dur_secs < 86400 { return format!("{}h{}m", dur_secs / 3600, (dur_secs % 3600) / 60); }
+    if dur_secs < 60 {
+        return format!("{dur_secs}s");
+    }
+    if dur_secs < 3600 {
+        return format!("{}m", dur_secs / 60);
+    }
+    if dur_secs < 86400 {
+        return format!("{}h{}m", dur_secs / 3600, (dur_secs % 3600) / 60);
+    }
     format!("{}d{}h", dur_secs / 86400, (dur_secs % 86400) / 3600)
 }

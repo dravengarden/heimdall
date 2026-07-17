@@ -2,8 +2,8 @@
 #![cfg_attr(not(feature = "user"), no_std)]
 
 /// Original connection destination + caller identity, saved by the eBPF
-/// connect4 / connect6 hooks for the userspace relay to consume after
-/// accept().
+/// `connect4` / `connect6` hooks for the userspace relay to consume after
+/// `accept()`.
 ///
 /// Dual-stack: `addr` holds the destination address bytes in network
 /// byte order, `family` discriminates IPv4 vs IPv6, and `port` is in
@@ -27,8 +27,12 @@ pub struct OrigDst {
     /// `AF_INET` (4) or `AF_INET6` (6) — which `addr` slice is valid.
     /// Stored as the wire-protocol family number directly.
     pub family: u8,
+    #[allow(
+        clippy::pub_underscore_fields,
+        reason = "the explicit ABI padding is shared with eBPF"
+    )]
     pub _pad: u8,
-    /// Leaf cgroup id of the process that called connect().
+    /// Leaf cgroup id of the process that called `connect()`.
     /// 0 if not captured (older builds; treat as "unknown unit").
     pub cgroup_id: u64,
     /// Kernel socket cookie of the underlying TCP socket (set by
@@ -62,7 +66,7 @@ pub enum TapDir {
 /// many bytes were really written/read.
 pub const TAP_DATA_LEN: usize = 256;
 
-/// Single SSL_write entry / SSL_read return event emitted by an eBPF
+/// Single `SSL_write` entry / `SSL_read` return event emitted by an eBPF
 /// uprobe to a perf event array. Fixed-size so the verifier is happy.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -73,23 +77,35 @@ pub struct TapEvent {
     pub ts_ns: u64,
     /// `bpf_get_current_cgroup_id()` of the calling task. Userspace uses
     /// this to correlate the captured plaintext with a flow recorded by
-    /// the relay (which stamped the same cgroup_id at connect4 time).
+    /// the relay (which stamped the same `cgroup_id` at `connect4` time).
     pub cgroup_id: u64,
-    /// 0 = send (SSL_write), 1 = recv (SSL_read return).
+    /// 0 = send (`SSL_write`), 1 = recv (`SSL_read` return).
     pub dir: u32,
-    /// Bytes captured into `data` (≤ TAP_DATA_LEN).
+    /// Bytes captured into `data` (≤ `TAP_DATA_LEN`).
     pub captured_len: u32,
-    /// SSL_write's `num` argument or SSL_read's return value (full size
+    /// `SSL_write`'s `num` argument or `SSL_read`'s return value (full size
     /// the application asked for / received).
     pub total_len: u32,
+    #[allow(
+        clippy::pub_underscore_fields,
+        reason = "the explicit ABI padding is shared with eBPF"
+    )]
     pub _pad: u32,
     pub data: [u8; TAP_DATA_LEN],
 }
 
 #[cfg(feature = "user")]
+#[allow(
+    unsafe_code,
+    reason = "repr(C) contains only fixed-width Pod fields shared verbatim with eBPF"
+)]
 unsafe impl aya::Pod for TapEvent {}
 
 #[cfg(feature = "user")]
+#[allow(
+    unsafe_code,
+    reason = "repr(C) contains only fixed-width Pod fields shared verbatim with eBPF"
+)]
 unsafe impl aya::Pod for OrigDst {}
 
 // ---------------------------------------------------------------------------
@@ -117,10 +133,18 @@ pub struct BypassEvent {
     pub dst_port_be: u16,
     /// `FAMILY_V4` (4) or `FAMILY_V6` (6).
     pub family: u8,
+    #[allow(
+        clippy::pub_underscore_fields,
+        reason = "the explicit ABI padding is shared with eBPF"
+    )]
     pub _pad: u8,
 }
 
 #[cfg(feature = "user")]
+#[allow(
+    unsafe_code,
+    reason = "repr(C) contains only fixed-width Pod fields shared verbatim with eBPF"
+)]
 unsafe impl aya::Pod for BypassEvent {}
 
 // ---------------------------------------------------------------------------
@@ -153,7 +177,7 @@ pub const POLICY_NO_BYPASS_LOG: u8 = 1 << 2;
 
 /// Hijack DNS for this cgroup: any TCP/UDP connect or UDP sendmsg to
 /// port 53 gets its destination rewritten to heimdall's fake-IP DNS
-/// server (taken from DNS_ADDR_V4 / DNS_ADDR_V6 maps). Used by
+/// server (taken from `DNS_ADDR_V4` / `DNS_ADDR_V6` maps). Used by
 /// `heimdall run` when the wrapped command's profile resolves to
 /// `dns: fake`, so the child uses heimdall's resolver instead of the
 /// host's systemd-resolved / /etc/resolv.conf.
@@ -185,12 +209,13 @@ pub const DEFAULT_POLICY: u8 = POLICY_OBSERVE_OFF | POLICY_NO_BYPASS_LOG;
 ///
 /// Userspace can extend the bypass set at runtime via `runtime.bypassCidrs`
 /// (not yet wired into the eBPF map; tracked for M5+).
+#[must_use]
 pub fn is_default_bypass(ip_be: u32) -> bool {
     let ip = u32::from_be(ip_be);
     ip == 0                              // 0.0.0.0
     || ip >> 24 == 127                   // 127.0.0.0/8     loopback
     || ip >> 16 == 0xA9FE                // 169.254.0.0/16  link-local
-    || ip >> 16 == 0xC0A8                // 192.168.0.0/16  LAN
+    || ip >> 16 == 0xC0A8 // 192.168.0.0/16  LAN
 }
 
 /// IPv6 sibling of [`is_default_bypass`]. Bytes are the on-wire IPv6
@@ -209,9 +234,10 @@ pub fn is_default_bypass(ip_be: u32) -> bool {
 ///
 /// Notably, **`fc00::/7` (ULA) is NOT bypassed**. heimdall's own
 /// IPv6 fake-IP pool defaults to `fc00:198:19::/96` which sits inside
-/// the ULA range, so blanket-bypassing fc00::/7 would short-circuit
+/// the ULA range, so blanket-bypassing `fc00::/7` would short-circuit
 /// every fake-IP redirect. Mirrors the v4 narrow-bypass philosophy
 /// (RFC-1918 10/8 + 172.16/12 are NOT bypassed either).
+#[must_use]
 pub fn is_default_bypass6(addr: &[u8; 16]) -> bool {
     // ::1 (loopback) — all zero except final byte == 1.
     let all_but_last_zero = addr[..15].iter().all(|&b| b == 0);
@@ -228,9 +254,7 @@ pub fn is_default_bypass6(addr: &[u8; 16]) -> bool {
     }
     // IPv4-mapped IPv6: ::ffff:a.b.c.d. Defer to the v4 bypass check on
     // the embedded address so the same set of "narrow" ranges applies.
-    let is_v4_mapped = addr[..10].iter().all(|&b| b == 0)
-        && addr[10] == 0xff
-        && addr[11] == 0xff;
+    let is_v4_mapped = addr[..10].iter().all(|&b| b == 0) && addr[10] == 0xff && addr[11] == 0xff;
     if is_v4_mapped {
         let v4_be = u32::from_ne_bytes([addr[12], addr[13], addr[14], addr[15]]);
         return is_default_bypass(v4_be);
@@ -261,9 +285,9 @@ mod tests {
 
     #[test]
     fn bypasses_lan_192_168() {
-        assert!(is_default_bypass(be(192, 168, 0, 1)));     // router
-        assert!(is_default_bypass(be(192, 168, 0, 96)));    // host
-        assert!(is_default_bypass(be(192, 168, 0, 155)));   // Mac
+        assert!(is_default_bypass(be(192, 168, 0, 1))); // router
+        assert!(is_default_bypass(be(192, 168, 0, 96))); // host
+        assert!(is_default_bypass(be(192, 168, 0, 155))); // Mac
         assert!(is_default_bypass(be(192, 168, 255, 255)));
     }
 

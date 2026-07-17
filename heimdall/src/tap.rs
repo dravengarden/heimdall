@@ -52,12 +52,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use aya::{
-    maps::AsyncPerfEventArray,
-    programs::UProbe,
-    util::online_cpus,
-    Ebpf,
-};
+use aya::{maps::AsyncPerfEventArray, programs::UProbe, util::online_cpus, Ebpf};
 use bytes::BytesMut;
 use heimdall_common::{TapDir, TapEvent, TAP_DATA_LEN};
 use tokio::sync::mpsc;
@@ -210,12 +205,19 @@ pub fn start(bpf: &mut Ebpf, status: &TapStatusHandle) -> Result<TapHandle> {
 
     // ─── Discover statically-linked BoringSSL binaries ───────────────────
     let bssl_bins = scan_boringssl_static();
-    info!(count = bssl_bins.len(), "tap: BoringSSL static binaries discovered");
+    info!(
+        count = bssl_bins.len(),
+        "tap: BoringSSL static binaries discovered"
+    );
 
     if libs.is_empty() && go_bins.is_empty() && rs_bins.is_empty() && bssl_bins.is_empty() {
         info!("tap: no libssl / Go TLS / rustls / BoringSSL binaries found at startup; rescan loop will catch new units");
         let (_, rx) = mpsc::channel(1);
-        return Ok(TapHandle { events: rx, attached_libs: 0, attached_inodes });
+        return Ok(TapHandle {
+            events: rx,
+            attached_libs: 0,
+            attached_inodes,
+        });
     }
 
     let mut attached: usize = 0;
@@ -317,7 +319,11 @@ pub fn start(bpf: &mut Ebpf, status: &TapStatusHandle) -> Result<TapHandle> {
         tokio::spawn(consumer_loop(buf, tx, cpu));
     }
 
-    Ok(TapHandle { events: rx, attached_libs: attached, attached_inodes })
+    Ok(TapHandle {
+        events: rx,
+        attached_libs: attached,
+        attached_inodes,
+    })
 }
 
 /// Periodic re-scan loop. Owns `bpf` so it can attach uprobes to units
@@ -501,6 +507,10 @@ async fn consumer_loop(
     }
 }
 
+#[allow(
+    unsafe_code,
+    reason = "the byte length is checked before copying into the repr(C) Pod ABI type"
+)]
 fn decode(raw: &BytesMut) -> Option<ObservedTap> {
     if raw.len() < std::mem::size_of::<TapEvent>() {
         return None;
@@ -574,7 +584,7 @@ fn scan_libssl() -> Vec<LibImage> {
         // so we don't try to stat the same `r--p`/`r-xp` twice.
         let mut seen_in_pid: HashSet<String> = HashSet::new();
 
-        for line in BufReader::new(f).lines().flatten() {
+        for line in BufReader::new(f).lines().map_while(Result::ok) {
             // Format: addr_lo-addr_hi perms offset dev inode  pathname
             //   7f...000-7f...000 r-xp 00000000 fd:00 1234567 /usr/lib/libssl.so.3
             // We accept any executable-mapped libssl image; we'll attach
@@ -697,7 +707,14 @@ fn scan_go_tls() -> Vec<GoBinary> {
             continue;
         }
 
-        by_inode.insert(key, GoBinary { path: host_path, dev: meta.dev(), inode: meta.ino() });
+        by_inode.insert(
+            key,
+            GoBinary {
+                path: host_path,
+                dev: meta.dev(),
+                inode: meta.ino(),
+            },
+        );
     }
 
     debug!(
@@ -741,8 +758,7 @@ fn is_libssl(p: &str) -> bool {
         Some(f) => f,
         None => return false,
     };
-    fname == "libssl.so"
-        || fname.starts_with("libssl.so.")
+    fname == "libssl.so" || fname.starts_with("libssl.so.")
 }
 
 // ---------------------------------------------------------------------------
@@ -801,10 +817,7 @@ fn attach_one(bpf: &mut Ebpf, target: &Path) -> Result<()> {
 fn attach_go_one(bpf: &mut Ebpf, target: &Path) -> Result<()> {
     let funcs = crate::gosym::find_functions(
         target,
-        &[
-            "crypto/tls.(*Conn).Write",
-            "crypto/tls.(*Conn).Read",
-        ],
+        &["crypto/tls.(*Conn).Write", "crypto/tls.(*Conn).Read"],
     )
     .context("gosym lookup")?;
 
@@ -899,10 +912,7 @@ fn attach_go_one(bpf: &mut Ebpf, target: &Path) -> Result<()> {
 /// of every RET instruction. Uses iced-x86's `FlowControl::Return`
 /// classification, which covers near-RET, near-RET-imm16, far-RET,
 /// and IRET in one shot.
-fn find_go_ret_offsets(
-    path: &Path,
-    func: &crate::gosym::FuncLocation,
-) -> Result<Vec<u64>> {
+fn find_go_ret_offsets(path: &Path, func: &crate::gosym::FuncLocation) -> Result<Vec<u64>> {
     use iced_x86::{Decoder, DecoderOptions, FlowControl};
     use object::{Object, ObjectSection};
 
@@ -911,8 +921,7 @@ fn find_go_ret_offsets(
     }
 
     let data = fs::read(path).with_context(|| format!("read {}", path.display()))?;
-    let obj = object::read::File::parse(&*data)
-        .map_err(|e| anyhow::anyhow!("ELF parse: {e}"))?;
+    let obj = object::read::File::parse(&*data).map_err(|e| anyhow::anyhow!("ELF parse: {e}"))?;
     let text = obj
         .section_by_name(".text")
         .context(".text section not found")?;
@@ -921,11 +930,10 @@ fn find_go_ret_offsets(
         .data()
         .map_err(|e| anyhow::anyhow!("section data: {e}"))?;
 
-    let func_off_in_text = func
-        .vaddr
-        .checked_sub(text_addr)
-        .ok_or_else(|| anyhow::anyhow!("vaddr below .text base"))?
-        as usize;
+    let func_off_in_text =
+        func.vaddr
+            .checked_sub(text_addr)
+            .ok_or_else(|| anyhow::anyhow!("vaddr below .text base"))? as usize;
     let end = func_off_in_text
         .checked_add(func.size as usize)
         .ok_or_else(|| anyhow::anyhow!("func size overflow"))?;
@@ -1054,14 +1062,15 @@ fn scan_rustls() -> Vec<RustlsBinary> {
 /// Substring-tuple match (Coroot's approach), more robust than the
 /// exact mangled patterns we used to grep for:
 ///
-///   write: name contains "rustls" + ("Writer" OR "PlaintextSink") + "write"
-///   read:  name contains "rustls" + "Reader" + "read"
+/// - write: name contains "rustls" + ("Writer" OR "PlaintextSink") + "write"
+/// - read: name contains "rustls" + "Reader" + "read"
 ///
 /// Why both `Writer` and `PlaintextSink`:
-///   - rustls 0.21 and earlier: write goes through the `PlaintextSink`
-///     trait (`<...PlaintextSink>::write`).
-///   - rustls 0.22+: `PlaintextSink` is gone; write goes through
-///     `<rustls::common_state::Writer<'_, ...> as std::io::Write>::write`.
+/// - rustls 0.21 and earlier: write goes through the `PlaintextSink`
+///   trait (`<...PlaintextSink>::write`).
+/// - rustls 0.22+: `PlaintextSink` is gone; write goes through
+///   `<rustls::common_state::Writer<'_, ...> as std::io::Write>::write`.
+///
 /// ClickHouse still links 0.21-style rustls; Deno alpine ships 0.23.
 /// Matching both terms covers both eras without needing version-
 /// specific patterns.
@@ -1174,8 +1183,13 @@ fn attach_rustls_one(bpf: &mut Ebpf, bin: &RustlsBinary) -> Result<()> {
             .try_into()?;
         let _ = prog.load();
         prog.attach(None, bin.write_offset, &bin.path, None)
-            .with_context(|| format!("attach rustls_write at {} offset {:#x}",
-                bin.path.display(), bin.write_offset))?;
+            .with_context(|| {
+                format!(
+                    "attach rustls_write at {} offset {:#x}",
+                    bin.path.display(),
+                    bin.write_offset
+                )
+            })?;
     }
 
     let read_off = match bin.read_offset {
@@ -1196,8 +1210,13 @@ fn attach_rustls_one(bpf: &mut Ebpf, bin: &RustlsBinary) -> Result<()> {
             .try_into()?;
         let _ = prog.load();
         prog.attach(None, read_off, &bin.path, None)
-            .with_context(|| format!("attach rustls_read_enter at {} offset {:#x}",
-                bin.path.display(), read_off))?;
+            .with_context(|| {
+                format!(
+                    "attach rustls_read_enter at {} offset {:#x}",
+                    bin.path.display(),
+                    read_off
+                )
+            })?;
     }
 
     {
@@ -1207,8 +1226,13 @@ fn attach_rustls_one(bpf: &mut Ebpf, bin: &RustlsBinary) -> Result<()> {
             .try_into()?;
         let _ = prog.load();
         prog.attach(None, read_off, &bin.path, None)
-            .with_context(|| format!("attach rustls_read_exit at {} offset {:#x}",
-                bin.path.display(), read_off))?;
+            .with_context(|| {
+                format!(
+                    "attach rustls_read_exit at {} offset {:#x}",
+                    bin.path.display(),
+                    read_off
+                )
+            })?;
     }
 
     Ok(())
@@ -1453,9 +1477,13 @@ fn attach_boringssl_one(bpf: &mut Ebpf, bin: &BoringSSLBinary) -> Result<()> {
             .try_into()?;
         let _ = prog.load();
         prog.attach(None, bin.write_offset, &bin.path, None)
-            .with_context(|| format!(
-                "attach BoringSSL SSL_write at {} offset {:#x}",
-                bin.path.display(), bin.write_offset))?;
+            .with_context(|| {
+                format!(
+                    "attach BoringSSL SSL_write at {} offset {:#x}",
+                    bin.path.display(),
+                    bin.write_offset
+                )
+            })?;
     }
     {
         let prog: &mut UProbe = bpf
@@ -1464,9 +1492,13 @@ fn attach_boringssl_one(bpf: &mut Ebpf, bin: &BoringSSLBinary) -> Result<()> {
             .try_into()?;
         let _ = prog.load();
         prog.attach(None, bin.read_offset, &bin.path, None)
-            .with_context(|| format!(
-                "attach BoringSSL SSL_read entry at {} offset {:#x}",
-                bin.path.display(), bin.read_offset))?;
+            .with_context(|| {
+                format!(
+                    "attach BoringSSL SSL_read entry at {} offset {:#x}",
+                    bin.path.display(),
+                    bin.read_offset
+                )
+            })?;
     }
     {
         let prog: &mut UProbe = bpf
@@ -1475,9 +1507,13 @@ fn attach_boringssl_one(bpf: &mut Ebpf, bin: &BoringSSLBinary) -> Result<()> {
             .try_into()?;
         let _ = prog.load();
         prog.attach(None, bin.read_offset, &bin.path, None)
-            .with_context(|| format!(
-                "attach BoringSSL SSL_read return at {} offset {:#x}",
-                bin.path.display(), bin.read_offset))?;
+            .with_context(|| {
+                format!(
+                    "attach BoringSSL SSL_read return at {} offset {:#x}",
+                    bin.path.display(),
+                    bin.read_offset
+                )
+            })?;
     }
     Ok(())
 }
@@ -1487,20 +1523,26 @@ fn attach_boringssl_one(bpf: &mut Ebpf, bin: &BoringSSLBinary) -> Result<()> {
 /// development to confirm uprobes are firing without persisting.
 pub fn spawn_journal_logger(mut handle: TapHandle) {
     tokio::spawn(async move {
-        info!(attached_libs = handle.attached_libs, "tap: journal logger started");
+        info!(
+            attached_libs = handle.attached_libs,
+            "tap: journal logger started"
+        );
         while let Some(ev) = handle.events.recv().await {
-            let preview = String::from_utf8_lossy(
-                &ev.captured[..ev.captured.len().min(96)],
-            )
-            .replace('\n', "\\n")
-            .replace('\r', "\\r");
+            let preview = String::from_utf8_lossy(&ev.captured[..ev.captured.len().min(96)])
+                .replace('\n', "\\n")
+                .replace('\r', "\\r");
             let dir = match ev.dir {
                 TapDir::Send => "SEND",
                 TapDir::Recv => "RECV",
             };
             info!(
                 "tap[{} cg={} tgid={} total={} cap={}]: {}",
-                dir, ev.cgroup_id, ev.tgid, ev.total_len, ev.captured.len(), preview
+                dir,
+                ev.cgroup_id,
+                ev.tgid,
+                ev.total_len,
+                ev.captured.len(),
+                preview
             );
         }
         warn!("tap: journal logger stopped (channel closed)");
@@ -1518,8 +1560,7 @@ pub fn spawn_store_writer<F>(
     mut handle: TapHandle,
     store: std::sync::Arc<crate::store::Store>,
     correlate: F,
-)
-where
+) where
     F: Fn(u64) -> Option<i64> + Send + Sync + 'static,
 {
     tokio::spawn(async move {

@@ -146,7 +146,9 @@ pub fn run(config_path: &Path, args: RunArgs) -> Result<()> {
     }
 
     if args.command.is_empty() {
-        bail!("missing command — pass it after `--`. e.g. `heimdall run -- curl https://example.com`");
+        bail!(
+            "missing command — pass it after `--`. e.g. `heimdall run -- curl https://example.com`"
+        );
     }
 
     // Re-entry: if not under user@<UID>.service, hand off to
@@ -160,10 +162,9 @@ pub fn run(config_path: &Path, args: RunArgs) -> Result<()> {
     let cgroup_id = read_cgroup_id(&cgroup_path)?;
 
     // Register before fork so the child inherits the policy.
-    register_with_daemon(&api_addr, cgroup_id, &decision).map_err(|e| {
+    register_with_daemon(&api_addr, cgroup_id, &decision).inspect_err(|_| {
         // Best-effort cleanup before bailing.
         let _ = fs::remove_dir(&cgroup_path);
-        e
     })?;
 
     // For dns=fake we need to short-circuit nss-resolve / systemd-resolved
@@ -208,18 +209,15 @@ struct DnsShim {
 /// Generate per-invocation `nsswitch.conf` and `resolv.conf` in /tmp.
 /// The child unshares a mount namespace and bind-mounts these over
 /// `/etc/nsswitch.conf` and `/etc/resolv.conf` so:
-///   - NSS doesn't dispatch hostname lookups to nss-resolve / D-Bus
-///     (which would talk to systemd-resolved, returning NXDOMAIN for
-///      hosts only heimdall's fake-IP DNS knows about)
-///   - libc's nss-dns falls back to UDP `127.0.0.1:53` queries that
-///     the eBPF DNS-hijack rewrites to heimdall's fake-IP DNS port
+///
+/// - NSS doesn't dispatch hostname lookups to nss-resolve / D-Bus
+///   (which would talk to systemd-resolved, returning NXDOMAIN for
+///   hosts only heimdall's fake-IP DNS knows about)
+/// - libc's nss-dns falls back to UDP `127.0.0.1:53` queries that
+///   the eBPF DNS-hijack rewrites to heimdall's fake-IP DNS port
 fn prepare_dns_shim(cgroup_id: u64) -> Result<DnsShim> {
-    let nsswitch = PathBuf::from(format!(
-        "/tmp/heimdall-cli-nsswitch-{cgroup_id}.conf"
-    ));
-    let resolv = PathBuf::from(format!(
-        "/tmp/heimdall-cli-resolv-{cgroup_id}.conf"
-    ));
+    let nsswitch = PathBuf::from(format!("/tmp/heimdall-cli-nsswitch-{cgroup_id}.conf"));
+    let resolv = PathBuf::from(format!("/tmp/heimdall-cli-resolv-{cgroup_id}.conf"));
 
     // `hosts: files dns` skips `resolve` and `mymachines` so libc goes
     // straight to /etc/resolv.conf (which we override below). The
@@ -261,8 +259,7 @@ fn resolve_decision(cfg: &HeimdallConfig, args: &RunArgs) -> Result<RunDecision>
     let base = &cfg.cli.run.default;
     let profile: Option<&CliRunProfile> = match &args.profile {
         Some(name) => Some(cfg.cli.run.profiles.get(name).ok_or_else(|| {
-            let known: Vec<&str> =
-                cfg.cli.run.profiles.keys().map(String::as_str).collect();
+            let known: Vec<&str> = cfg.cli.run.profiles.keys().map(String::as_str).collect();
             anyhow!(
                 "unknown profile `{name}` — declared profiles: [{}]",
                 known.join(", ")
@@ -295,9 +292,7 @@ fn resolve_decision(cfg: &HeimdallConfig, args: &RunArgs) -> Result<RunDecision>
         .or_else(|| base.dns.map(dns_strategy_str))
         .unwrap_or_else(|| "fake".into());
     if dns != "fake" && dns != "system" {
-        bail!(
-            "invalid dns strategy `{dns}` — expected `fake` or `system`"
-        );
+        bail!("invalid dns strategy `{dns}` — expected `fake` or `system`");
     }
     let tag = args
         .tag
@@ -320,7 +315,12 @@ fn resolve_decision(cfg: &HeimdallConfig, args: &RunArgs) -> Result<RunDecision>
         );
     }
 
-    Ok(RunDecision { connection, observe, dns, tag })
+    Ok(RunDecision {
+        connection,
+        observe,
+        dns,
+        tag,
+    })
 }
 
 fn dns_strategy_str(d: heimdall_config::DnsStrategy) -> String {
@@ -341,6 +341,10 @@ where
 // systemd user-scope re-exec — gives us a writable cgroup tree
 // ────────────────────────────────────────────────────────────────────────────
 
+#[allow(
+    unsafe_code,
+    reason = "libc getuid has no safety preconditions and only reads process credentials"
+)]
 fn in_user_service_scope() -> Result<bool> {
     let cgroup = read_proc_self_cgroup()?;
     let uid = unsafe { libc::getuid() };
@@ -470,6 +474,10 @@ fn deregister_with_daemon(base: &str, cgroup_id: u64) -> Result<()> {
 // fork → child joins cgroup → execvp ; parent waits and forwards exit
 // ────────────────────────────────────────────────────────────────────────────
 
+#[allow(
+    unsafe_code,
+    reason = "fork and signal disposition changes are confined to the immediate pre-exec child path"
+)]
 fn fork_into_cgroup_and_exec(
     cgroup_path: &Path,
     cmd: &[String],
@@ -484,10 +492,7 @@ fn fork_into_cgroup_and_exec(
             let pid_str = std::process::id().to_string();
             let cgroup_procs = cgroup_path.join("cgroup.procs");
             if let Err(e) = fs::write(&cgroup_procs, pid_str.as_bytes()) {
-                eprintln!(
-                    "heimdall run: write {} failed: {e}",
-                    cgroup_procs.display()
-                );
+                eprintln!("heimdall run: write {} failed: {e}", cgroup_procs.display());
                 std::process::exit(127);
             }
 
@@ -519,11 +524,16 @@ fn fork_into_cgroup_and_exec(
             // Strip both lower- and upper-case variants because every
             // tool seems to read a different one.
             for var in [
-                "http_proxy", "HTTP_PROXY",
-                "https_proxy", "HTTPS_PROXY",
-                "all_proxy", "ALL_PROXY",
-                "no_proxy", "NO_PROXY",
-                "ftp_proxy", "FTP_PROXY",
+                "http_proxy",
+                "HTTP_PROXY",
+                "https_proxy",
+                "HTTPS_PROXY",
+                "all_proxy",
+                "ALL_PROXY",
+                "no_proxy",
+                "NO_PROXY",
+                "ftp_proxy",
+                "FTP_PROXY",
             ] {
                 std::env::remove_var(var);
             }
@@ -531,8 +541,7 @@ fn fork_into_cgroup_and_exec(
             // execvp — replaces this process image with the wrapped
             // command. From the kernel's POV the cgroup membership
             // sticks across exec.
-            let prog =
-                CString::new(cmd[0].as_bytes()).expect("command path contained NUL");
+            let prog = CString::new(cmd[0].as_bytes()).expect("command path contained NUL");
             let argv: Vec<CString> = cmd
                 .iter()
                 .map(|s| CString::new(s.as_bytes()).expect("arg contained NUL"))
@@ -560,6 +569,10 @@ fn fork_into_cgroup_and_exec(
 /// their own ns, which is required to mount(2). The uid_map maps the
 /// current real uid to itself (`<uid> <uid> 1`) so file permissions
 /// stay sane after the namespace switch.
+#[allow(
+    unsafe_code,
+    reason = "libc getuid and getgid have no safety preconditions and only read process credentials"
+)]
 fn apply_dns_shim(shim: &DnsShim) -> Result<()> {
     let real_uid = unsafe { libc::getuid() };
     let real_gid = unsafe { libc::getgid() };
@@ -645,4 +658,3 @@ fn wait_for_child(child: Pid) -> i32 {
         }
     }
 }
-

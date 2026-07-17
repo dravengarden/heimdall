@@ -34,6 +34,7 @@ pub const DEFAULT_DIR: &str = "/etc/heimdall";
 /// first one that exists. Falls back to `heimdall.ncl` (the canonical
 /// recommended format) if none are present so help text and error
 /// messages have something to display.
+#[must_use]
 pub fn default_config_path() -> PathBuf {
     let dir = Path::new(DEFAULT_DIR);
     for ext in ["ncl", "toml", "json", "yaml"] {
@@ -54,13 +55,25 @@ pub const SYSTEM_TAG: &str = "system";
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("read {path}: {source}")]
-    Read { path: PathBuf, source: std::io::Error },
+    Read {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error("parse {path}: {source}")]
-    Parse { path: PathBuf, source: serde_yaml::Error },
+    Parse {
+        path: PathBuf,
+        source: serde_yaml::Error,
+    },
     #[error("parse {path}: {source}")]
-    ParseJson { path: PathBuf, source: serde_json::Error },
+    ParseJson {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
     #[error("parse {path}: {source}")]
-    ParseToml { path: PathBuf, source: toml::de::Error },
+    ParseToml {
+        path: PathBuf,
+        source: toml::de::Error,
+    },
     #[error("apiVersion `{0}` is not supported (expected `heimdall.io/v1alpha1`)")]
     UnsupportedApiVersion(String),
     #[error("kind `{0}` is not supported (expected `HeimdallConfig`)")]
@@ -70,15 +83,25 @@ pub enum ConfigError {
     #[error("routing.default.use refers to unknown connection `{0}`")]
     DefaultRoutingUnknown(String),
     #[error("routing.rules[{index}] (`{name}`) refers to unknown connection `{tag}`")]
-    RuleRoutingUnknown { index: usize, name: String, tag: String },
+    RuleRoutingUnknown {
+        index: usize,
+        name: String,
+        tag: String,
+    },
     #[error("connection name `{0}` is reserved")]
     ReservedConnectionName(String),
     #[error("connection `{name}` has empty addr (required for type `{ty}`)")]
     EmptyAddr { name: String, ty: String },
     #[error("read passwordFile `{path}`: {source}")]
-    SecretRead { path: PathBuf, source: std::io::Error },
+    SecretRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error("regex compilation failed: {pattern}: {source}")]
-    Regex { pattern: String, source: regex::Error },
+    Regex {
+        pattern: String,
+        source: regex::Error,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -121,9 +144,9 @@ pub struct Runtime {
     pub listen: String,
     #[serde(default = "default_relay_ip", rename = "relayIp")]
     pub relay_ip: Ipv4Addr,
-    /// IPv6 relay address. When set, the daemon attaches a connect6
-    /// eBPF program that rewrites IPv6 connect() destinations to this
-    /// address + port (`runtime.listen`'s port). When None, IPv6
+    /// IPv6 relay address. When set, the daemon attaches a `connect6`
+    /// eBPF program that rewrites IPv6 `connect()` destinations to this
+    /// address + port (`runtime.listen`'s port). When `None`, IPv6
     /// connections fall through to whatever the host normally does
     /// with them. Defaults to `::1` so dual-stack works out of the
     /// box on hosts where the relay binds `[::]`.
@@ -143,7 +166,7 @@ pub struct Runtime {
     /// stay empty-NOERROR (forcing resolver fallback to A) — the
     /// pre-IPv6 behaviour.
     ///
-    /// Default uses the v4-mapped fc00:198:19::/96 ULA range to mirror
+    /// Default uses the v4-mapped `fc00:198:19::/96` ULA range to mirror
     /// the v4 pool 1:1 visually (`fc00:198:19::a.b.c.d`).
     #[serde(default = "default_fake_ip6_cidr", rename = "fakeIp6Cidr")]
     pub fake_ip6_cidr: String,
@@ -196,14 +219,14 @@ impl Default for Runtime {
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DefaultEgressPolicy {
-    /// Route through heimdall (current behaviour) — REDIRECT_OFF
-    /// stays unset, so the eBPF programs redirect every connect()
+    /// Route through heimdall (current behaviour) — `REDIRECT_OFF`
+    /// stays unset, so the eBPF programs redirect every `connect()`
     /// to the relay, which then either fakes-IP-resolves or routes
     /// to the `default` connection.
     #[default]
     Redirect,
-    /// Skip heimdall entirely — REDIRECT_OFF set, OBSERVE_OFF set,
-    /// NO_BYPASS_LOG set. Traffic flows direct, heimdall sees
+    /// Skip heimdall entirely — `REDIRECT_OFF` set, `OBSERVE_OFF` set,
+    /// `NO_BYPASS_LOG` set. Traffic flows direct, heimdall sees
     /// nothing. Use when something's wrong with the relay or
     /// upstream and you need to fail-open without stopping the
     /// daemon (which would also drop tap visibility).
@@ -214,16 +237,36 @@ pub enum DefaultEgressPolicy {
 // / `heimdall run` processes under user.slice. The daemon attaches the
 // primary cgroup target here plus user.slice as a secondary (see
 // main.rs); system.slice is the default primary.
-fn default_cgroup() -> String { "/sys/fs/cgroup/system.slice".into() }
-fn default_listen() -> String { "0.0.0.0:12345".into() }
-fn default_relay_ip() -> Ipv4Addr { Ipv4Addr::new(127, 0, 0, 1) }
-fn default_relay_ip6() -> Ipv6Addr { Ipv6Addr::LOCALHOST }
-fn default_dns_listen() -> String { "0.0.0.0:5358".into() }
-fn default_fake_ip_cidr() -> String { "198.19.0.0/16".into() }
-fn default_fake_ip6_cidr() -> String { "fc00:198:19::/96".into() }
-fn default_state_dir() -> PathBuf { PathBuf::from("/var/lib/heimdall") }
-fn default_flow_retention_secs() -> i64 { 3 * 86400 }
-fn default_api_listen() -> String { "127.0.0.1:9999".into() }
+fn default_cgroup() -> String {
+    "/sys/fs/cgroup/system.slice".into()
+}
+fn default_listen() -> String {
+    "0.0.0.0:12345".into()
+}
+fn default_relay_ip() -> Ipv4Addr {
+    Ipv4Addr::LOCALHOST
+}
+fn default_relay_ip6() -> Ipv6Addr {
+    Ipv6Addr::LOCALHOST
+}
+fn default_dns_listen() -> String {
+    "0.0.0.0:5358".into()
+}
+fn default_fake_ip_cidr() -> String {
+    "198.19.0.0/16".into()
+}
+fn default_fake_ip6_cidr() -> String {
+    "fc00:198:19::/96".into()
+}
+fn default_state_dir() -> PathBuf {
+    PathBuf::from("/var/lib/heimdall")
+}
+fn default_flow_retention_secs() -> i64 {
+    3 * 86400
+}
+fn default_api_listen() -> String {
+    "127.0.0.1:9999".into()
+}
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -246,6 +289,7 @@ pub enum Connection {
 }
 
 impl Connection {
+    #[must_use]
     pub fn description(&self) -> Option<&str> {
         match self {
             Connection::Socks5(c) => c.description.as_deref(),
@@ -253,6 +297,7 @@ impl Connection {
         }
     }
 
+    #[must_use]
     pub fn type_str(&self) -> &'static str {
         match self {
             Connection::Socks5(_) => "socks5",
@@ -284,6 +329,11 @@ pub struct Socks5Auth {
 }
 
 impl Socks5Auth {
+    /// Read the configured password file and trim one trailing newline.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::SecretRead`] when the file cannot be read.
     pub fn read_password(&self) -> Result<String, ConfigError> {
         let bytes = fs::read(&self.password_file).map_err(|source| ConfigError::SecretRead {
             path: self.password_file.clone(),
@@ -317,6 +367,11 @@ pub enum MatchValue {
 }
 
 impl MatchValue {
+    /// Parse an exact or prefixed match expression.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::Regex`] for an invalid `regexp:` pattern.
     pub fn parse(s: &str) -> Result<Self, ConfigError> {
         if let Some(pat) = s.strip_prefix("regexp:") {
             let re = Regex::new(pat).map_err(|source| ConfigError::Regex {
@@ -335,6 +390,7 @@ impl MatchValue {
         }
     }
 
+    #[must_use]
     pub fn matches(&self, target: &str) -> bool {
         match self {
             MatchValue::Exact(s) => target == s,
@@ -389,6 +445,7 @@ pub struct MatchCond {
 }
 
 impl MatchCond {
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.units.is_empty()
             && self.slices.is_empty()
@@ -397,15 +454,15 @@ impl MatchCond {
             && self.not.is_none()
     }
 
+    #[must_use]
     pub fn evaluate(&self, target: &dyn MatchTarget) -> bool {
         if self.is_empty() {
             return true;
         }
 
         if !self.units.is_empty() {
-            let unit = match target.unit_name() {
-                Some(s) => s,
-                None => return false,
+            let Some(unit) = target.unit_name() else {
+                return false;
             };
             if !self.units.iter().any(|m| m.matches(unit)) {
                 return false;
@@ -413,9 +470,8 @@ impl MatchCond {
         }
 
         if !self.slices.is_empty() {
-            let slice = match target.slice() {
-                Some(s) => s,
-                None => return false,
+            let Some(slice) = target.slice() else {
+                return false;
             };
             if !self.slices.iter().any(|m| m.matches(slice)) {
                 return false;
@@ -442,22 +498,13 @@ impl MatchCond {
 // routing
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Routing {
     #[serde(default)]
     pub rules: Vec<Rule>,
     #[serde(default)]
     pub default: Decision,
-}
-
-impl Default for Routing {
-    fn default() -> Self {
-        Self {
-            rules: Vec::new(),
-            default: Decision::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -495,7 +542,9 @@ impl Default for Decision {
     }
 }
 
-fn default_use() -> String { "default".into() }
+fn default_use() -> String {
+    "default".into()
+}
 
 // ---------------------------------------------------------------------------
 // cli — defaults for `heimdall <subcommand>` invocations
@@ -550,19 +599,16 @@ pub struct CliRunProfile {
     pub tag: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DnsStrategy {
     /// Use heimdall's fake-IP DNS resolver. The relay reverses to a
     /// hostname before forwarding via SOCKS5 ATYP=0x03.
+    #[default]
     Fake,
     /// Bypass fake-IP; let the wrapped command's libc resolver hit
     /// whatever it usually hits (host's /etc/resolv.conf).
     System,
-}
-
-impl Default for DnsStrategy {
-    fn default() -> Self { DnsStrategy::Fake }
 }
 
 // ---------------------------------------------------------------------------
@@ -581,6 +627,7 @@ pub enum Format {
 }
 
 impl Format {
+    #[must_use]
     pub fn detect(path: &Path) -> Option<Self> {
         let ext = path.extension()?.to_str()?;
         match ext {
@@ -594,6 +641,11 @@ impl Format {
 }
 
 impl HeimdallConfig {
+    /// Load and validate a configuration file.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ConfigError`] when reading, parsing, or validation fails.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
         let path = path.as_ref();
         let cfg: HeimdallConfig = parse_typed(path)?;
@@ -601,6 +653,11 @@ impl HeimdallConfig {
         Ok(cfg)
     }
 
+    /// Validate schema identifiers, connection references, and routing rules.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first violated configuration invariant.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.api_version != SUPPORTED_API_VERSION {
             return Err(ConfigError::UnsupportedApiVersion(self.api_version.clone()));
@@ -652,31 +709,50 @@ impl HeimdallConfig {
     }
 }
 
+/// Parse a supported configuration format into the requested type.
+///
+/// # Errors
+///
+/// Returns a [`ConfigError`] when the file cannot be read or decoded.
 pub fn parse_typed<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, ConfigError> {
     let format = Format::detect(path).unwrap_or(Format::Yaml);
     match format {
         Format::Yaml => {
-            let raw = fs::read_to_string(path)
-                .map_err(|source| ConfigError::Read { path: path.to_path_buf(), source })?;
-            serde_yaml::from_str(&raw)
-                .map_err(|source| ConfigError::Parse { path: path.to_path_buf(), source })
+            let raw = fs::read_to_string(path).map_err(|source| ConfigError::Read {
+                path: path.to_path_buf(),
+                source,
+            })?;
+            serde_yaml::from_str(&raw).map_err(|source| ConfigError::Parse {
+                path: path.to_path_buf(),
+                source,
+            })
         }
         Format::Json => {
-            let raw = fs::read_to_string(path)
-                .map_err(|source| ConfigError::Read { path: path.to_path_buf(), source })?;
-            serde_json::from_str(&raw)
-                .map_err(|source| ConfigError::ParseJson { path: path.to_path_buf(), source })
+            let raw = fs::read_to_string(path).map_err(|source| ConfigError::Read {
+                path: path.to_path_buf(),
+                source,
+            })?;
+            serde_json::from_str(&raw).map_err(|source| ConfigError::ParseJson {
+                path: path.to_path_buf(),
+                source,
+            })
         }
         Format::Toml => {
-            let raw = fs::read_to_string(path)
-                .map_err(|source| ConfigError::Read { path: path.to_path_buf(), source })?;
-            toml::from_str(&raw)
-                .map_err(|source| ConfigError::ParseToml { path: path.to_path_buf(), source })
+            let raw = fs::read_to_string(path).map_err(|source| ConfigError::Read {
+                path: path.to_path_buf(),
+                source,
+            })?;
+            toml::from_str(&raw).map_err(|source| ConfigError::ParseToml {
+                path: path.to_path_buf(),
+                source,
+            })
         }
         Format::Nickel => {
             let json = run_nickel_export(path)?;
-            serde_json::from_str(&json)
-                .map_err(|source| ConfigError::ParseJson { path: path.to_path_buf(), source })
+            serde_json::from_str(&json).map_err(|source| ConfigError::ParseJson {
+                path: path.to_path_buf(),
+                source,
+            })
         }
     }
 }
@@ -689,7 +765,10 @@ fn run_nickel_export(path: &Path) -> Result<String, ConfigError> {
         .arg("json")
         .arg(path)
         .output()
-        .map_err(|source| ConfigError::Read { path: path.to_path_buf(), source })?;
+        .map_err(|source| ConfigError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
     if !out.status.success() {
         return Err(ConfigError::Read {
             path: path.to_path_buf(),
@@ -712,33 +791,44 @@ mod tests {
     use indoc::indoc;
 
     fn parse(yaml: &str) -> Result<HeimdallConfig, ConfigError> {
-        let cfg: HeimdallConfig = serde_yaml::from_str(yaml).map_err(|source| ConfigError::Parse {
-            path: PathBuf::from("<test>"),
-            source,
-        })?;
+        let cfg: HeimdallConfig =
+            serde_yaml::from_str(yaml).map_err(|source| ConfigError::Parse {
+                path: PathBuf::from("<test>"),
+                source,
+            })?;
         cfg.validate()?;
         Ok(cfg)
     }
 
     #[test]
     fn minimal_config() {
-        let yaml = indoc! {r#"
+        let yaml = indoc! {r"
             apiVersion: heimdall.io/v1alpha1
             kind: HeimdallConfig
             connections:
               default: { type: socks5, addr: 127.0.0.1:20170 }
-        "#};
+        "};
         let cfg = parse(yaml).unwrap();
         assert_eq!(cfg.routing.default.use_, "default");
     }
 
     #[test]
     fn match_value_prefixes() {
-        assert!(MatchValue::parse("nginx.service").unwrap().matches("nginx.service"));
-        assert!(MatchValue::parse("regexp:^postgres.*\\.service$").unwrap().matches("postgresql.service"));
-        assert!(MatchValue::parse("prefix:docker-").unwrap().matches("docker-abc.scope"));
-        assert!(MatchValue::parse("suffix:.scope").unwrap().matches("run-r1.scope"));
-        assert!(MatchValue::parse("keyword:nginx").unwrap().matches("nginx.service"));
+        assert!(MatchValue::parse("nginx.service")
+            .unwrap()
+            .matches("nginx.service"));
+        assert!(MatchValue::parse("regexp:^postgres.*\\.service$")
+            .unwrap()
+            .matches("postgresql.service"));
+        assert!(MatchValue::parse("prefix:docker-")
+            .unwrap()
+            .matches("docker-abc.scope"));
+        assert!(MatchValue::parse("suffix:.scope")
+            .unwrap()
+            .matches("run-r1.scope"));
+        assert!(MatchValue::parse("keyword:nginx")
+            .unwrap()
+            .matches("nginx.service"));
     }
 
     struct TestUnit {
@@ -761,11 +851,14 @@ mod tests {
 
     #[test]
     fn evaluate_units_and_slices() {
-        let u = TestUnit { unit: "nginx.service", slice: "system.slice" };
-        let c = cond_yaml(indoc! {r#"
+        let u = TestUnit {
+            unit: "nginx.service",
+            slice: "system.slice",
+        };
+        let c = cond_yaml(indoc! {r"
             units: [nginx.service, caddy.service]
             slices: [system.slice]
-        "#});
+        "});
         assert!(c.evaluate(&u));
 
         let c2 = cond_yaml("slices: [user.slice]");
@@ -774,14 +867,20 @@ mod tests {
 
     #[test]
     fn evaluate_unit_prefix() {
-        let u = TestUnit { unit: "docker-abc123.scope", slice: "system.slice" };
+        let u = TestUnit {
+            unit: "docker-abc123.scope",
+            slice: "system.slice",
+        };
         let c = cond_yaml("units: [prefix:docker-]");
         assert!(c.evaluate(&u));
     }
 
     #[test]
     fn evaluate_any_or() {
-        let u = TestUnit { unit: "rancher.service", slice: "system.slice" };
+        let u = TestUnit {
+            unit: "rancher.service",
+            slice: "system.slice",
+        };
         let c = cond_yaml(indoc! {"
             any:
               - units: [rancher.service]
@@ -792,33 +891,42 @@ mod tests {
 
     #[test]
     fn evaluate_all_and_not() {
-        let app = TestUnit { unit: "app.service", slice: "system.slice" };
-        let db = TestUnit { unit: "mysql.service", slice: "system.slice" };
-        let c = cond_yaml(indoc! {r#"
+        let app = TestUnit {
+            unit: "app.service",
+            slice: "system.slice",
+        };
+        let db = TestUnit {
+            unit: "mysql.service",
+            slice: "system.slice",
+        };
+        let c = cond_yaml(indoc! {r"
             all:
               - slices: [system.slice]
               - not:
                   units: [mysql.service, redis.service]
-        "#});
+        "});
         assert!(c.evaluate(&app));
         assert!(!c.evaluate(&db));
     }
 
     #[test]
     fn rejects_reserved_system() {
-        let yaml = indoc! {r#"
+        let yaml = indoc! {r"
             apiVersion: heimdall.io/v1alpha1
             kind: HeimdallConfig
             connections:
               default: { type: socks5, addr: 127.0.0.1:20170 }
               system: { type: direct }
-        "#};
-        assert!(matches!(parse(yaml), Err(ConfigError::ReservedConnectionName(_))));
+        "};
+        assert!(matches!(
+            parse(yaml),
+            Err(ConfigError::ReservedConnectionName(_))
+        ));
     }
 
     #[test]
     fn rejects_unknown_use_in_rule() {
-        let yaml = indoc! {r#"
+        let yaml = indoc! {r"
             apiVersion: heimdall.io/v1alpha1
             kind: HeimdallConfig
             connections:
@@ -827,13 +935,16 @@ mod tests {
               rules:
                 - match: { slices: [system.slice] }
                   use: ghost
-        "#};
-        assert!(matches!(parse(yaml), Err(ConfigError::RuleRoutingUnknown { .. })));
+        "};
+        assert!(matches!(
+            parse(yaml),
+            Err(ConfigError::RuleRoutingUnknown { .. })
+        ));
     }
 
     #[test]
     fn accepts_use_system() {
-        let yaml = indoc! {r#"
+        let yaml = indoc! {r"
             apiVersion: heimdall.io/v1alpha1
             kind: HeimdallConfig
             connections:
@@ -842,7 +953,7 @@ mod tests {
               rules:
                 - match: { units: [sshd.service] }
                   use: system
-        "#};
+        "};
         let cfg = parse(yaml).unwrap();
         assert_eq!(cfg.routing.rules[0].use_, "system");
     }

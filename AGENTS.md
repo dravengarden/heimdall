@@ -68,11 +68,9 @@ eBPF must be built **before** the userspace daemon (it's
 canonical incantation.
 
 ```bash
-( cd heimdall-ebpf && cargo +nightly build -Z build-std=core \
-                                          --target bpfel-unknown-none --release )
-( cd heimdall-ui && deno install --allow-scripts && deno task build )  # only when UI changed
-cargo build --release                                  # daemon
-cargo test --release --workspace                       # gate before commit
+nix develop .#ebpf -c bash -c \
+  'cd heimdall-ebpf && cargo-nightly build --locked --release'
+nix develop -c just verify
 ```
 
 ### Schema changes mirror in three places

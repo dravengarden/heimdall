@@ -2,6 +2,21 @@
 name = "heimdall-common"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.95"
+publish = false
+
+[lints.rust]
+unsafe_code = "deny"
+unexpected_cfgs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+cargo_common_metadata = "allow"
+multiple_crate_versions = "allow"
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
 
 # no_std for eBPF side; "user" enables std + aya::Pod
 [features]

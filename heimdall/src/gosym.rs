@@ -35,21 +35,14 @@ pub struct FuncLocation {
 
 /// Look up a set of function names in the binary's `.gopclntab`.
 /// Names that don't exist are simply absent from the returned map.
-pub fn find_functions(
-    binary: &Path,
-    needles: &[&str],
-) -> Result<HashMap<String, FuncLocation>> {
-    let data = fs::read(binary)
-        .with_context(|| format!("read {}", binary.display()))?;
-    let obj = object::read::File::parse(&*data)
-        .map_err(|e| anyhow!("ELF parse: {e}"))?;
+pub fn find_functions(binary: &Path, needles: &[&str]) -> Result<HashMap<String, FuncLocation>> {
+    let data = fs::read(binary).with_context(|| format!("read {}", binary.display()))?;
+    let obj = object::read::File::parse(&*data).map_err(|e| anyhow!("ELF parse: {e}"))?;
 
     let pcln = obj
         .section_by_name(".gopclntab")
         .context(".gopclntab section not found")?;
-    let pcln_data = pcln
-        .data()
-        .map_err(|e| anyhow!("read .gopclntab: {e}"))?;
+    let pcln_data = pcln.data().map_err(|e| anyhow!("read .gopclntab: {e}"))?;
 
     if pcln_data.len() < 72 {
         bail!(".gopclntab too small ({} bytes)", pcln_data.len());
@@ -95,20 +88,17 @@ pub fn find_functions(
         .section_by_name(".text")
         .context(".text section not found")?;
     let text_addr = text.address();
-    let (text_file_off, _) = text
-        .file_range()
-        .context(".text has no file range")?;
+    let (text_file_off, _) = text.file_range().context(".text has no file range")?;
 
     let want: std::collections::HashSet<&&str> = needles.iter().collect();
     let mut found = HashMap::new();
 
     for i in 0..nfunc {
         let entry_pos = pcln_off + i * 8;
-        let entry_off =
-            u32::from_le_bytes(pcln_data[entry_pos..entry_pos + 4].try_into().unwrap());
-        let func_off = u32::from_le_bytes(
-            pcln_data[entry_pos + 4..entry_pos + 8].try_into().unwrap(),
-        ) as usize;
+        let entry_off = u32::from_le_bytes(pcln_data[entry_pos..entry_pos + 4].try_into().unwrap());
+        let func_off =
+            u32::from_le_bytes(pcln_data[entry_pos + 4..entry_pos + 8].try_into().unwrap())
+                as usize;
 
         // funcInfo layout in pcln_data[pcln_off + func_off..]:
         //   [0..4]  entryOff (duplicate of the table value, ignored)
@@ -146,7 +136,9 @@ pub fn find_functions(
         // sentinel entry makes this safe for the final function.
         let next_entry_pos = pcln_off + (i + 1) * 8;
         let next_entry_off = u32::from_le_bytes(
-            pcln_data[next_entry_pos..next_entry_pos + 4].try_into().unwrap(),
+            pcln_data[next_entry_pos..next_entry_pos + 4]
+                .try_into()
+                .unwrap(),
         );
         if next_entry_off < entry_off {
             // sanity — gopclntab is supposed to be sorted ascending.
@@ -157,13 +149,15 @@ pub fn find_functions(
         let file_offset = vaddr
             .checked_sub(text_addr)
             .map(|d| text_file_off + d)
-            .ok_or_else(|| {
-                anyhow!("vaddr {vaddr:#x} below .text base {text_addr:#x}")
-            })?;
+            .ok_or_else(|| anyhow!("vaddr {vaddr:#x} below .text base {text_addr:#x}"))?;
 
         found.insert(
             name.to_string(),
-            FuncLocation { vaddr, size, file_offset },
+            FuncLocation {
+                vaddr,
+                size,
+                file_offset,
+            },
         );
 
         if found.len() == needles.len() {

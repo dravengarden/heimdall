@@ -6,15 +6,15 @@
 
 ```bash
 # eBPF first (its build artifact is include_bytes!'d into the daemon).
-# Needs nightly + bpfel-unknown-none + rust-src + build-std.
-( cd heimdall-ebpf && cargo +nightly build -Z build-std=core \
-                                          --target bpfel-unknown-none --release )
+# Uses the pinned nightly + rust-src/build-std and matching LLVM linker.
+nix develop .#ebpf -c bash -c \
+  'cd heimdall-ebpf && cargo-nightly build --locked --release'
 
 # UI (only when components/ or hooks/ changed)
-( cd heimdall-ui && bun install --frozen-lockfile && bun run typecheck && bun run build )
+( cd heimdall-ui && deno install --frozen --allow-scripts && deno task typecheck && deno task build )
 
 # Daemon (embeds the UI bundle via rust-embed)
-cargo build --release
+nix develop -c cargo build --workspace --all-features --locked --release
 ```
 
 ### Deploying

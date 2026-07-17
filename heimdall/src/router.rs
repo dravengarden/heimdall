@@ -119,7 +119,10 @@ slices: [system.slice]
             connections,
             routing: Routing {
                 rules,
-                default: Decision { use_: "default".into(), observe: false },
+                default: Decision {
+                    use_: "default".into(),
+                    observe: false,
+                },
             },
             cli: Default::default(),
         }

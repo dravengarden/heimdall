@@ -61,8 +61,7 @@ const README_MD: &str = include_str!("init_templates/README.md");
 
 pub fn run(args: InitArgs) -> Result<()> {
     let ext = args.format.extension();
-    fs::create_dir_all(&args.dir)
-        .with_context(|| format!("create dir {}", args.dir.display()))?;
+    fs::create_dir_all(&args.dir).with_context(|| format!("create dir {}", args.dir.display()))?;
 
     let main_target = args.dir.join(format!("heimdall.{ext}"));
     let lib_target = args.dir.join("lib.ncl");
@@ -121,4 +120,3 @@ pub fn run(args: InitArgs) -> Result<()> {
 
     Ok(())
 }
-

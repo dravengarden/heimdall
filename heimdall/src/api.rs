@@ -25,16 +25,16 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use rust_embed::Embed;
 use heimdall_config::{Connection, Decision, HeimdallConfig, SYSTEM_TAG};
+use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{info, warn};
 
-use crate::unit::UnitResolver;
 use crate::policy::PolicyEngine;
 use crate::store::{Flow, ListQuery, Message as StoreMessage, MessageQuery, Store};
+use crate::unit::UnitResolver;
 
 // ---------------------------------------------------------------------------
 // Live flow event bus — relay → broadcast → WebSocket subscribers
@@ -128,7 +128,10 @@ pub fn router(state: AppState) -> Router {
         // combination doesn't trip axum 0.8's Handler bound). Both
         // endpoints write / clear the same cli_overrides map and the
         // matching CGROUP_POLICY BPF entry.
-        .route("/api/cli/register", get(list_cli_overrides).post(register_cli))
+        .route(
+            "/api/cli/register",
+            get(list_cli_overrides).post(register_cli),
+        )
         .route("/api/cli/deregister", post(deregister_cli))
         // Embedded Dioxus UI bundle. Order matters: API first, then the
         // catch-all static handler so it doesn't shadow API paths.
@@ -138,7 +141,10 @@ pub fn router(state: AppState) -> Router {
             // Allow any origin while we develop the Dioxus UI side-by-side.
             // Once the UI is bundled into the same binary at `/`, same-origin
             // makes this unnecessary, but harmless.
-            CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any),
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
         )
         .with_state(state)
 }
@@ -246,7 +252,10 @@ async fn status(State(s): State<AppState>) -> Result<Json<StatusResp>, ApiError>
         .map_err(internal)?;
     let count = s
         .store
-        .list(ListQuery { limit: 10_000_000, ..Default::default() })
+        .list(ListQuery {
+            limit: 10_000_000,
+            ..Default::default()
+        })
         .await
         .map_err(internal)?
         .len() as i64;
@@ -286,7 +295,9 @@ struct ListParams {
     atyp: Option<String>,
 }
 
-fn default_limit() -> u32 { 100 }
+fn default_limit() -> u32 {
+    100
+}
 
 async fn list_flows(
     State(s): State<AppState>,
@@ -304,10 +315,7 @@ async fn list_flows(
     Ok(Json(rows))
 }
 
-async fn show_flow(
-    State(s): State<AppState>,
-    Path(id): Path<i64>,
-) -> Result<Json<Flow>, ApiError> {
+async fn show_flow(State(s): State<AppState>, Path(id): Path<i64>) -> Result<Json<Flow>, ApiError> {
     let f = s
         .store
         .get(id)
@@ -327,7 +335,9 @@ struct MessageParams {
     since_us: Option<i64>,
 }
 
-fn default_msg_limit() -> u32 { 200 }
+fn default_msg_limit() -> u32 {
+    200
+}
 
 /// Wire shape for messages — pass-through of the stored row plus
 /// unit identity resolved at API time. The DB schema deliberately
@@ -481,8 +491,12 @@ pub struct CliRegisterReq {
     pub dns: String,
 }
 
-fn default_observe() -> bool { true }
-fn default_dns_strategy() -> String { "fake".into() }
+fn default_observe() -> bool {
+    true
+}
+fn default_dns_strategy() -> String {
+    "fake".into()
+}
 
 #[derive(Debug, Serialize)]
 pub struct CliOverrideEntry {
@@ -585,15 +599,18 @@ async fn deregister_cli(
         g.clone()
     };
     if let Some(engine) = engine_opt {
-        engine.deregister_external(p.cgroup_id).await.map_err(internal)?;
+        engine
+            .deregister_external(p.cgroup_id)
+            .await
+            .map_err(internal)?;
     }
     info!(cgroup_id = p.cgroup_id, "cli deregister: cgroup cleared");
-    Ok(Json(serde_json::json!({ "ok": true, "cgroup_id": p.cgroup_id })))
+    Ok(Json(
+        serde_json::json!({ "ok": true, "cgroup_id": p.cgroup_id }),
+    ))
 }
 
-async fn list_cli_overrides(
-    State(s): State<AppState>,
-) -> Json<Vec<CliOverrideEntry>> {
+async fn list_cli_overrides(State(s): State<AppState>) -> Json<Vec<CliOverrideEntry>> {
     let entries: Vec<CliOverrideEntry> = s
         .cli_overrides
         .read()

@@ -214,9 +214,7 @@ impl DbFileStats {
 /// startup to log which mode is in effect — pre-existing DBs created
 /// before the auto_vacuum=INCREMENTAL wiring landed will report 0.
 async fn current_auto_vacuum(pool: &SqlitePool) -> Result<i64> {
-    let row: (i64,) = sqlx::query_as("PRAGMA auto_vacuum")
-        .fetch_one(pool)
-        .await?;
+    let row: (i64,) = sqlx::query_as("PRAGMA auto_vacuum").fetch_one(pool).await?;
     Ok(row.0)
 }
 
@@ -331,7 +329,7 @@ impl Store {
     }
 
     pub async fn list(&self, q: ListQuery) -> Result<Vec<Flow>> {
-        let limit = q.limit.max(1).min(10_000) as i64;
+        let limit = i64::from(q.limit.clamp(1, 10_000));
         let mut sql = String::from("SELECT * FROM flows WHERE 1=1");
         if q.since_us.is_some() {
             sql.push_str(" AND ts_start_us >= ?");
@@ -403,9 +401,15 @@ impl Store {
         let total = deleted_flows + deleted_messages;
         // Persist stats so `heimdall status` (read-only handle, no
         // shared memory with the daemon) can surface them.
-        self.set_meta("last_cleanup_at_us", &now_micros().to_string()).await?;
-        self.set_meta("last_cleanup_deleted", &total.to_string()).await?;
-        Ok(CleanupOutcome { deleted_flows, deleted_messages, total })
+        self.set_meta("last_cleanup_at_us", &now_micros().to_string())
+            .await?;
+        self.set_meta("last_cleanup_deleted", &total.to_string())
+            .await?;
+        Ok(CleanupOutcome {
+            deleted_flows,
+            deleted_messages,
+            total,
+        })
     }
 
     // ── heimdall_meta helpers ──────────────────────────────────────────
@@ -467,7 +471,7 @@ impl Store {
     }
 
     pub async fn list_messages(&self, q: MessageQuery) -> Result<Vec<Message>> {
-        let limit = q.limit.max(1).min(10_000) as i64;
+        let limit = i64::from(q.limit.clamp(1, 10_000));
         let mut sql = String::from("SELECT * FROM messages WHERE 1=1");
         if q.flow_id.is_some() {
             sql.push_str(" AND flow_id = ?");
@@ -503,11 +507,7 @@ impl Store {
 pub fn spawn_cleanup(store: Arc<Store>, retention_secs: i64) {
     tokio::spawn(async move {
         let interval_secs = (retention_secs / 12).clamp(60, 6 * 3600) as u64;
-        info!(
-            interval_secs,
-            retention_secs,
-            "store cleanup task spawned",
-        );
+        info!(interval_secs, retention_secs, "store cleanup task spawned",);
         let mut tick = tokio::time::interval(Duration::from_secs(interval_secs));
         // First tick fires immediately; let it ride.
         loop {
@@ -519,12 +519,8 @@ pub fn spawn_cleanup(store: Arc<Store>, retention_secs: i64) {
                         deleted = out.total,
                         deleted_flows = out.deleted_flows,
                         deleted_messages = out.deleted_messages,
-                        db_mb = stats
-                            .map(|s| s.total_bytes() / (1024 * 1024))
-                            .unwrap_or(0),
-                        freelist_pages = stats
-                            .map(|s| s.freelist_count)
-                            .unwrap_or(0),
+                        db_mb = stats.map(|s| s.total_bytes() / (1024 * 1024)).unwrap_or(0),
+                        freelist_pages = stats.map(|s| s.freelist_count).unwrap_or(0),
                         "store cleanup",
                     );
                 }
@@ -574,10 +570,20 @@ mod tests {
     #[tokio::test]
     async fn insert_finish_round_trip() {
         let (_d, s) = open_temp().await;
-        let id = s.insert_flow_start(sample("default", "example.com")).await.unwrap();
-        s.finish_flow(id, FlowFinish { bytes_up: 100, bytes_down: 4096, error: None })
+        let id = s
+            .insert_flow_start(sample("default", "example.com"))
             .await
             .unwrap();
+        s.finish_flow(
+            id,
+            FlowFinish {
+                bytes_up: 100,
+                bytes_down: 4096,
+                error: None,
+            },
+        )
+        .await
+        .unwrap();
         let f = s.get(id).await.unwrap().unwrap();
         assert_eq!(f.connection_name, "default");
         assert_eq!(f.bytes_down, 4096);
@@ -587,15 +593,31 @@ mod tests {
     #[tokio::test]
     async fn list_filters() {
         let (_d, s) = open_temp().await;
-        s.insert_flow_start(sample("default", "a.example.com")).await.unwrap();
-        s.insert_flow_start(sample("corp", "b.example.com")).await.unwrap();
-        s.insert_flow_start(sample("corp", "grafana.corp.example.com")).await.unwrap();
+        s.insert_flow_start(sample("default", "a.example.com"))
+            .await
+            .unwrap();
+        s.insert_flow_start(sample("corp", "b.example.com"))
+            .await
+            .unwrap();
+        s.insert_flow_start(sample("corp", "grafana.corp.example.com"))
+            .await
+            .unwrap();
 
-        let all = s.list(ListQuery { limit: 100, ..Default::default() }).await.unwrap();
+        let all = s
+            .list(ListQuery {
+                limit: 100,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
         assert_eq!(all.len(), 3);
 
         let corp = s
-            .list(ListQuery { limit: 100, connection: Some("corp".into()), ..Default::default() })
+            .list(ListQuery {
+                limit: 100,
+                connection: Some("corp".into()),
+                ..Default::default()
+            })
             .await
             .unwrap();
         assert_eq!(corp.len(), 2);
@@ -621,17 +643,27 @@ mod tests {
         let mut v4 = sample("default", "v4.example.com");
         v4.atyp = Some("ip");
         s.insert_flow_start(v4).await.unwrap();
-        s.insert_flow_start(sample("default", "domain.example.com")).await.unwrap();
+        s.insert_flow_start(sample("default", "domain.example.com"))
+            .await
+            .unwrap();
 
         let only_v6 = s
-            .list(ListQuery { limit: 100, atyp: Some("ip6".into()), ..Default::default() })
+            .list(ListQuery {
+                limit: 100,
+                atyp: Some("ip6".into()),
+                ..Default::default()
+            })
             .await
             .unwrap();
         assert_eq!(only_v6.len(), 1);
         assert_eq!(only_v6[0].dst_ip, "2606:4700::1");
 
         let only_dns = s
-            .list(ListQuery { limit: 100, atyp: Some("domain".into()), ..Default::default() })
+            .list(ListQuery {
+                limit: 100,
+                atyp: Some("domain".into()),
+                ..Default::default()
+            })
             .await
             .unwrap();
         assert_eq!(only_dns.len(), 1);
@@ -640,7 +672,10 @@ mod tests {
     #[tokio::test]
     async fn cleanup_drops_old_rows() {
         let (_d, s) = open_temp().await;
-        let id = s.insert_flow_start(sample("default", "x.com")).await.unwrap();
+        let id = s
+            .insert_flow_start(sample("default", "x.com"))
+            .await
+            .unwrap();
         // Backdate the row by one hour.
         sqlx::query("UPDATE flows SET ts_start_us = ts_start_us - 3600000000 WHERE id = ?")
             .bind(id)
@@ -666,7 +701,9 @@ mod tests {
     #[tokio::test]
     async fn file_stats_reasonable() {
         let (_d, s) = open_temp().await;
-        s.insert_flow_start(sample("default", "x.com")).await.unwrap();
+        s.insert_flow_start(sample("default", "x.com"))
+            .await
+            .unwrap();
         let st = s.file_stats().await.unwrap();
         assert!(st.page_size >= 512);
         assert!(st.page_count > 0);

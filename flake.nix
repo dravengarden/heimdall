@@ -41,7 +41,14 @@
     shared-utils.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { self, nixpkgs, fenix, crane, shared-utils }:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      fenix,
+      crane,
+      shared-utils,
+    }:
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs {
@@ -63,8 +70,14 @@
           url = "https://github.com/denoland/deno/releases/download/v${version}/deno-x86_64-unknown-linux-gnu.zip";
           hash = "sha256-LXu2GVImrIMuC/cQmhFfCvZe5prHl6S73lsnoGzCQtk=";
         };
-        nativeBuildInputs = [ pkgs.unzip pkgs.autoPatchelfHook ];
-        buildInputs = [ pkgs.stdenv.cc.cc.lib pkgs.zlib ];
+        nativeBuildInputs = [
+          pkgs.unzip
+          pkgs.autoPatchelfHook
+        ];
+        buildInputs = [
+          pkgs.stdenv.cc.cc.lib
+          pkgs.zlib
+        ];
         unpackPhase = "unzip $src";
         installPhase = "install -Dm755 deno $out/bin/deno";
         meta.mainProgram = "deno";
@@ -78,13 +91,27 @@
         sha256 = "sha256-yeJzwn4p8HYe2nLp6fIgUvEa6Q+s9DSz8xCu/lZabUk=";
       };
 
-      # Stable for the userspace daemon. Heimdall has no MSRV file;
-      # latest stable is fine.
-      rustStable = pkgs.fenix.stable.toolchain;
+      # Stable userspace Rust is independent from the eBPF nightly. Pinning the
+      # minimal toolchain prevents a flake update from silently changing the
+      # compiler and avoids materializing documentation components in the dev
+      # shell.
+      rustStable = pkgs.fenix.fromToolchainFile {
+        file = ./rust-toolchain.toml;
+        sha256 = "sha256-gh/xTkxKHL4eiRXzWv8KP7vfjSk61Iq48x47BEDFgfk=";
+      };
       rustPlatform = pkgs.makeRustPlatform {
         cargo = rustStable;
         rustc = rustStable;
       };
+
+      # Cargo's `+toolchain` syntax is implemented by rustup, which is not part
+      # of this Nix shell. Keep the exceptional eBPF compiler explicit while
+      # leaving ordinary `cargo` and `rustc` on stable.
+      cargoNightly = pkgs.writeShellScriptBin "cargo-nightly" ''
+        export RUSTC=${rustNightly}/bin/rustc
+        export RUSTDOC=${rustNightly}/bin/rustdoc
+        exec ${rustNightly}/bin/cargo "$@"
+      '';
 
       # ── bpf-linker 0.10.2 from upstream ───────────────────────────────
       # nixpkgs ships 0.9.15 (LLVM 19), which can't parse the bitcode
@@ -120,8 +147,7 @@
           # released to crates.io with the patch they need). importCargoLock
           # needs a hash for it.
           outputHashes = {
-            "compiletest_rs-0.11.2" =
-              "sha256-RaRXhEwfovb0FMePsZ+gHx+T19XsrWxBkNoDXjL7hWg=";
+            "compiletest_rs-0.11.2" = "sha256-RaRXhEwfovb0FMePsZ+gHx+T19XsrWxBkNoDXjL7hWg=";
           };
         };
 
@@ -176,7 +202,7 @@
       # so cargo with build-std can resolve everything offline.
       craneLib = (crane.mkLib pkgs).overrideToolchain rustNightly;
 
-      ebpfSrc = pkgs.runCommand "heimdall-ebpf-src" {} ''
+      ebpfSrc = pkgs.runCommand "heimdall-ebpf-src" { } ''
         mkdir -p $out
         cp -r ${./heimdall-ebpf} $out/heimdall-ebpf
         cp -r ${./heimdall-common} $out/heimdall-common
@@ -281,7 +307,7 @@
         webRoot = "heimdall-ui";
         stageShell = false;
         installArgs = "--frozen --allow-scripts";
-        depsHash = "sha256-N5g70zrmsXg8odNLDfxllgBoaFhN20JKec1QE22XyUc=";
+        depsHash = "sha256-CBKSdGEHbeIb7i7KZfJYn+XPBEE33R4XSDBE67xuiZk=";
       };
 
       # ── heimdall: workspace daemon, embeds the two artifacts above ────
@@ -291,10 +317,16 @@
 
         src = lib.cleanSourceWith {
           src = ./.;
-          filter = path: type:
-            let base = baseNameOf (toString path); in
+          filter =
+            path: type:
+            let
+              base = baseNameOf (toString path);
+            in
             !(builtins.elem base [
-              "target" "result" "node_modules" "dist"
+              "target"
+              "result"
+              "node_modules"
+              "dist"
             ]);
         };
 
@@ -311,7 +343,12 @@
           cp -r ${heimdall-ui}/. heimdall-ui/dist/
         '';
 
-        cargoBuildFlags = [ "--bin" "heimdall" "--package" "heimdall" ];
+        cargoBuildFlags = [
+          "--bin"
+          "heimdall"
+          "--package"
+          "heimdall"
+        ];
 
         # Tests touch /proc, /sys/fs/cgroup, and require root for the
         # eBPF / sqlite paths; not viable inside the sandbox.
@@ -324,27 +361,58 @@
           license = licenses.asl20;
         };
       };
-    in {
+    in
+    {
       packages.${system} = {
-        inherit heimdall heimdall-ebpf heimdall-ui bpf-linker deno;
+        inherit
+          heimdall
+          heimdall-ebpf
+          heimdall-ui
+          bpf-linker
+          deno
+          ;
         default = heimdall;
       };
 
       # `nix develop` shell with everything needed to iterate locally —
       # nightly for eBPF, stable for userspace, deno for UI, plus the
       # surrounding tooling the runbook expects.
-      devShells.${system}.default = pkgs.mkShell {
-        packages = [
-          rustNightly
-          rustStable
-          pkgs.bpf-linker
-          deno
-          pkgs.nodejs_24
-          pkgs.pkg-config
-          pkgs.cargo-watch
-          pkgs.bpftools
-          pkgs.nickel
-        ];
+      devShells.${system} = {
+        # Most edits touch userspace Rust or the UI. Keep the LLVM 22 eBPF
+        # linker closure out of this common path.
+        default = pkgs.mkShell {
+          packages = [
+            rustStable
+            pkgs.sccache
+            pkgs.cargo-nextest
+            pkgs.rust-analyzer
+            deno
+            pkgs.nodejs_24
+            pkgs.pkg-config
+            pkgs.cargo-watch
+            pkgs.just
+            pkgs.nickel
+            pkgs.nixfmt
+          ];
+
+          RUSTC_WRAPPER = "sccache";
+        };
+
+        # eBPF is an intentionally separate toolchain: pinned nightly,
+        # rust-src/build-std, and the LLVM 22 linker required by its bitcode.
+        ebpf = pkgs.mkShell {
+          packages = [
+            rustNightly
+            cargoNightly
+            bpf-linker
+            pkgs.sccache
+            pkgs.bpftools
+          ];
+
+          RUSTC_WRAPPER = "sccache";
+        };
       };
+
+      formatter.${system} = pkgs.nixfmt;
     };
 }

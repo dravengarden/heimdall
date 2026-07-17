@@ -3,10 +3,10 @@
 //!
 //! Three verbs:
 //! - `validate`: parse + run schema checks; exit 0/1. CI-friendly.
-//! - `show`:     print the file content (auto-discovered) so you can
-//!               see what the daemon is actually reading.
-//! - `path`:     just the resolved path on stdout. Useful for
-//!               `cd "$(heimdall config path | xargs dirname)"`.
+//! - `show`: print the file content (auto-discovered) so you can
+//!   see what the daemon is actually reading.
+//! - `path`: just the resolved path on stdout. Useful for
+//!   `cd "$(heimdall config path | xargs dirname)"`.
 //!
 //! Re-emitting the parsed config with defaults filled in (i.e. an
 //! "effective config" view) would require `Serialize` impls across

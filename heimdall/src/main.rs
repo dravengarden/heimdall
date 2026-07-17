@@ -50,9 +50,7 @@ use std::{
 use anyhow::{Context, Result};
 use aya::{
     maps::{Array, HashMap},
-    programs::{
-        CgroupAttachMode, CgroupSkb, CgroupSkbAttachType, CgroupSock, CgroupSockAddr,
-    },
+    programs::{CgroupAttachMode, CgroupSkb, CgroupSkbAttachType, CgroupSock, CgroupSockAddr},
     Ebpf,
 };
 use clap::Parser;
@@ -75,9 +73,9 @@ use crate::unit::UnitResolver;
 #[repr(C, align(8))]
 struct AlignedBytes<const N: usize>([u8; N]);
 
-static EBPF_OBJ: AlignedBytes<{ include_bytes!(
-    "../../heimdall-ebpf/target/bpfel-unknown-none/release/heimdall-ebpf"
-).len() }> = AlignedBytes(*include_bytes!(
+static EBPF_OBJ: AlignedBytes<
+    { include_bytes!("../../heimdall-ebpf/target/bpfel-unknown-none/release/heimdall-ebpf").len() },
+> = AlignedBytes(*include_bytes!(
     "../../heimdall-ebpf/target/bpfel-unknown-none/release/heimdall-ebpf"
 ));
 
@@ -206,7 +204,10 @@ pub struct StatusArgs {
 
 #[derive(Clone, Debug)]
 enum Upstream {
-    Socks5 { addr: String, auth: Option<ResolvedAuth> },
+    Socks5 {
+        addr: String,
+        auth: Option<ResolvedAuth>,
+    },
     Direct,
 }
 
@@ -221,7 +222,10 @@ impl Upstream {
         match conn {
             Connection::Socks5(Socks5Connection { addr, auth, .. }) => {
                 let resolved = auth.as_ref().map(resolve_auth).transpose()?;
-                Ok(Upstream::Socks5 { addr: addr.clone(), auth: resolved })
+                Ok(Upstream::Socks5 {
+                    addr: addr.clone(),
+                    auth: resolved,
+                })
             }
             Connection::Direct(_) => Ok(Upstream::Direct),
         }
@@ -232,7 +236,10 @@ fn resolve_auth(a: &Socks5Auth) -> Result<ResolvedAuth> {
     let password = a
         .read_password()
         .with_context(|| format!("read password file {}", a.password_file.display()))?;
-    Ok(ResolvedAuth { username: a.username.clone(), password })
+    Ok(ResolvedAuth {
+        username: a.username.clone(),
+        password,
+    })
 }
 
 /// Pre-resolve every connection in the config so the relay path doesn't
@@ -295,7 +302,11 @@ impl Shared {
     /// Record that a flow with this cgroup_id is now open. The tap
     /// consumer prefers the most recent open flow when correlating.
     fn open_flow_push(&self, cgroup_id: u64, flow_id: i64) {
-        self.open_flows.write().entry(cgroup_id).or_default().push(flow_id);
+        self.open_flows
+            .write()
+            .entry(cgroup_id)
+            .or_default()
+            .push(flow_id);
     }
 
     /// Mark a flow finished. We remove this exact id rather than the
@@ -312,7 +323,10 @@ impl Shared {
 
     /// Most recent active flow_id for this cgroup_id, if any.
     fn open_flow_latest(&self, cgroup_id: u64) -> Option<i64> {
-        self.open_flows.read().get(&cgroup_id).and_then(|v| v.last().copied())
+        self.open_flows
+            .read()
+            .get(&cgroup_id)
+            .and_then(|v| v.last().copied())
     }
 }
 
@@ -377,7 +391,9 @@ async fn main() -> Result<()> {
             None => {
                 use clap::CommandFactory;
                 let mut root = Cli::command();
-                let flows = root.find_subcommand_mut("flows").expect("flows subcommand exists");
+                let flows = root
+                    .find_subcommand_mut("flows")
+                    .expect("flows subcommand exists");
                 let _ = flows.print_help();
                 println!();
                 std::process::exit(2);
@@ -405,7 +421,7 @@ fn validate_help_path(path: &[&str]) -> Result<(), String> {
     // into every subcommand. Without it, walking the tree manually
     // misses the global args that clap injects at runtime.
     let mut root = Cli::command().clone();
-    let _ = root.build();
+    root.build();
     let mut node: &mut clap::Command = &mut root;
     for (i, name) in path.iter().enumerate() {
         match node.find_subcommand_mut(*name) {
@@ -432,7 +448,7 @@ fn print_help_at(path: &[&str], verbose: bool) {
     let mut root = Cli::command();
     // Propagate globals (`--config`, `-v`) into every subcommand so
     // `heimdall help flows` lists them just like `flows --help` does.
-    let _ = root.build();
+    root.build();
     let mut node: &mut clap::Command = &mut root;
     for name in path {
         node = node
@@ -531,11 +547,10 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
     let dns = match DnsResolver::new(&cfg.runtime.fake_ip_cidr, &cfg.runtime.fake_ip6_cidr) {
         Ok(r) => {
             let r = Arc::new(r);
-            let listen: SocketAddr = cfg
-                .runtime
-                .dns_listen
-                .parse()
-                .with_context(|| format!("parse runtime.dnsListen `{}`", cfg.runtime.dns_listen))?;
+            let listen: SocketAddr =
+                cfg.runtime.dns_listen.parse().with_context(|| {
+                    format!("parse runtime.dnsListen `{}`", cfg.runtime.dns_listen)
+                })?;
             let r_for_task = r.clone();
             tokio::spawn(async move {
                 if let Err(e) = r_for_task.serve(listen).await {
@@ -557,10 +572,8 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
     // endpoints write), and the `heimdall run` flow. Initialised here
     // so AppState gets a clone before it's spawned. See type aliases
     // above for semantics.
-    let cli_overrides: CliOverrides =
-        Arc::new(parking_lot::RwLock::new(StdHashMap::new()));
-    let policy_engine_slot: PolicyEngineSlot =
-        Arc::new(parking_lot::Mutex::new(None));
+    let cli_overrides: CliOverrides = Arc::new(parking_lot::RwLock::new(StdHashMap::new()));
+    let policy_engine_slot: PolicyEngineSlot = Arc::new(parking_lot::Mutex::new(None));
     // Live TLS-tap status, cloned by Arc into AppState so /api/status
     // can render a snapshot to AI consumers, and into tap::start /
     // spawn_rescan so they can populate it.
@@ -610,7 +623,9 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
         let relay_ip_be = u32::from(shared.cfg.runtime.relay_ip).to_be();
         let mut relay_map: Array<&mut aya::maps::MapData, u32> =
             Array::try_from(bpf.map_mut("RELAY_ADDR").context("RELAY_ADDR not found")?)?;
-        relay_map.set(0, relay_ip_be, 0).context("failed to set relay IP in BPF map")?;
+        relay_map
+            .set(0, relay_ip_be, 0)
+            .context("failed to set relay IP in BPF map")?;
         info!(relay_ip = %shared.cfg.runtime.relay_ip, "relay IP written to BPF map");
     }
 
@@ -619,8 +634,10 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
     // *something* — connect6 reads slot 0 and bails if missing.
     {
         let relay6_bytes = shared.cfg.runtime.relay_ip6.octets();
-        let mut relay6_map: Array<&mut aya::maps::MapData, [u8; 16]> =
-            Array::try_from(bpf.map_mut("RELAY_ADDR6").context("RELAY_ADDR6 not found")?)?;
+        let mut relay6_map: Array<&mut aya::maps::MapData, [u8; 16]> = Array::try_from(
+            bpf.map_mut("RELAY_ADDR6")
+                .context("RELAY_ADDR6 not found")?,
+        )?;
         relay6_map
             .set(0, relay6_bytes, 0)
             .context("failed to set relay IPv6 in BPF map")?;
@@ -648,23 +665,25 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
         // deployment.
         let dns_v4_be = u32::from(std::net::Ipv4Addr::LOCALHOST).to_be();
         let dns_port_be = dns_port.to_be() as u32;
-        let mut dns_map: Array<&mut aya::maps::MapData, u32> =
-            Array::try_from(bpf.map_mut("DNS_ADDR_V4").context("DNS_ADDR_V4 not found")?)?;
-        dns_map
-            .set(0, dns_v4_be, 0)
-            .context("DNS_ADDR_V4 set ip")?;
+        let mut dns_map: Array<&mut aya::maps::MapData, u32> = Array::try_from(
+            bpf.map_mut("DNS_ADDR_V4")
+                .context("DNS_ADDR_V4 not found")?,
+        )?;
+        dns_map.set(0, dns_v4_be, 0).context("DNS_ADDR_V4 set ip")?;
         dns_map
             .set(1, dns_port_be, 0)
             .context("DNS_ADDR_V4 set port")?;
 
         let mut dns6_map: Array<&mut aya::maps::MapData, [u8; 16]> = Array::try_from(
-            bpf.map_mut("DNS_ADDR_V6").context("DNS_ADDR_V6 not found")?,
+            bpf.map_mut("DNS_ADDR_V6")
+                .context("DNS_ADDR_V6 not found")?,
         )?;
         dns6_map
             .set(0, std::net::Ipv6Addr::LOCALHOST.octets(), 0)
             .context("DNS_ADDR_V6 set addr")?;
         let mut dns6_port_map: Array<&mut aya::maps::MapData, u32> = Array::try_from(
-            bpf.map_mut("DNS_PORT_V6").context("DNS_PORT_V6 not found")?,
+            bpf.map_mut("DNS_PORT_V6")
+                .context("DNS_PORT_V6 not found")?,
         )?;
         dns6_port_map
             .set(0, dns_port_be, 0)
@@ -730,9 +749,8 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
                     std::thread::sleep(std::time::Duration::from_secs(1));
                 }
                 Err(e) => {
-                    return Err(e).with_context(|| {
-                        format!("failed to open cgroup path: {cgroup_path}")
-                    });
+                    return Err(e)
+                        .with_context(|| format!("failed to open cgroup path: {cgroup_path}"));
                 }
             }
         }
@@ -821,14 +839,21 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
             .program_mut(name)
             .with_context(|| format!("{name} eBPF program not found"))?
             .try_into()?;
-        prog.load().with_context(|| format!("failed to load {name}"))?;
+        prog.load()
+            .with_context(|| format!("failed to load {name}"))?;
         prog.attach(&cgroup, CgroupAttachMode::default())
             .with_context(|| format!("failed to attach {name}"))?;
         info!(cgroup = %shared.cfg.runtime.cgroup, prog = name, "eBPF sendmsg attached");
         if let Some(user_cg) = user_slice_file.as_ref() {
             match prog.attach(user_cg, CgroupAttachMode::default()) {
-                Ok(_) => info!(cgroup = USER_SLICE, prog = name, "eBPF sendmsg attached (extra)"),
-                Err(e) => warn!(error = %e, cgroup = USER_SLICE, prog = name, "extra sendmsg attach failed"),
+                Ok(_) => info!(
+                    cgroup = USER_SLICE,
+                    prog = name,
+                    "eBPF sendmsg attached (extra)"
+                ),
+                Err(e) => {
+                    warn!(error = %e, cgroup = USER_SLICE, prog = name, "extra sendmsg attach failed")
+                }
             }
         }
     }
@@ -839,7 +864,11 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
             .try_into()?;
         skb_egress.load().context("failed to load skb_egress")?;
         skb_egress
-            .attach(&cgroup, CgroupSkbAttachType::Egress, CgroupAttachMode::default())
+            .attach(
+                &cgroup,
+                CgroupSkbAttachType::Egress,
+                CgroupAttachMode::default(),
+            )
             .context("failed to attach skb_egress")?;
         info!(cgroup = %shared.cfg.runtime.cgroup, "eBPF skb_egress attached");
         if let Some(user_cg) = user_slice_file.as_ref() {
@@ -854,16 +883,17 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
         }
     }
 
-    let port_map: PortMap = Arc::new(RwLock::new(
-        HashMap::try_from(bpf.take_map("PORT_MAP").context("PORT_MAP not found")?)?,
-    ));
+    let port_map: PortMap = Arc::new(RwLock::new(HashMap::try_from(
+        bpf.take_map("PORT_MAP").context("PORT_MAP not found")?,
+    )?));
 
     // ─── PolicyEngine — keeps CGROUP_POLICY in sync with rules + units ──
     // Started before bypass / tap so the eBPF map is populated by the
     // time real traffic starts hitting connect4.
     if let Some(ur) = shared.units.as_ref() {
         let policy_map = HashMap::try_from(
-            bpf.take_map("CGROUP_POLICY").context("CGROUP_POLICY not found")?,
+            bpf.take_map("CGROUP_POLICY")
+                .context("CGROUP_POLICY not found")?,
         )?;
         let engine = std::sync::Arc::new(policy::PolicyEngine::new(
             std::sync::Arc::new(shared.cfg.clone()),
@@ -919,7 +949,10 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 match bootstrap::synthesize(deps_for_bootstrap).await {
                     Ok(0) => debug!("bootstrap: no pre-existing connections to synthesize"),
-                    Ok(n) => info!(synthesized = n, "bootstrap: pre-existing connections recorded"),
+                    Ok(n) => info!(
+                        synthesized = n,
+                        "bootstrap: pre-existing connections recorded"
+                    ),
                     Err(e) => warn!(error = %e, "bootstrap: synthesis failed"),
                 }
             });
@@ -927,7 +960,9 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
             let deps_for_bypass = (*deps).clone();
             match bypass::start(&mut bpf, deps_for_bypass) {
                 Ok(cpus) => info!(cpus, "bypass: synthetic flow consumer started"),
-                Err(e) => warn!(error = %e, "bypass: failed to start; cluster-internal flows won't be recorded"),
+                Err(e) => {
+                    warn!(error = %e, "bypass: failed to start; cluster-internal flows won't be recorded")
+                }
             }
         }
     }
@@ -940,8 +975,7 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
                 let attached_inodes = handle.attached_inodes.clone();
                 info!(
                     attached_libs = handle.attached_libs,
-                    persist,
-                    "tap: started (Phase B)"
+                    persist, "tap: started (Phase B)"
                 );
                 match (persist, shared.store.as_ref()) {
                     (true, Some(s)) => {
@@ -951,7 +985,9 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
                         });
                     }
                     (true, None) => {
-                        warn!("tap: persist=true but store unavailable; falling back to journal only");
+                        warn!(
+                            "tap: persist=true but store unavailable; falling back to journal only"
+                        );
                         tap::spawn_journal_logger(handle);
                     }
                     (false, _) => tap::spawn_journal_logger(handle),
@@ -1025,14 +1061,15 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
     let mut watchdog_usec: u64 = 0;
     if sd_notify::watchdog_enabled(false, &mut watchdog_usec) && watchdog_usec > 0 {
         let beat = std::time::Duration::from_micros(watchdog_usec / 3);
-        info!(period_secs = beat.as_secs_f32(), "systemd watchdog heartbeat starting");
+        info!(
+            period_secs = beat.as_secs_f32(),
+            "systemd watchdog heartbeat starting"
+        );
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(beat);
             loop {
                 tick.tick().await;
-                if let Err(e) =
-                    sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog])
-                {
+                if let Err(e) = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]) {
                     warn!(error = %e, "sd_notify WATCHDOG failed");
                 }
             }
@@ -1098,9 +1135,8 @@ async fn relay(
         }
         _ => {
             // v4 (default for older OrigDst with family=0).
-            let v4_be = u32::from_ne_bytes([
-                orig.addr[0], orig.addr[1], orig.addr[2], orig.addr[3],
-            ]);
+            let v4_be =
+                u32::from_ne_bytes([orig.addr[0], orig.addr[1], orig.addr[2], orig.addr[3]]);
             let v4 = Ipv4Addr::from(u32::from_be(v4_be));
             let from_dns = shared.dns.as_ref().and_then(|d| d.lookup_be(v4_be));
             let display = v4.to_string();
@@ -1131,9 +1167,7 @@ async fn relay(
     // No destination-side routing layer: `decision.use_` is itself
     // either a connection name from `connections:` or the reserved
     // `system` keyword.
-    let decision = if let Some(ovr) =
-        shared.cli_overrides.read().get(&orig.cgroup_id).cloned()
-    {
+    let decision = if let Some(ovr) = shared.cli_overrides.read().get(&orig.cgroup_id).cloned() {
         ovr
     } else {
         router::resolve_decision(&shared.cfg, unit_info.as_ref())
@@ -1370,7 +1404,10 @@ async fn socks5_connect(
 
     let mut sel = [0u8; 2];
     s.read_exact(&mut sel).await?;
-    anyhow::ensure!(sel[0] == 0x05, "SOCKS5: bad version in method reply: {sel:?}");
+    anyhow::ensure!(
+        sel[0] == 0x05,
+        "SOCKS5: bad version in method reply: {sel:?}"
+    );
 
     match sel[1] {
         M_NO_AUTH => {}
@@ -1413,7 +1450,10 @@ async fn socks5_connect(
     // VER REP RSV ATYP BND.ADDR BND.PORT
     let mut hdr = [0u8; 4];
     s.read_exact(&mut hdr).await?;
-    anyhow::ensure!(hdr[0] == 0x05, "SOCKS5: bad version in CONNECT reply: {hdr:?}");
+    anyhow::ensure!(
+        hdr[0] == 0x05,
+        "SOCKS5: bad version in CONNECT reply: {hdr:?}"
+    );
     anyhow::ensure!(
         hdr[1] == 0x00,
         "SOCKS5 CONNECT rejected by server: code=0x{:02x}",
@@ -1456,7 +1496,14 @@ async fn socks5_userpass(s: &mut TcpStream, user: &str, pass: &str) -> Result<()
 
     let mut resp = [0u8; 2];
     s.read_exact(&mut resp).await?;
-    anyhow::ensure!(resp[0] == 0x01, "SOCKS5 user/pass: bad sub-version: {resp:?}");
-    anyhow::ensure!(resp[1] == 0x00, "SOCKS5 user/pass: auth failed (status=0x{:02x})", resp[1]);
+    anyhow::ensure!(
+        resp[0] == 0x01,
+        "SOCKS5 user/pass: bad sub-version: {resp:?}"
+    );
+    anyhow::ensure!(
+        resp[1] == 0x00,
+        "SOCKS5 user/pass: auth failed (status=0x{:02x})",
+        resp[1]
+    );
     Ok(())
 }

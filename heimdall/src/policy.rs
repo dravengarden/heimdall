@@ -66,11 +66,7 @@ pub struct PolicyEngine {
 }
 
 impl PolicyEngine {
-    pub fn new(
-        cfg: Arc<HeimdallConfig>,
-        units: Arc<UnitResolver>,
-        map: CgroupPolicyMap,
-    ) -> Self {
+    pub fn new(cfg: Arc<HeimdallConfig>, units: Arc<UnitResolver>, map: CgroupPolicyMap) -> Self {
         Self {
             cfg,
             units,
@@ -242,25 +238,37 @@ mod tests {
 
     #[test]
     fn encode_default_uses_proxy_and_observe() {
-        let d = Decision { use_: "default".into(), observe: true };
+        let d = Decision {
+            use_: "default".into(),
+            observe: true,
+        };
         assert_eq!(encode(&d), 0);
     }
 
     #[test]
     fn encode_system_use_sets_redirect_off() {
-        let d = Decision { use_: "system".into(), observe: true };
+        let d = Decision {
+            use_: "system".into(),
+            observe: true,
+        };
         assert_eq!(encode(&d), POLICY_REDIRECT_OFF);
     }
 
     #[test]
     fn encode_observe_off_sets_observe_and_no_bypass_log() {
-        let d = Decision { use_: "default".into(), observe: false };
+        let d = Decision {
+            use_: "default".into(),
+            observe: false,
+        };
         assert_eq!(encode(&d), POLICY_OBSERVE_OFF | POLICY_NO_BYPASS_LOG);
     }
 
     #[test]
     fn encode_system_with_no_observe_combines() {
-        let d = Decision { use_: "system".into(), observe: false };
+        let d = Decision {
+            use_: "system".into(),
+            observe: false,
+        };
         assert_eq!(
             encode(&d),
             POLICY_REDIRECT_OFF | POLICY_OBSERVE_OFF | POLICY_NO_BYPASS_LOG

@@ -47,8 +47,7 @@ pub struct Deps {
     pub units: Option<Arc<UnitResolver>>,
     /// Same `open_flows` map shared with the relay; we push synthetic
     /// flow ids here so the tap consumer's correlate() finds them.
-    pub open_flows:
-        Arc<parking_lot::RwLock<std::collections::HashMap<u64, Vec<i64>>>>,
+    pub open_flows: Arc<parking_lot::RwLock<std::collections::HashMap<u64, Vec<i64>>>>,
 }
 
 /// Drain BYPASS_EVENTS and create synthetic flow rows. Spawns one
@@ -89,6 +88,10 @@ pub fn start(bpf: &mut Ebpf, deps: Deps) -> Result<usize> {
     Ok(cpu_count)
 }
 
+#[allow(
+    unsafe_code,
+    reason = "the perf buffer length is checked before copying into the repr(C) Pod ABI type"
+)]
 async fn reader_loop(
     mut buf: aya::maps::perf::AsyncPerfEventArrayBuffer<aya::maps::MapData>,
     tx: tokio::sync::mpsc::Sender<BypassEvent>,
@@ -107,7 +110,11 @@ async fn reader_loop(
             }
         };
         if events.lost > 0 {
-            warn!(cpu, lost = events.lost, "bypass: perf buffer dropped events");
+            warn!(
+                cpu,
+                lost = events.lost,
+                "bypass: perf buffer dropped events"
+            );
         }
         for slot in bufs.iter_mut().take(events.read) {
             if slot.len() < event_size {
@@ -135,7 +142,10 @@ async fn insert_one(deps: &Deps, ev: BypassEvent) {
         (v6.to_string(), Some("ip6"))
     } else {
         let v4_be = u32::from_ne_bytes([
-            ev.dst_addr[0], ev.dst_addr[1], ev.dst_addr[2], ev.dst_addr[3],
+            ev.dst_addr[0],
+            ev.dst_addr[1],
+            ev.dst_addr[2],
+            ev.dst_addr[3],
         ]);
         let v4 = Ipv4Addr::from(u32::from_be(v4_be));
         (v4.to_string(), Some("ip"))

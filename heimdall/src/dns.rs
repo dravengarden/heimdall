@@ -35,7 +35,10 @@ use std::{
 use anyhow::{Context, Result};
 use hickory_proto::{
     op::{Header, Message, MessageType, OpCode, ResponseCode},
-    rr::{rdata::{A, AAAA}, RData, Record, RecordType},
+    rr::{
+        rdata::{A, AAAA},
+        RData, Record, RecordType,
+    },
     serialize::binary::{BinDecodable, BinEncodable},
 };
 use parking_lot::RwLock;
@@ -91,8 +94,8 @@ impl DnsResolver {
     /// `fake_cidr` is the IPv4 CIDR; `fake6_cidr` is the optional IPv6
     /// CIDR for AAAA synthesis (pass empty string to disable IPv6).
     pub fn new(fake_cidr: &str, fake6_cidr: &str) -> Result<Self> {
-        let (base, prefix) = parse_v4_cidr(fake_cidr)
-            .with_context(|| format!("parse fakeIpCidr `{fake_cidr}`"))?;
+        let (base, prefix) =
+            parse_v4_cidr(fake_cidr).with_context(|| format!("parse fakeIpCidr `{fake_cidr}`"))?;
         anyhow::ensure!(
             prefix <= 30,
             "fakeIpCidr must be /30 or larger; got /{prefix}"

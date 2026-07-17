@@ -111,7 +111,9 @@ async fn list(store: &Store, args: ListArgs) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 async fn show(store: &Store, args: ShowArgs) -> Result<()> {
-    let f = store.get(args.id).await?
+    let f = store
+        .get(args.id)
+        .await?
         .with_context(|| format!("no flow with id {}", args.id))?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&FlowJson::from(&f))?);
@@ -149,9 +151,9 @@ async fn search(store: &Store, args: SearchArgs) -> Result<()> {
 #[derive(Serialize)]
 struct FlowJson<'a> {
     id: i64,
-    ts: String,                 // RFC3339
+    ts: String, // RFC3339
     duration_ms: Option<i64>,
-    unit: Option<String>,       // "slice/unit"
+    unit: Option<String>, // "slice/unit"
     connection: &'a str,
     dst_host: Option<&'a str>,
     dst_ip: &'a str,
@@ -253,7 +255,11 @@ fn print_detail(f: &Flow) {
     println!("flow #{}", f.id);
     println!("  ts_start    {}", format_us(f.ts_start_us));
     if let Some(e) = f.ts_end_us {
-        println!("  ts_end      {}  ({} ms)", format_us(e), (e - f.ts_start_us) / 1000);
+        println!(
+            "  ts_end      {}  ({} ms)",
+            format_us(e),
+            (e - f.ts_start_us) / 1000
+        );
     } else {
         println!("  ts_end      (open)");
     }
@@ -265,7 +271,11 @@ fn print_detail(f: &Flow) {
         println!("  dst_host    {h}");
     }
     println!("  dst         {}", format_addr_port(&f.dst_ip, f.dst_port));
-    println!("  bytes ↑↓    {} / {}", human_bytes(f.bytes_up), human_bytes(f.bytes_down));
+    println!(
+        "  bytes ↑↓    {} / {}",
+        human_bytes(f.bytes_up),
+        human_bytes(f.bytes_down)
+    );
     if let Some(u) = &f.upstream_addr {
         println!("  via         {u}");
     }
@@ -288,7 +298,11 @@ fn color_cell(connection: &str) -> Cell {
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max { s.to_string() } else { format!("{}…", &s[..max - 1]) }
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..max - 1])
+    }
 }
 
 /// Render `ip:port` with IPv6 wrapped in `[...]:port`. We treat any IP
@@ -329,4 +343,3 @@ fn format_short_us(us: i64) -> String {
     );
     dt.format("%H:%M:%S").to_string()
 }
-

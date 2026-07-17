@@ -36,11 +36,7 @@ use std::{
 use anyhow::Result;
 use tracing::{debug, info, warn};
 
-use crate::{
-    bypass::Deps,
-    store::FlowStart,
-    unit::UnitInfo,
-};
+use crate::{bypass::Deps, store::FlowStart, unit::UnitInfo};
 
 /// `tcp_state` value the kernel uses for ESTABLISHED in /proc/net/tcp.
 const TCP_ESTABLISHED: u32 = 0x01;
@@ -112,17 +108,15 @@ pub async fn synthesize(deps: Arc<Deps>) -> Result<usize> {
     }
 
     if inserted > 0 {
-        info!(inserted, "bootstrap: synthesized flows for pre-existing connections");
+        info!(
+            inserted,
+            "bootstrap: synthesized flows for pre-existing connections"
+        );
     }
     Ok(inserted)
 }
 
-async fn insert_one(
-    deps: &Deps,
-    cgroup_id: u64,
-    unit: &UnitInfo,
-    conn: &TcpConn,
-) -> Result<()> {
+async fn insert_one(deps: &Deps, cgroup_id: u64, unit: &UnitInfo, conn: &TcpConn) -> Result<()> {
     let dst_ip = Ipv4Addr::from(u32::from_be(conn.remote_addr_be)).to_string();
     let dst_port = conn.remote_port;
 
@@ -142,7 +136,11 @@ async fn insert_one(
         })
         .await?;
 
-    deps.open_flows.write().entry(cgroup_id).or_default().push(id);
+    deps.open_flows
+        .write()
+        .entry(cgroup_id)
+        .or_default()
+        .push(id);
 
     let _ = deps
         .store
@@ -185,7 +183,11 @@ async fn insert_one_v6(
         })
         .await?;
 
-    deps.open_flows.write().entry(cgroup_id).or_default().push(id);
+    deps.open_flows
+        .write()
+        .entry(cgroup_id)
+        .or_default()
+        .push(id);
 
     let _ = deps
         .store
@@ -245,10 +247,7 @@ fn build_socket_to_cgroup() -> StdHashMap<u64, u64> {
 /// `/sys/fs/cgroup<path>`.
 fn cgroup_id_of_pid(pid: u32) -> Option<u64> {
     let raw = fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?;
-    let rel = raw
-        .lines()
-        .find_map(|l| l.strip_prefix("0::"))?
-        .trim();
+    let rel = raw.lines().find_map(|l| l.strip_prefix("0::"))?.trim();
     let path = format!("/sys/fs/cgroup{rel}");
     fs::metadata(path).ok().map(|m| m.ino())
 }
@@ -305,7 +304,13 @@ fn read_tcp_v4() -> Result<Vec<TcpConn>> {
             Ok(i) => i,
             Err(_) => continue,
         };
-        out.push(TcpConn { state, local_port, remote_addr_be, remote_port, inode });
+        out.push(TcpConn {
+            state,
+            local_port,
+            remote_addr_be,
+            remote_port,
+            inode,
+        });
     }
     Ok(out)
 }
@@ -371,7 +376,13 @@ fn read_tcp_v6() -> Result<Vec<TcpConn6>> {
             Ok(i) => i,
             Err(_) => continue,
         };
-        out.push(TcpConn6 { state, local_port, remote_addr, remote_port, inode });
+        out.push(TcpConn6 {
+            state,
+            local_port,
+            remote_addr,
+            remote_port,
+            inode,
+        });
     }
     Ok(out)
 }
@@ -420,7 +431,10 @@ mod tests {
     fn parse_addr_port_v4() {
         // 127.0.0.1:8080 → "0100007F:1F90"
         let (addr_be, port) = parse_addr_port("0100007F:1F90").unwrap();
-        assert_eq!(Ipv4Addr::from(u32::from_be(addr_be)), Ipv4Addr::new(127, 0, 0, 1));
+        assert_eq!(
+            Ipv4Addr::from(u32::from_be(addr_be)),
+            Ipv4Addr::new(127, 0, 0, 1)
+        );
         assert_eq!(port, 0x1F90);
     }
 }
