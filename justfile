@@ -31,8 +31,8 @@ test-fast:
 
 # Explicitly opt in after confirming a representative workload benefits from
 # compiler caching. Fresh local builds are currently faster without sccache.
-check-cached:
-    RUSTC_WRAPPER=sccache cargo check --workspace --all-features --locked
+build-cached:
+    RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0 cargo build --workspace --all-features --locked
 
 build-userspace:
     cargo build --workspace --all-features --locked --release
