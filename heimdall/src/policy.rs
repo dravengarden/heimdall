@@ -122,10 +122,13 @@ impl PolicyEngine {
             let prev = self.last.read().clone();
             for (cg, flags) in &desired {
                 if prev.get(cg) != Some(flags) {
-                    if let Err(e) = self.write_one(*cg, *flags).await {
-                        warn!(cgroup = cg, error = %e, "policy: write failed");
-                    } else {
-                        writes += 1;
+                    match self.write_one(*cg, *flags).await {
+                        Err(e) => {
+                            warn!(cgroup = cg, error = %e, "policy: write failed");
+                        }
+                        _ => {
+                            writes += 1;
+                        }
                     }
                 }
             }
@@ -138,10 +141,13 @@ impl PolicyEngine {
             let external = self.external.read().clone();
             for cg in prev.keys() {
                 if !alive.contains(cg) && !external.contains(cg) {
-                    if let Err(e) = self.delete_one(*cg).await {
-                        debug!(cgroup = cg, error = %e, "policy: delete failed");
-                    } else {
-                        deletes += 1;
+                    match self.delete_one(*cg).await {
+                        Err(e) => {
+                            debug!(cgroup = cg, error = %e, "policy: delete failed");
+                        }
+                        _ => {
+                            deletes += 1;
+                        }
                     }
                 }
             }

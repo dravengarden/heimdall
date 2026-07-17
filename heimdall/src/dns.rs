@@ -34,7 +34,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use hickory_proto::{
-    op::{Header, Message, MessageType, OpCode, ResponseCode},
+    op::{Message, OpCode, ResponseCode},
     rr::{
         rdata::{A, AAAA},
         RData, Record, RecordType,
@@ -273,51 +273,43 @@ impl DnsResolver {
     }
 
     fn handle(&self, query: Message) -> Message {
-        let mut response = Message::new();
-        let mut hdr = Header::new();
-        hdr.set_id(query.id());
-        hdr.set_message_type(MessageType::Response);
-        hdr.set_op_code(query.op_code());
-        hdr.set_recursion_desired(query.recursion_desired());
-        hdr.set_recursion_available(true);
-        hdr.set_response_code(ResponseCode::NoError);
-        response.set_header(hdr);
+        let mut response = Message::response(query.metadata.id, query.metadata.op_code);
+        response.metadata.recursion_desired = query.metadata.recursion_desired;
+        response.metadata.recursion_available = true;
+        response.metadata.response_code = ResponseCode::NoError;
 
         // Echo the question section.
-        for q in query.queries() {
+        for q in &query.queries {
             response.add_query(q.clone());
         }
 
         // Only OpCode::Query is meaningful; refuse the rest.
-        if query.op_code() != OpCode::Query {
-            response.set_response_code(ResponseCode::NotImp);
+        if query.metadata.op_code != OpCode::Query {
+            response.metadata.response_code = ResponseCode::NotImp;
             return response;
         }
 
-        for q in query.queries() {
+        for q in &query.queries {
             let hostname = q.name().to_ascii();
             let host_trim = hostname.trim_end_matches('.').to_string();
 
             match q.query_type() {
                 RecordType::A => {
                     let fake = self.allocate(&host_trim);
-                    let mut rec = Record::new();
-                    rec.set_name(q.name().clone())
-                        .set_record_type(RecordType::A)
-                        .set_dns_class(q.query_class())
-                        .set_ttl(FAKE_IP_TTL_SEC)
-                        .set_data(Some(RData::A(A(fake))));
+                    let mut rec =
+                        Record::from_rdata(q.name().clone(), FAKE_IP_TTL_SEC, RData::A(A(fake)));
+                    rec.dns_class = q.query_class();
                     response.add_answer(rec);
                     debug!(host = %host_trim, %fake, "A → fake IP");
                 }
                 RecordType::AAAA => match self.allocate6(&host_trim) {
                     Some(fake6) => {
-                        let mut rec = Record::new();
-                        rec.set_name(q.name().clone())
-                            .set_record_type(RecordType::AAAA)
-                            .set_dns_class(q.query_class())
-                            .set_ttl(FAKE_IP_TTL_SEC)
-                            .set_data(Some(RData::AAAA(AAAA(fake6))));
+                        let mut rec = Record::from_rdata(
+                            q.name().clone(),
+                            FAKE_IP_TTL_SEC,
+                            RData::AAAA(AAAA(fake6)),
+                        );
+                        rec.dns_class = q.query_class();
                         response.add_answer(rec);
                         debug!(host = %host_trim, %fake6, "AAAA → fake IPv6");
                     }

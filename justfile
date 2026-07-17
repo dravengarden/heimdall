@@ -11,6 +11,12 @@ check-format:
 lint:
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
+dependencies:
+    cargo deny check
+    cargo machete --with-metadata
+    cargo deny --manifest-path heimdall-ebpf/Cargo.toml check --config deny.toml
+    cargo machete --with-metadata heimdall-ebpf
+
 build-ebpf:
     nix develop .#ebpf -c bash -euo pipefail -c 'cd heimdall-ebpf && cargo-nightly build --locked --release'
 
@@ -34,5 +40,5 @@ build-userspace:
 cache-stats:
     sccache --show-stats
 
-verify: check-format build-ebpf build-ui lint test build-userspace
+verify: check-format build-ebpf build-ui lint dependencies test build-userspace
     @echo "verify OK"

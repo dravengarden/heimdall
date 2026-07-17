@@ -535,7 +535,9 @@ fn fork_into_cgroup_and_exec(
                 "ftp_proxy",
                 "FTP_PROXY",
             ] {
-                std::env::remove_var(var);
+                // SAFETY: this is the post-fork child immediately before exec;
+                // it cannot race another thread's environment access.
+                unsafe { std::env::remove_var(var) };
             }
 
             // execvp — replaces this process image with the wrapped

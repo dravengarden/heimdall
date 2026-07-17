@@ -1361,10 +1361,13 @@ async fn relay(
                 error: Some(format!("{e:#}")),
             },
         };
-        if let Err(e) = s.finish_flow(id, finish).await {
-            warn!(error = %e, "store: finish_flow failed");
-        } else {
-            shared.events.publish(api::FlowEvent { flow_id: id });
+        match s.finish_flow(id, finish).await {
+            Err(e) => {
+                warn!(error = %e, "store: finish_flow failed");
+            }
+            _ => {
+                shared.events.publish(api::FlowEvent { flow_id: id });
+            }
         }
         // Drop from the open-flow index so future tap events no longer
         // attribute plaintext to this flow.
