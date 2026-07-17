@@ -16,14 +16,14 @@ use std::{collections::BTreeMap, net::SocketAddr, sync::Arc};
 
 use anyhow::{Context, Result};
 use axum::{
+    Json, Router,
     extract::{
-        ws::{Message, WebSocket},
         Path, Query, State, WebSocketUpgrade,
+        ws::{Message, WebSocket},
     },
-    http::{header, StatusCode, Uri},
+    http::{StatusCode, Uri, header},
     response::{IntoResponse, Response},
     routing::{get, post},
-    Json, Router,
 };
 use heimdall_config::{Connection, Decision, HeimdallConfig, SYSTEM_TAG};
 use rust_embed::Embed;

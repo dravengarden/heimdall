@@ -27,8 +27,8 @@ use std::{
     net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     str::FromStr,
     sync::{
-        atomic::{AtomicU32, AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU32, AtomicU64, Ordering},
     },
 };
 
@@ -36,8 +36,8 @@ use anyhow::{Context, Result};
 use hickory_proto::{
     op::{Message, OpCode, ResponseCode},
     rr::{
-        rdata::{A, AAAA},
         RData, Record, RecordType,
+        rdata::{A, AAAA},
     },
     serialize::binary::{BinDecodable, BinEncodable},
 };

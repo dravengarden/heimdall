@@ -34,15 +34,15 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use nix::mount::{mount, MsFlags};
-use nix::sched::{unshare, CloneFlags};
+use nix::mount::{MsFlags, mount};
+use nix::sched::{CloneFlags, unshare};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
 use heimdall_config::{CliRunProfile, HeimdallConfig, SYSTEM_TAG};
 use nix::sys::signal::{self, SigHandler, Signal};
-use nix::sys::wait::{waitpid, WaitStatus};
-use nix::unistd::{fork, ForkResult, Pid};
+use nix::sys::wait::{WaitStatus, waitpid};
+use nix::unistd::{ForkResult, Pid, fork};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
@@ -184,10 +184,10 @@ pub fn run(config_path: &Path, args: RunArgs) -> Result<()> {
     if let Err(e) = deregister_with_daemon(&api_addr, cgroup_id) {
         warn!(error = %e, "deregister failed; daemon will GC eventually");
     }
-    if !args.keep_cgroup {
-        if let Err(e) = fs::remove_dir(&cgroup_path) {
-            warn!(error = %e, path = %cgroup_path.display(), "rmdir cgroup failed");
-        }
+    if !args.keep_cgroup
+        && let Err(e) = fs::remove_dir(&cgroup_path)
+    {
+        warn!(error = %e, path = %cgroup_path.display(), "rmdir cgroup failed");
     }
     if let Some(shim) = dns_shim {
         // Tmp files are cheap; ignore cleanup errors (parent might have
@@ -501,11 +501,11 @@ fn fork_into_cgroup_and_exec(
             // command's libc resolver issues UDP DNS queries that
             // eBPF can hijack (instead of D-Bus to systemd-resolved
             // which we can't intercept).
-            if let Some(shim) = dns_shim {
-                if let Err(e) = apply_dns_shim(shim) {
-                    eprintln!("heimdall run: dns shim failed: {e:#}");
-                    std::process::exit(127);
-                }
+            if let Some(shim) = dns_shim
+                && let Err(e) = apply_dns_shim(shim)
+            {
+                eprintln!("heimdall run: dns shim failed: {e:#}");
+                std::process::exit(127);
             }
 
             // Restore default SIGINT/SIGTERM so Ctrl+C reaches the

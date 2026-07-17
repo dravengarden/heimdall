@@ -25,7 +25,7 @@
 use std::{net::Ipv4Addr, sync::Arc};
 
 use anyhow::{Context, Result};
-use aya::{maps::AsyncPerfEventArray, util::online_cpus, Ebpf};
+use aya::{Ebpf, maps::AsyncPerfEventArray, util::online_cpus};
 use bytes::BytesMut;
 use heimdall_common::BypassEvent;
 use tracing::{info, warn};

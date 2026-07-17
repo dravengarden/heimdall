@@ -11,8 +11,8 @@ use anyhow::{Context, Result};
 use heimdall_config::HeimdallConfig;
 use serde::Serialize;
 
-use crate::store::{DbFileStats, ListQuery, Store};
 use crate::StatusArgs;
+use crate::store::{DbFileStats, ListQuery, Store};
 
 #[derive(Serialize)]
 struct StatusJson<'a> {

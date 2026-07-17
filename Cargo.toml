@@ -5,7 +5,7 @@ members = [
     "heimdall-config",
     # heimdall-ebpf is compiled separately targeting bpfel-unknown-none
 ]
-resolver = "2"
+resolver = "3"
 
 [workspace.package]
 rust-version = "1.95"

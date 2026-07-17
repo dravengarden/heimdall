@@ -232,10 +232,10 @@ fn build_socket_to_cgroup() -> StdHashMap<u64, u64> {
             Err(_) => continue,
         };
         for fd in fds.flatten() {
-            if let Ok(target) = fs::read_link(fd.path()) {
-                if let Some(inode) = parse_socket_inode(&target.to_string_lossy()) {
-                    out.insert(inode, cg);
-                }
+            if let Ok(target) = fs::read_link(fd.path())
+                && let Some(inode) = parse_socket_inode(&target.to_string_lossy())
+            {
+                out.insert(inode, cg);
             }
         }
     }

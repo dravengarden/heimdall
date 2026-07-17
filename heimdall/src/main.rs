@@ -49,9 +49,9 @@ use std::{
 
 use anyhow::{Context, Result};
 use aya::{
+    Ebpf,
     maps::{Array, HashMap},
     programs::{CgroupAttachMode, CgroupSkb, CgroupSkbAttachType, CgroupSock, CgroupSockAddr},
-    Ebpf,
 };
 use clap::Parser;
 use heimdall_common::OrigDst;
@@ -932,37 +932,37 @@ async fn daemon_run(config_path: &PathBuf, args: ServeArgs) -> Result<()> {
     // never be useful and would flood the flows table with probe
     // chatter. (The kernel-side perf buffer just gets overwritten when
     // nobody is consuming it.)
-    if shared.cfg.runtime.tap.enabled {
-        if let Some(s) = shared.store.as_ref() {
-            let deps = std::sync::Arc::new(bypass::Deps {
-                store: s.clone(),
-                events: shared.events.clone(),
-                units: shared.units.clone(),
-                open_flows: shared.open_flows.clone(),
-            });
-            // Bootstrap pass first: synthesize flows for connections
-            // that were already established when heimdall started, so
-            // long-lived TLS streams get a flow_id for tap correlation.
-            // Wait briefly so the policy engine has populated the eBPF map.
-            let deps_for_bootstrap = deps.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                match bootstrap::synthesize(deps_for_bootstrap).await {
-                    Ok(0) => debug!("bootstrap: no pre-existing connections to synthesize"),
-                    Ok(n) => info!(
-                        synthesized = n,
-                        "bootstrap: pre-existing connections recorded"
-                    ),
-                    Err(e) => warn!(error = %e, "bootstrap: synthesis failed"),
-                }
-            });
-            // Live consumer for new connect4 events.
-            let deps_for_bypass = (*deps).clone();
-            match bypass::start(&mut bpf, deps_for_bypass) {
-                Ok(cpus) => info!(cpus, "bypass: synthetic flow consumer started"),
-                Err(e) => {
-                    warn!(error = %e, "bypass: failed to start; cluster-internal flows won't be recorded")
-                }
+    if shared.cfg.runtime.tap.enabled
+        && let Some(s) = shared.store.as_ref()
+    {
+        let deps = std::sync::Arc::new(bypass::Deps {
+            store: s.clone(),
+            events: shared.events.clone(),
+            units: shared.units.clone(),
+            open_flows: shared.open_flows.clone(),
+        });
+        // Bootstrap pass first: synthesize flows for connections
+        // that were already established when heimdall started, so
+        // long-lived TLS streams get a flow_id for tap correlation.
+        // Wait briefly so the policy engine has populated the eBPF map.
+        let deps_for_bootstrap = deps.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            match bootstrap::synthesize(deps_for_bootstrap).await {
+                Ok(0) => debug!("bootstrap: no pre-existing connections to synthesize"),
+                Ok(n) => info!(
+                    synthesized = n,
+                    "bootstrap: pre-existing connections recorded"
+                ),
+                Err(e) => warn!(error = %e, "bootstrap: synthesis failed"),
+            }
+        });
+        // Live consumer for new connect4 events.
+        let deps_for_bypass = (*deps).clone();
+        match bypass::start(&mut bpf, deps_for_bypass) {
+            Ok(cpus) => info!(cpus, "bypass: synthetic flow consumer started"),
+            Err(e) => {
+                warn!(error = %e, "bypass: failed to start; cluster-internal flows won't be recorded")
             }
         }
     }

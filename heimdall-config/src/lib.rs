@@ -25,7 +25,7 @@ use std::{
 };
 
 use regex::Regex;
-use serde::{de, Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use thiserror::Error;
 
 pub const DEFAULT_DIR: &str = "/etc/heimdall";
@@ -484,10 +484,10 @@ impl MatchCond {
         if !self.any.is_empty() && !self.any.iter().any(|c| c.evaluate(target)) {
             return false;
         }
-        if let Some(n) = &self.not {
-            if n.evaluate(target) {
-                return false;
-            }
+        if let Some(n) = &self.not
+            && n.evaluate(target)
+        {
+            return false;
         }
 
         true
@@ -675,13 +675,13 @@ impl HeimdallConfig {
         }
 
         for (name, conn) in &self.connections {
-            if let Connection::Socks5(c) = conn {
-                if c.addr.is_empty() {
-                    return Err(ConfigError::EmptyAddr {
-                        name: name.clone(),
-                        ty: "socks5".into(),
-                    });
-                }
+            if let Connection::Socks5(c) = conn
+                && c.addr.is_empty()
+            {
+                return Err(ConfigError::EmptyAddr {
+                    name: name.clone(),
+                    ty: "socks5".into(),
+                });
             }
         }
 
@@ -814,21 +814,31 @@ mod tests {
 
     #[test]
     fn match_value_prefixes() {
-        assert!(MatchValue::parse("nginx.service")
-            .unwrap()
-            .matches("nginx.service"));
-        assert!(MatchValue::parse("regexp:^postgres.*\\.service$")
-            .unwrap()
-            .matches("postgresql.service"));
-        assert!(MatchValue::parse("prefix:docker-")
-            .unwrap()
-            .matches("docker-abc.scope"));
-        assert!(MatchValue::parse("suffix:.scope")
-            .unwrap()
-            .matches("run-r1.scope"));
-        assert!(MatchValue::parse("keyword:nginx")
-            .unwrap()
-            .matches("nginx.service"));
+        assert!(
+            MatchValue::parse("nginx.service")
+                .unwrap()
+                .matches("nginx.service")
+        );
+        assert!(
+            MatchValue::parse("regexp:^postgres.*\\.service$")
+                .unwrap()
+                .matches("postgresql.service")
+        );
+        assert!(
+            MatchValue::parse("prefix:docker-")
+                .unwrap()
+                .matches("docker-abc.scope")
+        );
+        assert!(
+            MatchValue::parse("suffix:.scope")
+                .unwrap()
+                .matches("run-r1.scope")
+        );
+        assert!(
+            MatchValue::parse("keyword:nginx")
+                .unwrap()
+                .matches("nginx.service")
+        );
     }
 
     struct TestUnit {

@@ -20,7 +20,7 @@
 
 use std::{collections::HashMap, fs, path::Path};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use object::{Object, ObjectSection};
 
 /// Where a Go function lives in the binary. `vaddr` is the virtual

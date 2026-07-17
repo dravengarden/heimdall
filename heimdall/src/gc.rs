@@ -26,8 +26,8 @@ use anyhow::{Context, Result};
 use std::os::unix::fs::MetadataExt;
 use tracing::{debug, info, warn};
 
-use crate::policy::PolicyEngine;
 use crate::CliOverrides;
+use crate::policy::PolicyEngine;
 
 const GC_INTERVAL: Duration = Duration::from_secs(30);
 const USER_SLICE: &str = "/sys/fs/cgroup/user.slice";
@@ -87,10 +87,10 @@ async fn gc_pass(overrides: &CliOverrides, engine: Option<&PolicyEngine>) -> Res
         // Userspace map first so the relay can't resolve against this
         // entry while we're tearing it down. (Mirror of api.rs DELETE.)
         overrides.write().remove(&cgroup_id);
-        if let Some(engine) = engine {
-            if let Err(e) = engine.deregister_external(cgroup_id).await {
-                debug!(cgroup_id, error = %e, "gc: deregister_external failed");
-            }
+        if let Some(engine) = engine
+            && let Err(e) = engine.deregister_external(cgroup_id).await
+        {
+            debug!(cgroup_id, error = %e, "gc: deregister_external failed");
         }
 
         match std::fs::remove_dir(&path) {

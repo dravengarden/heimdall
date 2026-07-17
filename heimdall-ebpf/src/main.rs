@@ -23,19 +23,19 @@
 #![no_main]
 
 use aya_ebpf::{
+    EbpfContext,
     helpers::{
         bpf_get_current_cgroup_id, bpf_get_current_pid_tgid, bpf_get_socket_cookie,
-        bpf_ktime_get_ns, gen::bpf_probe_read_user,
+        bpf_ktime_get_ns, r#gen::bpf_probe_read_user,
     },
     macros::{cgroup_skb, cgroup_sock, cgroup_sock_addr, map, uprobe, uretprobe},
     maps::{Array, HashMap, LruHashMap, PerfEventArray},
     programs::{ProbeContext, RetProbeContext, SkBuffContext, SockAddrContext, SockContext},
-    EbpfContext,
 };
 use heimdall_common::{
-    is_default_bypass, is_default_bypass6, BypassEvent, OrigDst, TapDir, TapEvent,
-    DEFAULT_POLICY, FAMILY_V4, FAMILY_V6, POLICY_DNS_HIJACK, POLICY_NO_BYPASS_LOG,
-    POLICY_OBSERVE_OFF, POLICY_REDIRECT_OFF, TAP_DATA_LEN,
+    BypassEvent, DEFAULT_POLICY, FAMILY_V4, FAMILY_V6, OrigDst, POLICY_DNS_HIJACK,
+    POLICY_NO_BYPASS_LOG, POLICY_OBSERVE_OFF, POLICY_REDIRECT_OFF, TAP_DATA_LEN, TapDir, TapEvent,
+    is_default_bypass, is_default_bypass6,
 };
 
 const PROXY_PORT: u16 = 12345;
@@ -349,7 +349,7 @@ fn try_connect6(ctx: SockAddrContext) -> Result<(), ()> {
     let mut dst_addr = [0u8; 16];
     for i in 0..4 {
         let b = dst6_words[i].to_ne_bytes();
-        dst_addr[i * 4]     = b[0];
+        dst_addr[i * 4] = b[0];
         dst_addr[i * 4 + 1] = b[1];
         dst_addr[i * 4 + 2] = b[2];
         dst_addr[i * 4 + 3] = b[3];
@@ -523,13 +523,13 @@ const IPV6_FIXED_HDR: usize = 40;
 // so the on-wire length is `(len + 1) * 8`. Fragment (44) is a fixed 8.
 //
 // Reference: RFC 8200 §4 + IANA "Protocol Numbers" registry.
-const IPV6_EXT_HOPOPT: u8 = 0;       // Hop-by-Hop Options
-const IPV6_EXT_ROUTING: u8 = 43;     // Routing
-const IPV6_EXT_FRAGMENT: u8 = 44;    // Fragment (fixed 8-byte header)
-const IPV6_EXT_DSTOPTS: u8 = 60;     // Destination Options
-const IPV6_EXT_MOBILITY: u8 = 135;   // Mobility (RFC 6275)
-const IPV6_EXT_HIP: u8 = 139;        // HIP (RFC 7401)
-const IPV6_EXT_SHIM6: u8 = 140;      // Shim6 (RFC 5533)
+const IPV6_EXT_HOPOPT: u8 = 0; // Hop-by-Hop Options
+const IPV6_EXT_ROUTING: u8 = 43; // Routing
+const IPV6_EXT_FRAGMENT: u8 = 44; // Fragment (fixed 8-byte header)
+const IPV6_EXT_DSTOPTS: u8 = 60; // Destination Options
+const IPV6_EXT_MOBILITY: u8 = 135; // Mobility (RFC 6275)
+const IPV6_EXT_HIP: u8 = 139; // HIP (RFC 7401)
+const IPV6_EXT_SHIM6: u8 = 140; // Shim6 (RFC 5533)
 
 /// Bounded extension-header walk. The BPF verifier rejects unbounded
 /// loops; 8 ext headers is more than any real-world packet (RFC 8200
@@ -567,12 +567,8 @@ fn try_skb_egress(ctx: &SkBuffContext) -> Result<(), ()> {
                     break;
                 }
                 let (nh, hdr_len) = match next {
-                    IPV6_EXT_HOPOPT
-                    | IPV6_EXT_ROUTING
-                    | IPV6_EXT_DSTOPTS
-                    | IPV6_EXT_MOBILITY
-                    | IPV6_EXT_HIP
-                    | IPV6_EXT_SHIM6 => {
+                    IPV6_EXT_HOPOPT | IPV6_EXT_ROUTING | IPV6_EXT_DSTOPTS | IPV6_EXT_MOBILITY
+                    | IPV6_EXT_HIP | IPV6_EXT_SHIM6 => {
                         let nh: u8 = ctx.load(off).map_err(|_| ())?;
                         let len: u8 = ctx.load(off + 1).map_err(|_| ())?;
                         (nh, (len as usize + 1) * 8)
@@ -709,7 +705,11 @@ fn try_go_tls_write(ctx: &ProbeContext) -> Result<(), ()> {
     if num <= 0 || buf.is_null() {
         return Ok(());
     }
-    let total = if num > i32::MAX as i64 { i32::MAX as u32 } else { num as u32 };
+    let total = if num > i32::MAX as i64 {
+        i32::MAX as u32
+    } else {
+        num as u32
+    };
     emit_tap(ctx, TapDir::Send, total, buf);
     Ok(())
 }
@@ -803,7 +803,11 @@ fn try_rustls_write(ctx: &ProbeContext) -> Result<(), ()> {
     if num <= 0 || buf.is_null() {
         return Ok(());
     }
-    let total = if num > i32::MAX as i64 { i32::MAX as u32 } else { num as u32 };
+    let total = if num > i32::MAX as i64 {
+        i32::MAX as u32
+    } else {
+        num as u32
+    };
     emit_tap(ctx, TapDir::Send, total, buf);
     Ok(())
 }
@@ -853,7 +857,11 @@ fn try_rustls_read_exit(ctx: &RetProbeContext) -> Result<(), ()> {
     if buf.is_null() {
         return Ok(());
     }
-    let total = if n > i32::MAX as i64 { i32::MAX as u32 } else { n as u32 };
+    let total = if n > i32::MAX as i64 {
+        i32::MAX as u32
+    } else {
+        n as u32
+    };
     emit_tap_ret(ctx, TapDir::Recv, total, buf);
     Ok(())
 }
@@ -875,7 +883,11 @@ fn try_go_tls_read_ret(ctx: &ProbeContext) -> Result<(), ()> {
     if buf.is_null() {
         return Ok(());
     }
-    let total = if n > i32::MAX as i64 { i32::MAX as u32 } else { n as u32 };
+    let total = if n > i32::MAX as i64 {
+        i32::MAX as u32
+    } else {
+        n as u32
+    };
     emit_tap(ctx, TapDir::Recv, total, buf);
     Ok(())
 }

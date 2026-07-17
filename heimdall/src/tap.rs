@@ -52,9 +52,9 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use aya::{maps::AsyncPerfEventArray, programs::UProbe, util::online_cpus, Ebpf};
+use aya::{Ebpf, maps::AsyncPerfEventArray, programs::UProbe, util::online_cpus};
 use bytes::BytesMut;
-use heimdall_common::{TapDir, TapEvent, TAP_DATA_LEN};
+use heimdall_common::{TAP_DATA_LEN, TapDir, TapEvent};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -211,7 +211,9 @@ pub fn start(bpf: &mut Ebpf, status: &TapStatusHandle) -> Result<TapHandle> {
     );
 
     if libs.is_empty() && go_bins.is_empty() && rs_bins.is_empty() && bssl_bins.is_empty() {
-        info!("tap: no libssl / Go TLS / rustls / BoringSSL binaries found at startup; rescan loop will catch new units");
+        info!(
+            "tap: no libssl / Go TLS / rustls / BoringSSL binaries found at startup; rescan loop will catch new units"
+        );
         let (_, rx) = mpsc::channel(1);
         return Ok(TapHandle {
             events: rx,
@@ -1121,10 +1123,11 @@ fn find_rustls_offsets(path: &Path) -> Result<Option<RustlsBinary>> {
             if let Some(idx) = sym.section_index() {
                 write_addr = Some((sym.address(), idx));
             }
-        } else if read_addr.is_none() && is_rustls_read(name) {
-            if let Some(idx) = sym.section_index() {
-                read_addr = Some((sym.address(), idx));
-            }
+        } else if read_addr.is_none()
+            && is_rustls_read(name)
+            && let Some(idx) = sym.section_index()
+        {
+            read_addr = Some((sym.address(), idx));
         }
         if write_addr.is_some() && read_addr.is_some() {
             break;
@@ -1390,10 +1393,11 @@ fn find_boringssl_offsets(path: &Path) -> Result<Option<BoringSSLBinary>> {
             if let Some(idx) = sym.section_index() {
                 write_addr = Some((sym.address(), idx));
             }
-        } else if name == "SSL_read" && read_addr.is_none() {
-            if let Some(idx) = sym.section_index() {
-                read_addr = Some((sym.address(), idx));
-            }
+        } else if name == "SSL_read"
+            && read_addr.is_none()
+            && let Some(idx) = sym.section_index()
+        {
+            read_addr = Some((sym.address(), idx));
         }
         if write_addr.is_some() && read_addr.is_some() {
             break;
@@ -1409,10 +1413,11 @@ fn find_boringssl_offsets(path: &Path) -> Result<Option<BoringSSLBinary>> {
                 if let Some(idx) = sym.section_index() {
                     write_addr = Some((sym.address(), idx));
                 }
-            } else if name == "SSL_read" && read_addr.is_none() {
-                if let Some(idx) = sym.section_index() {
-                    read_addr = Some((sym.address(), idx));
-                }
+            } else if name == "SSL_read"
+                && read_addr.is_none()
+                && let Some(idx) = sym.section_index()
+            {
+                read_addr = Some((sym.address(), idx));
             }
             if write_addr.is_some() && read_addr.is_some() {
                 break;
