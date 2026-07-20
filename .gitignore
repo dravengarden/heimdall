@@ -1,4 +1,5 @@
 target/
+/result
 .cargo/registry/
 heimdall-ui/dist/
 heimdall-ui/node_modules/
