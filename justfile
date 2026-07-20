@@ -1,5 +1,8 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
+toolchain-check:
+    required="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].rust_version')"; actual="$(rustc --version --verbose | awk '/^release:/ { print $2 }')"; test "$required" = "$actual" || { echo "rust-version $required does not match pinned stable rustc $actual" >&2; exit 1; }
+
 fmt:
     cargo fmt --all
     cargo fmt --manifest-path heimdall-ebpf/Cargo.toml
@@ -47,5 +50,5 @@ build-userspace:
 cache-stats:
     sccache --show-stats
 
-verify: check-format build-ebpf build-ui lint lint-ebpf dependencies test build-userspace
+verify: toolchain-check check-format build-ebpf build-ui lint lint-ebpf dependencies test build-userspace
     @echo "verify OK"
