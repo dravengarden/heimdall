@@ -70,7 +70,9 @@ let
     udp = { type = "direct" }
 
     [capture]
-    mode = "off"
+    mode = "on"
+    directory = "/run/heimdall-test/captures"
+    max_bytes_per_flow = 128
     [decrypt]
     mode = "off"
   '';

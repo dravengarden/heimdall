@@ -56,7 +56,10 @@ orchestrator-shaped metadata.
    protocol rules, and routes, connects directly, or rejects it. Connected UDP
    reuses one bidirectional upstream association per socket. IPv4 connectionless
    UDP reuses one association per socket and destination.
-7. Application bytes, including TLS records, pass through unchanged. Heimdall
+7. Application bytes, including TLS records, pass through unchanged. When
+   capture is enabled, the relay writes its observed TCP stream chunks or UDP
+   datagrams to one bounded JSONL file per flow before forwarding them. SOCKS5
+   handshakes and UDP framing are excluded. TLS remains ciphertext. Heimdall
    never uses SNI to reinterpret an IP destination: fake DNS produces a SOCKS5
    domain request, while system DNS preserves the resolved IP address.
 8. After the immediate child exits, the parent keeps the policy registered
@@ -83,6 +86,13 @@ restores userspace decisions for still-populated cgroups and removes stale
 registrations. Existing TCP or UDP relay sessions are not preserved, so this is
 enforcement continuity rather than full connection continuity. `heimdall agent`
 exposes both boundaries through `capabilities.lifecycle`.
+
+Capture is a relay-layer facility, not a kernel packet recorder. Its
+`heimdall.capture/v1` files preserve ordered open/data/close events and count
+both wire directions under one per-flow byte budget. The root-only output
+directory is permission-checked before eBPF attachment. Storage retention remains an
+operator responsibility, and plaintext decryption remains outside the current
+product contract.
 
 A pinned bootstrap array records the map-layout schema. A binary rejects an
 unknown schema before loading or replacing programs and points the operator at

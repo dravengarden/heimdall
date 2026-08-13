@@ -142,18 +142,39 @@ decision. `--network` defaults to `tcp` for compatibility.
 
 ## Capture and decrypt
 
-The three product layers are represented independently, but only proxy is
-enabled in this release:
+The three product layers are independent. Proxy decides whether and where a
+connection is relayed. Capture can record the bytes the relay observes without
+interpreting them. Decrypt remains unavailable:
 
 ```toml
 [capture]
-mode = "off"
+mode = "on"
+directory = "/var/lib/heimdall/captures"
+max_bytes_per_flow = 1048576
 
 [decrypt]
 mode = "off"
 ```
 
-Any other mode is rejected instead of being accepted as a no-op.
+`capture.mode` is `off` or `on`. The directory must be absolute; it defaults to
+`/var/lib/heimdall/captures`. `max_bytes_per_flow` defaults to 1 MiB and must be
+between 1 byte and 64 MiB. The limit is shared by both directions. Heimdall
+continues counting relayed bytes after the limit and marks the close record as
+truncated, but stores no further payload for that flow.
+
+When capture is on, daemon startup creates the directory as `0700`, or rejects
+an existing directory that grants group/other access, and proves it is writable
+before attaching eBPF. Every flow gets one new `0600`
+JSONL file. Each line is one `heimdall.capture/v1` `open`, `data`, or `close`
+record. Data payloads are base64, directions are `client_to_remote` and
+`remote_to_client`, and sequence numbers start at zero. A capture write failure
+fails the affected relay instead of silently producing an incomplete accepted
+capture.
+
+Capture contains sensitive application bytes and has no automatic retention or
+upload. Operators own deletion and capacity policy. For TLS connections these
+bytes are encrypted TLS records, not plaintext. `decrypt.mode` accepts only
+`off`; any other decrypt mode is rejected instead of becoming a no-op.
 
 ## Daemon settings
 

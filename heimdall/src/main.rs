@@ -30,6 +30,7 @@
 //! Driven by one `/etc/heimdall/config.{toml,yaml,json,ncl}` file.
 
 mod api;
+mod capture;
 mod cli;
 mod dns;
 mod ebpf;
@@ -484,6 +485,7 @@ fn parse_timeout(value: &str) -> Duration {
 struct Shared {
     cfg: HeimdallConfig,
     upstreams: StdHashMap<String, Arc<Upstream>>,
+    capture: Option<capture::CaptureManager>,
     /// Fake-IP DNS resolver. None when DNS server failed to bind
     /// (relay degrades to plain IP-mode SOCKS5 in that case).
     dns: Option<Arc<DnsResolver>>,
@@ -760,6 +762,9 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
     info!(outbounds = upstreams.len(), "all outbounds resolved");
 
     let _daemon_lock = state::DaemonLock::acquire()?;
+    let capture = capture::CaptureManager::from_config(&cfg.capture)
+        .await
+        .context("initialize transport capture")?;
 
     let _ = &args;
 
@@ -812,6 +817,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
     let shared = Arc::new(Shared {
         cfg,
         upstreams,
+        capture,
         dns,
         cli_overrides: cli_overrides.clone(),
     });
@@ -1524,7 +1530,21 @@ async fn relay(mut client: TcpStream, key: u32, map: PortMap, shared: Arc<Shared
                     via = %addr,
                     "tunnel established"
                 );
-                let (u, d) = copy_bidirectional(&mut client, &mut up).await?;
+                let action = format!("route:{outbound}");
+                let (u, d) = copy_tcp_transport(
+                    &mut client,
+                    &mut up,
+                    &shared,
+                    capture::FlowMeta {
+                        network: "tcp",
+                        cgroup_id: orig.cgroup_id,
+                        policy: &decision.policy,
+                        destination: &dst_label,
+                        destination_port: dst_port,
+                        action: &action,
+                    },
+                )
+                .await?;
                 Ok((u, d))
             }
             Action::Direct => {
@@ -1532,7 +1552,20 @@ async fn relay(mut client: TcpStream, key: u32, map: PortMap, shared: Arc<Shared
                     .await
                     .with_context(|| format!("direct CONNECT {dst_label}:{dst_port}"))?;
                 info!(unit = %unit_label, policy = %decision.policy, dst = %dst_label, dst_port, "direct connection established");
-                let (u, d) = copy_bidirectional(&mut client, &mut direct).await?;
+                let (u, d) = copy_tcp_transport(
+                    &mut client,
+                    &mut direct,
+                    &shared,
+                    capture::FlowMeta {
+                        network: "tcp",
+                        cgroup_id: orig.cgroup_id,
+                        policy: &decision.policy,
+                        destination: &dst_label,
+                        destination_port: dst_port,
+                        action: "direct",
+                    },
+                )
+                .await?;
                 Ok((u, d))
             }
             Action::Reject { method } => anyhow::bail!(
@@ -1544,6 +1577,22 @@ async fn relay(mut client: TcpStream, key: u32, map: PortMap, shared: Arc<Shared
     .await;
 
     result.map(|_| ())
+}
+
+async fn copy_tcp_transport<A, B>(
+    client: &mut A,
+    remote: &mut B,
+    shared: &Shared,
+    meta: capture::FlowMeta<'_>,
+) -> Result<(u64, u64)>
+where
+    A: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    B: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    match &shared.capture {
+        Some(manager) => capture::copy_tcp(client, remote, manager.open(meta).await?).await,
+        None => copy_bidirectional(client, remote).await.map_err(Into::into),
+    }
 }
 
 enum UdpSessionAction {
@@ -1730,7 +1779,13 @@ async fn run_udp_session(
                 dst_port = spec.dst_port,
                 "SOCKS5 UDP session established"
             );
-            run_socks5_udp_session(&spec, &runtime, rx, control, socket).await
+            let action = format!("route:{outbound}");
+            let capture = open_udp_capture(&spec, &runtime.shared, &action).await?;
+            let result =
+                run_socks5_udp_session(&spec, &runtime, rx, control, socket, capture.as_ref())
+                    .await;
+            close_udp_capture(capture, &result).await?;
+            result
         }
         UdpSessionAction::Direct => {
             let target = destination_socket_addr(&spec.dst, spec.dst_port).await?;
@@ -1753,9 +1808,51 @@ async fn run_udp_session(
                 dst = %target,
                 "direct UDP session established"
             );
-            run_direct_udp_session(&spec, &runtime, rx, socket).await
+            let capture = open_udp_capture(&spec, &runtime.shared, "direct").await?;
+            let result =
+                run_direct_udp_session(&spec, &runtime, rx, socket, capture.as_ref()).await;
+            close_udp_capture(capture, &result).await?;
+            result
         }
     }
+}
+
+async fn open_udp_capture(
+    spec: &UdpSessionSpec,
+    shared: &Shared,
+    action: &str,
+) -> Result<Option<capture::CaptureFlow>> {
+    let Some(manager) = &shared.capture else {
+        return Ok(None);
+    };
+    let destination = match &spec.dst {
+        Dst::Ip4(ip) => ip.to_string(),
+        Dst::Ip6(ip) => ip.to_string(),
+        Dst::Domain(domain) => domain.clone(),
+    };
+    manager
+        .open(capture::FlowMeta {
+            network: "udp",
+            cgroup_id: spec.cgroup_id,
+            policy: &spec.policy,
+            destination: &destination,
+            destination_port: spec.dst_port,
+            action,
+        })
+        .await
+        .map(Some)
+}
+
+async fn close_udp_capture(
+    capture: Option<capture::CaptureFlow>,
+    result: &Result<()>,
+) -> Result<()> {
+    if let Some(capture) = capture {
+        capture
+            .close(if result.is_ok() { "complete" } else { "error" })
+            .await?;
+    }
+    Ok(())
 }
 
 async fn destination_socket_addr(dst: &Dst, port: u16) -> Result<SocketAddr> {
@@ -1796,6 +1893,7 @@ async fn run_direct_udp_session(
     runtime: &UdpSessionRuntime,
     mut rx: mpsc::Receiver<UdpRequest>,
     socket: UdpSocket,
+    capture: Option<&capture::CaptureFlow>,
 ) -> Result<()> {
     let idle = tokio::time::sleep(UDP_SESSION_IDLE_TIMEOUT);
     tokio::pin!(idle);
@@ -1810,6 +1908,9 @@ async fn run_direct_udp_session(
                 if !udp_session_active(spec, &runtime.cookies, &runtime.shared).await {
                     return Ok(());
                 }
+                if let Some(capture) = capture {
+                    capture.data(capture::Direction::ClientToRemote, &request.payload).await?;
+                }
                 socket.send(&request.payload).await.context("send direct UDP payload")?;
                 reset_udp_idle(&mut idle);
             }
@@ -1817,6 +1918,9 @@ async fn run_direct_udp_session(
                 let len = received.context("receive direct UDP response")?;
                 if !udp_session_active(spec, &runtime.cookies, &runtime.shared).await {
                     return Ok(());
+                }
+                if let Some(capture) = capture {
+                    capture.data(capture::Direction::RemoteToClient, &response[..len]).await?;
                 }
                 runtime.relay.send(&response[..len], runtime.peer, runtime.token).await
                     .with_context(|| format!("return direct UDP response to {}", runtime.peer))?;
@@ -1838,6 +1942,7 @@ async fn run_socks5_udp_session(
     mut rx: mpsc::Receiver<UdpRequest>,
     mut control: TcpStream,
     socket: UdpSocket,
+    capture: Option<&capture::CaptureFlow>,
 ) -> Result<()> {
     let idle = tokio::time::sleep(UDP_SESSION_IDLE_TIMEOUT);
     tokio::pin!(idle);
@@ -1853,6 +1958,9 @@ async fn run_socks5_udp_session(
                 if !udp_session_active(spec, &runtime.cookies, &runtime.shared).await {
                     return Ok(());
                 }
+                if let Some(capture) = capture {
+                    capture.data(capture::Direction::ClientToRemote, &request.payload).await?;
+                }
                 let frame = encode_socks5_udp_frame(&spec.dst, spec.dst_port, &request.payload)?;
                 socket.send(&frame).await.context("send SOCKS5 UDP frame")?;
                 reset_udp_idle(&mut idle);
@@ -1862,6 +1970,9 @@ async fn run_socks5_udp_session(
                 let payload = decode_socks5_udp_payload(&response[..len])?;
                 if !udp_session_active(spec, &runtime.cookies, &runtime.shared).await {
                     return Ok(());
+                }
+                if let Some(capture) = capture {
+                    capture.data(capture::Direction::RemoteToClient, payload).await?;
                 }
                 runtime.relay.send(payload, runtime.peer, runtime.token).await
                     .with_context(|| format!("return SOCKS5 UDP response to {}", runtime.peer))?;

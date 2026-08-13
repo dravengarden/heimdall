@@ -69,6 +69,22 @@ mode = "off"
 mode = "off"
 ```
 
+To retain the relay-observed TCP and UDP byte streams for later analysis,
+enable bounded JSONL capture explicitly:
+
+```toml
+[capture]
+mode = "on"
+directory = "/var/lib/heimdall/captures"
+max_bytes_per_flow = 1048576
+```
+
+Capture stores opaque application transport bytes. HTTPS remains TLS
+ciphertext; capture neither installs a CA nor changes application trust. Each
+flow file is mode `0600` below a mode `0700` directory and follows the
+`heimdall.capture/v1` contract. See [docs/config.md](docs/config.md) for its
+limits and security boundary.
+
 Optional authentication keeps the password out of the config:
 
 ```toml

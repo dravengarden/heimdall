@@ -11,7 +11,9 @@ proxy.policies.<name>.dns.mode = fake | system
 proxy.policies.<name>.rules[] = ordered match + terminal action
 proxy.policies.<name>.final.tcp = route | direct | reject
 proxy.policies.<name>.final.udp = route | direct | reject
-capture.mode = off
+capture.mode = off | on
+capture.directory = absolute path (default /var/lib/heimdall/captures)
+capture.max_bytes_per_flow = 1..67108864 (default 1048576)
 decrypt.mode = off
 daemon = optional implementation settings
 ```
@@ -76,6 +78,19 @@ HTTP/3; address-family migration remains false.
 Configuration validity does not prove a particular language runtime. After
 validation, compare the intended path with `capabilities.runtime_acceptance`;
 probe the actual command when its runtime is absent from that path's array.
+
+## Capture boundary
+
+Enable capture only when the user intends to retain traffic. It writes one
+root-only JSONL file per TCP or UDP flow using `heimdall.capture/v1`. The byte
+limit is shared across both directions. Payload is base64-encoded opaque
+transport data: TLS remains ciphertext and `decrypt.mode` remains `off`.
+
+Validate the absolute directory and bounded limit, then inspect the normalized
+values at `agent.config.capture` and capability boundary at
+`agent.capabilities.capture`. Never add a CA, weaken file permissions, or claim
+TLS plaintext. Heimdall does not rotate or upload captures; retention is an
+operator decision.
 
 ## DNS invariants
 

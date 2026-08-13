@@ -34,6 +34,10 @@ Node.js, and Rust clients through fake-DNS TCP plus connected IPv4 and IPv6
 UDP. Existing C, curl, and Python fixtures cover syscall batching, HTTP, and
 additional UDP shapes.
 
+The VM also enables a deliberately small capture budget and validates TCP and
+UDP `heimdall.capture/v1` files, bidirectional records, truncation, ordering,
+and root-only permissions.
+
 ## Install
 
 ```bash
@@ -79,9 +83,23 @@ It is read-only and always prints exactly one JSON value before exiting:
   "contract": "heimdall.agent/v2",
   "version": "0.1.0",
   "ready": true,
-  "config": { "path": "...", "format": "toml", "valid": true, "error": null },
+  "config": {
+    "path": "...",
+    "format": "toml",
+    "valid": true,
+    "capture": { "mode": "off", "directory": "/var/lib/heimdall/captures", "max_bytes_per_flow": 1048576 },
+    "error": null
+  },
   "daemon": { "reachable": true, "control": "127.0.0.1:9999" },
   "capabilities": {
+    "capture": {
+      "contract": "heimdall.capture/v1",
+      "format": "jsonl",
+      "tcp": true,
+      "udp": true,
+      "payload": "opaque_transport",
+      "tls_plaintext": false
+    },
     "udp": {
       "connected": true,
       "connectionless": false,
@@ -146,6 +164,22 @@ config cannot be loaded, `config.error.code` is a stable category and
 `diagnostics` contains stable code/path/message/hint records. The contract may
 add fields within v2; consumers
 must ignore unknown fields.
+
+Before enabling capture, agents must inspect `capabilities.capture` and the
+normalized `config.capture` report. `opaque_transport` means relay-observed
+application transport bytes: HTTP may be readable, while HTTPS stays encrypted
+TLS records because `tls_plaintext` is false. Never describe these files as
+decrypted traffic.
+
+Capture files are sensitive and root-only. Inspect them without changing daemon
+state:
+
+```bash
+sudo jq -s . /var/lib/heimdall/captures/<flow>.jsonl
+```
+
+There is no automatic retention. Operators must bound storage externally and
+must not weaken directory or file permissions to make an agent workflow easier.
 
 Agents must inspect the per-family fields in `capabilities.udp` before choosing
 a UDP workload. The aggregate `connectionless` and

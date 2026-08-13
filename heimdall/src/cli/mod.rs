@@ -15,7 +15,7 @@ pub mod agent {
 
     use anyhow::Result;
     use heimdall_config::{
-        Action, ConfigDiagnostic, ConfigError, ConfigFormat, DnsMode, HeimdallConfig,
+        Action, CaptureMode, ConfigDiagnostic, ConfigError, ConfigFormat, DnsMode, HeimdallConfig,
     };
     use serde::Serialize;
 
@@ -48,7 +48,15 @@ pub mod agent {
         path: String,
         format: Option<&'static str>,
         valid: bool,
+        capture: Option<CaptureConfigReport>,
         error: Option<MachineError>,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct CaptureConfigReport {
+        mode: &'static str,
+        directory: String,
+        max_bytes_per_flow: u64,
     }
 
     #[derive(Debug, Serialize)]
@@ -59,10 +67,21 @@ pub mod agent {
 
     #[derive(Debug, Serialize)]
     struct Capabilities {
+        capture: CaptureCapabilities,
         udp: UdpCapabilities,
         runtime_acceptance: RuntimeAcceptance,
         cli_acceptance: CliAcceptance,
         lifecycle: LifecycleCapabilities,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct CaptureCapabilities {
+        contract: &'static str,
+        format: &'static str,
+        tcp: bool,
+        udp: bool,
+        payload: &'static str,
+        tls_plaintext: bool,
     }
 
     #[derive(Debug, Serialize)]
@@ -180,6 +199,7 @@ pub mod agent {
                     path: path.display().to_string(),
                     format,
                     valid: false,
+                    capture: None,
                     error: Some(config_error(error)),
                 },
                 daemon: DaemonReport {
@@ -263,6 +283,14 @@ pub mod agent {
                 path: path.display().to_string(),
                 format,
                 valid: true,
+                capture: Some(CaptureConfigReport {
+                    mode: match config.capture.mode {
+                        CaptureMode::Off => "off",
+                        CaptureMode::On => "on",
+                    },
+                    directory: config.capture.directory.display().to_string(),
+                    max_bytes_per_flow: config.capture.max_bytes_per_flow,
+                }),
                 error: None,
             },
             daemon: DaemonReport {
@@ -343,6 +371,14 @@ pub mod agent {
 
     const fn capabilities() -> Capabilities {
         Capabilities {
+            capture: CaptureCapabilities {
+                contract: "heimdall.capture/v1",
+                format: "jsonl",
+                tcp: true,
+                udp: true,
+                payload: "opaque_transport",
+                tls_plaintext: false,
+            },
             udp: UdpCapabilities {
                 connected: true,
                 connectionless: false,
@@ -434,6 +470,17 @@ pub mod agent {
             assert!(runtimes.udp_ipv4.contains(&"nodejs"));
             assert!(runtimes.udp_ipv6.contains(&"java"));
             assert!(capabilities.cli_acceptance.tcp_fake_dns.contains(&"git"));
+        }
+
+        #[test]
+        fn capture_capabilities_expose_plaintext_boundary() {
+            let capture = capabilities().capture;
+            assert_eq!(capture.contract, "heimdall.capture/v1");
+            assert_eq!(capture.format, "jsonl");
+            assert!(capture.tcp);
+            assert!(capture.udp);
+            assert_eq!(capture.payload, "opaque_transport");
+            assert!(!capture.tls_plaintext);
         }
 
         #[test]

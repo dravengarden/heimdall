@@ -44,6 +44,10 @@ All notable changes to heimdall are documented here.
 
 ### Changed
 
+- Added opt-in, bounded TCP and UDP relay capture as root-only
+  `heimdall.capture/v1` JSONL files. Capture covers direct and SOCKS5 actions,
+  remains opaque to TLS, fails affected flows on write errors, and exposes its
+  exact boundary through `heimdall agent`.
 - Added real-eBPF acceptance for an active fake-DNS command across a daemon
   restart and exposed policy recovery, DNS recovery, connection survival, and
   uninterrupted-continuity boundaries separately through `heimdall agent`.

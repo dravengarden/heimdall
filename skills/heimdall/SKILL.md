@@ -23,6 +23,11 @@ join or evaluate them as shell text.
 
 Use `heimdall help -v` only when deeper command discovery is needed.
 
+If capture is requested, inspect `config.capture` and
+`capabilities.capture`. Require `mode: on`, a suitable byte limit, and
+`payload: opaque_transport`. `tls_plaintext: false` is a hard boundary: do not
+present TLS records as decrypted content or install trust material.
+
 ## Validate and repair configuration
 
 Read [references/config.md](references/config.md) before creating or changing a
@@ -104,6 +109,9 @@ not a per-run override. Keep the wrapped command after `--`. Read
 - For runtime failures, collect `heimdall agent`, `heimdall status --json`, and
   recent `heimdall.service` logs before changing state.
 - Do not infer removed workload, UI, or TLS-observability commands.
+- Do not enable capture without explicit retention intent; its root-only files
+  can contain credentials and other application data. Heimdall does not rotate
+  them.
 - Never delete `/sys/fs/bpf/heimdall` manually. For an explicitly requested
   uninstall or incompatible-schema repair, stop the service, prove all wrapped
   workloads exited, then run `heimdall ebpf cleanup --json`. Treat

@@ -217,7 +217,7 @@ pub struct HeimdallConfig {
     pub version: u32,
     pub proxy: ProxyConfig,
     #[serde(default)]
-    pub capture: FeatureConfig,
+    pub capture: CaptureConfig,
     #[serde(default)]
     pub decrypt: FeatureConfig,
     #[serde(default)]
@@ -393,6 +393,41 @@ pub enum FeatureMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct CaptureConfig {
+    pub mode: CaptureMode,
+    #[serde(default = "default_capture_directory")]
+    pub directory: PathBuf,
+    #[serde(default = "default_capture_max_bytes")]
+    pub max_bytes_per_flow: u64,
+}
+
+impl Default for CaptureConfig {
+    fn default() -> Self {
+        Self {
+            mode: CaptureMode::Off,
+            directory: default_capture_directory(),
+            max_bytes_per_flow: default_capture_max_bytes(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CaptureMode {
+    Off,
+    On,
+}
+
+fn default_capture_directory() -> PathBuf {
+    "/var/lib/heimdall/captures".into()
+}
+
+const fn default_capture_max_bytes() -> u64 {
+    1_048_576
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Runtime {
     #[serde(default = "default_cgroup")]
     pub cgroup: String,
@@ -504,6 +539,8 @@ impl HeimdallConfig {
             }
             validate_policy(&mut errors, &base, policy, &self.proxy.outbounds);
         }
+
+        validate_capture(&mut errors, &self.capture);
 
         validate_runtime(&mut errors, &self.daemon);
 
@@ -953,6 +990,30 @@ fn validate_action(
     }
 }
 
+fn validate_capture(errors: &mut Vec<ConfigDiagnostic>, capture: &CaptureConfig) {
+    if !capture.directory.is_absolute() {
+        push(
+            errors,
+            "relative_capture_directory",
+            "$.capture.directory",
+            format!("`{}` is not absolute", capture.directory.display()),
+            "Use an absolute directory writable only by the daemon, such as /var/lib/heimdall/captures.",
+        );
+    }
+    if capture.max_bytes_per_flow == 0 || capture.max_bytes_per_flow > 67_108_864 {
+        push(
+            errors,
+            "invalid_capture_limit",
+            "$.capture.max_bytes_per_flow",
+            format!(
+                "{} is outside the supported 1..=67108864 byte range",
+                capture.max_bytes_per_flow
+            ),
+            "Choose a per-flow limit between 1 byte and 64 MiB.",
+        );
+    }
+}
+
 fn validate_runtime(errors: &mut Vec<ConfigDiagnostic>, runtime: &Runtime) {
     let api = validated_socket(errors, "$.daemon.api_listen", &runtime.api_listen);
     if runtime.dns_port == 0 {
@@ -1318,19 +1379,23 @@ proxy:
       final:
         tcp: { type: route, outbound: default }
         udp: { type: reject, method: refused }
-capture: { mode: "off" }
+capture: { mode: "on", directory: /var/lib/heimdall/captures, max_bytes_per_flow: 4096 }
 decrypt: { mode: "off" }
 "#,
             ),
             (
                 "json",
-                r#"{"version":1,"proxy":{"default_policy":"default","outbounds":{"default":{"type":"socks5","server":"127.0.0.1","server_port":1080,"network":["tcp"]}},"policies":{"default":{"dns":{"mode":"fake"},"rules":[],"final":{"tcp":{"type":"route","outbound":"default"},"udp":{"type":"reject","method":"refused"}}}}},"capture":{"mode":"off"},"decrypt":{"mode":"off"}}"#,
+                r#"{"version":1,"proxy":{"default_policy":"default","outbounds":{"default":{"type":"socks5","server":"127.0.0.1","server_port":1080,"network":["tcp"]}},"policies":{"default":{"dns":{"mode":"fake"},"rules":[],"final":{"tcp":{"type":"route","outbound":"default"},"udp":{"type":"reject","method":"refused"}}}}},"capture":{"mode":"on","directory":"/var/lib/heimdall/captures","max_bytes_per_flow":4096},"decrypt":{"mode":"off"}}"#,
             ),
         ];
         for (extension, content) in cases {
             let path = temp_config(extension, content);
             let cfg = HeimdallConfig::load(&path).unwrap();
             assert_eq!(cfg.proxy.default_policy, "default");
+            if extension != "toml" {
+                assert_eq!(cfg.capture.mode, CaptureMode::On);
+                assert_eq!(cfg.capture.max_bytes_per_flow, 4096);
+            }
             fs::remove_file(path).unwrap();
         }
     }
@@ -1358,12 +1423,18 @@ decrypt: { mode: "off" }
                   },
                 },
               },
-              capture.mode = "off",
+              capture = {
+                mode = "on",
+                directory = "/var/lib/heimdall/captures",
+                max_bytes_per_flow = 4096,
+              },
               decrypt.mode = "off",
             }"#,
         );
         let cfg = HeimdallConfig::load(&path).unwrap();
         assert_eq!(cfg.proxy.default_policy, "default");
+        assert_eq!(cfg.capture.mode, CaptureMode::On);
+        assert_eq!(cfg.capture.max_bytes_per_flow, 4096);
         fs::remove_file(path).unwrap();
     }
 
@@ -1412,6 +1483,34 @@ action = { type = "direct" }
         assert!(diagnostics.iter().any(|item| {
             item.code == "duplicate_match_value"
                 && item.path == "$.proxy.policies.default.rules[0].match.port"
+        }));
+    }
+
+    #[test]
+    fn accepts_enabled_capture_with_explicit_storage_limits() {
+        let source = valid_toml().replace(
+            "[capture]\n            mode = \"off\"",
+            "[capture]\n            mode = \"on\"\n            directory = \"/var/lib/heimdall/captures\"\n            max_bytes_per_flow = 4096",
+        );
+        let cfg: HeimdallConfig = toml::from_str(&source).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(cfg.capture.mode, CaptureMode::On);
+        assert_eq!(cfg.capture.max_bytes_per_flow, 4096);
+    }
+
+    #[test]
+    fn capture_diagnostics_are_machine_repairable() {
+        let source = valid_toml().replace(
+            "[capture]\n            mode = \"off\"",
+            "[capture]\n            mode = \"on\"\n            directory = \"relative\"\n            max_bytes_per_flow = 0",
+        );
+        let cfg: HeimdallConfig = toml::from_str(&source).unwrap();
+        let diagnostics = cfg.validate().unwrap_err().diagnostics();
+        assert!(diagnostics.iter().any(|item| {
+            item.code == "relative_capture_directory" && item.path == "$.capture.directory"
+        }));
+        assert!(diagnostics.iter().any(|item| {
+            item.code == "invalid_capture_limit" && item.path == "$.capture.max_bytes_per_flow"
         }));
     }
 

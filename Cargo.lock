@@ -392,6 +392,7 @@ dependencies = [
  "anyhow",
  "axum",
  "aya",
+ "base64",
  "clap",
  "heimdall-common",
  "heimdall-config",

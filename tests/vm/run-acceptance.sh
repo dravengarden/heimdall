@@ -23,6 +23,15 @@ as_tester heimdall config validate --json \
 as_tester heimdall agent \
   | jq -e '.contract == "heimdall.agent/v2"
     and .ready
+    and .config.capture.mode == "on"
+    and .config.capture.directory == "/run/heimdall-test/captures"
+    and .config.capture.max_bytes_per_flow == 128
+    and .capabilities.capture.contract == "heimdall.capture/v1"
+    and .capabilities.capture.format == "jsonl"
+    and .capabilities.capture.tcp
+    and .capabilities.capture.udp
+    and .capabilities.capture.payload == "opaque_transport"
+    and (.capabilities.capture.tls_plaintext | not)
     and .capabilities.udp.connected
     and .capabilities.udp.association_reuse
     and .capabilities.udp.multi_response
@@ -363,6 +372,47 @@ systemctl start heimdall.service
 systemctl is-active --quiet heimdall.service
 test -e /sys/fs/bpf/heimdall/maps/STATE_SCHEMA
 as_tester heimdall agent | jq -e '.ready and .daemon.reachable'
+
+test "$(stat -c '%a' /run/heimdall-test/captures)" = 700
+if find /run/heimdall-test/captures -type f ! -perm 600 -print -quit | grep -q .; then
+  echo "capture file permissions are not 0600" >&2
+  exit 1
+fi
+
+tcp_capture=false
+udp_capture=false
+truncated_capture=false
+for capture_file in /run/heimdall-test/captures/*.jsonl; do
+  test -f "$capture_file"
+  jq -e -s '
+    length >= 1
+    and all(.[]; .contract == "heimdall.capture/v1")
+    and (to_entries | all(.value.sequence == .key))
+    and .[0].event == "open"
+  ' "$capture_file" >/dev/null
+  if jq -e -s '
+    .[0].network == "tcp"
+    and any(.[]; .event == "data" and .direction == "client_to_remote")
+    and any(.[]; .event == "data" and .direction == "remote_to_client")
+    and any(.[]; .event == "close" and .status == "complete")
+  ' "$capture_file" >/dev/null; then
+    tcp_capture=true
+  fi
+  if jq -e -s '
+    .[0].network == "udp"
+    and any(.[]; .event == "data" and .direction == "client_to_remote")
+    and any(.[]; .event == "data" and .direction == "remote_to_client")
+    and any(.[]; .event == "close" and .status == "complete")
+  ' "$capture_file" >/dev/null; then
+    udp_capture=true
+  fi
+  if jq -e -s 'any(.[]; .event == "close" and .truncated)' "$capture_file" >/dev/null; then
+    truncated_capture=true
+  fi
+done
+test "$tcp_capture" = true
+test "$udp_capture" = true
+test "$truncated_capture" = true
 
 if find /sys/fs/cgroup/user.slice -type d -name 'heimdall-cli-*' -print -quit \
   | grep -q .; then
