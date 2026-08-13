@@ -49,7 +49,7 @@ nix = { version = "0.29", features = ["process", "signal", "fs", "mount", "sched
 # Sync (not reqwest) because the run subcommand is itself sync — it
 # fork/exec's the wrapped command and doesn't drive a tokio runtime.
 # Tiny footprint, no rustls / native-tls needed for loopback.
-ureq = { version = "2", default-features = false, features = ["json"] }
+ureq = { version = "3", default-features = false, features = ["json"] }
 
 # Cache types for resolver maps
 parking_lot = "0.12"
