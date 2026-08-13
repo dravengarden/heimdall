@@ -39,7 +39,7 @@ libc = "0.2"
 # lets systemd kill+restart heimdall if the heartbeat stops. No-op
 # when not run under systemd — the crate degrades to functions that
 # return Ok(()).
-sd-notify = "0.4"
+sd-notify = "0.5"
 
 # `heimdall run` cgroup management — fork/exec/waitpid + signal masking.
 # `process` for fork/wait, `signal` for SIGINT propagation to the child.
