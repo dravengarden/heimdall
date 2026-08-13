@@ -400,8 +400,9 @@ fn try_connect4(ctx: SockAddrContext) -> Result<(), ()> {
 //
 // Mirror logic: read user_ip6 + user_port from the sock_addr, consult
 // CGROUP_POLICY, then either bypass or rewrite to RELAY_ADDR6 + RELAY_PORT.
-// COOKIE_MAP entries from connect6 carry family=FAMILY_V6 so userspace
-// + skb_egress can decode the address bytes correctly.
+// Native IPv6 entries carry FAMILY_V6. IPv4-mapped destinations are
+// normalized to FAMILY_V4 so fake-IP lookup and SOCKS addressing retain the
+// application's real address family even when its runtime uses one v6 socket.
 // ---------------------------------------------------------------------------
 
 #[cgroup_sock_addr(connect6)]
@@ -470,7 +471,8 @@ fn try_connect6(ctx: SockAddrContext) -> Result<(), ()> {
         return Ok(());
     }
 
-    let orig = OrigDst {
+    let mapped_v4 = dst_addr[..10] == [0; 10] && dst_addr[10] == 0xff && dst_addr[11] == 0xff;
+    let mut orig = OrigDst {
         addr: dst_addr,
         port: dst_port_be,
         family: FAMILY_V6,
@@ -478,6 +480,11 @@ fn try_connect6(ctx: SockAddrContext) -> Result<(), ()> {
         cgroup_id,
         socket_cookie: cookie,
     };
+    if mapped_v4 {
+        orig.addr = [0; 16];
+        orig.addr[..4].copy_from_slice(&dst_addr[12..]);
+        orig.family = FAMILY_V4;
+    }
     // Best-effort: see the matching comment in `try_connect4`. The
     // rewrite below MUST run regardless of whether the cookie was
     // recorded.
@@ -532,16 +539,22 @@ pub fn getpeername6(ctx: SockAddrContext) -> i32 {
     let Some(orig) = (unsafe { UDP_COOKIE_MAP.get(&cookie) }) else {
         return 1;
     };
-    if orig.family != FAMILY_V6 {
+    let mut addr = orig.addr;
+    if orig.family == FAMILY_V4 {
+        addr = [0; 16];
+        addr[10] = 0xff;
+        addr[11] = 0xff;
+        addr[12..].copy_from_slice(&orig.addr[..4]);
+    } else if orig.family != FAMILY_V6 {
         return 1;
     }
     let mut words = [0u32; 4];
     for (i, word) in words.iter_mut().enumerate() {
         *word = u32::from_ne_bytes([
-            orig.addr[i * 4],
-            orig.addr[i * 4 + 1],
-            orig.addr[i * 4 + 2],
-            orig.addr[i * 4 + 3],
+            addr[i * 4],
+            addr[i * 4 + 1],
+            addr[i * 4 + 2],
+            addr[i * 4 + 3],
         ]);
     }
     unsafe {

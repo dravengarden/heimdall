@@ -66,6 +66,12 @@ and `ipv4_mapped_ipv6_socket` covers dual-stack clients targeting IPv4. Respect
 HTTP/3 on either family; do not infer address-family migration while
 `quic_address_family_migration` is false.
 
+Before claiming compatibility for a language runtime, inspect
+`capabilities.runtime_acceptance`. Treat each array as protocol-specific VM
+evidence, not as a general allowlist. An absent runtime means unverified and
+should trigger a bounded probe with the actual command when compatibility is
+required.
+
 ## Run a command
 
 ```bash

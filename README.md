@@ -86,7 +86,14 @@ bidirectional upstream association and can receive multiple responses. Common
 dual-stack sockets targeting IPv4 are supported, and single-path HTTP/3 over
 both IPv4 and native IPv6 has a dedicated QUIC acceptance gate. Ambiguous IPv6
 multi-target sends and explicit shared-source-port binds fail synchronously.
+IPv4-mapped `connect6` calls are normalized before fake-IP lookup, covering
+dual-stack TCP behavior used by Java and similar runtimes.
 See [docs/config.md](docs/config.md) for the complete schema.
+
+The disposable real-eBPF acceptance VM covers static Go `netgo`, Java,
+Node.js, Rust, Python, C, and curl. `heimdall agent` reports the precise
+per-protocol runtime matrix under `capabilities.runtime_acceptance`; agents
+should inspect it instead of inferring support from a language name alone.
 
 ## Getting started
 

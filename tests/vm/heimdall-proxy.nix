@@ -78,7 +78,11 @@ in
     pkgs.jq
     testPython
     pkgs.gcc
+    pkgs.go
+    pkgs.jdk_headless
+    pkgs.nodejs
     pkgs.openssl
+    pkgs.rustc
   ];
 
   systemd.tmpfiles.rules = [ "d /run/heimdall-test 0755 root root -" ];
@@ -177,6 +181,14 @@ in
     ./udp_ipv6_bind_guard_client.py;
   environment.etc."heimdall-test/udp_batch_client.c".source = ./udp_batch_client.c;
   environment.etc."heimdall-test/http3_client.py".source = ./http3_client.py;
+  environment.etc."heimdall-test/runtime_client.go".source = ./runtime_client.go;
+  environment.etc."heimdall-test/runtime_client.js".source = ./runtime_client.js;
+  environment.etc."heimdall-test/RuntimeClient.java".source = ./RuntimeClient.java;
+  environment.etc."heimdall-test/runtime_client.rs".source = ./runtime_client.rs;
+  environment.etc."heimdall-test/runtime-wrapper" = {
+    source = ./runtime-wrapper;
+    mode = "0755";
+  };
   environment.etc."heimdall-test/run-acceptance.sh" = {
     source = ./run-acceptance.sh;
     mode = "0755";

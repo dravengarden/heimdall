@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+runtime="$1"
+mode="$2"
+case "$runtime" in
+  go-netgo) exec /run/heimdall-test/runtime-go "$mode" ;;
+  java) exec java -cp /run/heimdall-test RuntimeClient "$mode" ;;
+  nodejs) exec node /etc/heimdall-test/runtime_client.js "$mode" ;;
+  rust) exec /run/heimdall-test/runtime-rust "$mode" ;;
+  *) echo "unknown runtime: $runtime" >&2; exit 2 ;;
+esac

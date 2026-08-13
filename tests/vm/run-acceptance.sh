@@ -37,7 +37,36 @@ as_tester heimdall agent \
     and .capabilities.udp.quic_ipv4
     and .capabilities.udp.quic_ipv6
     and (.capabilities.udp.quic_address_family_migration | not)
-    and .capabilities.udp.max_socks5_payload_bytes == 65245'
+    and .capabilities.udp.max_socks5_payload_bytes == 65245
+    and (.capabilities.runtime_acceptance.tcp_fake_dns | index("go-netgo")) != null
+    and (.capabilities.runtime_acceptance.udp_ipv4 | index("nodejs")) != null
+    and (.capabilities.runtime_acceptance.udp_ipv6 | index("java")) != null'
+
+CGO_ENABLED=0 go build -tags netgo -trimpath \
+  -o /run/heimdall-test/runtime-go /etc/heimdall-test/runtime_client.go
+if ldd /run/heimdall-test/runtime-go >/dev/null 2>&1; then
+  echo "Go netgo fixture unexpectedly linked dynamic libraries" >&2
+  exit 1
+fi
+javac -d /run/heimdall-test /etc/heimdall-test/RuntimeClient.java
+rustc --edition 2024 -C opt-level=2 -D warnings \
+  -o /run/heimdall-test/runtime-rust /etc/heimdall-test/runtime_client.rs
+
+: > /run/heimdall-test/socks.log
+for runtime in go-netgo java nodejs rust; do
+  test "$(as_tester heimdall run --policy fake -- \
+    /etc/heimdall-test/runtime-wrapper "$runtime" tcp)" = "$runtime-tcp-ok"
+  test "$(as_tester heimdall run --policy udp -- \
+    /etc/heimdall-test/runtime-wrapper "$runtime" udp4)" = "$runtime-udp4-ok"
+  test "$(as_tester heimdall run --policy udp -- \
+    /etc/heimdall-test/runtime-wrapper "$runtime" udp6)" = "$runtime-udp6-ok"
+done
+test "$(grep -c '"atyp": 3, "host": "fixture.test", "port": 18080' \
+  /run/heimdall-test/socks.log)" -eq 4
+test "$(grep -c '"udp": true, "atyp": 1, "host": "127.0.0.1", "port": 18082' \
+  /run/heimdall-test/socks.log)" -eq 4
+test "$(grep -c '"udp": true, "atyp": 4, "host": "::1", "port": 18083' \
+  /run/heimdall-test/socks.log)" -eq 4
 
 : > /run/heimdall-test/socks.log
 test "$(as_tester heimdall run --policy fake -- \

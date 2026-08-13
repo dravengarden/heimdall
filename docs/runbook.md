@@ -27,7 +27,10 @@ single-peer IPv6, fail-closed IPv6 multi-target/shared-port conflicts,
 IPv4-mapped dual-stack UDP, `sendmmsg`/`recvmmsg`, token stress across 128
 destinations, IPv4 and native IPv6 HTTP/3 with QUIC Retry and a 32 KiB response,
 unregistered bypass, cgroup cleanup, and 100 same-source-port dual-stack TCP
-connection pairs.
+connection pairs. It also compiles and executes static Go `netgo`, Java,
+Node.js, and Rust clients through fake-DNS TCP plus connected IPv4 and IPv6
+UDP. Existing C, curl, and Python fixtures cover syscall batching, HTTP, and
+additional UDP shapes.
 
 ## Install
 
@@ -95,6 +98,11 @@ It is read-only and always prints exactly one JSON value before exiting:
       "quic_ipv6": true,
       "quic_address_family_migration": false,
       "exchange": "bidirectional-session"
+    },
+    "runtime_acceptance": {
+      "tcp_fake_dns": ["curl", "go-netgo", "java", "nodejs", "rust"],
+      "udp_ipv4": ["c", "go-netgo", "java", "nodejs", "python", "rust"],
+      "udp_ipv6": ["go-netgo", "java", "nodejs", "python", "rust"]
     }
   },
   "decision": {
@@ -131,6 +139,17 @@ instead of being accepted with ambiguous response identity.
 `quic: "ipv4+ipv6-single-path"` and the `quic_ipv4`/`quic_ipv6` booleans mean
 HTTP/3 is acceptance-tested on either family. Agents must still reject workflows
 that require `quic_address_family_migration` while that field is false.
+
+`capabilities.runtime_acceptance` is evidence from the real-eBPF VM, not a
+language allowlist. A runtime absent from one protocol array is unverified for
+that protocol; it is not automatically rejected by the proxy. The current
+matrix is:
+
+| Path | Acceptance-tested clients |
+|---|---|
+| Fake-DNS TCP | curl, static Go `netgo`, Java, Node.js, Rust |
+| IPv4 UDP | C, static Go `netgo`, Java, Node.js, Python, Rust |
+| IPv6 UDP | static Go `netgo`, Java, Node.js, Python, Rust |
 
 ## Common failures
 

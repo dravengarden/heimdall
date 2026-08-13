@@ -58,6 +58,14 @@ pub mod agent {
     #[derive(Debug, Serialize)]
     struct Capabilities {
         udp: UdpCapabilities,
+        runtime_acceptance: RuntimeAcceptance,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct RuntimeAcceptance {
+        tcp_fake_dns: &'static [&'static str],
+        udp_ipv4: &'static [&'static str],
+        udp_ipv6: &'static [&'static str],
     }
 
     #[derive(Debug, Serialize)]
@@ -328,6 +336,11 @@ pub mod agent {
                 quic_address_family_migration: false,
                 exchange: "bidirectional-session",
             },
+            runtime_acceptance: RuntimeAcceptance {
+                tcp_fake_dns: &["curl", "go-netgo", "java", "nodejs", "rust"],
+                udp_ipv4: &["c", "go-netgo", "java", "nodejs", "python", "rust"],
+                udp_ipv6: &["go-netgo", "java", "nodejs", "python", "rust"],
+            },
         }
     }
 
@@ -367,6 +380,14 @@ pub mod agent {
             assert!(udp.quic_ipv4);
             assert!(udp.quic_ipv6);
             assert!(!udp.quic_address_family_migration);
+        }
+
+        #[test]
+        fn runtime_acceptance_is_machine_readable() {
+            let runtimes = capabilities().runtime_acceptance;
+            assert!(runtimes.tcp_fake_dns.contains(&"go-netgo"));
+            assert!(runtimes.udp_ipv4.contains(&"nodejs"));
+            assert!(runtimes.udp_ipv6.contains(&"java"));
         }
     }
 }

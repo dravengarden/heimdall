@@ -73,6 +73,10 @@ Ambiguous IPv6 multi-target sends and duplicate explicit source-port binds are
 rejected. `quic_ipv4` and `quic_ipv6` cover acceptance-tested single-path
 HTTP/3; address-family migration remains false.
 
+Configuration validity does not prove a particular language runtime. After
+validation, compare the intended path with `capabilities.runtime_acceptance`;
+probe the actual command when its runtime is absent from that path's array.
+
 ## DNS invariants
 
 - `fake` preserves hostname identity and permits domain rules. UDP and TCP port

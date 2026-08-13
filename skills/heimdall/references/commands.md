@@ -49,6 +49,11 @@ IPv4-mapped dual-stack clients have separate positive fields. Do not exceed
 HTTP/3 on either family. Require `quic_address_family_migration` for workflows
 that migrate an existing QUIC connection across families.
 
+Inspect `capabilities.runtime_acceptance` before asserting that a language
+runtime is covered. Membership is path-specific (`tcp_fake_dns`, `udp_ipv4`,
+or `udp_ipv6`). Absence means no committed VM evidence for that path, not a
+configuration error and not proof of incompatibility.
+
 ## Diagnose failures
 
 1. Run `heimdall agent` and preserve its JSON even when it exits 1.

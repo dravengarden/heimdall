@@ -6,6 +6,9 @@ All notable changes to heimdall are documented here.
 
 ### Fixed
 
+- Normalize IPv4-mapped destinations intercepted by `connect6`, preserving
+  fake-DNS hostname recovery and transparent peer identity for runtimes such as
+  Java that use dual-stack IPv6 sockets for IPv4 answers.
 - Reject ambiguous native IPv6 UDP multi-target sends and duplicate explicit
   source-port binds instead of overwriting relay ownership and risking a
   response with the wrong peer identity. Socket release now frees that
@@ -25,6 +28,9 @@ All notable changes to heimdall are documented here.
 
 ### Changed
 
+- Added real cgroup eBPF acceptance for static Go `netgo`, Java, Node.js, and
+  Rust across fake-DNS TCP plus connected IPv4 and IPv6 UDP, and exposed the
+  tested matrix through `heimdall agent`.
 - Added real IPv4 and native IPv6 HTTP/3 with QUIC Retry and multi-request
   acceptance, IPv4 UDP
   token stress across 128 destinations, 32 concurrent `SO_REUSEPORT` sockets,
