@@ -100,6 +100,7 @@ pub mod agent {
     struct DecryptCapabilities {
         modes: &'static [&'static str],
         transparent_runtimes: &'static [&'static str],
+        transparent_runtime_discovery: &'static str,
         transparent_requires_ca_trust: bool,
         transparent_supports_pinning_and_mtls: bool,
         mitm_runtime_independent: bool,
@@ -464,6 +465,7 @@ pub mod agent {
             decrypt: DecryptCapabilities {
                 modes: &["off", "transparent", "mitm"],
                 transparent_runtimes: &["openssl"],
+                transparent_runtime_discovery: "loaded_images_at_daemon_start",
                 transparent_requires_ca_trust: false,
                 transparent_supports_pinning_and_mtls: true,
                 mitm_runtime_independent: true,
@@ -575,6 +577,10 @@ pub mod agent {
             assert_eq!(capture.payload, "mode_dependent");
             assert!(capture.tls_plaintext);
             assert_eq!(capabilities().decrypt.modes, ["off", "transparent", "mitm"]);
+            assert_eq!(
+                capabilities().decrypt.transparent_runtime_discovery,
+                "loaded_images_at_daemon_start"
+            );
         }
 
         #[test]

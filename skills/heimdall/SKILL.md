@@ -29,8 +29,10 @@ and a suitable byte limit before either decrypt mode. Read each capture open
 record's `payload`; only `tls_plaintext` is decrypted.
 
 Choose `transparent` only when `transparent_runtimes` contains the client's TLS
-implementation. It changes no trust and supports pinning/mTLS, but absence from
-that array means no plaintext guarantee. Choose `mitm` for runtime-independent
+implementation and account for `transparent_runtime_discovery`; a newly
+introduced OpenSSL image requires a daemon restart before wrapping the command.
+It changes no trust and supports pinning/mTLS, but absence from that array means
+no plaintext guarantee. Choose `mitm` for runtime-independent
 capture only with explicit authority to install local trust. If
 `ca_material_ready` is false, execute `actions.tls_ca_init` as an argv array,
 then trust its public `ca_cert`; never expose or copy `ca_key`. Do not select

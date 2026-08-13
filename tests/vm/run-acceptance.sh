@@ -33,6 +33,7 @@ as_tester heimdall agent \
     and .capabilities.capture.payload == "mode_dependent"
     and .capabilities.capture.tls_plaintext
     and .capabilities.decrypt.modes == ["off", "transparent", "mitm"]
+    and .capabilities.decrypt.transparent_runtime_discovery == "loaded_images_at_daemon_start"
     and .capabilities.udp.connected
     and .capabilities.udp.association_reuse
     and .capabilities.udp.multi_response

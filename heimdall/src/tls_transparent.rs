@@ -37,9 +37,14 @@ pub fn start(bpf: &mut Ebpf, capture: CaptureManager) -> Result<usize> {
     let images = scan_libssl();
     let mut attached = 0usize;
     for image in &images {
-        attach(bpf, image)
-            .with_context(|| format!("attach transparent TLS probes to {}", image.display()))?;
-        attached += 1;
+        match attach(bpf, image) {
+            Ok(()) => attached += 1,
+            Err(error) => warn!(
+                image = %image.display(),
+                error = %error,
+                "skipped unsupported OpenSSL image"
+            ),
+        }
     }
 
     let map = bpf

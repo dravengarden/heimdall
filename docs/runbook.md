@@ -171,7 +171,9 @@ capability says plaintext is available, not that every file is plaintext.
 Inspect each open record: `opaque_transport` is relay-observed transport;
 `tls_plaintext` is decrypted content.
 
-Transparent mode requires no trust change and currently covers only OpenSSL.
+Transparent mode requires no trust change and currently covers only OpenSSL
+images loaded when the daemon starts. Restart the daemon after introducing a
+different `libssl` image.
 MITM mode is language-independent but requires clients to trust the generated
 CA and is incompatible with pinning and client-certificate mTLS. Generate its
 material only with explicit trust authority:

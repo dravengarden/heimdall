@@ -176,7 +176,9 @@ Both modes require `capture.mode = "on"`; otherwise validation returns
 `decrypt_requires_capture`. `transparent` currently attaches OpenSSL
 `SSL_read`/`SSL_write` uprobes. It requires no trust change and remains
 compatible with certificate pinning and mTLS, but does not claim coverage for
-Go, rustls, BoringSSL, JVM, or stripped/static TLS implementations.
+Go, rustls, BoringSSL, JVM, or stripped/static TLS implementations. Probe
+discovery covers `libssl` images already mapped when the daemon starts; restart
+the daemon after installing or introducing a different OpenSSL image.
 
 `mitm` detects TLS ClientHello records at the relay, verifies the upstream
 certificate with the native trust store, mirrors the negotiated ALPN, signs a

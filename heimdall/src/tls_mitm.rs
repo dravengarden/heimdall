@@ -1,6 +1,12 @@
 //! Language-independent TLS interception at the relay boundary.
 
-use std::{fs, os::unix::fs::PermissionsExt, path::Path, sync::Arc, time::Duration};
+use std::{
+    fs,
+    os::unix::fs::PermissionsExt,
+    path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result};
 use rcgen::{Certificate, CertificateParams, ExtendedKeyUsagePurpose, KeyPair, KeyUsagePurpose};
@@ -10,6 +16,7 @@ use rustls::{
 };
 use tokio::net::TcpStream;
 use tokio_rustls::{LazyConfigAcceptor, TlsConnector};
+use tracing::warn;
 use x509_parser::{parse_x509_certificate, pem::parse_x509_pem};
 
 use crate::capture::{self, CaptureManager, FlowMeta};
@@ -63,11 +70,12 @@ impl Mitm {
             added > 0,
             "no usable native CA roots found for upstream TLS"
         );
-        anyhow::ensure!(
-            native.errors.is_empty() && ignored == 0,
-            "native CA store contained {} load error(s) and {ignored} invalid certificate(s)",
-            native.errors.len()
-        );
+        if !native.errors.is_empty() || ignored > 0 {
+            warn!(
+                load_errors = native.errors.len(),
+                ignored, "ignored unusable certificates from the native CA store"
+            );
+        }
         let client_config = ClientConfig::builder()
             .with_root_certificates(roots)
             .with_no_client_auth();
@@ -144,22 +152,37 @@ impl Mitm {
 
 pub async fn looks_like_client_hello(stream: &TcpStream) -> Result<bool> {
     let mut header = [0u8; 6];
-    let read = match tokio::time::timeout(CLASSIFY_TIMEOUT, stream.peek(&mut header)).await {
-        Ok(result) => result.context("peek TCP payload")?,
-        Err(_) => return Ok(false),
-    };
-    Ok(read >= header.len()
-        && header[0] == 0x16
-        && header[1] == 0x03
-        && header[2] <= 0x04
-        && header[5] == 0x01)
+    let deadline = Instant::now() + CLASSIFY_TIMEOUT;
+    loop {
+        let read = stream.peek(&mut header).await.context("peek TCP payload")?;
+        if read == 0 {
+            return Ok(false);
+        }
+        if read >= header.len() {
+            return Ok(header[0] == 0x16
+                && header[1] == 0x03
+                && matches!(header[2], 0x01..=0x04)
+                && header[5] == 0x01);
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Ok(false);
+        }
+        // Why: readiness remains asserted while the same partial bytes are
+        // waiting in the socket, so another immediate peek would busy-loop.
+        tokio::time::sleep(Duration::from_millis(1).min(deadline - now)).await;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use heimdall_config::{CaptureConfig, CaptureMode};
     use rcgen::{BasicConstraints, IsCa};
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::{
+        io::{AsyncReadExt as _, AsyncWriteExt as _},
+        net::TcpListener,
+    };
     use tokio_rustls::TlsAcceptor;
 
     #[tokio::test]
@@ -204,5 +227,148 @@ mod tests {
         tls.read_exact(&mut response).await.unwrap();
         assert_eq!(&response, b"ok");
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn fragmented_client_hello_is_classified_as_tls() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let writer = tokio::spawn(async move {
+            let mut stream = TcpStream::connect(address).await.unwrap();
+            stream.write_all(&[0x16, 0x03, 0x03]).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            stream.write_all(&[0x00, 0x01, 0x01]).await.unwrap();
+        });
+        let (stream, _) = listener.accept().await.unwrap();
+        assert!(looks_like_client_hello(&stream).await.unwrap());
+        writer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn intercepts_verified_upstream_and_captures_plaintext() {
+        let upstream_ca_key = KeyPair::generate().unwrap();
+        let mut upstream_ca_params = CertificateParams::default();
+        upstream_ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let upstream_ca = upstream_ca_params.self_signed(&upstream_ca_key).unwrap();
+        let upstream_key = KeyPair::generate().unwrap();
+        let upstream_cert = CertificateParams::new(vec!["fixture.test".to_owned()])
+            .unwrap()
+            .signed_by(&upstream_key, &upstream_ca, &upstream_ca_key)
+            .unwrap();
+        let upstream_server = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![CertificateDer::from(upstream_cert.der().to_vec())],
+                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(upstream_key.serialize_der())),
+            )
+            .unwrap();
+
+        let mitm_ca_key = KeyPair::generate().unwrap();
+        let mut mitm_ca_params = CertificateParams::default();
+        mitm_ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let mitm_ca = mitm_ca_params.self_signed(&mitm_ca_key).unwrap();
+        let mitm_ca_der = CertificateDer::from(mitm_ca.der().to_vec());
+        let mut upstream_roots = RootCertStore::empty();
+        upstream_roots
+            .add(CertificateDer::from(upstream_ca.der().to_vec()))
+            .unwrap();
+        let mitm = Mitm {
+            ca: mitm_ca,
+            ca_key: mitm_ca_key,
+            client_config: Arc::new(
+                ClientConfig::builder()
+                    .with_root_certificates(upstream_roots)
+                    .with_no_client_auth(),
+            ),
+        };
+
+        let capture_directory = std::env::temp_dir().join(format!(
+            "heimdall-mitm-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let capture = CaptureManager::from_config(&CaptureConfig {
+            mode: CaptureMode::On,
+            directory: capture_directory.clone(),
+            max_bytes_per_flow: 1024,
+        })
+        .await
+        .unwrap()
+        .unwrap();
+
+        let upstream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_address = upstream_listener.local_addr().unwrap();
+        let upstream_task = tokio::spawn(async move {
+            let (stream, _) = upstream_listener.accept().await.unwrap();
+            let mut tls = TlsAcceptor::from(Arc::new(upstream_server))
+                .accept(stream)
+                .await
+                .unwrap();
+            let mut request = [0u8; 4];
+            tls.read_exact(&mut request).await.unwrap();
+            assert_eq!(&request, b"ping");
+            tls.write_all(b"pong").await.unwrap();
+            tls.shutdown().await.unwrap();
+        });
+
+        let relay_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let relay_address = relay_listener.local_addr().unwrap();
+        let relay_task = tokio::spawn(async move {
+            let (mut downstream, _) = relay_listener.accept().await.unwrap();
+            let mut upstream = TcpStream::connect(upstream_address).await.unwrap();
+            mitm.copy(
+                &mut downstream,
+                &mut upstream,
+                "fixture.test",
+                &capture,
+                FlowMeta {
+                    network: "tcp",
+                    cgroup_id: 42,
+                    policy: "test",
+                    destination: "fixture.test",
+                    destination_port: 443,
+                    action: "direct",
+                    payload: "tls_plaintext",
+                },
+            )
+            .await
+            .unwrap()
+        });
+
+        let mut client_roots = RootCertStore::empty();
+        client_roots.add(mitm_ca_der).unwrap();
+        let client = TcpStream::connect(relay_address).await.unwrap();
+        let mut tls = TlsConnector::from(Arc::new(
+            ClientConfig::builder()
+                .with_root_certificates(client_roots)
+                .with_no_client_auth(),
+        ))
+        .connect(ServerName::try_from("fixture.test").unwrap(), client)
+        .await
+        .unwrap();
+        tls.write_all(b"ping").await.unwrap();
+        let mut response = [0u8; 4];
+        tls.read_exact(&mut response).await.unwrap();
+        assert_eq!(&response, b"pong");
+        tls.shutdown().await.unwrap();
+        drop(tls);
+
+        upstream_task.await.unwrap();
+        let (uploaded, downloaded) = relay_task.await.unwrap();
+        assert_eq!((uploaded, downloaded), (4, 4));
+        let capture_path = fs::read_dir(&capture_directory)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let records = fs::read_to_string(capture_path).unwrap();
+        assert!(records.contains(r#""payload":"tls_plaintext""#));
+        assert!(records.contains(r#""payload_base64":"cGluZw==""#));
+        assert!(records.contains(r#""payload_base64":"cG9uZw==""#));
+        fs::remove_dir_all(capture_directory).unwrap();
     }
 }

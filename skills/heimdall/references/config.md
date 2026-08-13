@@ -89,7 +89,9 @@ both directions. With decrypt off, payload is opaque transport. Transparent
 mode is CA-free but currently covers only the runtimes listed by
 `agent.capabilities.decrypt.transparent_runtimes`. MITM is runtime-independent
 but requires client trust and does not support pinning or client-certificate
-mTLS. Both decrypt modes require capture on.
+mTLS. `transparent_runtime_discovery` reports when OpenSSL images are scanned;
+restart the daemon when a new image appears. Both decrypt modes require capture
+on.
 
 Validate the absolute directory and bounded limit, then inspect the normalized
 values at `agent.config.capture`/`agent.config.decrypt` and capability boundary
