@@ -30,4 +30,11 @@ if response != b"udp-v6:ipv6-single-peer":
 if source[:2] != target:
     raise RuntimeError(f"IPv6 source identity changed: {target!r} -> {source!r}")
 
+try:
+    sock.sendto(b"must-fail", ("::1", 18085))
+except PermissionError:
+    pass
+else:
+    raise RuntimeError("ambiguous IPv6 multi-target send unexpectedly succeeded")
+
 print("udp-connectionless-ok")

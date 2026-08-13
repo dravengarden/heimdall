@@ -21,7 +21,7 @@
 //!    the source port is already assigned but no Cilium intervention has occurred.
 //!
 //! UDP hooks additionally use per-socket-and-destination tokens for IPv4 and
-//! retain family-and-source-port correlation for connected IPv6.
+//! retain guarded family-and-source-port correlation for IPv6.
 #![no_std]
 #![no_main]
 
@@ -113,6 +113,21 @@ static PORT_MAP: LruHashMap<u32, OrigDst> = LruHashMap::with_max_entries(65536, 
 // connected sockets and one peer per connectionless socket. IPv4 uses tokens.
 #[map]
 static UDP_PORT_MAP: LruHashMap<u32, OrigDst> = LruHashMap::with_max_entries(65536, 0);
+
+// Reverse ownership for IPv6 relay keys. sock_release uses this to remove a
+// family+source-port entry only when it still belongs to the closing socket;
+// without it, a reused source port could remain blocked by stale ownership.
+#[map]
+static UDP_RELAY_KEY_MAP: LruHashMap<u64, u32> = LruHashMap::with_max_entries(65536, 0);
+
+// Explicit IPv6 binds can otherwise create several redirected sockets with
+// the same relay tuple. Reserve nonzero source ports for one live socket and
+// release the ownership from sock_release. Ephemeral port zero remains safe:
+// the kernel assigns distinct ports before egress.
+#[map]
+static UDP6_BIND_MAP: LruHashMap<u16, u64> = LruHashMap::with_max_entries(65536, 0);
+#[map]
+static UDP6_BIND_REVERSE: LruHashMap<u64, u16> = LruHashMap::with_max_entries(65536, 0);
 
 // Per-cgroup policy. `heimdall run` registers a cgroup before launching
 // the command and removes it afterward.
@@ -565,6 +580,51 @@ pub fn sock_release(ctx: SockContext) -> i32 {
     let cookie = unsafe { bpf_get_socket_cookie(ctx.as_ptr()) };
     let _ = COOKIE_MAP.remove(&cookie);
     let _ = UDP_COOKIE_MAP.remove(&cookie);
+    if let Some(key) = unsafe { UDP_RELAY_KEY_MAP.get(&cookie) }.copied() {
+        if let Some(orig) = unsafe { UDP_PORT_MAP.get(&key) }
+            && orig.socket_cookie == cookie
+        {
+            let _ = UDP_PORT_MAP.remove(&key);
+        }
+        let _ = UDP_RELAY_KEY_MAP.remove(&cookie);
+    }
+    if let Some(port) = unsafe { UDP6_BIND_REVERSE.get(&cookie) }.copied() {
+        if let Some(owner) = unsafe { UDP6_BIND_MAP.get(&port) }
+            && *owner == cookie
+        {
+            let _ = UDP6_BIND_MAP.remove(&port);
+        }
+        let _ = UDP6_BIND_REVERSE.remove(&cookie);
+    }
+    1
+}
+
+// Reserve explicitly requested IPv6 UDP source ports before connect/sendmsg
+// rewrites every socket to the same relay tuple. Returning zero makes an
+// ambiguous SO_REUSEPORT bind fail synchronously instead of risking delivery
+// to the wrong application socket.
+#[cgroup_sock_addr(bind6)]
+pub fn udp6_bind(ctx: SockAddrContext) -> i32 {
+    let sa = ctx.sock_addr;
+    if unsafe { (*sa).type_ } != SOCK_DGRAM {
+        return 1;
+    }
+    let policy = policy_for(unsafe { bpf_get_current_cgroup_id() });
+    if (policy & (POLICY_REDIRECT_OFF | POLICY_UDP_REJECT)) != 0 {
+        return 1;
+    }
+    let port = unsafe { (*sa).user_port as u16 };
+    if port == 0 {
+        return 1;
+    }
+    let cookie = unsafe { bpf_get_socket_cookie(ctx.as_ptr()) };
+    if let Some(owner) = unsafe { UDP6_BIND_MAP.get(&port) } {
+        return i32::from(*owner == cookie);
+    }
+    if UDP6_BIND_MAP.insert(&port, &cookie, 1).is_err() {
+        return 0;
+    }
+    let _ = UDP6_BIND_REVERSE.insert(&cookie, &port, 0);
     1
 }
 
@@ -686,6 +746,17 @@ pub fn udp6_sendmsg(ctx: SockAddrContext) -> i32 {
         orig.addr[..4].copy_from_slice(&dst_addr[12..]);
         orig.family = FAMILY_V4;
     }
+    if let Some(existing) = unsafe { UDP_COOKIE_MAP.get(&cookie) }
+        && (existing.cgroup_id != orig.cgroup_id
+            || existing.family != orig.family
+            || existing.port != orig.port
+            || existing.addr != orig.addr)
+    {
+        // A recvmsg6 hook can recover only one peer from a socket cookie. Do
+        // not overwrite it and risk returning a valid payload with the wrong
+        // source identity when several destinations have outstanding replies.
+        return 0;
+    }
     let _ = UDP_COOKIE_MAP.insert(&cookie, &orig, 0);
 
     let mut words = [0u32; 4];
@@ -769,9 +840,7 @@ pub fn udp6_recvmsg(ctx: SockAddrContext) -> i32 {
 
 #[cgroup_skb(egress)]
 pub fn skb_egress(ctx: SkBuffContext) -> i32 {
-    match try_skb_egress(&ctx) {
-        Ok(()) | Err(()) => 1, // always allow; we only read metadata
-    }
+    try_skb_egress(&ctx).unwrap_or(1)
 }
 
 // IPv4 + transport header field offsets (IP starts at byte 0 in cgroup_skb).
@@ -803,7 +872,7 @@ const IPV6_EXT_SHIM6: u8 = 140; // Shim6 (RFC 5533)
 const MAX_IPV6_EXT_HDRS: usize = 8;
 
 #[inline(always)]
-fn try_skb_egress(ctx: &SkBuffContext) -> Result<(), ()> {
+fn try_skb_egress(ctx: &SkBuffContext) -> Result<i32, ()> {
     // Detect IP version from the high nibble of the first byte.
     let ver_ihl: u8 = ctx.load(0).map_err(|_| ())?;
     let version = ver_ihl >> 4;
@@ -814,7 +883,7 @@ fn try_skb_egress(ctx: &SkBuffContext) -> Result<(), ()> {
             // (low nibble of byte 0, in 32-bit words).
             let proto: u8 = ctx.load(OFF_IPV4_PROTO).map_err(|_| ())?;
             if proto != IPPROTO_TCP && proto != IPPROTO_UDP {
-                return Ok(());
+                return Ok(1);
             }
             (((ver_ihl & 0x0f) as usize) * 4, proto)
         }
@@ -843,17 +912,17 @@ fn try_skb_egress(ctx: &SkBuffContext) -> Result<(), ()> {
                         let nh: u8 = ctx.load(off).map_err(|_| ())?;
                         (nh, 8)
                     }
-                    _ => return Ok(()),
+                    _ => return Ok(1),
                 };
                 next = nh;
                 off += hdr_len;
             }
             if next != IPPROTO_TCP && next != IPPROTO_UDP {
-                return Ok(());
+                return Ok(1);
             }
             (off, next)
         }
-        _ => return Ok(()),
+        _ => return Ok(1),
     };
 
     let cookie = unsafe { bpf_get_socket_cookie(ctx.as_ptr()) };
@@ -864,7 +933,17 @@ fn try_skb_egress(ctx: &SkBuffContext) -> Result<(), ()> {
 
     if protocol == IPPROTO_UDP && family == FAMILY_V6 {
         if let Some(orig) = unsafe { UDP_COOKIE_MAP.get(&cookie) } {
+            if let Some(existing) = unsafe { UDP_PORT_MAP.get(&key) }
+                && existing.socket_cookie != cookie
+            {
+                // The relay sees only family+source-port for native IPv6. A
+                // second live socket owning the same key is ambiguous, so
+                // dropping is safer than delivering a response as the wrong
+                // peer. sock_release clears ownership for subsequent reuse.
+                return Ok(0);
+            }
             let _ = UDP_PORT_MAP.insert(&key, orig, 0);
+            let _ = UDP_RELAY_KEY_MAP.insert(&cookie, &key, 0);
         }
     } else if protocol == IPPROTO_TCP
         && let Some(orig) = unsafe { COOKIE_MAP.get(&cookie) }
@@ -873,7 +952,7 @@ fn try_skb_egress(ctx: &SkBuffContext) -> Result<(), ()> {
         let _ = COOKIE_MAP.remove(&cookie);
     }
 
-    Ok(())
+    Ok(1)
 }
 
 #[panic_handler]

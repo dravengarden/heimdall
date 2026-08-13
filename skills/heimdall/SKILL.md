@@ -62,8 +62,9 @@ sharing one source port. The aggregate booleans stay false because IPv6 does
 not support those cases; inspect the `*_ipv4` and `*_ipv6` fields rather than
 guessing. `connectionless_ipv6_single_peer` permits one peer per IPv6 socket,
 and `ipv4_mapped_ipv6_socket` covers dual-stack clients targeting IPv4. Respect
-`max_socks5_payload_bytes`. `quic: ipv4` permits HTTP/3 only for IPv4
-destinations; do not infer native IPv6 or address-family migration support.
+`max_socks5_payload_bytes`. `quic_ipv4` and `quic_ipv6` permit single-path
+HTTP/3 on either family; do not infer address-family migration while
+`quic_address_family_migration` is false.
 
 ## Run a command
 

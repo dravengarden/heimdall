@@ -69,7 +69,9 @@ Connectionless IPv4 and concurrent IPv4 sockets sharing one source port are
 supported through per-flow tokens. IPv6 supports one peer per connectionless
 socket and IPv4-mapped destinations, but not multi-target or same-port
 concurrency. Multicast and fragmented SOCKS5 responses are not supported.
-`quic: ipv4` covers acceptance-tested HTTP/3 to IPv4 destinations only.
+Ambiguous IPv6 multi-target sends and duplicate explicit source-port binds are
+rejected. `quic_ipv4` and `quic_ipv6` cover acceptance-tested single-path
+HTTP/3; address-family migration remains false.
 
 ## DNS invariants
 

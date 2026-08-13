@@ -47,7 +47,9 @@ orchestrator-shaped metadata.
    connectionless sends receive a stable per-socket-and-destination token;
    IPv6 sendmsg uses a single-peer family-and-port fallback, including
    IPv4-mapped destinations used by common dual-stack QUIC clients. Ambiguous
-   IPv6 multi-target traffic remains fail-closed. DNS traffic is redirected
+   IPv6 multi-target traffic remains fail-closed. Explicit IPv6 source-port
+   ownership is reserved per live socket so a shared relay tuple cannot return
+   data to the wrong process. DNS traffic is redirected
    over UDP or TCP when the policy uses fake DNS. System DNS is explicitly
    allowed to port 53.
 6. The relay recovers the original destination, evaluates the policy's ordered
@@ -71,9 +73,10 @@ source port. IPv4 UDP instead rewrites each socket-and-destination flow to a
 distinct address in `127/8`; `recvmsg4` restores the real source address on the
 return path. This avoids ambiguity for an unconnected socket targeting several
 peers and for concurrent `SO_REUSEPORT` sockets. Connected IPv6 keeps the
-family-and-port path, including one connectionless peer per socket. Multiple
-IPv6 peers per socket and simultaneous IPv6 sockets sharing one source port
-remain unsupported. The daemon verifies socket liveness before returning every
+family-and-port path, including one connectionless peer per socket. A second
+peer on one IPv6 socket is rejected by `sendmsg6`; a duplicate explicit IPv6
+source-port bind is rejected before traffic can become ambiguous. Socket
+release clears both ownership records. The daemon verifies socket liveness before returning every
 upstream datagram and closes the session when the socket disappears, its CLI
 cgroup deregisters, orphan GC runs, or the session remains idle for 60 seconds.
 

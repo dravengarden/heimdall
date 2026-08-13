@@ -83,9 +83,10 @@ use SOCKS5 UDP ASSOCIATE or direct egress. IPv4 `sendto`/`sendmsg` is correlated
 per socket and destination, including sockets that share one source port;
 IPv6 supports one peer per connectionless socket. Connected sockets reuse one
 bidirectional upstream association and can receive multiple responses. Common
-dual-stack sockets targeting IPv4 are supported, and HTTP/3 over IPv4 has a
-dedicated QUIC acceptance gate. IPv6 multi-target traffic remains unsupported. See
-[docs/config.md](docs/config.md) for the complete schema.
+dual-stack sockets targeting IPv4 are supported, and single-path HTTP/3 over
+both IPv4 and native IPv6 has a dedicated QUIC acceptance gate. Ambiguous IPv6
+multi-target sends and explicit shared-source-port binds fail synchronously.
+See [docs/config.md](docs/config.md) for the complete schema.
 
 ## Getting started
 

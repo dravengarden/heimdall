@@ -45,8 +45,9 @@ supported. The aggregate booleans remain false because those IPv6 cases are
 unsupported, so branch on `connectionless_ipv4`/`connectionless_ipv6` and the
 matching `concurrent_shared_source_port_*` fields. One-peer IPv6 and
 IPv4-mapped dual-stack clients have separate positive fields. Do not exceed
-`max_socks5_payload_bytes`; `quic: ipv4` authorizes HTTP/3 only for an IPv4
-destination, not native IPv6 or cross-family migration.
+`max_socks5_payload_bytes`; `quic_ipv4` and `quic_ipv6` authorize single-path
+HTTP/3 on either family. Require `quic_address_family_migration` for workflows
+that migrate an existing QUIC connection across families.
 
 ## Diagnose failures
 

@@ -173,6 +173,8 @@ in
     ./udp_connectionless_client.py;
   environment.etc."heimdall-test/udp_shared_port_client.py".source = ./udp_shared_port_client.py;
   environment.etc."heimdall-test/udp_token_stress_client.py".source = ./udp_token_stress_client.py;
+  environment.etc."heimdall-test/udp_ipv6_bind_guard_client.py".source =
+    ./udp_ipv6_bind_guard_client.py;
   environment.etc."heimdall-test/udp_batch_client.c".source = ./udp_batch_client.c;
   environment.etc."heimdall-test/http3_client.py".source = ./http3_client.py;
   environment.etc."heimdall-test/run-acceptance.sh" = {

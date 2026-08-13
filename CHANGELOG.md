@@ -6,6 +6,10 @@ All notable changes to heimdall are documented here.
 
 ### Fixed
 
+- Reject ambiguous native IPv6 UDP multi-target sends and duplicate explicit
+  source-port binds instead of overwriting relay ownership and risking a
+  response with the wrong peer identity. Socket release now frees that
+  ownership for safe port reuse.
 - Support common dual-stack UDP clients that send to IPv4-mapped destinations
   through an IPv6 socket, including HTTP/3/QUIC, while restoring peer identity.
 - Correlate IPv4 UDP by socket and destination token, preserving source
@@ -21,7 +25,8 @@ All notable changes to heimdall are documented here.
 
 ### Changed
 
-- Added real HTTP/3 with QUIC Retry and multi-request acceptance, IPv4 UDP
+- Added real IPv4 and native IPv6 HTTP/3 with QUIC Retry and multi-request
+  acceptance, IPv4 UDP
   token stress across 128 destinations, 32 concurrent `SO_REUSEPORT` sockets,
   and `sendmmsg`/`recvmmsg` coverage.
 - Reused one bidirectional direct or SOCKS5 UDP association per connected

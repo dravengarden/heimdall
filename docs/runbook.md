@@ -23,8 +23,9 @@ fake/system DNS, SOCKS5 IPv4/IPv6/domain requests, connected UDP through SOCKS5
 and direct egress, persistent association reuse, multi-response delivery,
 sequential source-port reuse, transparent UDP peer identity, IPv4
 connectionless multi-target traffic, concurrent IPv4 same-source-port sockets,
-single-peer IPv6 and IPv4-mapped dual-stack UDP, `sendmmsg`/`recvmmsg`, token
-stress across 128 destinations, HTTP/3 with QUIC Retry and a 32 KiB response,
+single-peer IPv6, fail-closed IPv6 multi-target/shared-port conflicts,
+IPv4-mapped dual-stack UDP, `sendmmsg`/`recvmmsg`, token stress across 128
+destinations, IPv4 and native IPv6 HTTP/3 with QUIC Retry and a 32 KiB response,
 unregistered bypass, cgroup cleanup, and 100 same-source-port dual-stack TCP
 connection pairs.
 
@@ -89,7 +90,10 @@ It is read-only and always prints exactly one JSON value before exiting:
       "association_reuse": true,
       "multi_response": true,
       "max_socks5_payload_bytes": 65245,
-      "quic": "ipv4",
+      "quic": "ipv4+ipv6-single-path",
+      "quic_ipv4": true,
+      "quic_ipv6": true,
+      "quic_address_family_migration": false,
       "exchange": "bidirectional-session"
     }
   },
@@ -122,9 +126,11 @@ a UDP workload. The aggregate `connectionless` and
 `concurrent_shared_source_port` fields are false because support is not
 dual-stack. IPv4 supports both cases. IPv6 supports one peer per connectionless
 socket and IPv4-mapped destinations, but not arbitrary multi-target use or
-simultaneous sockets sharing one port. `quic: "ipv4"` means HTTP/3 is
-acceptance-tested only when the destination resolves to IPv4; it does not claim
-native IPv6 QUIC or connection migration across address families.
+simultaneous sockets sharing one explicit port. Those conflicts are rejected
+instead of being accepted with ambiguous response identity.
+`quic: "ipv4+ipv6-single-path"` and the `quic_ipv4`/`quic_ipv6` booleans mean
+HTTP/3 is acceptance-tested on either family. Agents must still reject workflows
+that require `quic_address_family_migration` while that field is false.
 
 ## Common failures
 

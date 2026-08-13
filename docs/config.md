@@ -123,9 +123,9 @@ are limited to 65,245 bytes so the largest domain header still fits one UDP
 datagram. IPv6 connectionless sockets support one peer, including IPv4-mapped
 destinations used by dual-stack clients, through family-and-port correlation.
 Multiple destinations from one IPv6 socket and simultaneous IPv6 sockets
-sharing one source port are unsupported because that key becomes ambiguous.
-HTTP/3/QUIC over IPv4 is acceptance-tested; native IPv6 QUIC is not yet a
-declared capability.
+sharing one explicitly bound source port are rejected because that key becomes
+ambiguous. HTTP/3/QUIC over IPv4 and native IPv6 is acceptance-tested for a
+stable single path; migration across address families is not declared.
 
 ## DNS
 

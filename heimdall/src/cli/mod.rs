@@ -75,6 +75,9 @@ pub mod agent {
         multi_response: bool,
         max_socks5_payload_bytes: usize,
         quic: &'static str,
+        quic_ipv4: bool,
+        quic_ipv6: bool,
+        quic_address_family_migration: bool,
         exchange: &'static str,
     }
 
@@ -319,7 +322,10 @@ pub mod agent {
                 association_reuse: true,
                 multi_response: true,
                 max_socks5_payload_bytes: 65_245,
-                quic: "ipv4",
+                quic: "ipv4+ipv6-single-path",
+                quic_ipv4: true,
+                quic_ipv6: true,
+                quic_address_family_migration: false,
                 exchange: "bidirectional-session",
             },
         }
@@ -358,6 +364,9 @@ pub mod agent {
             assert!(!udp.concurrent_shared_source_port);
             assert!(udp.concurrent_shared_source_port_ipv4);
             assert!(!udp.concurrent_shared_source_port_ipv6);
+            assert!(udp.quic_ipv4);
+            assert!(udp.quic_ipv6);
+            assert!(!udp.quic_address_family_migration);
         }
     }
 }

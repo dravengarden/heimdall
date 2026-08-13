@@ -44,6 +44,10 @@ threads = [
     ),
     threading.Thread(
         target=serve,
+        args=(socket.AF_INET6, ("::1", 18085), b"udp-v6-alt:"),
+    ),
+    threading.Thread(
+        target=serve,
         args=(socket.AF_INET, ("127.0.0.1", 18084), b"udp-v4-alt:"),
     ),
     threading.Thread(target=serve_range, args=(18100, 128)),

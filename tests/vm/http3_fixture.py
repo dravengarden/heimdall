@@ -45,14 +45,22 @@ async def main():
         alpn_protocols=H3_ALPN,
     )
     configuration.load_cert_chain(sys.argv[1], sys.argv[2])
-    await serve(
-        "127.0.0.1",
-        18443,
-        configuration=configuration,
-        create_protocol=Http3Protocol,
-        retry=True,
-    )
-    await asyncio.Future()
+    servers = []
+    for host in ("127.0.0.1", "::1"):
+        servers.append(
+            await serve(
+                host,
+                18443,
+                configuration=configuration,
+                create_protocol=Http3Protocol,
+                retry=True,
+            )
+        )
+    try:
+        await asyncio.Future()
+    finally:
+        for server in servers:
+            server.close()
 
 
 asyncio.run(main())

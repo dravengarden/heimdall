@@ -22,7 +22,8 @@
 //!
 //! IPv4 UDP uses a per-socket-and-destination token encoded in `127/8` so
 //! connectionless and shared-source-port traffic remains reversible. Connected
-//! IPv6 UDP retains family-and-source-port correlation.
+//! IPv6 UDP retains family-and-source-port correlation; ambiguous connectionless
+//! peers and explicit shared ports are rejected before ownership can be lost.
 //!
 //! ## Configuration
 //!
@@ -962,6 +963,30 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
                 ),
                 Err(e) => {
                     warn!(error = %e, cgroup = USER_SLICE, prog = name, "extra sendmsg attach failed")
+                }
+            }
+        }
+    }
+    {
+        let name = "udp6_bind";
+        let prog: &mut CgroupSockAddr = bpf
+            .program_mut(name)
+            .with_context(|| format!("{name} eBPF program not found"))?
+            .try_into()?;
+        prog.load()
+            .with_context(|| format!("failed to load {name}"))?;
+        prog.attach(&cgroup, CgroupAttachMode::default())
+            .with_context(|| format!("failed to attach {name}"))?;
+        info!(cgroup = %shared.cfg.daemon.cgroup, prog = name, "eBPF bind guard attached");
+        if let Some(user_cg) = user_slice_file.as_ref() {
+            match prog.attach(user_cg, CgroupAttachMode::default()) {
+                Ok(_) => info!(
+                    cgroup = USER_SLICE,
+                    prog = name,
+                    "eBPF bind guard attached (extra)"
+                ),
+                Err(e) => {
+                    warn!(error = %e, cgroup = USER_SLICE, prog = name, "extra bind guard attach failed")
                 }
             }
         }
