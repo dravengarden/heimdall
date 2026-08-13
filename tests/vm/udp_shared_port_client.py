@@ -19,11 +19,11 @@ def exchange(sock, target, payload, expected, barrier, errors):
         sock.close()
 
 
-family = socket.AF_INET
 local = "127.0.0.1"
 sockets = []
-for _ in range(2):
-    sock = socket.socket(family, socket.SOCK_DGRAM)
+count = 32
+for _ in range(count):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
     sock.bind((local, 39002))
@@ -32,10 +32,14 @@ for _ in range(2):
 
 barrier = threading.Barrier(2)
 errors = []
-cases = (
-    (("127.0.0.1", 18082), b"first", b"udp-v4:first"),
-    (("127.0.0.1", 18084), b"second", b"udp-v4-alt:second"),
-)
+cases = [
+    (
+        ("127.0.0.1", 18100 + index),
+        f"payload-{index}".encode(),
+        f"udp-stress:{18100 + index}:payload-{index}".encode(),
+    )
+    for index in range(count)
+]
 threads = [
     threading.Thread(
         target=exchange,

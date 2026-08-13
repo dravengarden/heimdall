@@ -23,8 +23,10 @@ fake/system DNS, SOCKS5 IPv4/IPv6/domain requests, connected UDP through SOCKS5
 and direct egress, persistent association reuse, multi-response delivery,
 sequential source-port reuse, transparent UDP peer identity, IPv4
 connectionless multi-target traffic, concurrent IPv4 same-source-port sockets,
-IPv6 connectionless fail-closed behavior, unregistered bypass, cgroup cleanup,
-and 100 same-source-port dual-stack TCP connection pairs.
+single-peer IPv6 and IPv4-mapped dual-stack UDP, `sendmmsg`/`recvmmsg`, token
+stress across 128 destinations, HTTP/3 with QUIC Retry and a 32 KiB response,
+unregistered bypass, cgroup cleanup, and 100 same-source-port dual-stack TCP
+connection pairs.
 
 ## Install
 
@@ -79,13 +81,15 @@ It is read-only and always prints exactly one JSON value before exiting:
       "connectionless": false,
       "connectionless_ipv4": true,
       "connectionless_ipv6": false,
+      "connectionless_ipv6_single_peer": true,
+      "ipv4_mapped_ipv6_socket": true,
       "concurrent_shared_source_port": false,
       "concurrent_shared_source_port_ipv4": true,
       "concurrent_shared_source_port_ipv6": false,
       "association_reuse": true,
       "multi_response": true,
       "max_socks5_payload_bytes": 65245,
-      "quic": "unverified",
+      "quic": "ipv4",
       "exchange": "bidirectional-session"
     }
   },
@@ -116,9 +120,11 @@ must ignore unknown fields.
 Agents must inspect the per-family fields in `capabilities.udp` before choosing
 a UDP workload. The aggregate `connectionless` and
 `concurrent_shared_source_port` fields are false because support is not
-dual-stack. IPv4 supports both cases; connectionless IPv6 fails closed and
-simultaneous IPv6 sockets sharing a source port are unsupported.
-`quic: "unverified"` is not permission to claim QUIC compatibility.
+dual-stack. IPv4 supports both cases. IPv6 supports one peer per connectionless
+socket and IPv4-mapped destinations, but not arbitrary multi-target use or
+simultaneous sockets sharing one port. `quic: "ipv4"` means HTTP/3 is
+acceptance-tested only when the destination resolves to IPv4; it does not claim
+native IPv6 QUIC or connection migration across address families.
 
 ## Common failures
 

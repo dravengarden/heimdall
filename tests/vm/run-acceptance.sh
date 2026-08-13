@@ -5,6 +5,7 @@ systemctl is-active --quiet heimdall.service
 systemctl is-active --quiet heimdall-test-socks.service
 systemctl is-active --quiet heimdall-test-http.service
 systemctl is-active --quiet heimdall-test-udp.service
+systemctl is-active --quiet heimdall-test-http3.service
 systemctl start user@1000.service
 
 as_tester() {
@@ -27,10 +28,12 @@ as_tester heimdall agent \
     and (.capabilities.udp.connectionless | not)
     and .capabilities.udp.connectionless_ipv4
     and (.capabilities.udp.connectionless_ipv6 | not)
+    and .capabilities.udp.connectionless_ipv6_single_peer
+    and .capabilities.udp.ipv4_mapped_ipv6_socket
     and (.capabilities.udp.concurrent_shared_source_port | not)
     and .capabilities.udp.concurrent_shared_source_port_ipv4
     and (.capabilities.udp.concurrent_shared_source_port_ipv6 | not)
-    and .capabilities.udp.quic == "unverified"
+    and .capabilities.udp.quic == "ipv4"
     and .capabilities.udp.max_socks5_payload_bytes == 65245'
 
 : > /run/heimdall-test/socks.log
@@ -101,6 +104,23 @@ test "$(as_tester heimdall run --policy udp -- \
   python3 /etc/heimdall-test/udp_connectionless_client.py)" = "udp-connectionless-ok"
 test "$(as_tester heimdall run --policy udp -- \
   python3 /etc/heimdall-test/udp_shared_port_client.py)" = "udp-shared-port-ok"
+test "$(as_tester heimdall run --policy udp -- \
+  python3 /etc/heimdall-test/udp_token_stress_client.py)" = "udp-token-stress-ok"
+
+gcc -O2 -Wall -Wextra -Werror \
+  /etc/heimdall-test/udp_batch_client.c -o /run/heimdall-test/udp-batch-client
+test "$(as_tester heimdall run --policy udp -- \
+  /run/heimdall-test/udp-batch-client)" = "udp-batch-ok"
+
+: > /run/heimdall-test/socks.log
+test "$(as_tester heimdall run --policy udp -- \
+  python3 /etc/heimdall-test/http3_client.py fixture.test)" = "http3-ok"
+test "$(grep -c '"udp_associate": true' /run/heimdall-test/socks.log)" -eq 1
+grep -q '"udp": true, "atyp": 3, "host": "fixture.test", "port": 18443' \
+  /run/heimdall-test/socks.log
+
+test "$(as_tester heimdall run --policy udp-direct -- \
+  python3 /etc/heimdall-test/http3_client.py 127.0.0.1)" = "http3-ok"
 
 test "$(as_tester heimdall run --policy udp-direct -- \
   python3 /etc/heimdall-test/udp_client.py 127.0.0.1 18082 udp-v4:probe)" = "udp-v4:probe"

@@ -66,6 +66,8 @@ pub mod agent {
         connectionless: bool,
         connectionless_ipv4: bool,
         connectionless_ipv6: bool,
+        connectionless_ipv6_single_peer: bool,
+        ipv4_mapped_ipv6_socket: bool,
         concurrent_shared_source_port: bool,
         concurrent_shared_source_port_ipv4: bool,
         concurrent_shared_source_port_ipv6: bool,
@@ -309,13 +311,15 @@ pub mod agent {
                 connectionless: false,
                 connectionless_ipv4: true,
                 connectionless_ipv6: false,
+                connectionless_ipv6_single_peer: true,
+                ipv4_mapped_ipv6_socket: true,
                 concurrent_shared_source_port: false,
                 concurrent_shared_source_port_ipv4: true,
                 concurrent_shared_source_port_ipv6: false,
                 association_reuse: true,
                 multi_response: true,
                 max_socks5_payload_bytes: 65_245,
-                quic: "unverified",
+                quic: "ipv4",
                 exchange: "bidirectional-session",
             },
         }
@@ -349,6 +353,8 @@ pub mod agent {
             assert!(!udp.connectionless);
             assert!(udp.connectionless_ipv4);
             assert!(!udp.connectionless_ipv6);
+            assert!(udp.connectionless_ipv6_single_peer);
+            assert!(udp.ipv4_mapped_ipv6_socket);
             assert!(!udp.concurrent_shared_source_port);
             assert!(udp.concurrent_shared_source_port_ipv4);
             assert!(!udp.concurrent_shared_source_port_ipv6);

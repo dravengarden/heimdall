@@ -120,10 +120,12 @@ pair, including asynchronous and multiple responses. IPv4 token correlation
 supports several destinations from one socket and concurrent sockets sharing a
 source port. Fragmented SOCKS5 UDP responses are rejected, and SOCKS5 payloads
 are limited to 65,245 bytes so the largest domain header still fits one UDP
-datagram. Connectionless IPv6 fails closed because the Linux sendmsg6 hook
-cannot rewrite an IPv6 destination to the IPv4 token relay. Simultaneous IPv6
-sockets sharing one source port are also unsupported. QUIC has not yet passed a
-dedicated compatibility gate and must not be inferred from generic UDP tests.
+datagram. IPv6 connectionless sockets support one peer, including IPv4-mapped
+destinations used by dual-stack clients, through family-and-port correlation.
+Multiple destinations from one IPv6 socket and simultaneous IPv6 sockets
+sharing one source port are unsupported because that key becomes ambiguous.
+HTTP/3/QUIC over IPv4 is acceptance-tested; native IPv6 QUIC is not yet a
+declared capability.
 
 ## DNS
 

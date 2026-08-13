@@ -14,7 +14,7 @@ operational guidance.
 ## Reading order
 
 - [`README.md`](../README.md) — Project overview and quick start
-- [`architecture.md`](architecture.md) — CLI, eBPF, DNS, and TCP/UDP relay boundaries
+- [`architecture.md`](architecture.md) — CLI, eBPF, DNS, UDP correlation, and relay boundaries
 - [`runbook.md`](runbook.md) — Runbook
 
 ## Documents
@@ -23,5 +23,5 @@ operational guidance.
 
 - [`README.md`](../README.md) — Project overview and quick start
 - [`architecture.md`](architecture.md) — CLI, eBPF, DNS, and TCP/UDP relay boundaries
-- [`config.md`](config.md) — Policy rules, formats, credentials, UDP limits, and strict diagnostics
-- [`runbook.md`](runbook.md) — Build, agent contract, and VM acceptance runbook
+- [`config.md`](config.md) — Policy rules, formats, credentials, UDP/QUIC limits, and strict diagnostics
+- [`runbook.md`](runbook.md) — Build, agent contract, stress, and HTTP/3 VM acceptance

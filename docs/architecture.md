@@ -45,9 +45,11 @@ orchestrator-shaped metadata.
 4. The child joins the cgroup and executes the requested command.
 5. eBPF rewrites the child's TCP and UDP destinations to the local relay. IPv4
    connectionless sends receive a stable per-socket-and-destination token;
-   connectionless IPv6 is rejected fail-closed. DNS traffic is redirected over
-   UDP or TCP when the policy uses fake DNS. System DNS is explicitly allowed
-   to port 53.
+   IPv6 sendmsg uses a single-peer family-and-port fallback, including
+   IPv4-mapped destinations used by common dual-stack QUIC clients. Ambiguous
+   IPv6 multi-target traffic remains fail-closed. DNS traffic is redirected
+   over UDP or TCP when the policy uses fake DNS. System DNS is explicitly
+   allowed to port 53.
 6. The relay recovers the original destination, evaluates the policy's ordered
    protocol rules, and routes, connects directly, or rejects it. Connected UDP
    reuses one bidirectional upstream association per socket. IPv4 connectionless
@@ -69,8 +71,9 @@ source port. IPv4 UDP instead rewrites each socket-and-destination flow to a
 distinct address in `127/8`; `recvmsg4` restores the real source address on the
 return path. This avoids ambiguity for an unconnected socket targeting several
 peers and for concurrent `SO_REUSEPORT` sockets. Connected IPv6 keeps the
-family-and-port path; simultaneous IPv6 sockets sharing one source port remain
-unsupported. The daemon verifies socket liveness before returning every
+family-and-port path, including one connectionless peer per socket. Multiple
+IPv6 peers per socket and simultaneous IPv6 sockets sharing one source port
+remain unsupported. The daemon verifies socket liveness before returning every
 upstream datagram and closes the session when the socket disappears, its CLI
 cgroup deregisters, orphan GC runs, or the session remains idle for 60 seconds.
 

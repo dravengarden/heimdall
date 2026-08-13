@@ -82,28 +82,46 @@ class Handler(socketserver.BaseRequestHandler):
             + struct.pack("!H", relay_port)
         )
         client = None
-        with udp:
-            while True:
-                readable, _, _ = select.select([self.request, udp], [], [], 10)
-                if self.request in readable:
-                    if not self.request.recv(1):
+        upstreams = {}
+        routes = {}
+        try:
+            with udp:
+                while True:
+                    readable, _, _ = select.select(
+                        [self.request, udp, *routes], [], [], 10
+                    )
+                    if not readable:
                         return
-                if udp not in readable:
-                    continue
-                packet, sender = udp.recvfrom(65535)
-                if client is None or sender == client:
-                    client = sender
-                    target, header, payload = parse_udp_frame(packet)
-                    family = socket.AF_INET6 if ":" in target[0] else socket.AF_INET
-                    with socket.socket(family, socket.SOCK_DGRAM) as upstream:
-                        upstream.settimeout(0.1)
-                        upstream.sendto(payload, target)
-                        while True:
-                            try:
-                                response, _ = upstream.recvfrom(65535)
-                            except TimeoutError:
-                                break
-                            udp.sendto(b"\x00\x00\x00" + header + response, client)
+                    if self.request in readable:
+                        if not self.request.recv(1):
+                            return
+                    if udp in readable:
+                        packet, sender = udp.recvfrom(65535)
+                        if client is None:
+                            client = sender
+                        if sender != client:
+                            continue
+                        target, header, payload = parse_udp_frame(packet)
+                        route_key = (target, header)
+                        upstream = upstreams.get(route_key)
+                        if upstream is None:
+                            family = (
+                                socket.AF_INET6 if ":" in target[0] else socket.AF_INET
+                            )
+                            upstream = socket.socket(family, socket.SOCK_DGRAM)
+                            upstream.connect(target)
+                            upstreams[route_key] = upstream
+                            routes[upstream] = header
+                        upstream.send(payload)
+                    for upstream in set(readable).intersection(routes):
+                        response = upstream.recv(65535)
+                        if client is not None:
+                            udp.sendto(
+                                b"\x00\x00\x00" + routes[upstream] + response, client
+                            )
+        finally:
+            for upstream in routes:
+                upstream.close()
 
 
 def parse_udp_frame(packet):
@@ -135,6 +153,7 @@ def parse_udp_frame(packet):
 class Server(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
+    request_queue_size = 128
 
 
 if __name__ == "__main__":

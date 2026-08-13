@@ -940,8 +940,9 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
         }
     }
     // udp{4,6}_sendmsg catches connectionless UDP (including pure-Go DNS).
-    // IPv4 uses reversible destination tokens; unsupported IPv6 non-DNS
-    // traffic fails closed. connect4/connect6 own the connected path.
+    // IPv4 uses reversible destination tokens. IPv6 uses a single-peer
+    // family-and-port fallback, including mapped IPv4 used by QUIC clients.
+    // connect4/connect6 own the connected path.
     for name in ["udp4_sendmsg", "udp6_sendmsg"] {
         let prog: &mut CgroupSockAddr = bpf
             .program_mut(name)
@@ -965,8 +966,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
             }
         }
     }
-    {
-        let name = "udp4_recvmsg";
+    for name in ["udp4_recvmsg", "udp6_recvmsg"] {
         let prog: &mut CgroupSockAddr = bpf
             .program_mut(name)
             .with_context(|| format!("{name} eBPF program not found"))?

@@ -81,9 +81,10 @@ actions and mandatory final actions for both protocols. Fake DNS preserves
 hostnames for domain rules; system DNS exposes resolved IPs. Connected UDP can
 use SOCKS5 UDP ASSOCIATE or direct egress. IPv4 `sendto`/`sendmsg` is correlated
 per socket and destination, including sockets that share one source port;
-connectionless IPv6 fails closed. Connected sockets reuse one bidirectional
-upstream association and can receive multiple responses. QUIC compatibility
-remains unverified. See
+IPv6 supports one peer per connectionless socket. Connected sockets reuse one
+bidirectional upstream association and can receive multiple responses. Common
+dual-stack sockets targeting IPv4 are supported, and HTTP/3 over IPv4 has a
+dedicated QUIC acceptance gate. IPv6 multi-target traffic remains unsupported. See
 [docs/config.md](docs/config.md) for the complete schema.
 
 ## Getting started

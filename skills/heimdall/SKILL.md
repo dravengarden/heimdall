@@ -60,9 +60,10 @@ Bidirectional, multi-response sessions are supported for connected sockets.
 IPv4 also supports connectionless multi-target traffic and concurrent sockets
 sharing one source port. The aggregate booleans stay false because IPv6 does
 not support those cases; inspect the `*_ipv4` and `*_ipv6` fields rather than
-guessing. Respect `max_socks5_payload_bytes`. Do not use Heimdall for
-connectionless IPv6, multicast, or QUIC while its capability remains
-`unverified`.
+guessing. `connectionless_ipv6_single_peer` permits one peer per IPv6 socket,
+and `ipv4_mapped_ipv6_socket` covers dual-stack clients targeting IPv4. Respect
+`max_socks5_payload_bytes`. `quic: ipv4` permits HTTP/3 only for IPv4
+destinations; do not infer native IPv6 or address-family migration support.
 
 ## Run a command
 

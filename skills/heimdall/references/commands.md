@@ -43,8 +43,10 @@ bidirectional multi-response traffic reuses one association per socket.
 IPv4 connectionless traffic and concurrent same-source-port sockets are
 supported. The aggregate booleans remain false because those IPv6 cases are
 unsupported, so branch on `connectionless_ipv4`/`connectionless_ipv6` and the
-matching `concurrent_shared_source_port_*` fields. Do not exceed
-`max_socks5_payload_bytes` or claim QUIC support while `quic` is `unverified`.
+matching `concurrent_shared_source_port_*` fields. One-peer IPv6 and
+IPv4-mapped dual-stack clients have separate positive fields. Do not exceed
+`max_socks5_payload_bytes`; `quic: ipv4` authorizes HTTP/3 only for an IPv4
+destination, not native IPv6 or cross-family migration.
 
 ## Diagnose failures
 

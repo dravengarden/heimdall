@@ -66,10 +66,10 @@ SOCKS5 UDP ASSOCIATE, connect directly, or reject. One bidirectional association
 is reused per connected socket and supports multiple responses. SOCKS5 payloads
 must not exceed the `agent.capabilities.udp.max_socks5_payload_bytes` value.
 Connectionless IPv4 and concurrent IPv4 sockets sharing one source port are
-supported through per-flow tokens. Connectionless IPv6, concurrent IPv6
-sockets sharing one source port, multicast, and fragmented SOCKS5 responses
-are not supported. Treat QUIC as unsupported while its capability is
-`unverified`.
+supported through per-flow tokens. IPv6 supports one peer per connectionless
+socket and IPv4-mapped destinations, but not multi-target or same-port
+concurrency. Multicast and fragmented SOCKS5 responses are not supported.
+`quic: ipv4` covers acceptance-tested HTTP/3 to IPv4 destinations only.
 
 ## DNS invariants
 

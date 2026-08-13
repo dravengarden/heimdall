@@ -3,9 +3,9 @@
 //! Wraps an arbitrary command so its egress flows through one of the
 //! named policy declared in /etc/heimdall/config.<ext>. No
 //! LD_PRELOAD: works with statically-linked Go binaries, setuid
-//! binaries. Connected UDP uses the relay, while connectionless non-DNS UDP
-//! remains fail-closed because its destination cannot be correlated safely. The
-//! cgroup-attached eBPF programs do the redirection.
+//! binaries. UDP uses reversible IPv4 tokens or an IPv6 single-peer fallback;
+//! ambiguous IPv6 multi-target and shared-source-port patterns remain
+//! fail-closed. The cgroup-attached eBPF programs do the redirection.
 //!
 //! Flow:
 //!

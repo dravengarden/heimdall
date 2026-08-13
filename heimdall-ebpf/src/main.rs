@@ -108,9 +108,9 @@ static UDP_TOKEN_MAP: LruHashMap<u32, OrigDst> = LruHashMap::with_max_entries(65
 #[map]
 static PORT_MAP: LruHashMap<u32, OrigDst> = LruHashMap::with_max_entries(65536, 0);
 
-// IPv6 connected UDP retains the legacy family+source-port correlation because
-// Linux does not permit a UDP6 sendmsg hook to rewrite to an IPv4-mapped token
-// address. IPv4 uses UDP_TOKEN_MAP and does not depend on this map.
+// IPv6 UDP retains family+source-port correlation because Linux does not permit
+// a UDP6 sendmsg hook to rewrite to an IPv4-mapped token address. This covers
+// connected sockets and one peer per connectionless socket. IPv4 uses tokens.
 #[map]
 static UDP_PORT_MAP: LruHashMap<u32, OrigDst> = LruHashMap::with_max_entries(65536, 0);
 
@@ -578,9 +578,9 @@ pub fn sock_release(ctx: SockContext) -> i32 {
 // (sendto/sendmsg) for AF_INET sockets that aren't connected, giving
 // us a chance to rewrite the destination.
 //
-// Each socket+destination receives a distinct token address. Unlike a source
-// port key this remains unambiguous when one unconnected socket targets many
-// peers or several SO_REUSEPORT sockets share one local port.
+// IPv4 assigns a distinct token to every socket+destination, remaining
+// unambiguous across many peers and SO_REUSEPORT sockets. IPv6 uses one
+// family+source-port entry and is therefore limited to one peer per socket.
 // ---------------------------------------------------------------------------
 
 #[cgroup_sock_addr(sendmsg4)]
@@ -639,6 +639,23 @@ pub fn udp4_sendmsg(ctx: SockAddrContext) -> i32 {
 pub fn udp6_sendmsg(ctx: SockAddrContext) -> i32 {
     let sa = ctx.sock_addr;
     let dst_port_be = unsafe { (*sa).user_port as u16 };
+    let dst_words = unsafe { (*sa).user_ip6 };
+    let Some(relay6) = RELAY_ADDR6.get(0) else {
+        return 1;
+    };
+    let mut dst_addr = [0u8; 16];
+    let mut i = 0;
+    while i < 4 {
+        let bytes = dst_words[i].to_ne_bytes();
+        dst_addr[i * 4] = bytes[0];
+        dst_addr[i * 4 + 1] = bytes[1];
+        dst_addr[i * 4 + 2] = bytes[2];
+        dst_addr[i * 4 + 3] = bytes[3];
+        i += 1;
+    }
+    if dst_addr == *relay6 && u16::from_be(dst_port_be) == RELAY_PORT {
+        return 1;
+    }
     let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
     let policy = policy_for(cgroup_id);
     if try_hijack_dns_v6(sa, policy) {
@@ -647,10 +664,46 @@ pub fn udp6_sendmsg(ctx: SockAddrContext) -> i32 {
     if (policy & POLICY_DNS_SYSTEM) != 0 && u16::from_be(dst_port_be) == DNS_PORT {
         return 1;
     }
-    // Linux rejects rewriting an unconnected UDP6 sendmsg destination to an
-    // IPv4-mapped address with ENOTSUPP. Connected UDP6 is handled by
-    // connect6 and does not need destination recovery in this hook.
-    i32::from((policy & POLICY_REDIRECT_OFF) != 0)
+    if (policy & POLICY_UDP_REJECT) != 0 {
+        return 0;
+    }
+    if (policy & POLICY_REDIRECT_OFF) != 0 {
+        return 1;
+    }
+
+    let cookie = unsafe { bpf_get_socket_cookie(ctx.as_ptr()) };
+    let mapped_v4 = dst_addr[..10] == [0; 10] && dst_addr[10] == 0xff && dst_addr[11] == 0xff;
+    let mut orig = OrigDst {
+        addr: dst_addr,
+        port: dst_port_be,
+        family: FAMILY_V6,
+        _pad: 0,
+        cgroup_id,
+        socket_cookie: cookie,
+    };
+    if mapped_v4 {
+        orig.addr = [0; 16];
+        orig.addr[..4].copy_from_slice(&dst_addr[12..]);
+        orig.family = FAMILY_V4;
+    }
+    let _ = UDP_COOKIE_MAP.insert(&cookie, &orig, 0);
+
+    let mut words = [0u32; 4];
+    let mut i = 0;
+    while i < 4 {
+        words[i] = u32::from_ne_bytes([
+            relay6[i * 4],
+            relay6[i * 4 + 1],
+            relay6[i * 4 + 2],
+            relay6[i * 4 + 3],
+        ]);
+        i += 1;
+    }
+    unsafe {
+        (*sa).user_ip6 = words;
+        (*sa).user_port = u32::from(RELAY_PORT.to_be());
+    }
+    1
 }
 
 #[cgroup_sock_addr(recvmsg4)]
@@ -667,6 +720,39 @@ pub fn udp4_recvmsg(ctx: SockAddrContext) -> i32 {
     unsafe {
         (*ctx.sock_addr).user_ip4 =
             u32::from_ne_bytes([orig.addr[0], orig.addr[1], orig.addr[2], orig.addr[3]]);
+        (*ctx.sock_addr).user_port = u32::from(orig.port);
+    }
+    1
+}
+
+#[cgroup_sock_addr(recvmsg6)]
+pub fn udp6_recvmsg(ctx: SockAddrContext) -> i32 {
+    let cookie = unsafe { bpf_get_socket_cookie(ctx.as_ptr()) };
+    let Some(orig) = (unsafe { UDP_COOKIE_MAP.get(&cookie) }) else {
+        return 1;
+    };
+    let mut addr = orig.addr;
+    if orig.family == FAMILY_V4 {
+        addr = [0; 16];
+        addr[10] = 0xff;
+        addr[11] = 0xff;
+        addr[12..].copy_from_slice(&orig.addr[..4]);
+    } else if orig.family != FAMILY_V6 {
+        return 1;
+    }
+    let mut words = [0u32; 4];
+    let mut i = 0;
+    while i < 4 {
+        words[i] = u32::from_ne_bytes([
+            addr[i * 4],
+            addr[i * 4 + 1],
+            addr[i * 4 + 2],
+            addr[i * 4 + 3],
+        ]);
+        i += 1;
+    }
+    unsafe {
+        (*ctx.sock_addr).user_ip6 = words;
         (*ctx.sock_addr).user_port = u32::from(orig.port);
     }
     1

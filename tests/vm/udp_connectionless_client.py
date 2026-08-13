@@ -18,4 +18,16 @@ for target, expected, payload in targets:
     if source[:2] != target:
         raise RuntimeError(f"source identity changed: {target!r} -> {source!r}")
 
+sock.close()
+sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+sock.settimeout(5)
+target = ("::1", 18083)
+sock.sendto(b"ipv6-single-peer", target)
+response, source = sock.recvfrom(65535)
+if response != b"udp-v6:ipv6-single-peer":
+    raise RuntimeError(f"unexpected IPv6 response: {response!r}")
+if source[:2] != target:
+    raise RuntimeError(f"IPv6 source identity changed: {target!r} -> {source!r}")
+
 print("udp-connectionless-ok")

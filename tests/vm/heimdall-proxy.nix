@@ -6,6 +6,7 @@
   ...
 }:
 let
+  testPython = pkgs.python3.withPackages (pythonPackages: [ pythonPackages.aioquic ]);
   heimdallConfig = pkgs.writeText "heimdall-test-config.toml" ''
     version = 1
 
@@ -75,7 +76,9 @@ in
     heimdallPackage
     pkgs.curl
     pkgs.jq
-    pkgs.python3
+    testPython
+    pkgs.gcc
+    pkgs.openssl
   ];
 
   systemd.tmpfiles.rules = [ "d /run/heimdall-test 0755 root root -" ];
@@ -101,6 +104,15 @@ in
     wantedBy = [ "multi-user.target" ];
     serviceConfig = {
       ExecStart = "${pkgs.python3}/bin/python3 ${./udp_fixture.py}";
+      Restart = "on-failure";
+    };
+  };
+
+  systemd.services.heimdall-test-http3 = {
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      ExecStartPre = "${pkgs.openssl}/bin/openssl req -x509 -newkey rsa:2048 -nodes -keyout /run/heimdall-test/http3-key.pem -out /run/heimdall-test/http3-cert.pem -subj /CN=fixture.test -days 1";
+      ExecStart = "${testPython}/bin/python3 ${./http3_fixture.py} /run/heimdall-test/http3-cert.pem /run/heimdall-test/http3-key.pem";
       Restart = "on-failure";
     };
   };
@@ -138,12 +150,14 @@ in
       "heimdall.service"
       "heimdall-test-http.service"
       "heimdall-test-udp.service"
+      "heimdall-test-http3.service"
       "user@1000.service"
     ];
     requires = [
       "heimdall.service"
       "heimdall-test-http.service"
       "heimdall-test-udp.service"
+      "heimdall-test-http3.service"
     ];
     serviceConfig = {
       Type = "oneshot";
@@ -155,8 +169,12 @@ in
   environment.etc."heimdall-test/udp_client.py".source = ./udp_client.py;
   environment.etc."heimdall-test/udp_session_client.py".source = ./udp_session_client.py;
   environment.etc."heimdall-test/udp_port_reuse_client.py".source = ./udp_port_reuse_client.py;
-  environment.etc."heimdall-test/udp_connectionless_client.py".source = ./udp_connectionless_client.py;
+  environment.etc."heimdall-test/udp_connectionless_client.py".source =
+    ./udp_connectionless_client.py;
   environment.etc."heimdall-test/udp_shared_port_client.py".source = ./udp_shared_port_client.py;
+  environment.etc."heimdall-test/udp_token_stress_client.py".source = ./udp_token_stress_client.py;
+  environment.etc."heimdall-test/udp_batch_client.c".source = ./udp_batch_client.c;
+  environment.etc."heimdall-test/http3_client.py".source = ./http3_client.py;
   environment.etc."heimdall-test/run-acceptance.sh" = {
     source = ./run-acceptance.sh;
     mode = "0755";

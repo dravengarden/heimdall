@@ -6,6 +6,8 @@ All notable changes to heimdall are documented here.
 
 ### Fixed
 
+- Support common dual-stack UDP clients that send to IPv4-mapped destinations
+  through an IPv6 socket, including HTTP/3/QUIC, while restoring peer identity.
 - Correlate IPv4 UDP by socket and destination token, preserving source
   identity for connectionless multi-target traffic and concurrent
   `SO_REUSEPORT` sockets instead of relying on an ambiguous source port.
@@ -19,13 +21,16 @@ All notable changes to heimdall are documented here.
 
 ### Changed
 
+- Added real HTTP/3 with QUIC Retry and multi-request acceptance, IPv4 UDP
+  token stress across 128 destinations, 32 concurrent `SO_REUSEPORT` sockets,
+  and `sendmmsg`/`recvmmsg` coverage.
 - Reused one bidirectional direct or SOCKS5 UDP association per connected
   socket, added multi-response delivery, socket/cgroup-aware cleanup, bounded
   queues and sessions, and machine-readable payload and QUIC limits.
 - Added strict UDP routing through SOCKS5 UDP ASSOCIATE or direct
   egress, UDP-aware `config explain`, transparent `getpeername`, and explicit
-  machine-readable per-family capability limits. Connectionless IPv6 remains
-  fail-closed because Linux does not support the required sendmsg6 rewrite.
+  machine-readable per-family capability limits. IPv6 supports a single-peer
+  fallback while ambiguous multi-target and same-port concurrency fail closed.
 - Replaced `proxies` and per-run DNS overrides with named SOCKS5 outbounds and
   command-selected policies containing ordered TCP/UDP rules and explicit
   `route`, `direct`, or `reject` final actions.
