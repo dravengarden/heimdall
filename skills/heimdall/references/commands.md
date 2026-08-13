@@ -40,9 +40,11 @@ obtain an isolated cgroup.
 
 Inspect `agent.capabilities.udp` before wrapping a UDP command. Connected,
 bidirectional multi-response traffic reuses one association per socket.
-Connectionless non-DNS UDP remains fail-closed. Do not use concurrent sockets
-sharing one source port while `concurrent_shared_source_port` is false, exceed
-`max_socks5_payload_bytes`, or claim QUIC support while `quic` is `unverified`.
+IPv4 connectionless traffic and concurrent same-source-port sockets are
+supported. The aggregate booleans remain false because those IPv6 cases are
+unsupported, so branch on `connectionless_ipv4`/`connectionless_ipv6` and the
+matching `concurrent_shared_source_port_*` fields. Do not exceed
+`max_socks5_payload_bytes` or claim QUIC support while `quic` is `unverified`.
 
 ## Diagnose failures
 

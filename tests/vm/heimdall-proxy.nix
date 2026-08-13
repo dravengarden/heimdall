@@ -155,6 +155,8 @@ in
   environment.etc."heimdall-test/udp_client.py".source = ./udp_client.py;
   environment.etc."heimdall-test/udp_session_client.py".source = ./udp_session_client.py;
   environment.etc."heimdall-test/udp_port_reuse_client.py".source = ./udp_port_reuse_client.py;
+  environment.etc."heimdall-test/udp_connectionless_client.py".source = ./udp_connectionless_client.py;
+  environment.etc."heimdall-test/udp_shared_port_client.py".source = ./udp_shared_port_client.py;
   environment.etc."heimdall-test/run-acceptance.sh" = {
     source = ./run-acceptance.sh;
     mode = "0755";

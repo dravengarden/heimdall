@@ -6,6 +6,9 @@ All notable changes to heimdall are documented here.
 
 ### Fixed
 
+- Correlate IPv4 UDP by socket and destination token, preserving source
+  identity for connectionless multi-target traffic and concurrent
+  `SO_REUSEPORT` sockets instead of relying on an ambiguous source port.
 - Prevent IPv4 and IPv6 relay correlations from overwriting each other when
   both sockets reuse the same ephemeral source port.
 - Preserve `dns = "system"` and literal-IP semantics by treating TLS as opaque
@@ -19,18 +22,18 @@ All notable changes to heimdall are documented here.
 - Reused one bidirectional direct or SOCKS5 UDP association per connected
   socket, added multi-response delivery, socket/cgroup-aware cleanup, bounded
   queues and sessions, and machine-readable payload and QUIC limits.
-- Added strict connected UDP routing through SOCKS5 UDP ASSOCIATE or direct
+- Added strict UDP routing through SOCKS5 UDP ASSOCIATE or direct
   egress, UDP-aware `config explain`, transparent `getpeername`, and explicit
-  machine-readable capability limits. Connectionless non-DNS UDP remains
-  fail-closed.
+  machine-readable per-family capability limits. Connectionless IPv6 remains
+  fail-closed because Linux does not support the required sendmsg6 rewrite.
 - Replaced `proxies` and per-run DNS overrides with named SOCKS5 outbounds and
   command-selected policies containing ordered TCP/UDP rules and explicit
   `route`, `direct`, or `reject` final actions.
 - Added aggregated configuration diagnostics with stable codes, JSON paths,
   and repair hints plus `config explain` for deterministic rule inspection;
   all four starter formats are now tested through the same canonical loader.
-- Made connectionless non-DNS UDP fail closed, removed implicit address bypasses from
-  registered cgroups, completed fake DNS over TCP as well as UDP, and made DNS
+- Made unsupported connectionless UDP fail closed, removed implicit address bypasses
+  from registered cgroups, completed fake DNS over TCP as well as UDP, and made DNS
   plus control-listener binding fail before daemon readiness.
 - Reframed heimdall as a proxychains-style command wrapper.
 - Made unregistered cgroups bypass the relay by default; only commands started

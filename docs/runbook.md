@@ -21,9 +21,10 @@ nix develop -c just test-vm
 The check boots a disposable NixOS guest and verifies real eBPF attachment,
 fake/system DNS, SOCKS5 IPv4/IPv6/domain requests, connected UDP through SOCKS5
 and direct egress, persistent association reuse, multi-response delivery,
-sequential source-port reuse, transparent UDP `getpeername`, connectionless UDP
-fail-closed behavior, unregistered bypass, cgroup cleanup, and 100
-same-source-port dual-stack connection pairs.
+sequential source-port reuse, transparent UDP peer identity, IPv4
+connectionless multi-target traffic, concurrent IPv4 same-source-port sockets,
+IPv6 connectionless fail-closed behavior, unregistered bypass, cgroup cleanup,
+and 100 same-source-port dual-stack TCP connection pairs.
 
 ## Install
 
@@ -76,7 +77,11 @@ It is read-only and always prints exactly one JSON value before exiting:
     "udp": {
       "connected": true,
       "connectionless": false,
+      "connectionless_ipv4": true,
+      "connectionless_ipv6": false,
       "concurrent_shared_source_port": false,
+      "concurrent_shared_source_port_ipv4": true,
+      "concurrent_shared_source_port_ipv6": false,
       "association_reuse": true,
       "multi_response": true,
       "max_socks5_payload_bytes": 65245,
@@ -108,11 +113,11 @@ config cannot be loaded, `config.error.code` is a stable category and
 add fields within v2; consumers
 must ignore unknown fields.
 
-Agents must inspect `capabilities.udp` before choosing a UDP workload. A false
-`connectionless` value means non-DNS `sendto`/`sendmsg` workloads are expected
-to fail closed even when a UDP route is configured. A false
-`concurrent_shared_source_port` value excludes applications that bind multiple
-simultaneous sockets to the same local port.
+Agents must inspect the per-family fields in `capabilities.udp` before choosing
+a UDP workload. The aggregate `connectionless` and
+`concurrent_shared_source_port` fields are false because support is not
+dual-stack. IPv4 supports both cases; connectionless IPv6 fails closed and
+simultaneous IPv6 sockets sharing a source port are unsupported.
 `quic: "unverified"` is not permission to claim QUIC compatibility.
 
 ## Common failures

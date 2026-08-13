@@ -1,6 +1,6 @@
 //! eBPF kernel programs for heimdall.
 //!
-//! Two programs work together:
+//! The primary TCP programs work together as follows:
 //!
 //! 1. `connect4` (BPF_CGROUP_INET4_CONNECT)
 //!    Intercepts connect() syscalls from any process in the attached cgroup.
@@ -19,6 +19,9 @@
 //!    state transition that triggers ACTIVE_ESTABLISHED_CB is bypassed. The
 //!    cgroup_skb egress hook fires at an earlier point (packet send) where
 //!    the source port is already assigned but no Cilium intervention has occurred.
+//!
+//! UDP hooks additionally use per-socket-and-destination tokens for IPv4 and
+//! retain family-and-source-port correlation for connected IPv6.
 #![no_std]
 #![no_main]
 
@@ -31,7 +34,7 @@ use aya_ebpf::{
 };
 use heimdall_common::{
     DEFAULT_POLICY, FAMILY_V4, FAMILY_V6, OrigDst, POLICY_DNS_HIJACK, POLICY_DNS_SYSTEM,
-    POLICY_REDIRECT_OFF, POLICY_UDP_REJECT, RELAY_PORT, relay_key,
+    POLICY_REDIRECT_OFF, POLICY_UDP_REJECT, RELAY_PORT, UdpFlowKey, relay_key,
 };
 
 const DNS_PORT: u16 = 53;
@@ -85,6 +88,16 @@ static COOKIE_MAP: LruHashMap<u64, OrigDst> = LruHashMap::with_max_entries(65536
 #[map]
 static UDP_COOKIE_MAP: LruHashMap<u64, OrigDst> = LruHashMap::with_max_entries(65536, 0);
 
+// UDP relay correlation cannot use the client source port: SO_REUSEPORT and
+// connectionless sockets make that value ambiguous. Each socket+destination
+// instead receives a unique 24-bit token encoded in 127/8. The relay observes
+// the destination address through IP_PKTINFO and responses carry the same
+// token as their source address for recvmsg4 to reverse.
+#[map]
+static UDP_FLOW_MAP: LruHashMap<UdpFlowKey, u32> = LruHashMap::with_max_entries(65536, 0);
+#[map]
+static UDP_TOKEN_MAP: LruHashMap<u32, OrigDst> = LruHashMap::with_max_entries(65536, 0);
+
 // Stage-2 map: (address family, client_ephemeral_port) → original destination
 // Populated in skb_egress, consumed by the userspace relay after accept().
 //
@@ -95,8 +108,9 @@ static UDP_COOKIE_MAP: LruHashMap<u64, OrigDst> = LruHashMap::with_max_entries(6
 #[map]
 static PORT_MAP: LruHashMap<u32, OrigDst> = LruHashMap::with_max_entries(65536, 0);
 
-// Connected UDP sibling of PORT_MAP. The daemon reads without removing: one
-// connected socket can emit any number of datagrams to its fixed peer.
+// IPv6 connected UDP retains the legacy family+source-port correlation because
+// Linux does not permit a UDP6 sendmsg hook to rewrite to an IPv4-mapped token
+// address. IPv4 uses UDP_TOKEN_MAP and does not depend on this map.
 #[map]
 static UDP_PORT_MAP: LruHashMap<u32, OrigDst> = LruHashMap::with_max_entries(65536, 0);
 
@@ -110,6 +124,73 @@ fn policy_for(cgroup_id: u64) -> u8 {
     unsafe { CGROUP_POLICY.get(&cgroup_id) }
         .copied()
         .unwrap_or(DEFAULT_POLICY)
+}
+
+#[inline(always)]
+fn same_udp_flow(orig: &OrigDst, flow: &UdpFlowKey) -> bool {
+    orig.socket_cookie == flow.socket_cookie
+        && orig.cgroup_id == flow.cgroup_id
+        && orig.port == flow.port
+        && orig.family == flow.family
+        && orig.addr == flow.addr
+}
+
+#[inline(always)]
+fn udp_token(flow: &UdpFlowKey, orig: &OrigDst) -> Option<u32> {
+    if let Some(token) = unsafe { UDP_FLOW_MAP.get(flow) }
+        && let Some(existing) = unsafe { UDP_TOKEN_MAP.get(token) }
+        && same_udp_flow(existing, flow)
+    {
+        return Some(*token);
+    }
+
+    let mut seed = flow.socket_cookie
+        ^ flow.cgroup_id.rotate_left(17)
+        ^ u64::from(flow.port).rotate_left(33)
+        ^ u64::from(flow.family).rotate_left(49);
+    for chunk in flow.addr.chunks_exact(8) {
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(chunk);
+        seed ^= u64::from_ne_bytes(bytes).rotate_left(11);
+    }
+
+    // Bounded collision resolution keeps the verifier happy. BPF_NOEXIST (1)
+    // makes token ownership atomic across CPUs; 32 candidates against a
+    // 24-bit space is ample while the map itself is capped at 65,536 entries.
+    for salt in 0..32u64 {
+        let mixed = seed
+            .wrapping_add(salt.wrapping_mul(0x9e37_79b9_7f4a_7c15))
+            .wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        let token = ((mixed ^ (mixed >> 32)) as u32 & 0x00ff_ffff).max(1);
+        if UDP_TOKEN_MAP.insert(&token, orig, 1).is_ok() {
+            let _ = UDP_FLOW_MAP.insert(flow, &token, 0);
+            return Some(token);
+        }
+        if let Some(existing) = unsafe { UDP_TOKEN_MAP.get(&token) }
+            && same_udp_flow(existing, flow)
+        {
+            let _ = UDP_FLOW_MAP.insert(flow, &token, 0);
+            return Some(token);
+        }
+    }
+    None
+}
+
+#[inline(always)]
+fn token_v4(token: u32) -> u32 {
+    u32::from_ne_bytes([
+        127,
+        ((token >> 16) & 0xff) as u8,
+        ((token >> 8) & 0xff) as u8,
+        (token & 0xff) as u8,
+    ])
+}
+
+#[inline(always)]
+fn token_from_v4(addr: u32) -> Option<u32> {
+    let bytes = addr.to_ne_bytes();
+    (bytes[0] == 127)
+        .then_some((u32::from(bytes[1]) << 16) | (u32::from(bytes[2]) << 8) | u32::from(bytes[3]))
 }
 
 // ---------------------------------------------------------------------------
@@ -270,7 +351,23 @@ fn try_connect4(ctx: SockAddrContext) -> Result<(), ()> {
     // a `?` here on a full
     // (non-LRU) map silently broke every new redirect on the host.
     if is_udp {
+        let flow = UdpFlowKey {
+            socket_cookie: cookie,
+            cgroup_id,
+            addr: orig.addr,
+            port: orig.port,
+            family: orig.family,
+            _pad: [0; 5],
+        };
+        let Some(token) = udp_token(&flow, &orig) else {
+            return Err(());
+        };
         let _ = UDP_COOKIE_MAP.insert(&cookie, &orig, 0);
+        unsafe {
+            (*sa).user_ip4 = token_v4(token);
+            (*sa).user_port = u32::from(RELAY_PORT.to_be());
+        }
+        return Ok(());
     } else {
         let _ = COOKIE_MAP.insert(&cookie, &orig, 0);
     }
@@ -472,7 +569,7 @@ pub fn sock_release(ctx: SockContext) -> i32 {
 }
 
 // ---------------------------------------------------------------------------
-// sendmsg4 / sendmsg6 — DNS-only hijack for connectionless UDP.
+// sendmsg4 / sendmsg6 — transparent connectionless UDP relay.
 //
 // glibc's stub resolver uses connect()ed UDP, so connect4 catches it.
 // Pure-Go binaries (netgo build tag) and some other implementations
@@ -481,44 +578,98 @@ pub fn sock_release(ctx: SockContext) -> i32 {
 // (sendto/sendmsg) for AF_INET sockets that aren't connected, giving
 // us a chance to rewrite the destination.
 //
-// We DON'T hijack non-DNS UDP traffic — relay-side TCP redirection
-// for arbitrary UDP would require holding state per-connection (no
-// 5-tuple), which heimdall doesn't do. So this is strictly a DNS
-// rewrite gate: same logic as connect4 but bails out for everything
-// except the dst:53 case.
+// Each socket+destination receives a distinct token address. Unlike a source
+// port key this remains unambiguous when one unconnected socket targets many
+// peers or several SO_REUSEPORT sockets share one local port.
 // ---------------------------------------------------------------------------
 
 #[cgroup_sock_addr(sendmsg4)]
 pub fn udp4_sendmsg(ctx: SockAddrContext) -> i32 {
     let sa = ctx.sock_addr;
+    let dst_port_be = unsafe { (*sa).user_port as u16 };
+    if u16::from_be(dst_port_be) == RELAY_PORT && token_from_v4(unsafe { (*sa).user_ip4 }).is_some()
+    {
+        return 1;
+    }
     let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
     let policy = policy_for(cgroup_id);
     if try_hijack_dns_v4(sa, policy) {
         return 1;
     }
-    let dst_port_be = unsafe { (*sa).user_port as u16 };
     if (policy & POLICY_DNS_SYSTEM) != 0 && u16::from_be(dst_port_be) == DNS_PORT {
         return 1;
     }
-    // A connectionless socket can target multiple peers concurrently, while
-    // cgroup sendmsg exposes no stable per-datagram key to userspace. Registered
-    // commands therefore fail closed here; connected UDP is handled by connect4.
-    i32::from((policy & POLICY_REDIRECT_OFF) != 0)
+    if (policy & POLICY_UDP_REJECT) != 0 {
+        return 0;
+    }
+    if (policy & POLICY_REDIRECT_OFF) != 0 {
+        return 1;
+    }
+    let cookie = unsafe { bpf_get_socket_cookie(ctx.as_ptr()) };
+    let dst_ip = unsafe { (*sa).user_ip4 };
+    let mut orig = OrigDst {
+        addr: [0; 16],
+        port: dst_port_be,
+        family: FAMILY_V4,
+        _pad: 0,
+        cgroup_id,
+        socket_cookie: cookie,
+    };
+    orig.addr[..4].copy_from_slice(&dst_ip.to_ne_bytes());
+    let flow = UdpFlowKey {
+        socket_cookie: cookie,
+        cgroup_id,
+        addr: orig.addr,
+        port: orig.port,
+        family: orig.family,
+        _pad: [0; 5],
+    };
+    let Some(token) = udp_token(&flow, &orig) else {
+        return 0;
+    };
+    let _ = UDP_COOKIE_MAP.insert(&cookie, &orig, 0);
+    unsafe {
+        (*sa).user_ip4 = token_v4(token);
+        (*sa).user_port = u32::from(RELAY_PORT.to_be());
+    }
+    1
 }
 
 #[cgroup_sock_addr(sendmsg6)]
 pub fn udp6_sendmsg(ctx: SockAddrContext) -> i32 {
     let sa = ctx.sock_addr;
+    let dst_port_be = unsafe { (*sa).user_port as u16 };
     let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
     let policy = policy_for(cgroup_id);
     if try_hijack_dns_v6(sa, policy) {
         return 1;
     }
-    let dst_port_be = unsafe { (*sa).user_port as u16 };
     if (policy & POLICY_DNS_SYSTEM) != 0 && u16::from_be(dst_port_be) == DNS_PORT {
         return 1;
     }
+    // Linux rejects rewriting an unconnected UDP6 sendmsg destination to an
+    // IPv4-mapped address with ENOTSUPP. Connected UDP6 is handled by
+    // connect6 and does not need destination recovery in this hook.
     i32::from((policy & POLICY_REDIRECT_OFF) != 0)
+}
+
+#[cgroup_sock_addr(recvmsg4)]
+pub fn udp4_recvmsg(ctx: SockAddrContext) -> i32 {
+    let Some(token) = token_from_v4(unsafe { (*ctx.sock_addr).user_ip4 }) else {
+        return 1;
+    };
+    let Some(orig) = (unsafe { UDP_TOKEN_MAP.get(&token) }) else {
+        return 1;
+    };
+    if orig.family != FAMILY_V4 {
+        return 1;
+    }
+    unsafe {
+        (*ctx.sock_addr).user_ip4 =
+            u32::from_ne_bytes([orig.addr[0], orig.addr[1], orig.addr[2], orig.addr[3]]);
+        (*ctx.sock_addr).user_port = u32::from(orig.port);
+    }
+    1
 }
 
 // ---------------------------------------------------------------------------
@@ -625,11 +776,13 @@ fn try_skb_egress(ctx: &SkBuffContext) -> Result<(), ()> {
     let family = if version == 4 { FAMILY_V4 } else { FAMILY_V6 };
     let key = relay_key(family, src_port);
 
-    if protocol == IPPROTO_UDP {
+    if protocol == IPPROTO_UDP && family == FAMILY_V6 {
         if let Some(orig) = unsafe { UDP_COOKIE_MAP.get(&cookie) } {
             let _ = UDP_PORT_MAP.insert(&key, orig, 0);
         }
-    } else if let Some(orig) = unsafe { COOKIE_MAP.get(&cookie) } {
+    } else if protocol == IPPROTO_TCP
+        && let Some(orig) = unsafe { COOKIE_MAP.get(&cookie) }
+    {
         let _ = PORT_MAP.insert(&key, orig, 0);
         let _ = COOKIE_MAP.remove(&cookie);
     }

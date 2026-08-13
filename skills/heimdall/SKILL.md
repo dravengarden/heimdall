@@ -57,9 +57,12 @@ acceptance.
 
 Before choosing a UDP workload, inspect `capabilities.udp` in the agent report.
 Bidirectional, multi-response sessions are supported for connected sockets.
-Respect `max_socks5_payload_bytes`. Do not use Heimdall for connectionless
-non-DNS `sendto`/`sendmsg`, multicast, concurrent sockets sharing one source
-port, or QUIC while its capability remains `unverified`.
+IPv4 also supports connectionless multi-target traffic and concurrent sockets
+sharing one source port. The aggregate booleans stay false because IPv6 does
+not support those cases; inspect the `*_ipv4` and `*_ipv6` fields rather than
+guessing. Respect `max_socks5_payload_bytes`. Do not use Heimdall for
+connectionless IPv6, multicast, or QUIC while its capability remains
+`unverified`.
 
 ## Run a command
 

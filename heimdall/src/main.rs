@@ -3,7 +3,7 @@
 //! A small privileged daemon redirects only cgroups registered by
 //! `heimdall run`; every other process bypasses it.
 //!
-//! ## How it works
+//! ## TCP correlation path
 //!
 //!   process connect(external_ip:port)
 //!       │
@@ -20,6 +20,10 @@
 //!     2. cgroup_id → policy name from the active CLI registration
 //!     3. evaluate the ordered rules and execute route/direct/reject
 //!
+//! IPv4 UDP uses a per-socket-and-destination token encoded in `127/8` so
+//! connectionless and shared-source-port traffic remains reversible. Connected
+//! IPv6 UDP retains family-and-source-port correlation.
+//!
 //! ## Configuration
 //!
 //! Driven by one `/etc/heimdall/config.{toml,yaml,json,ncl}` file.
@@ -32,7 +36,10 @@ mod policy;
 
 use std::{
     collections::HashMap as StdHashMap,
+    ffi::OsString,
+    io::{IoSlice, IoSliceMut},
     net::{Ipv4Addr, Ipv6Addr, SocketAddr},
+    os::fd::{AsRawFd, OwnedFd},
     path::PathBuf,
     sync::{
         Arc,
@@ -50,7 +57,12 @@ use aya::{
 use clap::Parser;
 use heimdall_common::{FAMILY_V4, FAMILY_V6, OrigDst, RELAY_PORT, relay_key};
 use heimdall_config::{Action, HeimdallConfig, Outbound, Socks5Auth, Socks5Outbound};
+use nix::sys::socket::{
+    AddressFamily, ControlMessage, ControlMessageOwned, MsgFlags, SockFlag, SockType, SockaddrIn,
+    SockaddrStorage, bind, recvmsg, sendmsg, setsockopt, socket, sockopt,
+};
 use tokio::{
+    io::unix::AsyncFd,
     io::{AsyncReadExt, copy_bidirectional},
     net::{TcpListener, TcpStream, UdpSocket},
     sync::{Mutex, RwLock, mpsc},
@@ -76,8 +88,9 @@ const EBPF_BYTES: &[u8] = &EBPF_OBJ.0;
 
 type PortMap = Arc<RwLock<HashMap<aya::maps::MapData, u32, OrigDst>>>;
 type UdpPortMap = Arc<RwLock<HashMap<aya::maps::MapData, u32, OrigDst>>>;
+type UdpTokenMap = Arc<RwLock<HashMap<aya::maps::MapData, u32, OrigDst>>>;
 type UdpCookieMap = Arc<RwLock<HashMap<aya::maps::MapData, u64, OrigDst>>>;
-pub(crate) type UdpSessions = Arc<Mutex<StdHashMap<u64, UdpSessionHandle>>>;
+pub(crate) type UdpSessions = Arc<Mutex<StdHashMap<UdpSessionKey, UdpSessionHandle>>>;
 
 const UDP_SESSION_QUEUE: usize = 128;
 const UDP_MAX_SESSIONS: usize = 4096;
@@ -91,14 +104,21 @@ pub(crate) struct UdpSessionHandle {
     tx: mpsc::Sender<UdpRequest>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum UdpSessionKey {
+    Token(u32),
+    Cookie(u64),
+}
+
 struct UdpRequest {
     payload: Vec<u8>,
 }
 
 #[derive(Clone)]
 struct UdpRelayContext {
-    relay: Arc<UdpSocket>,
+    relay: UdpResponseRelay,
     ports: UdpPortMap,
+    tokens: UdpTokenMap,
     cookies: UdpCookieMap,
     sessions: UdpSessions,
     shared: Arc<Shared>,
@@ -106,9 +126,173 @@ struct UdpRelayContext {
 
 struct UdpSessionRuntime {
     peer: SocketAddr,
-    relay: Arc<UdpSocket>,
+    token: Option<u32>,
+    relay: UdpResponseRelay,
     cookies: UdpCookieMap,
     shared: Arc<Shared>,
+}
+
+#[derive(Clone)]
+enum UdpResponseRelay {
+    Token(Arc<UdpRelaySocket>),
+    Ipv6(Arc<UdpSocket>),
+}
+
+impl UdpResponseRelay {
+    async fn send(&self, payload: &[u8], peer: SocketAddr, token: Option<u32>) -> Result<()> {
+        match (self, token) {
+            (Self::Token(relay), Some(token)) => relay.send(payload, peer, token).await,
+            (Self::Ipv6(relay), None) => {
+                relay
+                    .send_to(payload, peer)
+                    .await
+                    .with_context(|| format!("return IPv6 UDP response to {peer}"))?;
+                Ok(())
+            }
+            _ => anyhow::bail!("UDP relay correlation mode mismatch"),
+        }
+    }
+}
+
+enum UdpCorrelation {
+    Token(u32),
+    Port(u32),
+}
+
+struct UdpRelaySocket {
+    fd: AsyncFd<OwnedFd>,
+}
+
+impl UdpRelaySocket {
+    fn bind() -> Result<Self> {
+        let fd = socket(
+            AddressFamily::Inet,
+            SockType::Datagram,
+            SockFlag::SOCK_NONBLOCK | SockFlag::SOCK_CLOEXEC,
+            None,
+        )
+        .context("create UDP relay socket")?;
+        setsockopt(&fd, sockopt::ReuseAddr, &true).context("set UDP relay SO_REUSEADDR")?;
+        setsockopt(&fd, sockopt::Ipv4PacketInfo, &true).context("enable UDP relay IP_PKTINFO")?;
+        // Why: token destinations span 127/8, so one wildcard bind is needed
+        // to receive every address. SO_BINDTODEVICE keeps that wildcard from
+        // exposing the privileged relay on non-loopback interfaces.
+        setsockopt(&fd, sockopt::BindToDevice, &OsString::from("lo"))
+            .context("bind UDP relay to loopback device")?;
+        bind(
+            fd.as_raw_fd(),
+            &SockaddrIn::from(std::net::SocketAddrV4::new(
+                Ipv4Addr::UNSPECIFIED,
+                RELAY_PORT,
+            )),
+        )
+        .context("bind UDP relay on IPv4 loopback range")?;
+        Ok(Self {
+            fd: AsyncFd::new(fd).context("register UDP relay with async runtime")?,
+        })
+    }
+
+    async fn recv(&self, payload: &mut [u8]) -> Result<(usize, SocketAddr, u32)> {
+        loop {
+            let mut ready = self
+                .fd
+                .readable()
+                .await
+                .context("wait for UDP relay datagram")?;
+            let result = ready.try_io(|inner| {
+                let mut iov = [IoSliceMut::new(payload)];
+                let mut control = nix::cmsg_space!(libc::in_pktinfo);
+                let message = recvmsg::<SockaddrStorage>(
+                    inner.as_raw_fd(),
+                    &mut iov,
+                    Some(&mut control),
+                    MsgFlags::MSG_DONTWAIT,
+                )
+                .map_err(nix_io_error)?;
+                let peer = message
+                    .address
+                    .and_then(|address| address.as_sockaddr_in().copied())
+                    .map(std::net::SocketAddrV4::from)
+                    .map(SocketAddr::V4)
+                    .ok_or_else(|| std::io::Error::other("UDP relay peer is not IPv4"))?;
+                let token = message
+                    .cmsgs()
+                    .map_err(nix_io_error)?
+                    .find_map(|item| match item {
+                        ControlMessageOwned::Ipv4PacketInfo(info) => {
+                            token_from_relay_ip(Ipv4Addr::from(info.ipi_addr.s_addr.to_ne_bytes()))
+                        }
+                        _ => None,
+                    })
+                    .ok_or_else(|| std::io::Error::other("UDP relay datagram has no token"))?;
+                Ok((message.bytes, peer, token))
+            });
+            match result {
+                Ok(value) => return value.context("receive UDP relay datagram"),
+                Err(_would_block) => continue,
+            }
+        }
+    }
+
+    async fn send(&self, payload: &[u8], peer: SocketAddr, token: u32) -> Result<()> {
+        let SocketAddr::V4(peer) = peer else {
+            anyhow::bail!("UDP relay response peer is not IPv4");
+        };
+        let source = relay_ip_from_token(token);
+        let packet_info = libc::in_pktinfo {
+            ipi_ifindex: 0,
+            ipi_spec_dst: libc::in_addr {
+                s_addr: u32::from_ne_bytes(source.octets()),
+            },
+            ipi_addr: libc::in_addr { s_addr: 0 },
+        };
+        let address = SockaddrIn::from(peer);
+        loop {
+            let mut ready = self
+                .fd
+                .writable()
+                .await
+                .context("wait for UDP relay writable")?;
+            let result = ready.try_io(|inner| {
+                sendmsg(
+                    inner.as_raw_fd(),
+                    &[IoSlice::new(payload)],
+                    &[ControlMessage::Ipv4PacketInfo(&packet_info)],
+                    MsgFlags::MSG_DONTWAIT,
+                    Some(&address),
+                )
+                .map_err(nix_io_error)
+            });
+            match result {
+                Ok(sent) => {
+                    let sent = sent.context("send UDP relay response")?;
+                    anyhow::ensure!(sent == payload.len(), "short UDP relay response");
+                    return Ok(());
+                }
+                Err(_would_block) => continue,
+            }
+        }
+    }
+}
+
+fn nix_io_error(error: nix::errno::Errno) -> std::io::Error {
+    std::io::Error::from_raw_os_error(error as i32)
+}
+
+fn relay_ip_from_token(token: u32) -> Ipv4Addr {
+    Ipv4Addr::new(
+        127,
+        ((token >> 16) & 0xff) as u8,
+        ((token >> 8) & 0xff) as u8,
+        (token & 0xff) as u8,
+    )
+}
+
+fn token_from_relay_ip(ip: Ipv4Addr) -> Option<u32> {
+    let octets = ip.octets();
+    (octets[0] == 127).then_some(
+        (u32::from(octets[1]) << 16) | (u32::from(octets[2]) << 8) | u32::from(octets[3]),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -755,10 +939,9 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
             }
         }
     }
-    // udp{4,6}_sendmsg: catch connectionless UDP DNS sends (Go's
-    // pure-Go resolver, etc.) and fail closed for non-DNS traffic whose
-    // destination cannot be correlated safely. connect4/connect6 own the
-    // connected UDP relay path.
+    // udp{4,6}_sendmsg catches connectionless UDP (including pure-Go DNS).
+    // IPv4 uses reversible destination tokens; unsupported IPv6 non-DNS
+    // traffic fails closed. connect4/connect6 own the connected path.
     for name in ["udp4_sendmsg", "udp6_sendmsg"] {
         let prog: &mut CgroupSockAddr = bpf
             .program_mut(name)
@@ -778,6 +961,30 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
                 ),
                 Err(e) => {
                     warn!(error = %e, cgroup = USER_SLICE, prog = name, "extra sendmsg attach failed")
+                }
+            }
+        }
+    }
+    {
+        let name = "udp4_recvmsg";
+        let prog: &mut CgroupSockAddr = bpf
+            .program_mut(name)
+            .with_context(|| format!("{name} eBPF program not found"))?
+            .try_into()?;
+        prog.load()
+            .with_context(|| format!("failed to load {name}"))?;
+        prog.attach(&cgroup, CgroupAttachMode::default())
+            .with_context(|| format!("failed to attach {name}"))?;
+        info!(cgroup = %shared.cfg.daemon.cgroup, prog = name, "eBPF recvmsg attached");
+        if let Some(user_cg) = user_slice_file.as_ref() {
+            match prog.attach(user_cg, CgroupAttachMode::default()) {
+                Ok(_) => info!(
+                    cgroup = USER_SLICE,
+                    prog = name,
+                    "eBPF recvmsg attached (extra)"
+                ),
+                Err(e) => {
+                    warn!(error = %e, cgroup = USER_SLICE, prog = name, "extra recvmsg attach failed")
                 }
             }
         }
@@ -810,6 +1017,10 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
 
     let port_map: PortMap = Arc::new(RwLock::new(HashMap::try_from(
         bpf.take_map("PORT_MAP").context("PORT_MAP not found")?,
+    )?));
+    let udp_token_map: UdpTokenMap = Arc::new(RwLock::new(HashMap::try_from(
+        bpf.take_map("UDP_TOKEN_MAP")
+            .context("UDP_TOKEN_MAP not found")?,
     )?));
     let udp_port_map: UdpPortMap = Arc::new(RwLock::new(HashMap::try_from(
         bpf.take_map("UDP_PORT_MAP")
@@ -853,11 +1064,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
     let relay_v6 = TcpListener::bind((Ipv6Addr::LOCALHOST, RELAY_PORT))
         .await
         .context("bind IPv6 relay loopback")?;
-    let udp_v4 = Arc::new(
-        UdpSocket::bind((Ipv4Addr::LOCALHOST, RELAY_PORT))
-            .await
-            .context("bind IPv4 UDP relay loopback")?,
-    );
+    let udp_relay = Arc::new(UdpRelaySocket::bind()?);
     let udp_v6 = Arc::new(
         UdpSocket::bind((Ipv6Addr::LOCALHOST, RELAY_PORT))
             .await
@@ -900,18 +1107,20 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
         debug!("systemd WATCHDOG_USEC unset; no heartbeat");
     }
 
-    let mut udp4_buf = vec![0u8; 65_535];
+    let mut udp_buf = vec![0u8; 65_535];
     let mut udp6_buf = vec![0u8; 65_535];
     let udp4_context = UdpRelayContext {
-        relay: udp_v4,
+        relay: UdpResponseRelay::Token(udp_relay.clone()),
         ports: udp_port_map.clone(),
+        tokens: udp_token_map.clone(),
         cookies: udp_cookie_map.clone(),
         sessions: udp_sessions.clone(),
         shared: shared.clone(),
     };
     let udp6_context = UdpRelayContext {
-        relay: udp_v6,
+        relay: UdpResponseRelay::Ipv6(udp_v6.clone()),
         ports: udp_port_map,
+        tokens: udp_token_map,
         cookies: udp_cookie_map,
         sessions: udp_sessions,
         shared: shared.clone(),
@@ -926,13 +1135,20 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
                 let (stream, peer) = accepted?;
                 spawn_tcp_relay(stream, peer, port_map.clone(), shared.clone());
             }
-            received = udp4_context.relay.recv_from(&mut udp4_buf) => {
-                let (len, peer) = received?;
-                spawn_udp_relay(udp4_buf[..len].to_vec(), peer, udp4_context.clone());
+            received = udp_relay.recv(&mut udp_buf) => {
+                let (len, peer, token) = received?;
+                spawn_udp_relay(
+                    udp_buf[..len].to_vec(), peer, UdpCorrelation::Token(token), udp4_context.clone()
+                );
             }
-            received = udp6_context.relay.recv_from(&mut udp6_buf) => {
+            received = udp_v6.recv_from(&mut udp6_buf) => {
                 let (len, peer) = received?;
-                spawn_udp_relay(udp6_buf[..len].to_vec(), peer, udp6_context.clone());
+                spawn_udp_relay(
+                    udp6_buf[..len].to_vec(),
+                    peer,
+                    UdpCorrelation::Port(relay_key_for_peer(peer)),
+                    udp6_context.clone(),
+                );
             }
         }
     }
@@ -948,11 +1164,15 @@ fn spawn_tcp_relay(stream: TcpStream, peer: SocketAddr, map: PortMap, shared: Ar
     });
 }
 
-fn spawn_udp_relay(payload: Vec<u8>, peer: SocketAddr, context: UdpRelayContext) {
+fn spawn_udp_relay(
+    payload: Vec<u8>,
+    peer: SocketAddr,
+    correlation: UdpCorrelation,
+    context: UdpRelayContext,
+) {
     tokio::spawn(async move {
-        let key = relay_key_for_peer(peer);
-        if let Err(e) = dispatch_udp(payload, peer, key, context).await {
-            warn!(key, "UDP relay error: {e:#}");
+        if let Err(e) = dispatch_udp(payload, peer, correlation, context).await {
+            warn!("UDP relay error: {e:#}");
         }
     });
 }
@@ -1109,28 +1329,46 @@ struct UdpSessionSpec {
 async fn dispatch_udp(
     payload: Vec<u8>,
     peer: SocketAddr,
-    key: u32,
+    correlation: UdpCorrelation,
     context: UdpRelayContext,
 ) -> Result<()> {
-    let orig = context
-        .ports
-        .read()
-        .await
-        .get(&key, 0)
-        .with_context(|| format!("BPF map miss for UDP relay key {key:#010x}"))?;
+    let (orig, token) = match correlation {
+        UdpCorrelation::Token(token) => (
+            context
+                .tokens
+                .read()
+                .await
+                .get(&token, 0)
+                .with_context(|| format!("BPF map miss for UDP relay token {token:#08x}"))?,
+            Some(token),
+        ),
+        UdpCorrelation::Port(key) => (
+            context
+                .ports
+                .read()
+                .await
+                .get(&key, 0)
+                .with_context(|| format!("BPF map miss for IPv6 UDP relay key {key:#010x}"))?,
+            None,
+        ),
+    };
     anyhow::ensure!(orig.socket_cookie != 0, "UDP relay has no socket cookie");
+    let session_key = token.map_or(
+        UdpSessionKey::Cookie(orig.socket_cookie),
+        UdpSessionKey::Token,
+    );
 
     let request = UdpRequest { payload };
     let request = {
         let mut active = context.sessions.lock().await;
-        if let Some(handle) = active.get(&orig.socket_cookie) {
+        if let Some(handle) = active.get(&session_key) {
             match handle.tx.try_send(request) {
                 Ok(()) => return Ok(()),
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     anyhow::bail!("UDP session queue is full")
                 }
                 Err(mpsc::error::TrySendError::Closed(request)) => {
-                    active.remove(&orig.socket_cookie);
+                    active.remove(&session_key);
                     request
                 }
             }
@@ -1147,7 +1385,7 @@ async fn dispatch_udp(
 
     {
         let mut active = context.sessions.lock().await;
-        if let Some(handle) = active.get(&orig.socket_cookie) {
+        if let Some(handle) = active.get(&session_key) {
             let request = rx
                 .try_recv()
                 .map_err(|_| anyhow::anyhow!("new UDP session lost its first datagram"))?;
@@ -1162,7 +1400,7 @@ async fn dispatch_udp(
             "UDP session limit reached ({UDP_MAX_SESSIONS})"
         );
         active.insert(
-            orig.socket_cookie,
+            session_key,
             UdpSessionHandle {
                 id,
                 cgroup_id: orig.cgroup_id,
@@ -1176,6 +1414,7 @@ async fn dispatch_udp(
     tokio::spawn(async move {
         let runtime = UdpSessionRuntime {
             peer,
+            token,
             relay: context.relay,
             cookies: context.cookies,
             shared: context.shared,
@@ -1185,10 +1424,10 @@ async fn dispatch_udp(
         }
         let mut active = cleanup_sessions.lock().await;
         if active
-            .get(&socket_cookie)
+            .get(&session_key)
             .is_some_and(|handle| handle.id == id)
         {
-            active.remove(&socket_cookie);
+            active.remove(&session_key);
         }
     });
     Ok(())
@@ -1342,7 +1581,7 @@ async fn run_direct_udp_session(
                 if !udp_session_active(spec, &runtime.cookies, &runtime.shared).await {
                     return Ok(());
                 }
-                runtime.relay.send_to(&response[..len], runtime.peer).await
+                runtime.relay.send(&response[..len], runtime.peer, runtime.token).await
                     .with_context(|| format!("return direct UDP response to {}", runtime.peer))?;
                 reset_udp_idle(&mut idle);
             }
@@ -1387,7 +1626,7 @@ async fn run_socks5_udp_session(
                 if !udp_session_active(spec, &runtime.cookies, &runtime.shared).await {
                     return Ok(());
                 }
-                runtime.relay.send_to(payload, runtime.peer).await
+                runtime.relay.send(payload, runtime.peer, runtime.token).await
                     .with_context(|| format!("return SOCKS5 UDP response to {}", runtime.peer))?;
                 reset_udp_idle(&mut idle);
             }
@@ -1795,6 +2034,20 @@ mod socks5_tests {
         assert_ne!(relay_key_for_peer(v4), relay_key_for_peer(v6));
         assert_eq!(relay_key_for_peer(v4), relay_key(FAMILY_V4, 40_000));
         assert_eq!(relay_key_for_peer(v6), relay_key(FAMILY_V6, 40_000));
+    }
+
+    #[test]
+    fn udp_session_keys_separate_tokens_from_socket_cookies() {
+        assert_ne!(UdpSessionKey::Token(7), UdpSessionKey::Cookie(7));
+    }
+
+    #[test]
+    fn udp_token_loopback_address_round_trips() {
+        for token in [1, 0x12_3456, 0xff_ffff] {
+            let address = relay_ip_from_token(token);
+            assert!(address.is_loopback());
+            assert_eq!(token_from_relay_ip(address), Some(token));
+        }
     }
 
     #[test]

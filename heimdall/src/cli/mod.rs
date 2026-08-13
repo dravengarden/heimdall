@@ -64,7 +64,11 @@ pub mod agent {
     struct UdpCapabilities {
         connected: bool,
         connectionless: bool,
+        connectionless_ipv4: bool,
+        connectionless_ipv6: bool,
         concurrent_shared_source_port: bool,
+        concurrent_shared_source_port_ipv4: bool,
+        concurrent_shared_source_port_ipv6: bool,
         association_reuse: bool,
         multi_response: bool,
         max_socks5_payload_bytes: usize,
@@ -303,7 +307,11 @@ pub mod agent {
             udp: UdpCapabilities {
                 connected: true,
                 connectionless: false,
+                connectionless_ipv4: true,
+                connectionless_ipv6: false,
                 concurrent_shared_source_port: false,
+                concurrent_shared_source_port_ipv4: true,
+                concurrent_shared_source_port_ipv6: false,
                 association_reuse: true,
                 multi_response: true,
                 max_socks5_payload_bytes: 65_245,
@@ -332,6 +340,18 @@ pub mod agent {
                     "--json"
                 ]
             );
+        }
+
+        #[test]
+        fn udp_capabilities_distinguish_family_specific_support() {
+            let udp = capabilities().udp;
+            assert!(udp.connected);
+            assert!(!udp.connectionless);
+            assert!(udp.connectionless_ipv4);
+            assert!(!udp.connectionless_ipv6);
+            assert!(!udp.concurrent_shared_source_port);
+            assert!(udp.concurrent_shared_source_port_ipv4);
+            assert!(!udp.concurrent_shared_source_port_ipv6);
         }
     }
 }

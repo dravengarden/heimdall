@@ -113,17 +113,17 @@ There is no implicit first outbound and no failure fallback to direct.
 `route` must name an existing outbound, `direct` is an explicit authorization,
 and `reject` fails the connection or datagram.
 
-UDP proxying currently covers connected datagram sockets. One bidirectional
-SOCKS5 association (or direct socket) is reused for the transparent socket
-lifetime, including asynchronous and multiple responses. Fragmented SOCKS5 UDP
-responses are rejected, and SOCKS5 payloads are limited to 65,245 bytes so the
-largest domain header still fits one UDP datagram. Connectionless non-DNS
-`sendto`/`sendmsg` fails closed because a shared source port cannot provide an
-unambiguous per-datagram destination correlation. QUIC has not yet passed a
+UDP proxying covers connected datagram sockets on both families and
+connectionless IPv4 `sendto`/`sendmsg`. One bidirectional SOCKS5 association
+(or direct socket) is reused per connected socket or IPv4 socket-destination
+pair, including asynchronous and multiple responses. IPv4 token correlation
+supports several destinations from one socket and concurrent sockets sharing a
+source port. Fragmented SOCKS5 UDP responses are rejected, and SOCKS5 payloads
+are limited to 65,245 bytes so the largest domain header still fits one UDP
+datagram. Connectionless IPv6 fails closed because the Linux sendmsg6 hook
+cannot rewrite an IPv6 destination to the IPv4 token relay. Simultaneous IPv6
+sockets sharing one source port are also unsupported. QUIC has not yet passed a
 dedicated compatibility gate and must not be inferred from generic UDP tests.
-Simultaneous connected sockets that reuse the same address-family/source-port
-pair are also unsupported because the transparent relay correlation key would
-be ambiguous.
 
 ## DNS
 

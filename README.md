@@ -79,9 +79,11 @@ password_file = "/etc/heimdall/secrets/default-password"
 Policies contain ordered TCP/UDP rules with `route`, `direct`, or `reject`
 actions and mandatory final actions for both protocols. Fake DNS preserves
 hostnames for domain rules; system DNS exposes resolved IPs. Connected UDP can
-use SOCKS5 UDP ASSOCIATE or direct egress. Connectionless non-DNS UDP fails
-closed. Connected sockets reuse one bidirectional upstream association and can
-receive multiple responses; QUIC compatibility remains unverified. See
+use SOCKS5 UDP ASSOCIATE or direct egress. IPv4 `sendto`/`sendmsg` is correlated
+per socket and destination, including sockets that share one source port;
+connectionless IPv6 fails closed. Connected sockets reuse one bidirectional
+upstream association and can receive multiple responses. QUIC compatibility
+remains unverified. See
 [docs/config.md](docs/config.md) for the complete schema.
 
 ## Getting started

@@ -1,7 +1,7 @@
 //! Types shared between the eBPF kernel programs and the userspace daemon.
 #![cfg_attr(not(feature = "user"), no_std)]
 
-/// Original connection destination + caller identity, saved by the eBPF
+/// Original flow destination + caller identity, saved by the eBPF
 /// `connect4` / `connect6` hooks for the userspace relay to consume after
 /// `accept()`.
 ///
@@ -19,7 +19,7 @@ pub struct OrigDst {
     /// Destination address (network byte order). For IPv4, bytes 0..4
     /// hold the address and bytes 4..16 are zero.
     pub addr: [u8; 16],
-    /// TCP destination port (network byte order)
+    /// Transport destination port (network byte order)
     pub port: u16,
     /// `AF_INET` (4) or `AF_INET6` (6) — which `addr` slice is valid.
     /// Stored as the wire-protocol family number directly.
@@ -29,13 +29,30 @@ pub struct OrigDst {
         reason = "the explicit ABI padding is shared with eBPF"
     )]
     pub _pad: u8,
-    /// Leaf cgroup id of the process that called `connect()`.
+    /// Leaf cgroup id of the process that opened or sent on the socket.
     /// 0 if not captured (older builds; treat as "unknown unit").
     pub cgroup_id: u64,
-    /// Kernel socket cookie of the underlying TCP socket (set by
-    /// `bpf_get_socket_cookie` in connect4 / connect6). Stable for the
-    /// lifetime of the connection.
+    /// Kernel socket cookie of the underlying transport socket. Stable for the
+    /// socket lifetime.
     pub socket_cookie: u64,
+}
+
+/// Stable identity for one UDP socket and one destination. Connectionless
+/// sockets may have several entries because every `sendmsg()` peer needs its
+/// own reversible relay token.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct UdpFlowKey {
+    pub socket_cookie: u64,
+    pub cgroup_id: u64,
+    pub addr: [u8; 16],
+    pub port: u16,
+    pub family: u8,
+    #[allow(
+        clippy::pub_underscore_fields,
+        reason = "the explicit ABI padding is shared with eBPF"
+    )]
+    pub _pad: [u8; 5],
 }
 
 /// Family discriminator values stored in `OrigDst::family`. We use the
@@ -59,6 +76,13 @@ pub const fn relay_key(family: u8, source_port: u16) -> u32 {
     reason = "repr(C) contains only fixed-width Pod fields shared verbatim with eBPF"
 )]
 unsafe impl aya::Pod for OrigDst {}
+
+#[cfg(feature = "user")]
+#[allow(
+    unsafe_code,
+    reason = "repr(C) contains only fixed-width Pod fields shared verbatim with eBPF"
+)]
+unsafe impl aya::Pod for UdpFlowKey {}
 
 // ---------------------------------------------------------------------------
 // Per-cgroup policy flags written by `heimdall run` and read by the eBPF

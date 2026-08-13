@@ -43,14 +43,15 @@ orchestrator-shaped metadata.
 2. It creates an `heimdall-cli-*` cgroup below the delegated user subtree.
 3. It registers that cgroup ID and policy name with the local daemon.
 4. The child joins the cgroup and executes the requested command.
-5. eBPF rewrites the child's TCP and connected UDP destinations to the local
-   relay. DNS traffic is redirected over UDP or TCP when the policy uses fake
-   DNS. System DNS is explicitly allowed to port 53. Connectionless non-DNS UDP
-   is rejected fail-closed.
+5. eBPF rewrites the child's TCP and UDP destinations to the local relay. IPv4
+   connectionless sends receive a stable per-socket-and-destination token;
+   connectionless IPv6 is rejected fail-closed. DNS traffic is redirected over
+   UDP or TCP when the policy uses fake DNS. System DNS is explicitly allowed
+   to port 53.
 6. The relay recovers the original destination, evaluates the policy's ordered
-   protocol rules, and routes, connects directly, or rejects it. Each connected
-   UDP socket reuses one bidirectional upstream association identified by its
-   kernel socket cookie.
+   protocol rules, and routes, connects directly, or rejects it. Connected UDP
+   reuses one bidirectional upstream association per socket. IPv4 connectionless
+   UDP reuses one association per socket and destination.
 7. Application bytes, including TLS records, pass through unchanged. Heimdall
    never uses SNI to reinterpret an IP destination: fake DNS produces a SOCKS5
    domain request, while system DNS preserves the resolved IP address.
@@ -63,14 +64,15 @@ Fake-IP mappings remain stable for the daemon lifetime. A depleted pool returns
 DNS `SERVFAIL` instead of reassigning an address that an application may still
 hold in its cache.
 
-Redirect correlation keys include both address family and ephemeral source
-port. IPv4 and IPv6 sockets may legally reuse the same port, so a port-only key
-would allow concurrent dual-stack connections to overwrite each other. UDP
-keeps its socket-cookie mapping for the connected socket lifetime so repeated
-datagrams retain their original peer and `getpeername` remains transparent.
-The daemon verifies that cookie before returning every upstream datagram, and
-closes the session when the socket disappears, its CLI cgroup deregisters, the
-orphan GC runs, or the session remains idle for 60 seconds.
+TCP and connected IPv6 relay keys include both address family and ephemeral
+source port. IPv4 UDP instead rewrites each socket-and-destination flow to a
+distinct address in `127/8`; `recvmsg4` restores the real source address on the
+return path. This avoids ambiguity for an unconnected socket targeting several
+peers and for concurrent `SO_REUSEPORT` sockets. Connected IPv6 keeps the
+family-and-port path; simultaneous IPv6 sockets sharing one source port remain
+unsupported. The daemon verifies socket liveness before returning every
+upstream datagram and closes the session when the socket disappears, its CLI
+cgroup deregisters, orphan GC runs, or the session remains idle for 60 seconds.
 
 ## Non-goals
 

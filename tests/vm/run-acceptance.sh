@@ -25,6 +25,11 @@ as_tester heimdall agent \
     and .capabilities.udp.association_reuse
     and .capabilities.udp.multi_response
     and (.capabilities.udp.connectionless | not)
+    and .capabilities.udp.connectionless_ipv4
+    and (.capabilities.udp.connectionless_ipv6 | not)
+    and (.capabilities.udp.concurrent_shared_source_port | not)
+    and .capabilities.udp.concurrent_shared_source_port_ipv4
+    and (.capabilities.udp.concurrent_shared_source_port_ipv6 | not)
     and .capabilities.udp.quic == "unverified"
     and .capabilities.udp.max_socks5_payload_bytes == 65245'
 
@@ -91,12 +96,20 @@ test "$(as_tester heimdall run --policy udp -- \
   python3 /etc/heimdall-test/udp_port_reuse_client.py)" = "udp-port-reuse-ok"
 test "$(grep -c '"udp_associate": true' /run/heimdall-test/socks.log)" -eq 2
 
+: > /run/heimdall-test/socks.log
+test "$(as_tester heimdall run --policy udp -- \
+  python3 /etc/heimdall-test/udp_connectionless_client.py)" = "udp-connectionless-ok"
+test "$(as_tester heimdall run --policy udp -- \
+  python3 /etc/heimdall-test/udp_shared_port_client.py)" = "udp-shared-port-ok"
+
 test "$(as_tester heimdall run --policy udp-direct -- \
   python3 /etc/heimdall-test/udp_client.py 127.0.0.1 18082 udp-v4:probe)" = "udp-v4:probe"
 test "$(as_tester heimdall run --policy udp-direct -- \
   python3 /etc/heimdall-test/udp_client.py ::1 18083 udp-v6:probe)" = "udp-v6:probe"
 test "$(as_tester heimdall run --policy udp-direct -- \
   python3 /etc/heimdall-test/udp_session_client.py 127.0.0.1 18082 udp-v4:)" = "udp-session-ok"
+test "$(as_tester heimdall run --policy udp-direct -- \
+  python3 /etc/heimdall-test/udp_connectionless_client.py)" = "udp-connectionless-ok"
 
 : > /run/heimdall-test/socks.log
 as_tester heimdall run --policy system -- \

@@ -65,9 +65,10 @@ Actions:
 SOCKS5 UDP ASSOCIATE, connect directly, or reject. One bidirectional association
 is reused per connected socket and supports multiple responses. SOCKS5 payloads
 must not exceed the `agent.capabilities.udp.max_socks5_payload_bytes` value.
-Connectionless non-DNS UDP, multicast, and fragmented SOCKS5 responses are not
-supported. Concurrent connected sockets sharing one address-family/source-port
-pair are also unsupported. Treat QUIC as unsupported while its capability is
+Connectionless IPv4 and concurrent IPv4 sockets sharing one source port are
+supported through per-flow tokens. Connectionless IPv6, concurrent IPv6
+sockets sharing one source port, multicast, and fragmented SOCKS5 responses
+are not supported. Treat QUIC as unsupported while its capability is
 `unverified`.
 
 ## DNS invariants
