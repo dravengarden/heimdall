@@ -40,6 +40,12 @@ use heimdall_common::{
 const DNS_PORT: u16 = 53;
 const SOCK_DGRAM: u32 = 2;
 
+// Version of every pinned map layout in this object. Userspace reads this
+// stable bootstrap map before reusing the remaining pins, so an incompatible
+// upgrade fails with a repair command instead of a loader-specific error.
+#[map]
+static STATE_SCHEMA: Array<u32> = Array::pinned(1, 0);
+
 // Relay IPv4 address in network byte order, set by userspace at startup.
 #[map]
 static RELAY_ADDR: Array<u32> = Array::pinned(2, 0);

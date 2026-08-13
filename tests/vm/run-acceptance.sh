@@ -52,7 +52,18 @@ as_tester heimdall agent \
     and .capabilities.lifecycle.daemon_restart_enforcement_continuity
     and .capabilities.lifecycle.daemon_restart_policy_recovery
     and .capabilities.lifecycle.daemon_restart_fake_dns_recovery
-    and (.capabilities.lifecycle.daemon_restart_existing_connections | not)'
+    and (.capabilities.lifecycle.daemon_restart_existing_connections | not)
+    and .capabilities.lifecycle.pinned_state_schema == 1
+    and .capabilities.lifecycle.transactional_program_upgrade
+    and .capabilities.lifecycle.cleanup_requires_no_active_workloads'
+
+set +e
+cleanup_report="$(heimdall ebpf cleanup --json)"
+cleanup_status=$?
+set -e
+test "$cleanup_status" -eq 1
+printf '%s' "$cleanup_report" \
+  | jq -e '.contract == "heimdall.ebpf.cleanup/v1" and (.cleaned | not) and .code == "daemon_active"'
 
 CGO_ENABLED=0 go build -tags netgo -trimpath \
   -o /run/heimdall-test/runtime-go /etc/heimdall-test/runtime_client.go
@@ -241,6 +252,13 @@ test "$(find /run/heimdall/registrations -type f -name '*.json' | wc -l)" -eq 1
 test "$(find /sys/fs/bpf/heimdall/links -type f | wc -l)" -ge 10
 systemctl stop heimdall.service
 test "$(find /sys/fs/bpf/heimdall/links -type f | wc -l)" -ge 10
+set +e
+cleanup_report="$(heimdall ebpf cleanup --json)"
+cleanup_status=$?
+set -e
+test "$cleanup_status" -eq 1
+printf '%s' "$cleanup_report" \
+  | jq -e '(.cleaned | not) and .code == "active_workloads" and (.active_cgroups | length) == 1 and (.registrations | length) == 1'
 : > /run/heimdall-test/socks.log
 touch /tmp/heimdall-restart-stop-go
 for _ in $(seq 1 250); do
@@ -253,7 +271,16 @@ test ! -e /tmp/heimdall-restart-bypass
 test ! -s /run/heimdall-test/socks.log
 systemctl start heimdall.service
 systemctl is-active --quiet heimdall.service
-journalctl -u heimdall.service -n 100 --no-pager | grep -q 'restored=1'
+restored_registration=false
+for _ in $(seq 1 100); do
+  if journalctl -u heimdall.service -n 100 --no-pager \
+    | grep 'restored=1' >/dev/null; then
+    restored_registration=true
+    break
+  fi
+  sleep 0.02
+done
+test "$restored_registration" = true
 : > /run/heimdall-test/socks.log
 touch /tmp/heimdall-restart-start-go
 for _ in $(seq 1 500); do
@@ -288,6 +315,53 @@ fi
 test ! -e /tmp/heimdall-unregistered-command
 systemctl start heimdall.service
 systemctl is-active --quiet heimdall.service
+as_tester heimdall agent | jq -e '.ready and .daemon.reachable'
+
+# A future map-layout schema must fail before any pinned program replacement.
+systemctl stop heimdall.service
+bpftool map update pinned /sys/fs/bpf/heimdall/maps/STATE_SCHEMA \
+  key 0x00 0x00 0x00 0x00 value 0xe7 0x03 0x00 0x00
+set +e
+schema_error="$(timeout -k 1s 10s heimdall --config /etc/heimdall/config.toml daemon 2>&1)"
+schema_status=$?
+set -e
+test "$schema_status" -ne 0
+printf '%s' "$schema_error" | grep -q 'incompatible pinned eBPF state schema 999'
+bpftool map update pinned /sys/fs/bpf/heimdall/maps/STATE_SCHEMA \
+  key 0x00 0x00 0x00 0x00 value 0x01 0x00 0x00 0x00
+systemctl start heimdall.service
+systemctl is-active --quiet heimdall.service
+
+# A late invalid pin forces rollback of every earlier program replacement.
+systemctl stop heimdall.service
+rm /sys/fs/bpf/heimdall/links/skb_egress-user
+link_programs_before="$(bpftool -j link show \
+  | jq -c '[.[].prog_id] | sort')"
+mkdir /sys/fs/bpf/heimdall/links/skb_egress-user
+set +e
+rollback_error="$(timeout -k 1s 10s heimdall --config /etc/heimdall/config.toml daemon 2>&1)"
+rollback_status=$?
+set -e
+test "$rollback_status" -ne 0
+link_programs_after="$(bpftool -j link show \
+  | jq -c '[.[].prog_id] | sort')"
+if test "$link_programs_before" != "$link_programs_after"; then
+  printf 'rollback changed link programs: before=%s after=%s\n%s\n' \
+    "$link_programs_before" "$link_programs_after" "$rollback_error" >&2
+  exit 1
+fi
+test -n "$rollback_error"
+rmdir /sys/fs/bpf/heimdall/links/skb_egress-user
+
+# Cleanup is idempotent and a clean subsequent start installs a full generation.
+cleanup_report="$(heimdall ebpf cleanup --json)"
+printf '%s' "$cleanup_report" \
+  | jq -e '.cleaned and .code == "cleaned" and .removed_entries > 0'
+test ! -e /sys/fs/bpf/heimdall
+heimdall ebpf cleanup --json | jq -e '.cleaned and .removed_entries == 0'
+systemctl start heimdall.service
+systemctl is-active --quiet heimdall.service
+test -e /sys/fs/bpf/heimdall/maps/STATE_SCHEMA
 as_tester heimdall agent | jq -e '.ready and .daemon.reachable'
 
 if find /sys/fs/cgroup/user.slice -type d -name 'heimdall-cli-*' -print -quit \

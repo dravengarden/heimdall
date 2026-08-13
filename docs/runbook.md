@@ -117,7 +117,10 @@ It is read-only and always prints exactly one JSON value before exiting:
       "daemon_restart_enforcement_continuity": true,
       "daemon_restart_policy_recovery": true,
       "daemon_restart_fake_dns_recovery": true,
-      "daemon_restart_existing_connections": false
+      "daemon_restart_existing_connections": false,
+      "pinned_state_schema": 1,
+      "transactional_program_upgrade": true,
+      "cleanup_requires_no_active_workloads": true
     }
   },
   "decision": {
@@ -184,6 +187,11 @@ The first upgrade from a release that did not pin cgroup links requires one
 ordinary daemon restart to install them. Enforcement continuity applies to
 later stops and restarts after that startup succeeds.
 
+`pinned_state_schema` identifies the exact reusable map layout.
+`transactional_program_upgrade` means link replacement uses kernel CAS and
+rolls the whole generation back if any later replacement or readiness step
+fails. An unknown schema is never auto-deleted or silently migrated.
+
 ## Common failures
 
 - `unknown policy`: declare it below `proxy.policies` or choose a name reported
@@ -207,6 +215,20 @@ cgroups fail closed until the relay returns; unregistered processes continue to
 bypass heimdall. During an explicit service restart, systemd preserves the
 root-only runtime journal; after readiness, still-running wrapped commands
 regain their userspace policy decisions and fake-DNS mappings. Connections
-established before the restart are not preserved. Before permanently removing
-heimdall, remove `/sys/fs/bpf/heimdall` only after every wrapped command has
-exited.
+established before the restart are not preserved.
+
+## Remove persistent eBPF state
+
+Stop the daemon, wait for every wrapped command to exit, then use the bounded
+cleanup command instead of deleting bpffs paths manually:
+
+```bash
+sudo systemctl stop heimdall
+sudo heimdall ebpf cleanup --json
+```
+
+The command emits one `heimdall.ebpf.cleanup/v1` document. Exit 0 means the
+Heimdall-owned `/sys/fs/bpf/heimdall` tree was removed (or was already absent).
+Exit 1 with `code = "daemon_active"` or `code = "active_workloads"` means it
+made no change. Do not bypass these checks: removing links from a populated
+command cgroup would turn a fail-closed outage into unproxied egress.

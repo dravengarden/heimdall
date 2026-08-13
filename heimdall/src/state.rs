@@ -1,7 +1,7 @@
 //! Runtime state that must survive a daemon process restart within one boot.
 
 use std::{
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::Write,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
@@ -12,6 +12,49 @@ use serde::{Deserialize, Serialize};
 
 pub const RUNTIME_DIR: &str = "/run/heimdall";
 const REGISTRATIONS_DIR: &str = "registrations";
+const DAEMON_LOCK: &str = "daemon.lock";
+
+pub struct DaemonLock(File);
+
+impl DaemonLock {
+    #[allow(
+        unsafe_code,
+        reason = "flock is the process-shared daemon and lifecycle-operation exclusion primitive"
+    )]
+    pub fn acquire() -> Result<Self> {
+        prepare_runtime_dir()?;
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .open(Path::new(RUNTIME_DIR).join(DAEMON_LOCK))
+            .context("open /run/heimdall/daemon.lock")?;
+        let result = unsafe {
+            libc::flock(
+                std::os::fd::AsRawFd::as_raw_fd(&file),
+                libc::LOCK_EX | libc::LOCK_NB,
+            )
+        };
+        if result != 0 {
+            return Err(std::io::Error::last_os_error()).context(
+                "lock /run/heimdall/daemon.lock; another daemon or lifecycle operation is active",
+            );
+        }
+        Ok(Self(file))
+    }
+}
+
+impl Drop for DaemonLock {
+    #[allow(
+        unsafe_code,
+        reason = "release the flock acquired for the daemon lifecycle guard"
+    )]
+    fn drop(&mut self) {
+        let _ = unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&self.0), libc::LOCK_UN) };
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]

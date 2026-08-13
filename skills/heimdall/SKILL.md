@@ -82,6 +82,9 @@ workflow that requires existing connections to survive while
 `daemon_restart_continuity` or `daemon_restart_existing_connections` is false.
 Policy and fake-DNS recovery fields mean the userspace decision is restored
 after daemon readiness.
+`pinned_state_schema` must match the installed binary.
+`transactional_program_upgrade` means a partial link replacement is rolled
+back before startup fails.
 
 ## Run a command
 
@@ -101,3 +104,7 @@ not a per-run override. Keep the wrapped command after `--`. Read
 - For runtime failures, collect `heimdall agent`, `heimdall status --json`, and
   recent `heimdall.service` logs before changing state.
 - Do not infer removed workload, UI, or TLS-observability commands.
+- Never delete `/sys/fs/bpf/heimdall` manually. For an explicitly requested
+  uninstall or incompatible-schema repair, stop the service, prove all wrapped
+  workloads exited, then run `heimdall ebpf cleanup --json`. Treat
+  `daemon_active` and `active_workloads` as hard stops; never work around them.

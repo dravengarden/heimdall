@@ -6,6 +6,9 @@ All notable changes to heimdall are documented here.
 
 ### Fixed
 
+- Version pinned map layouts, replace cgroup programs as one rollback-capable
+  transaction, and add a machine-readable eBPF cleanup command that refuses
+  daemon or active-workload races.
 - Keep registered cgroups intercepted across daemon restarts with pinned eBPF
   maps and atomic link updates. Traffic fails closed while the relay is
   unavailable; existing relay sessions and connections remain unsupported. The

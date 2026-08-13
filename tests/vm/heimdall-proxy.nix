@@ -102,6 +102,7 @@ in
     pkgs.jdk_headless
     pkgs.nodejs
     pkgs.openssl
+    pkgs.bpftools
     pkgs.rustc
   ];
 

@@ -3,6 +3,8 @@
 //! The handlers share the same strict configuration loader and the daemon's
 //! small loopback registration API.
 
+pub mod ebpf;
+
 pub mod agent {
     //! Stable, side-effect-free machine contract for AI agents and automation.
 
@@ -87,6 +89,9 @@ pub mod agent {
         daemon_restart_policy_recovery: bool,
         daemon_restart_fake_dns_recovery: bool,
         daemon_restart_existing_connections: bool,
+        pinned_state_schema: u32,
+        transactional_program_upgrade: bool,
+        cleanup_requires_no_active_workloads: bool,
     }
 
     #[derive(Debug, Serialize)]
@@ -376,6 +381,9 @@ pub mod agent {
                 daemon_restart_policy_recovery: true,
                 daemon_restart_fake_dns_recovery: true,
                 daemon_restart_existing_connections: false,
+                pinned_state_schema: crate::ebpf::STATE_SCHEMA,
+                transactional_program_upgrade: true,
+                cleanup_requires_no_active_workloads: true,
             },
         }
     }

@@ -127,6 +127,7 @@ heimdall agent [--policy NAME]
 heimdall daemon
 heimdall status [--json]
 heimdall config validate|explain|show|path
+heimdall ebpf cleanup [--json]
 heimdall init [--dir PATH] [--format toml|yaml|json|nickel] [--force]
 ```
 
@@ -144,6 +145,10 @@ intercepted and fail closed while the relay is unavailable. Seamless continuity
 is still false because relay sessions and existing connections are not
 preserved. Upgrading from a release without pinned links requires one ordinary
 restart before enforcement continuity is available on later restarts.
+Pinned state carries a strict schema version, and a failed multi-link program
+upgrade rolls every already-replaced link back before the daemon exits.
+`heimdall ebpf cleanup --json` is the explicit removal path; it refuses to run
+while the daemon or any wrapped workload is active.
 
 ## Requirements
 

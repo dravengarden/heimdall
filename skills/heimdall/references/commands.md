@@ -67,6 +67,22 @@ cgroups intercepted and fail-closed while the daemon is unavailable.
 their userspace state recovers after the new daemon is ready. Existing
 connections are not preserved; reject workflows that require them while
 `daemon_restart_continuity` or `daemon_restart_existing_connections` is false.
+Pinned program upgrades are transactional when
+`transactional_program_upgrade` is true. Never guess around a
+`pinned_state_schema` mismatch.
+
+## Clean up persistent eBPF state
+
+Only for an explicitly requested uninstall or schema repair:
+
+```bash
+sudo systemctl stop heimdall
+sudo heimdall ebpf cleanup --json
+```
+
+Parse the single `heimdall.ebpf.cleanup/v1` result. Exit 1 with
+`daemon_active` or `active_workloads` means no state was removed and the agent
+must stop. Do not manually unlink pins or add a force path.
 
 ## Diagnose failures
 

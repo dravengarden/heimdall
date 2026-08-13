@@ -72,8 +72,10 @@ address that an application may still hold in its cache.
 
 The daemon pins its eBPF maps and cgroup links below `/sys/fs/bpf/heimdall`.
 Every replacement loads against the same maps, then atomically redirects each
-stable cgroup link to its new program with `BPF_LINK_UPDATE`. Registered traffic
-therefore remains
+stable cgroup link to its new program with an expected-old-program
+`BPF_LINK_UPDATE`. The daemon retains both program generations until every link
+and relay listener is ready. Any failure rolls already-replaced links back in
+reverse order; only a complete generation is committed. Registered traffic therefore remains
 intercepted during a daemon restart and fails closed while the loopback relay is
 unavailable. A root-only runtime journal records active CLI cgroup
 registrations and fake-DNS mappings. Once the replacement daemon is ready, it
@@ -81,6 +83,12 @@ restores userspace decisions for still-populated cgroups and removes stale
 registrations. Existing TCP or UDP relay sessions are not preserved, so this is
 enforcement continuity rather than full connection continuity. `heimdall agent`
 exposes both boundaries through `capabilities.lifecycle`.
+
+A pinned bootstrap array records the map-layout schema. A binary rejects an
+unknown schema before loading or replacing programs and points the operator at
+the explicit cleanup command. Cleanup takes the same exclusive lifecycle lock
+as the daemon and refuses to remove pins while any registration or populated
+command cgroup exists.
 
 TCP and connected IPv6 relay keys include both address family and ephemeral
 source port. IPv4 UDP instead rewrites each socket-and-destination flow to a
