@@ -32,16 +32,3 @@ updates:
     groups:
       actions:
         patterns: ["*"]
-
-  # Deno has no native dependabot support, but the heimdall-ui
-  # package.json can be tracked via npm for major-version signal.
-  # Dependabot reads package.json fine; it won't touch deno.lock,
-  # which `deno install` regenerates from package.json.
-  - package-ecosystem: npm
-    directory: /heimdall-ui
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-    groups:
-      patch-and-minor:
-        update-types: ["patch", "minor"]
