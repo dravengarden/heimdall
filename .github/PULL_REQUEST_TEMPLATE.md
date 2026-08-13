@@ -21,13 +21,11 @@ ones. Delete sections that don't apply.
 
 ## Test plan
 
-<!-- What did you run? `cargo test`, `deno task typecheck`, end-to-end
-     smoke against a real cluster, manual verification of a failure
-     mode, etc. -->
+<!-- What did you run? Include deterministic local checks and any manual
+     verification of the changed behavior. -->
 
 - [ ] `cargo test` (workspace)
 - [ ] `cargo +nightly build -Zbuild-std=core --target bpfel-unknown-none --release` (if BPF source changed)
-- [ ] `cd heimdall-ui && deno task typecheck` (if UI changed)
 - [ ] Manual smoke test described above
 
 ## Schema / config changes
