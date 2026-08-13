@@ -5,7 +5,6 @@ use std::{
     fs,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
-    process::Command,
     time::Duration,
 };
 
@@ -16,20 +15,13 @@ use serde::{
 use thiserror::Error;
 
 pub const DEFAULT_DIR: &str = "/etc/heimdall";
-const CONFIG_CANDIDATES: [&str; 5] = [
-    "config.toml",
-    "config.yaml",
-    "config.yml",
-    "config.json",
-    "config.ncl",
-];
+const CONFIG_CANDIDATES: [&str; 4] = ["config.toml", "config.yaml", "config.yml", "config.json"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigFormat {
     Toml,
     Yaml,
     Json,
-    Nickel,
 }
 
 impl ConfigFormat {
@@ -39,7 +31,6 @@ impl ConfigFormat {
             "toml" => Some(Self::Toml),
             "yaml" | "yml" => Some(Self::Yaml),
             "json" => Some(Self::Json),
-            "ncl" => Some(Self::Nickel),
             _ => None,
         }
     }
@@ -50,7 +41,6 @@ impl ConfigFormat {
             Self::Toml => "toml",
             Self::Yaml => "yaml",
             Self::Json => "json",
-            Self::Nickel => "nickel",
         }
     }
 }
@@ -104,7 +94,7 @@ pub enum ConfigError {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("unsupported config extension for {path}; expected .toml, .yaml, .yml, .json, or .ncl")]
+    #[error("unsupported config extension for {path}; expected .toml, .yaml, .yml, or .json")]
     UnsupportedFormat { path: PathBuf },
     #[error("parse TOML {path}: {source}")]
     ParseToml {
@@ -121,13 +111,6 @@ pub enum ConfigError {
         path: PathBuf,
         source: serde_json::Error,
     },
-    #[error("run `nickel export` for {path}: {source}")]
-    NickelSpawn {
-        path: PathBuf,
-        source: std::io::Error,
-    },
-    #[error("Nickel evaluation failed for {path}: {message}")]
-    NickelExport { path: PathBuf, message: String },
     #[error("multiple config files found; keep exactly one of: {paths:?}")]
     AmbiguousConfig { paths: Vec<PathBuf> },
     #[error("configuration has {count} semantic error(s)")]
@@ -152,8 +135,6 @@ impl ConfigError {
             Self::ParseToml { .. } => "invalid_toml",
             Self::ParseYaml { .. } => "invalid_yaml",
             Self::ParseJson { .. } => "invalid_json",
-            Self::NickelSpawn { .. } => "nickel_unavailable",
-            Self::NickelExport { .. } => "invalid_nickel",
             Self::AmbiguousConfig { .. } => "ambiguous_config",
             Self::Validation { .. } => "config_validation_failed",
             Self::SecretRead { .. } => "secret_read_failed",
@@ -193,13 +174,11 @@ impl ConfigError {
         match self {
             Self::Read { .. } => "Create the file or pass the intended path with --config.",
             Self::UnsupportedFormat { .. } => {
-                "Use exactly one .toml, .yaml/.yml, .json, or .ncl configuration file."
+                "Use exactly one .toml, .yaml/.yml, or .json configuration file."
             }
             Self::ParseToml { .. } => "Fix the TOML syntax at the reported line and column.",
             Self::ParseYaml { .. } => "Fix the YAML syntax and use strings for enum values.",
             Self::ParseJson { .. } => "Fix the JSON syntax at the reported line and column.",
-            Self::NickelSpawn { .. } => "Install Nickel or use the packaged Heimdall binary.",
-            Self::NickelExport { .. } => "Fix the Nickel contract or evaluation error.",
             Self::AmbiguousConfig { .. } => {
                 "Keep one discovered config file and remove stale peers."
             }
@@ -1259,7 +1238,7 @@ fn push(
 /// Parse a supported source into a type with Serde-level unknown-field checks.
 ///
 /// # Errors
-/// Returns format-specific decoding or Nickel evaluation errors.
+/// Returns format-specific decoding errors.
 pub fn parse_typed<T: DeserializeOwned>(path: &Path) -> Result<T, ConfigError> {
     let format = ConfigFormat::detect(path).ok_or_else(|| ConfigError::UnsupportedFormat {
         path: path.to_path_buf(),
@@ -1283,32 +1262,7 @@ pub fn parse_typed<T: DeserializeOwned>(path: &Path) -> Result<T, ConfigError> {
             path: path.to_path_buf(),
             source,
         }),
-        ConfigFormat::Nickel => {
-            let json = export_nickel(path)?;
-            serde_json::from_slice(&json).map_err(|source| ConfigError::ParseJson {
-                path: path.to_path_buf(),
-                source,
-            })
-        }
     }
-}
-
-fn export_nickel(path: &Path) -> Result<Vec<u8>, ConfigError> {
-    let output = Command::new("nickel")
-        .args(["export", "--format", "json"])
-        .arg(path)
-        .output()
-        .map_err(|source| ConfigError::NickelSpawn {
-            path: path.to_path_buf(),
-            source,
-        })?;
-    if !output.status.success() {
-        return Err(ConfigError::NickelExport {
-            path: path.to_path_buf(),
-            message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        });
-    }
-    Ok(output.stdout)
 }
 
 #[cfg(test)]
@@ -1401,44 +1355,6 @@ decrypt: { mode: "off" }
     }
 
     #[test]
-    fn loads_nickel_through_the_same_schema() {
-        let path = temp_config(
-            "ncl",
-            r#"{
-              version = 1,
-              proxy = {
-                default_policy = "default",
-                outbounds.default = {
-                  type = "socks5",
-                  server = "127.0.0.1",
-                  server_port = 1080,
-                  network = ["tcp"],
-                },
-                policies.default = {
-                  dns.mode = "fake",
-                  rules = [],
-                  final = {
-                    tcp = { type = "route", outbound = "default" },
-                    udp = { type = "reject", method = "refused" },
-                  },
-                },
-              },
-              capture = {
-                mode = "on",
-                directory = "/var/lib/heimdall/captures",
-                max_bytes_per_flow = 4096,
-              },
-              decrypt.mode = "off",
-            }"#,
-        );
-        let cfg = HeimdallConfig::load(&path).unwrap();
-        assert_eq!(cfg.proxy.default_policy, "default");
-        assert_eq!(cfg.capture.mode, CaptureMode::On);
-        assert_eq!(cfg.capture.max_bytes_per_flow, 4096);
-        fs::remove_file(path).unwrap();
-    }
-
-    #[test]
     fn rejects_duplicate_named_objects() {
         let path = temp_config(
             "json",
@@ -1464,6 +1380,18 @@ decrypt: { mode: "off" }
             HeimdallConfig::load(&path),
             Err(ConfigError::ParseJson { .. })
         ));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn rejects_removed_ncl_format_with_a_repair_hint() {
+        let path = temp_config("ncl", "{}");
+        let error = HeimdallConfig::load(&path).unwrap_err();
+        assert_eq!(error.code(), "unsupported_config_format");
+        let diagnostic = error.diagnostics().pop().unwrap();
+        assert_eq!(diagnostic.path, "$");
+        assert!(diagnostic.hint.contains(".toml"));
+        assert!(!diagnostic.hint.contains(".ncl"));
         fs::remove_file(path).unwrap();
     }
 

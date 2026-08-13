@@ -37,7 +37,7 @@ static binaries and lets DNS names be resolved by the upstream proxy.
 ## Configuration
 
 Keep exactly one configuration file under `/etc/heimdall`: `config.toml`,
-`config.yaml`/`config.yml`, `config.json`, or `config.ncl`. The extension selects
+`config.yaml`/`config.yml`, or `config.json`. The extension selects
 the parser; every syntax uses the same strict schema. Multiple discovered files,
 unknown or duplicate fields, wrong types, bad references, unsupported protocol
 capabilities, contradictory rules, malformed addresses, and invalid CIDRs are
@@ -126,7 +126,7 @@ nix develop .#ebpf -c bash -c \
 nix develop -c cargo build --workspace --locked --release
 
 sudo ./target/release/heimdall init
-# Or: init --format yaml|json|nickel
+# Or: init --format yaml|json
 sudo ./target/release/heimdall daemon
 
 ./target/release/heimdall run -- curl https://example.com
@@ -144,7 +144,7 @@ heimdall daemon
 heimdall status [--json]
 heimdall config validate|explain|show|path
 heimdall ebpf cleanup [--json]
-heimdall init [--dir PATH] [--format toml|yaml|json|nickel] [--force]
+heimdall init [--dir PATH] [--format toml|yaml|json] [--force]
 ```
 
 The daemon owns only the relay, fake-IP DNS, local control endpoint, eBPF
@@ -174,6 +174,5 @@ while the daemon or any wrapped workload is active.
 - `CAP_BPF`, `CAP_NET_ADMIN`, `CAP_SYS_ADMIN`, and `CAP_DAC_OVERRIDE` for
   the daemon
 - a SOCKS5 server
-- `nickel` when using `.ncl` outside the Nix package (the Nix package includes it)
 
 Licensed under Apache-2.0.

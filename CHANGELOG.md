@@ -74,7 +74,7 @@ All notable changes to heimdall are documented here.
   `route`, `direct`, or `reject` final actions.
 - Added aggregated configuration diagnostics with stable codes, JSON paths,
   and repair hints plus `config explain` for deterministic rule inspection;
-  all four starter formats are now tested through the same canonical loader.
+  all three starter formats are now tested through the same canonical loader.
 - Made unsupported connectionless UDP fail closed, removed implicit address bypasses
   from registered cgroups, completed fake DNS over TCP as well as UDP, and made DNS
   plus control-listener binding fail before daemon readiness.
@@ -82,7 +82,7 @@ All notable changes to heimdall are documented here.
 - Made unregistered cgroups bypass the relay by default; only commands started
   through `heimdall run` are redirected.
 - Replaced the orchestrator-shaped schema with one format-independent model.
-- Added strict TOML, YAML, JSON, and Nickel decoding, including ambiguous-file,
+- Added strict TOML, YAML, and JSON decoding, including ambiguous-file,
   unknown-field, reference, address, listener, path, and CIDR validation.
 - Rebuilt the bundled Heimdall skill around the command-wrapper workflow and
   the live CLI contract.
@@ -93,6 +93,8 @@ All notable changes to heimdall are documented here.
 
 ### Removed
 
+- Nickel configuration and its runtime/package dependency, leaving the three
+  direct Serde formats: TOML, YAML, and JSON.
 - Cluster integration and its vocabulary.
 - Workload selector routing from the public configuration.
 - The bundled Web UI and its Deno/Vite/Nix build path.

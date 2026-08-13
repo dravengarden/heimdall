@@ -231,10 +231,8 @@ fails. An unknown schema is never auto-deleted or silently migrated.
 - `unknown policy`: declare it below `proxy.policies` or choose a name reported
   by `heimdall agent`.
 - ambiguous config discovery: keep exactly one `config.toml`, `config.yaml`,
-  `config.yml`, `config.json`, or `config.ncl` in `/etc/heimdall`, or pass an
+  `config.yml`, or `config.json` in `/etc/heimdall`, or pass an
   explicit `--config` path.
-- Nickel export failure: install `nickel` when using a manually copied binary;
-  the Nix package includes it automatically.
 - daemon registration connection refused: start `heimdall.service` and confirm
   `daemon.api_listen` matches the client config.
 - DNS lookup failure in fake mode: verify unprivileged user namespaces are

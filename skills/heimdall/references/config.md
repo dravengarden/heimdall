@@ -1,6 +1,6 @@
 # Configuration reference
 
-Heimdall accepts `.toml`, `.yaml`/`.yml`, `.json`, and `.ncl`. Keep exactly one
+Heimdall accepts `.toml`, `.yaml`/`.yml`, and `.json`. Keep exactly one
 discovered `/etc/heimdall/config.<format>` file. All formats use this model:
 
 ```text
@@ -18,7 +18,7 @@ decrypt.mode = off
 daemon = optional implementation settings
 ```
 
-Use `heimdall init --format toml|yaml|json|nickel` for exact syntax. Do not
+Use `heimdall init --format toml|yaml|json` for exact syntax. Do not
 translate field names between formats.
 
 ## Outbound

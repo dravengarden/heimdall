@@ -23,5 +23,5 @@ operational guidance.
 
 - [`README.md`](../README.md) — Project overview and quick start
 - [`architecture.md`](architecture.md) — CLI, eBPF, DNS, and TCP/UDP relay boundaries
-- [`config.md`](config.md) — Policy rules, formats, credentials, capture, UDP/QUIC limits, and strict diagnostics
+- [`config.md`](config.md) — Strict TOML/YAML/JSON policy rules, credentials, capture, and UDP/QUIC limits
 - [`runbook.md`](runbook.md) — Build, agent and capture contracts, runtime and lifecycle matrices, safe eBPF cleanup, stress, and dual-stack HTTP/3 VM acceptance

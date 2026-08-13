@@ -1,6 +1,6 @@
 ---
 name: heimdall
-description: Operate and configure the Heimdall proxychains-style CLI wrapper. Use when an agent needs to run a command through a named egress policy, create or strictly repair Heimdall TOML/YAML/JSON/Nickel configuration, inspect daemon health, diagnose command-scoped SOCKS5 routing or fake/system DNS, or work with heimdall.service and /etc/heimdall/config.*.
+description: Operate and configure the Heimdall proxychains-style CLI wrapper. Use when an agent needs to run a command through a named egress policy, create or strictly repair Heimdall TOML/YAML/JSON configuration, inspect daemon health, diagnose command-scoped SOCKS5 routing or fake/system DNS, or work with heimdall.service and /etc/heimdall/config.*.
 ---
 
 # Heimdall
@@ -32,7 +32,7 @@ present TLS records as decrypted content or install trust material.
 
 Read [references/config.md](references/config.md) before creating or changing a
 config. Keep exactly one discovered
-`/etc/heimdall/config.{toml,yaml,yml,json,ncl}` file unless `--config` is
+`/etc/heimdall/config.{toml,yaml,yml,json}` file unless `--config` is
 explicit.
 
 After every edit, run:

@@ -1,7 +1,7 @@
 # Configuration
 
 Heimdall reads exactly one `/etc/heimdall/config.<format>` file. TOML, YAML,
-JSON, and Nickel enter the same strict schema. Unknown fields, duplicate named
+and JSON enter the same strict schema. Unknown fields, duplicate named
 objects, invalid enums, bad references, unsupported protocol capabilities, and
 contradictory DNS/routing choices are rejected before a command is started.
 
@@ -237,6 +237,6 @@ The `heimdall.config.explain/v1` document identifies the matched rule, or uses
 only for policies using fake DNS; strict validation rejects domain rules under
 system DNS.
 
-Generate a canonical starter with `heimdall init --format
-toml|yaml|json|nickel`. Existing files are preserved unless `--force` is
+Generate a canonical starter with `heimdall init --format toml|yaml|json`.
+Existing files are preserved unless `--force` is
 explicit.

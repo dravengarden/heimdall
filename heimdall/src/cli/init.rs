@@ -29,7 +29,6 @@ pub enum InitFormat {
     Toml,
     Yaml,
     Json,
-    Nickel,
 }
 
 impl InitFormat {
@@ -38,7 +37,6 @@ impl InitFormat {
             Self::Toml => "toml",
             Self::Yaml => "yaml",
             Self::Json => "json",
-            Self::Nickel => "ncl",
         }
     }
 
@@ -47,7 +45,6 @@ impl InitFormat {
             Self::Toml => HEIMDALL_TOML,
             Self::Yaml => HEIMDALL_YAML,
             Self::Json => HEIMDALL_JSON,
-            Self::Nickel => HEIMDALL_NICKEL,
         }
     }
 }
@@ -134,31 +131,6 @@ const HEIMDALL_JSON: &str = r#"{
 }
 "#;
 
-const HEIMDALL_NICKEL: &str = r#"# heimdall is a proxy wrapper. System traffic is never redirected.
-{
-  version = 1,
-  proxy = {
-    default_policy = "default",
-    outbounds.default = {
-      type = "socks5",
-      server = "127.0.0.1",
-      server_port = 1080,
-      network = ["tcp"],
-    },
-    policies.default = {
-      dns.mode = "fake",
-      rules = [],
-      final = {
-        tcp = { type = "route", outbound = "default" },
-        udp = { type = "reject", method = "refused" },
-      },
-    },
-  },
-  capture.mode = "off",
-  decrypt.mode = "off",
-}
-"#;
-
 pub fn run(args: InitArgs) -> Result<()> {
     fs::create_dir_all(&args.dir).with_context(|| format!("create dir {}", args.dir.display()))?;
 
@@ -212,12 +184,7 @@ mod tests {
 
     #[test]
     fn every_embedded_template_passes_the_canonical_loader() {
-        for format in [
-            InitFormat::Toml,
-            InitFormat::Yaml,
-            InitFormat::Json,
-            InitFormat::Nickel,
-        ] {
+        for format in [InitFormat::Toml, InitFormat::Yaml, InitFormat::Json] {
             let id = NEXT_DIR.fetch_add(1, Ordering::Relaxed);
             let dir = std::env::temp_dir()
                 .join(format!("heimdall-init-test-{}-{id}", std::process::id()));

@@ -281,13 +281,6 @@
           "heimdall"
         ];
 
-        nativeBuildInputs = [ pkgs.makeWrapper ];
-
-        postFixup = ''
-          wrapProgram $out/bin/heimdall \
-            --prefix PATH : ${lib.makeBinPath [ pkgs.nickel ]}
-        '';
-
         # Tests touch /proc, /sys/fs/cgroup, and require root for the
         # eBPF / sqlite paths; not viable inside the sandbox.
         doCheck = false;
@@ -345,7 +338,6 @@
             pkgs.cargo-watch
             pkgs.just
             pkgs.nixfmt
-            pkgs.nickel
           ];
 
         };

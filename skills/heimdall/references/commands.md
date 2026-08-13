@@ -20,7 +20,7 @@ read `capabilities.capture` before consuming a capture file. The payload is
 opaque transport data and `tls_plaintext` is false.
 
 `config show` prints source text, not a normalized form. `config validate`
-evaluates Nickel when applicable, decodes the selected syntax, rejects unknown
+decodes the selected syntax, rejects unknown
 fields and types, then runs semantic validation.
 
 `config explain` evaluates one TCP or UDP destination against the selected

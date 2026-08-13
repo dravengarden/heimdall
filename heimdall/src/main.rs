@@ -323,7 +323,7 @@ fn token_from_relay_ip(ip: Ipv4Addr) -> Option<u32> {
           after_help = "Tip: `heimdall help -v` prints every subcommand and \
                         option in one shot.")]
 struct Cli {
-    /// Config path (.toml, .yaml/.yml, .json, or .ncl). By default,
+    /// Config path (.toml, .yaml/.yml, or .json). By default,
     /// discover exactly one /etc/heimdall/config.<format> file.
     #[arg(long, env = "HEIMDALL_CONFIG", global = true)]
     config: Option<PathBuf>,

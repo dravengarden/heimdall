@@ -15,7 +15,7 @@ aya = "0.14"
 # Shared data types with the eBPF programs
 heimdall-common = { path = "../heimdall-common" }
 
-# Strict shared schema for TOML, YAML, JSON, and Nickel configuration.
+# Strict shared schema for TOML, YAML, and JSON configuration.
 heimdall-config = { path = "../heimdall-config" }
 
 # Async runtime
