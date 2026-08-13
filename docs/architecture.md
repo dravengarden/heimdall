@@ -43,10 +43,17 @@ orchestrator-shaped metadata.
    is also redirected when `dns = "fake"`.
 6. The relay recovers the original destination and connects through the
    selected SOCKS5 server.
-7. The parent forwards the child's exit status and deregisters the cgroup.
+7. Application bytes, including TLS records, pass through unchanged. Heimdall
+   never uses SNI to reinterpret an IP destination: fake DNS produces a SOCKS5
+   domain request, while system DNS preserves the resolved IP address.
+8. The parent forwards the child's exit status and deregisters the cgroup.
 
 If the parent is killed, the daemon's bounded cgroup scan removes the orphan
 after it becomes empty.
+
+Fake-IP mappings remain stable for the daemon lifetime. A depleted pool returns
+DNS `SERVFAIL` instead of reassigning an address that an application may still
+hold in its cache.
 
 ## Non-goals
 

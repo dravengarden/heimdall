@@ -20,7 +20,8 @@ default; `heimdall run --proxy NAME` overrides it for one invocation.
 
 For username/password authentication, add an `auth` table with `username` and
 `passwordFile`. The password file is read by the daemon and should be owned by
-root with restrictive permissions.
+root with restrictive permissions. SOCKS5 username/password fields must each
+contain 1–255 bytes; one trailing newline is removed from the password file.
 
 `run.dns` accepts `fake` or `system`. Fake mode preserves the hostname until
 the SOCKS5 CONNECT request, allowing the upstream to resolve private names.
@@ -36,7 +37,7 @@ starter file. They may be overridden under `daemon`.
 - unsupported extensions or ambiguous automatic discovery;
 - syntax errors, unknown fields, wrong types, and unknown connection types;
 - an undeclared `run.proxy` or an invalid proxy name/address;
-- empty authentication usernames or relative `passwordFile` paths;
+- empty or overlong authentication usernames and relative `passwordFile` paths;
 - malformed, zero-port, or colliding daemon listener addresses;
 - cgroup paths outside `/sys/fs/cgroup`;
 - non-canonical or wrong-family fake-IP CIDRs;

@@ -114,6 +114,8 @@ pub enum ConfigError {
     InvalidProxyAddress { name: String, addr: String },
     #[error("proxy `{0}` has an empty auth.username")]
     EmptyAuthUsername(String),
+    #[error("proxy `{name}` auth.username is {length} bytes; expected at most 255")]
+    AuthUsernameTooLong { name: String, length: usize },
     #[error("proxy `{name}` passwordFile must be absolute: {path}")]
     RelativePasswordFile { name: String, path: PathBuf },
     #[error("daemon.{field} has invalid socket address `{value}`")]
@@ -152,6 +154,7 @@ impl ConfigError {
             Self::InvalidProxyName(_) => "invalid_proxy_name",
             Self::InvalidProxyAddress { .. } => "invalid_proxy_address",
             Self::EmptyAuthUsername(_) => "empty_auth_username",
+            Self::AuthUsernameTooLong { .. } => "auth_username_too_long",
             Self::RelativePasswordFile { .. } => "relative_password_file",
             Self::InvalidSocket { .. } => "invalid_listener",
             Self::DuplicateListeners => "duplicate_listeners",
@@ -263,13 +266,16 @@ impl Socks5Auth {
     ///
     /// # Errors
     /// Returns [`ConfigError::SecretRead`] when the file cannot be read.
-    pub fn read_password(&self) -> Result<String, ConfigError> {
-        let bytes = fs::read(&self.password_file).map_err(|source| ConfigError::SecretRead {
-            path: self.password_file.clone(),
-            source,
-        })?;
-        let value = String::from_utf8_lossy(&bytes);
-        Ok(value.strip_suffix('\n').unwrap_or(&value).to_string())
+    pub fn read_password(&self) -> Result<Vec<u8>, ConfigError> {
+        let mut bytes =
+            fs::read(&self.password_file).map_err(|source| ConfigError::SecretRead {
+                path: self.password_file.clone(),
+                source,
+            })?;
+        if bytes.last() == Some(&b'\n') {
+            bytes.pop();
+        }
+        Ok(bytes)
     }
 }
 
@@ -349,6 +355,12 @@ impl HeimdallConfig {
                     if let Some(auth) = &proxy.auth {
                         if auth.username.trim().is_empty() {
                             return Err(ConfigError::EmptyAuthUsername(name.clone()));
+                        }
+                        if auth.username.len() > 255 {
+                            return Err(ConfigError::AuthUsernameTooLong {
+                                name: name.clone(),
+                                length: auth.username.len(),
+                            });
                         }
                         if !auth.password_file.is_absolute() {
                             return Err(ConfigError::RelativePasswordFile {
@@ -604,6 +616,40 @@ mod tests {
         let error = cfg.validate().unwrap_err();
         assert!(matches!(&error, ConfigError::InvalidProxyAddress { .. }));
         assert_eq!(error.code(), "invalid_proxy_address");
+    }
+
+    #[test]
+    fn rejects_auth_username_longer_than_socks5_field() {
+        let source = format!(
+            r#"
+                [proxies.default]
+                type = "socks5"
+                addr = "127.0.0.1:1080"
+                [proxies.default.auth]
+                username = "{}"
+                passwordFile = "/etc/heimdall/password"
+            "#,
+            "u".repeat(256)
+        );
+        let cfg: HeimdallConfig = toml::from_str(&source).unwrap();
+        let error = cfg.validate().unwrap_err();
+        assert!(matches!(
+            &error,
+            ConfigError::AuthUsernameTooLong { length: 256, .. }
+        ));
+        assert_eq!(error.code(), "auth_username_too_long");
+    }
+
+    #[test]
+    fn password_file_preserves_binary_bytes_and_trims_one_newline() {
+        let path = temp_config("secret", "ignored");
+        fs::write(&path, [0xff, 0x00, b'p', b'\n']).unwrap();
+        let auth = Socks5Auth {
+            username: "alice".into(),
+            password_file: path.clone(),
+        };
+        assert_eq!(auth.read_password().unwrap(), [0xff, 0x00, b'p']);
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

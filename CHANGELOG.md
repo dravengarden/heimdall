@@ -4,6 +4,14 @@ All notable changes to heimdall are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve `dns = "system"` and literal-IP semantics by treating TLS as opaque
+  payload instead of rewriting destinations from ClientHello SNI. SOCKS5
+  connection setup now has bounded timeouts, strict reply/domain/credential
+  validation, and downgrade-resistant username/password negotiation. Fake-IP
+  pools no longer recycle addresses into potentially stale application caches.
+
 ### Changed
 
 - Reframed heimdall as a proxychains-style command wrapper.

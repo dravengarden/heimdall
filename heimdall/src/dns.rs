@@ -17,10 +17,9 @@
 //! AAAA falls back to NOERROR + 0 records, keeping the legacy
 //! "force IPv4" behaviour. Other RR types remain empty NOERROR.
 //!
-//! The pool is recycled wrap-around. Eviction is implicit: the next
-//! allocation that hits a slot already in use overwrites it. With a
-//! /16 (65 K addresses) and short TTL (30 s) this is fine for the
-//! foreseeable load.
+//! Mappings stay stable for the daemon lifetime. Pool exhaustion returns
+//! SERVFAIL instead of recycling an address that an application may still
+//! hold in its DNS cache.
 
 use std::{
     collections::HashMap,
@@ -28,7 +27,7 @@ use std::{
     str::FromStr,
     sync::{
         Arc,
-        atomic::{AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
 };
 
@@ -50,11 +49,11 @@ const FAKE_IP_TTL_SEC: u32 = 30;
 pub struct DnsResolver {
     /// Pool base in network byte order.
     fake_base_be: u32,
-    /// Number of usable IPs in the pool. We skip offset 0 (network)
-    /// and the broadcast — but for /15+ ranges we just skip 0.
-    fake_size: u32,
-    /// Next offset to allocate (mod fake_size).
-    next_offset: AtomicU32,
+    /// Total number of addresses in the pool. Allocation skips both the
+    /// network and broadcast address and never recycles a live mapping.
+    fake_size: u64,
+    /// Next offset to allocate.
+    next_offset: AtomicU64,
 
     /// fake_ip (network byte order u32) → hostname.
     by_ip: RwLock<HashMap<u32, String>>,
@@ -79,7 +78,7 @@ struct V6Pool {
     /// store it). For a /96 this is 2^32 = 4G addresses; for a /124
     /// it's 16. We compute as min(2^(128 - prefix), u64::MAX).
     size: u64,
-    /// Next host-offset to allocate (mod size). Skips offset 0.
+    /// Next host-offset to allocate. Skips offset 0 and never recycles.
     next_offset: AtomicU64,
 
     /// fake_v6 → hostname. Keyed by the full 16-byte address (network
@@ -100,7 +99,7 @@ impl DnsResolver {
             prefix <= 30,
             "fakeIpCidr must be /30 or larger; got /{prefix}"
         );
-        let size = 1u32 << (32 - prefix);
+        let size = 1u64 << (32 - prefix);
 
         let v6 = if fake6_cidr.is_empty() {
             None
@@ -130,7 +129,7 @@ impl DnsResolver {
         Ok(Self {
             fake_base_be: u32::from(base).to_be(),
             fake_size: size,
-            next_offset: AtomicU32::new(1), // skip the network address
+            next_offset: AtomicU64::new(1), // skip the network address
             by_ip: RwLock::new(HashMap::new()),
             by_name: RwLock::new(HashMap::new()),
             v6,
@@ -140,38 +139,31 @@ impl DnsResolver {
     /// Allocate or retrieve the fake IP for `hostname`.
     ///
     /// Hostname is canonicalised to lowercase, no trailing dot.
-    pub fn allocate(&self, hostname: &str) -> Ipv4Addr {
+    pub fn allocate(&self, hostname: &str) -> Option<Ipv4Addr> {
         let canon = canonicalise(hostname);
-
-        if let Some(&fake_be) = self.by_name.read().get(&canon) {
-            return Ipv4Addr::from(u32::from_be(fake_be));
+        let mut by_name = self.by_name.write();
+        if let Some(&fake_be) = by_name.get(&canon) {
+            return Some(Ipv4Addr::from(u32::from_be(fake_be)));
         }
 
-        // Reserve next offset; wrap and recycle if pool exhausted.
-        // We skip offset 0 to avoid the network address.
-        let offset = loop {
-            let raw = self.next_offset.fetch_add(1, Ordering::Relaxed);
-            let off = raw % self.fake_size;
-            if off != 0 {
-                break off;
-            }
-        };
+        // Offset 0 is the network address and size - 1 is broadcast.
+        // Refusing exhaustion preserves the lifetime identity of every fake
+        // IP; recycling could send a stale application cache to another host.
+        let offset = self.next_offset.fetch_add(1, Ordering::Relaxed);
+        if offset >= self.fake_size - 1 {
+            return None;
+        }
 
         let base_host = u32::from_be(self.fake_base_be);
-        let fake_host = base_host + offset;
+        let fake_host = base_host + offset as u32;
         let fake_be = fake_host.to_be();
         let fake = Ipv4Addr::from(fake_host);
 
-        // If this slot was used by another hostname, evict.
         let mut by_ip = self.by_ip.write();
-        let mut by_name = self.by_name.write();
-        if let Some(prev) = by_ip.insert(fake_be, canon.clone()) {
-            by_name.remove(&prev);
-            debug!(evicted = %prev, %fake, "fake-IP slot recycled");
-        }
+        by_ip.insert(fake_be, canon.clone());
         by_name.insert(canon, fake_be);
 
-        fake
+        Some(fake)
     }
 
     /// Reverse lookup: fake IP (network byte order) → hostname.
@@ -184,19 +176,15 @@ impl DnsResolver {
     pub fn allocate6(&self, hostname: &str) -> Option<Ipv6Addr> {
         let pool = self.v6.as_ref()?;
         let canon = canonicalise(hostname);
-
-        if let Some(addr) = pool.by_name.read().get(&canon) {
+        let mut by_name = pool.by_name.write();
+        if let Some(addr) = by_name.get(&canon) {
             return Some(Ipv6Addr::from(*addr));
         }
 
-        // Reserve next offset; wrap and recycle if pool exhausted.
-        let offset = loop {
-            let raw = pool.next_offset.fetch_add(1, Ordering::Relaxed);
-            let off = if pool.size == 0 { raw } else { raw % pool.size };
-            if off != 0 {
-                break off;
-            }
-        };
+        let offset = pool.next_offset.fetch_add(1, Ordering::Relaxed);
+        if offset >= pool.size {
+            return None;
+        }
 
         // Compose: base bytes + (offset spread across the host bits).
         // For prefix p, host_bits = 128 - p; the offset occupies the
@@ -216,10 +204,7 @@ impl DnsResolver {
         }
 
         let mut by_ip = pool.by_ip.write();
-        let mut by_name = pool.by_name.write();
-        if let Some(prev) = by_ip.insert(addr, canon.clone()) {
-            by_name.remove(&prev);
-        }
+        by_ip.insert(addr, canon.clone());
         by_name.insert(canon, addr);
 
         Some(Ipv6Addr::from(addr))
@@ -295,7 +280,11 @@ impl DnsResolver {
 
             match q.query_type() {
                 RecordType::A => {
-                    let fake = self.allocate(&host_trim);
+                    let Some(fake) = self.allocate(&host_trim) else {
+                        warn!(host = %host_trim, "fake IPv4 pool exhausted");
+                        response.metadata.response_code = ResponseCode::ServFail;
+                        return response;
+                    };
                     let mut rec =
                         Record::from_rdata(q.name().clone(), FAKE_IP_TTL_SEC, RData::A(A(fake)));
                     rec.dns_class = q.query_class();
@@ -314,6 +303,11 @@ impl DnsResolver {
                         debug!(host = %host_trim, %fake6, "AAAA → fake IPv6");
                     }
                     None => {
+                        if self.v6.is_some() {
+                            warn!(host = %host_trim, "fake IPv6 pool exhausted");
+                            response.metadata.response_code = ResponseCode::ServFail;
+                            return response;
+                        }
                         debug!(host = %host_trim, "AAAA → empty NOERROR (no v6 pool)");
                     }
                 },
@@ -365,23 +359,23 @@ mod tests {
     #[test]
     fn allocate_returns_stable_ip_for_same_host() {
         let r = DnsResolver::new("198.19.0.0/16", "").unwrap();
-        let a = r.allocate("foo.example");
-        let b = r.allocate("foo.example");
+        let a = r.allocate("foo.example").unwrap();
+        let b = r.allocate("foo.example").unwrap();
         assert_eq!(a, b, "same host must get same fake IP");
     }
 
     #[test]
     fn allocate_distinct_ips_for_distinct_hosts() {
         let r = DnsResolver::new("198.19.0.0/16", "").unwrap();
-        let a = r.allocate("a.test");
-        let b = r.allocate("b.test");
+        let a = r.allocate("a.test").unwrap();
+        let b = r.allocate("b.test").unwrap();
         assert_ne!(a, b);
     }
 
     #[test]
     fn fake_ip_falls_in_pool() {
         let r = DnsResolver::new("198.19.0.0/16", "").unwrap();
-        let ip = r.allocate("x.test");
+        let ip = r.allocate("x.test").unwrap();
         let octets = ip.octets();
         assert_eq!(octets[0], 198);
         assert_eq!(octets[1], 19);
@@ -390,9 +384,9 @@ mod tests {
     #[test]
     fn case_insensitive_canonicalisation() {
         let r = DnsResolver::new("198.19.0.0/16", "").unwrap();
-        let a = r.allocate("Foo.Example");
-        let b = r.allocate("foo.example");
-        let c = r.allocate("foo.example.");
+        let a = r.allocate("Foo.Example").unwrap();
+        let b = r.allocate("foo.example").unwrap();
+        let c = r.allocate("foo.example.").unwrap();
         assert_eq!(a, b);
         assert_eq!(b, c);
     }
@@ -400,7 +394,7 @@ mod tests {
     #[test]
     fn lookup_round_trip() {
         let r = DnsResolver::new("198.19.0.0/16", "").unwrap();
-        let ip = r.allocate("svc.example");
+        let ip = r.allocate("svc.example").unwrap();
         let be = u32::from(ip).to_be();
         assert_eq!(r.lookup_be(be).as_deref(), Some("svc.example"));
     }
@@ -413,16 +407,17 @@ mod tests {
     }
 
     #[test]
-    fn small_pool_recycles_without_crashing() {
-        // /30 = 4 addresses, we skip offset 0 so 3 effective slots.
+    fn small_pool_never_reassigns_a_stale_fake_ip() {
+        // /30 has two usable addresses after network and broadcast.
         let r = DnsResolver::new("198.19.0.0/30", "").unwrap();
-        for i in 0..20 {
-            let host = format!("h{i}.test");
-            let _ = r.allocate(&host);
-        }
-        // Still in pool
-        for (_be, host) in r.by_ip.read().iter() {
-            assert!(host.starts_with("h"));
-        }
+        let first = r.allocate("first.test").unwrap();
+        let second = r.allocate("second.test").unwrap();
+        assert_ne!(first, second);
+        assert_eq!(r.allocate("third.test"), None);
+        assert_eq!(r.allocate("first.test"), Some(first));
+        assert_eq!(
+            r.lookup_be(u32::from(first).to_be()).as_deref(),
+            Some("first.test")
+        );
     }
 }

@@ -2,9 +2,10 @@
 
 heimdall sits on the data path: it loads eBPF programs into the kernel,
 intercepts `connect()` syscalls for wrapped commands, and relays selected
-connections through SOCKS5. It may inspect the TLS ClientHello to recover SNI
-when fake DNS is not in use. Bugs in these layers can leak traffic, crash the
-host, or escalate privileges. We take security reports seriously.
+connections through SOCKS5. Application payloads, including TLS records, are
+forwarded unchanged and are never used to alter the destination. Bugs in these
+layers can leak traffic, crash the host, or escalate privileges. We take
+security reports seriously.
 
 ## Reporting a vulnerability
 
@@ -54,7 +55,9 @@ Heimdall assumes:
 - The SOCKS5 upstream is trusted. heimdall forwards destination hostnames
   (SOCKS5 ATYP=0x03) to it; an evil upstream can MITM via
   cert injection on the upstream-of-the-upstream side, but heimdall
-  itself doesn't inject CAs.
+  itself doesn't inject CAs. RFC 1929 username/password authentication is
+  plaintext on the connection to the SOCKS5 server, so use it only over a
+  trusted local or otherwise protected transport.
 - eBPF programs are loaded by the daemon (uid 0 with `CAP_BPF`).
   They run with kernel privileges and bypass DAC.
 

@@ -14,7 +14,7 @@ operational guidance.
 ## Reading order
 
 - [`README.md`](../README.md) — Project overview and quick start
-- [`architecture.md`](architecture.md) — Architecture
+- [`architecture.md`](architecture.md) — CLI, eBPF, DNS, and transparent relay boundaries
 - [`runbook.md`](runbook.md) — Runbook
 
 ## Documents
@@ -22,6 +22,6 @@ operational guidance.
 ### Core documents
 
 - [`README.md`](../README.md) — Project overview and quick start
-- [`architecture.md`](architecture.md) — Architecture
-- [`config.md`](config.md) — Config
+- [`architecture.md`](architecture.md) — CLI, eBPF, DNS, and transparent relay boundaries
+- [`config.md`](config.md) — Formats, DNS modes, credentials, and strict validation
 - [`runbook.md`](runbook.md) — Runbook

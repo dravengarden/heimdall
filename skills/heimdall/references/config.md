@@ -11,8 +11,8 @@ proxies.<name>
   type = "socks5"                  required
   addr = "host:port"               required
   description                      optional
-  auth.username                    optional with auth
-  auth.passwordFile                absolute path, optional with auth
+  auth.username                    1–255 bytes, optional with auth
+  auth.passwordFile                absolute path; content 1–255 bytes
 
 run
   proxy = "default"                optional default
@@ -32,7 +32,8 @@ daemon                             entirely optional
 Proxy names may contain ASCII letters, digits, `.`, `_`, and `-`. `run.proxy`
 must name a declared proxy. Listener sockets must be valid, nonzero, and
 distinct. Fake-IP CIDRs must be canonical network addresses of the stated IP
-family.
+family. The daemon removes one trailing newline from `auth.passwordFile` and
+rejects an empty or over-255-byte result.
 
 ## Minimal examples
 

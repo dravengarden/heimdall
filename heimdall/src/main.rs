@@ -29,13 +29,13 @@ mod cli;
 mod dns;
 mod gc;
 mod policy;
-mod sni;
 
 use std::{
     collections::HashMap as StdHashMap,
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
     sync::Arc,
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
@@ -178,7 +178,7 @@ enum Upstream {
 #[derive(Clone, Debug)]
 struct ResolvedAuth {
     username: String,
-    password: String,
+    password: Vec<u8>,
 }
 
 impl Upstream {
@@ -199,6 +199,10 @@ fn resolve_auth(a: &Socks5Auth) -> Result<ResolvedAuth> {
     let password = a
         .read_password()
         .with_context(|| format!("read password file {}", a.password_file.display()))?;
+    anyhow::ensure!(
+        (1..=255).contains(&password.len()),
+        "SOCKS5 password must contain 1..=255 bytes after trimming one trailing newline"
+    );
     Ok(ResolvedAuth {
         username: a.username.clone(),
         password,
@@ -852,17 +856,16 @@ async fn relay(
     // we have a hostname for it and prefer SOCKS5 ATYP=0x03 so the upstream
     // proxy resolves it via its own resolver (which knows internal /
     // VPN-pushed DNS we don't).
-    let (dst, dst_ip_display) = match orig.family {
+    let dst = match orig.family {
         heimdall_common::FAMILY_V6 => {
             let v6 = std::net::Ipv6Addr::from(orig.addr);
             let from_dns = shared.dns.as_ref().and_then(|d| d.lookup6(&v6));
-            let display = v6.to_string();
             match from_dns {
                 Some(host) => {
                     debug!(addr = %v6, %host, "fake-IP reverse lookup hit (v6)");
-                    (Dst::Domain(host), display)
+                    Dst::Domain(host)
                 }
-                None => (Dst::Ip6(v6), display),
+                None => Dst::Ip6(v6),
             }
         }
         _ => {
@@ -871,18 +874,15 @@ async fn relay(
                 u32::from_ne_bytes([orig.addr[0], orig.addr[1], orig.addr[2], orig.addr[3]]);
             let v4 = Ipv4Addr::from(u32::from_be(v4_be));
             let from_dns = shared.dns.as_ref().and_then(|d| d.lookup_be(v4_be));
-            let display = v4.to_string();
             match from_dns {
                 Some(host) => {
                     debug!(addr = %v4, %host, "fake-IP reverse lookup hit (v4)");
-                    (Dst::Domain(host), display)
+                    Dst::Domain(host)
                 }
-                None => (Dst::Ip4(v4), display),
+                None => Dst::Ip4(v4),
             }
         }
     };
-    // Backward-compat alias used by older log lines below.
-    let dst_ip = dst_ip_display;
 
     // ─── Resolve decision → connection name directly ─────────────────────
     // `heimdall run` registers a per-cgroup override here before exec.
@@ -903,49 +903,6 @@ async fn relay(
 
     let unit_label = format!("cgroup:{}", orig.cgroup_id);
 
-    // ─── SNI fallback for IP-literal destinations ─────────────────────────
-    // Clients can land here with `Dst::Ip*` for two distinct reasons:
-    //   (a) Genuinely connecting to a public IP literal (e.g. service
-    //       mesh, hardcoded `https://1.1.1.1/`).
-    //   (b) Connecting to a stale or out-of-pool fake IP — the unit's
-    //       application-level DNS cache (Java InetAddress, Python
-    //       `dns.resolver`, runtime libs that bypass libc, etc.) holds
-    //       an IP that heimdall's fake-IP map no longer recognises.
-    //
-    // For (b) the IP is unroutable (heimdall's pool sits in the IETF
-    // benchmark range 198.18.0.0/15), so forwarding by IP makes the
-    // upstream SOCKS5 server time out / reject with 0x04. To honour
-    // the "failure shouldn't break the network" principle, we peek
-    // the TLS ClientHello: if SNI gives us a hostname, *promote* the
-    // destination to `Dst::Domain(host)` so the SOCKS5 CONNECT goes
-    // out as ATYP=0x03 (DOMAINNAME). The upstream resolves the name
-    // through its own resolver (Mac scoped DNS, AnyConnect, etc.)
-    // and the connection lands cleanly.
-    //
-    // For (a) we still benefit: SOCKS5 ATYP=0x03 is no worse than
-    // 0x01 when the IP is routable, and arguably better for upstream
-    // observability ("this client wanted google.com, here's the IP
-    // they tried"). The `dst_ip` field in the flow record always
-    // preserves the original IP literal so a forensic chain stays
-    // intact.
-    //
-    // The peek is non-destructive (`TcpStream::peek`), 150 ms time-
-    // bounded, and silent on miss — non-TLS or zero-SNI clients
-    // simply fall through to the legacy IP path.
-    let sni_host: Option<String> = match &dst {
-        Dst::Domain(_) => None, // already have a hostname from fake-IP DNS
-        Dst::Ip4(_) | Dst::Ip6(_) => {
-            sni::peek_sni(&client, std::time::Duration::from_millis(150)).await
-        }
-    };
-    if let Some(host) = sni_host.as_deref() {
-        info!(%host, dst = %dst_ip, "relay: SNI fallback promoted IP-literal connection to hostname");
-    }
-    let dst = match (dst, sni_host.clone()) {
-        (Dst::Ip4(_) | Dst::Ip6(_), Some(host)) => Dst::Domain(host),
-        (other, _) => other,
-    };
-
     let dst_label = match &dst {
         Dst::Ip4(ip) => ip.to_string(),
         Dst::Ip6(ip) => ip.to_string(),
@@ -956,10 +913,7 @@ async fn relay(
     let result: Result<(u64, u64)> = async {
         match upstream.as_ref() {
             Upstream::Socks5 { addr, auth } => {
-                let mut up = TcpStream::connect(addr)
-                    .await
-                    .with_context(|| format!("connect to SOCKS5 {addr}"))?;
-                socks5_connect(&mut up, &dst, dst_port, auth.as_ref())
+                let mut up = open_socks5_tunnel(addr, &dst, dst_port, auth.as_ref())
                     .await
                     .with_context(|| format!("SOCKS5 CONNECT {dst_label}:{dst_port} via {addr}"))?;
                 info!(
@@ -987,6 +941,46 @@ async fn relay(
 const M_NO_AUTH: u8 = 0x00;
 const M_USER_PASS: u8 = 0x02;
 const M_NO_ACCEPTABLE: u8 = 0xFF;
+const SOCKS5_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const SOCKS5_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+async fn open_socks5_tunnel(
+    addr: &str,
+    dst: &Dst,
+    port: u16,
+    auth: Option<&ResolvedAuth>,
+) -> Result<TcpStream> {
+    open_socks5_tunnel_with_timeouts(
+        addr,
+        dst,
+        port,
+        auth,
+        SOCKS5_CONNECT_TIMEOUT,
+        SOCKS5_HANDSHAKE_TIMEOUT,
+    )
+    .await
+}
+
+async fn open_socks5_tunnel_with_timeouts(
+    addr: &str,
+    dst: &Dst,
+    port: u16,
+    auth: Option<&ResolvedAuth>,
+    connect_timeout: Duration,
+    handshake_timeout: Duration,
+) -> Result<TcpStream> {
+    let mut stream = tokio::time::timeout(connect_timeout, TcpStream::connect(addr))
+        .await
+        .with_context(|| format!("timed out connecting to SOCKS5 {addr}"))?
+        .with_context(|| format!("connect to SOCKS5 {addr}"))?;
+    tokio::time::timeout(
+        handshake_timeout,
+        socks5_connect(&mut stream, dst, port, auth),
+    )
+    .await
+    .with_context(|| format!("timed out negotiating SOCKS5 with {addr}"))??;
+    Ok(stream)
+}
 
 async fn socks5_connect(
     s: &mut TcpStream,
@@ -998,7 +992,7 @@ async fn socks5_connect(
 
     // ─── Method negotiation (RFC 1928 §3) ────────────────────────────────
     let methods: &[u8] = if auth.is_some() {
-        &[M_NO_AUTH, M_USER_PASS]
+        &[M_USER_PASS]
     } else {
         &[M_NO_AUTH]
     };
@@ -1015,14 +1009,19 @@ async fn socks5_connect(
         "SOCKS5: bad version in method reply: {sel:?}"
     );
 
-    match sel[1] {
-        M_NO_AUTH => {}
-        M_USER_PASS => {
-            let auth = auth.context("server demands user/pass but no credentials configured")?;
+    match (sel[1], auth) {
+        (M_NO_AUTH, None) => {}
+        (M_USER_PASS, Some(auth)) => {
             socks5_userpass(s, &auth.username, &auth.password).await?;
         }
-        M_NO_ACCEPTABLE => anyhow::bail!("SOCKS5: server rejected all offered methods"),
-        other => anyhow::bail!("SOCKS5: unsupported method 0x{other:02x}"),
+        (M_NO_AUTH, Some(_)) | (M_USER_PASS, None) => {
+            anyhow::bail!(
+                "SOCKS5: server selected method 0x{:02x} that the client did not offer",
+                sel[1]
+            )
+        }
+        (M_NO_ACCEPTABLE, _) => anyhow::bail!("SOCKS5: server rejected all offered methods"),
+        (other, _) => anyhow::bail!("SOCKS5: unsupported method 0x{other:02x}"),
     }
 
     // ─── CONNECT request (RFC 1928 §4) ───────────────────────────────────
@@ -1040,9 +1039,13 @@ async fn socks5_connect(
         }
         Dst::Domain(host) => {
             anyhow::ensure!(
-                host.len() <= 255,
-                "SOCKS5: domain name too long ({} bytes)",
+                !host.is_empty() && host.len() <= 255,
+                "SOCKS5: domain name must contain 1..=255 bytes (got {})",
                 host.len()
+            );
+            anyhow::ensure!(
+                valid_socks5_domain(host),
+                "SOCKS5: domain name must be an ASCII hostname with 1..=63-byte labels"
             );
             req.push(0x03); // ATYP=DOMAINNAME
             req.push(host.len() as u8);
@@ -1065,6 +1068,7 @@ async fn socks5_connect(
         "SOCKS5 CONNECT rejected by server: code=0x{:02x}",
         hdr[1]
     );
+    anyhow::ensure!(hdr[2] == 0x00, "SOCKS5: non-zero reserved reply byte");
     // Drain BND.ADDR + BND.PORT based on the reply ATYP (independent of request).
     match hdr[3] {
         0x01 => {
@@ -1086,18 +1090,44 @@ async fn socks5_connect(
     Ok(())
 }
 
-async fn socks5_userpass(s: &mut TcpStream, user: &str, pass: &str) -> Result<()> {
+fn valid_socks5_domain(host: &str) -> bool {
+    let host = host.strip_suffix('.').unwrap_or(host);
+    !host.is_empty()
+        && host.is_ascii()
+        && host.split('.').all(|label| {
+            (1..=63).contains(&label.len())
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                && label
+                    .as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                && label
+                    .as_bytes()
+                    .last()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+        })
+}
+
+async fn socks5_userpass(s: &mut TcpStream, user: &str, pass: &[u8]) -> Result<()> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    anyhow::ensure!(user.len() <= 255, "SOCKS5 user/pass: username > 255 bytes");
-    anyhow::ensure!(pass.len() <= 255, "SOCKS5 user/pass: password > 255 bytes");
+    anyhow::ensure!(
+        (1..=255).contains(&user.len()),
+        "SOCKS5 user/pass: username must contain 1..=255 bytes"
+    );
+    anyhow::ensure!(
+        (1..=255).contains(&pass.len()),
+        "SOCKS5 user/pass: password must contain 1..=255 bytes"
+    );
 
     let mut req = Vec::with_capacity(3 + user.len() + pass.len());
     req.push(0x01);
     req.push(user.len() as u8);
     req.extend_from_slice(user.as_bytes());
     req.push(pass.len() as u8);
-    req.extend_from_slice(pass.as_bytes());
+    req.extend_from_slice(pass);
     s.write_all(&req).await?;
 
     let mut resp = [0u8; 2];
@@ -1112,4 +1142,205 @@ async fn socks5_userpass(s: &mut TcpStream, user: &str, pass: &str) -> Result<()
         resp[1]
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod socks5_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn tcp_pair() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (client, accepted) = tokio::join!(TcpStream::connect(addr), listener.accept());
+        (client.unwrap(), accepted.unwrap().0)
+    }
+
+    fn request_bytes(dst: &Dst, port: u16) -> Vec<u8> {
+        let mut request = vec![0x05, 0x01, 0x00];
+        match dst {
+            Dst::Ip4(ip) => {
+                request.push(0x01);
+                request.extend_from_slice(&ip.octets());
+            }
+            Dst::Ip6(ip) => {
+                request.push(0x04);
+                request.extend_from_slice(&ip.octets());
+            }
+            Dst::Domain(domain) => {
+                request.push(0x03);
+                request.push(domain.len() as u8);
+                request.extend_from_slice(domain.as_bytes());
+            }
+        }
+        request.extend_from_slice(&port.to_be_bytes());
+        request
+    }
+
+    #[tokio::test]
+    async fn encodes_ipv4_ipv6_and_domain_connect_requests() {
+        let cases = [
+            Dst::Ip4(Ipv4Addr::new(203, 0, 113, 8)),
+            Dst::Ip6("2001:db8::8".parse().unwrap()),
+            Dst::Domain("internal.example.com".into()),
+        ];
+
+        for dst in cases {
+            let (mut client, mut server) = tcp_pair().await;
+            let expected = request_bytes(&dst, 443);
+            let server_task = tokio::spawn(async move {
+                let mut greeting = [0u8; 3];
+                server.read_exact(&mut greeting).await.unwrap();
+                assert_eq!(greeting, [0x05, 0x01, M_NO_AUTH]);
+                server.write_all(&[0x05, M_NO_AUTH]).await.unwrap();
+
+                let mut request = vec![0u8; expected.len()];
+                server.read_exact(&mut request).await.unwrap();
+                assert_eq!(request, expected);
+                server
+                    .write_all(&[0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0, 0])
+                    .await
+                    .unwrap();
+            });
+
+            socks5_connect(&mut client, &dst, 443, None).await.unwrap();
+            server_task.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn configured_auth_cannot_downgrade_and_preserves_password_bytes() {
+        let (mut client, mut server) = tcp_pair().await;
+        let auth = ResolvedAuth {
+            username: "alice".into(),
+            password: vec![0xff, 0x00, b'p'],
+        };
+        let dst = Dst::Domain("example.com".into());
+        let expected_request = request_bytes(&dst, 443);
+        let server_task = tokio::spawn(async move {
+            let mut greeting = [0u8; 3];
+            server.read_exact(&mut greeting).await.unwrap();
+            assert_eq!(greeting, [0x05, 0x01, M_USER_PASS]);
+            server.write_all(&[0x05, M_USER_PASS]).await.unwrap();
+
+            let mut auth_request = [0u8; 11];
+            server.read_exact(&mut auth_request).await.unwrap();
+            assert_eq!(
+                auth_request,
+                [0x01, 5, b'a', b'l', b'i', b'c', b'e', 3, 0xff, 0x00, b'p',]
+            );
+            server.write_all(&[0x01, 0x00]).await.unwrap();
+
+            let mut request = vec![0u8; expected_request.len()];
+            server.read_exact(&mut request).await.unwrap();
+            assert_eq!(request, expected_request);
+            server
+                .write_all(&[
+                    0x05, 0x00, 0x00, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0,
+                ])
+                .await
+                .unwrap();
+        });
+
+        socks5_connect(&mut client, &dst, 443, Some(&auth))
+            .await
+            .unwrap();
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rejects_server_selected_auth_method_that_was_not_offered() {
+        let (mut client, mut server) = tcp_pair().await;
+        let auth = ResolvedAuth {
+            username: "alice".into(),
+            password: b"secret".to_vec(),
+        };
+        let server_task = tokio::spawn(async move {
+            let mut greeting = [0u8; 3];
+            server.read_exact(&mut greeting).await.unwrap();
+            assert_eq!(greeting, [0x05, 0x01, M_USER_PASS]);
+            server.write_all(&[0x05, M_NO_AUTH]).await.unwrap();
+        });
+
+        let error = socks5_connect(
+            &mut client,
+            &Dst::Domain("example.com".into()),
+            443,
+            Some(&auth),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("did not offer"));
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rejects_nonzero_reserved_reply_byte() {
+        let (mut client, mut server) = tcp_pair().await;
+        let dst = Dst::Ip4(Ipv4Addr::new(203, 0, 113, 8));
+        let request_len = request_bytes(&dst, 443).len();
+        let server_task = tokio::spawn(async move {
+            let mut greeting = [0u8; 3];
+            server.read_exact(&mut greeting).await.unwrap();
+            server.write_all(&[0x05, M_NO_AUTH]).await.unwrap();
+            let mut request = vec![0u8; request_len];
+            server.read_exact(&mut request).await.unwrap();
+            server
+                .write_all(&[0x05, 0x00, 0x01, 0x01, 127, 0, 0, 1, 0, 0])
+                .await
+                .unwrap();
+        });
+
+        let error = socks5_connect(&mut client, &dst, 443, None)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("reserved"));
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rejects_empty_and_non_ascii_domains() {
+        for domain in [
+            String::new(),
+            "例.example".into(),
+            "bad host.example".into(),
+            "-bad.example".into(),
+        ] {
+            let (mut client, mut server) = tcp_pair().await;
+            let server_task = tokio::spawn(async move {
+                let mut greeting = [0u8; 3];
+                server.read_exact(&mut greeting).await.unwrap();
+                server.write_all(&[0x05, M_NO_AUTH]).await.unwrap();
+            });
+            assert!(
+                socks5_connect(&mut client, &Dst::Domain(domain), 443, None)
+                    .await
+                    .is_err()
+            );
+            server_task.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn handshake_timeout_bounds_silent_proxy() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server_task = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        });
+
+        let error = open_socks5_tunnel_with_timeouts(
+            &addr.to_string(),
+            &Dst::Ip4(Ipv4Addr::new(203, 0, 113, 8)),
+            443,
+            None,
+            Duration::from_secs(1),
+            Duration::from_millis(20),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("timed out negotiating"));
+        server_task.abort();
+    }
 }
