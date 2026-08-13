@@ -28,12 +28,11 @@ multiple-versions = "deny"
 wildcards = "deny"
 allow-wildcard-paths = true
 highlight = "all"
-# Kernel instrumentation, DNS, and SQLite are independently versioned stacks.
+# Kernel instrumentation and DNS are independently versioned stacks.
 # Keep their advisories strict while excluding their internal version bridges.
 skip-tree = [
   { name = "aya" },
   { name = "hickory-proto" },
-  { name = "sqlx" },
 ]
 
 [sources]

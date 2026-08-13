@@ -1,280 +1,60 @@
 # Architecture
 
-## Components
+Heimdall has one product path: wrap a command and proxy that command's
+outbound connections.
 
-| Component | Crate / module | Role |
-|---|---|---|
-| eBPF programs | `heimdall-ebpf` | `connect4`, `connect6`, `udp4_sendmsg`, `udp6_sendmsg`, `skb_egress`, libssl uprobes, Go TLS uprobes, rustls uprobes — all in one ELF, embedded into the daemon binary |
-| Userspace daemon | `heimdall` | loads / attaches eBPF, runs the relay (dual-stack), watches `/sys/fs/cgroup` for unit identity, drives the policy engine, GCs orphan CLI cgroups, serves the HTTP API |
-| Web UI | `heimdall-ui` | React 19 / MUI, `bun run build`, bundled into the daemon binary via `rust-embed` |
-| Shared types | `heimdall-common` | `OrigDst`, `TapEvent`, `BypassEvent`, `is_default_bypass{,6}`, policy flag bits — `#![no_std]` so the eBPF crate can use them |
-| Config schema | `heimdall-config` | YAML / JSON / TOML / Nickel schema + validator — pure Rust, no orchestrator deps |
-
-## End-to-end data flow
-
-```
-            ┌──────────────────── Unit cgroup ──────────────────────────────┐
-            │                                                               │
-            │   app process                                                 │
-            │     │                                                         │
-            │     │ connect(remote_ip:443)            (or :53 for DNS)      │
-            │     ▼                                                         │
-            │   ┌──────────── eBPF connect4 / connect6 ──────────────────┐ │
-            │   │ cgroup_id = bpf_get_current_cgroup_id()                 │ │
-            │   │ policy    = CGROUP_POLICY[cgroup_id] or DEFAULT         │ │
-            │   │                                                          │ │
-            │   │ DNS hijack gate (heimdall run with dns=fake):           │ │
-            │   │   if (policy & DNS_HIJACK) and dport == 53:             │ │
-            │   │     rewrite dst → DNS_ADDR_V{4,6}, return                │ │
-            │   │                                                          │ │
-            │   │ Bypass gate:                                             │ │
-            │   │   if is_default_bypass{,6}(dst) OR (policy & REDIRECT_OFF):│
-            │   │     maybe emit BYPASS_EVENTS perf event, return         │ │
-            │   │                                                          │ │
-            │   │ Else rewrite to relay:                                   │ │
-            │   │   COOKIE_MAP[socket_cookie] = OrigDst{dst, family,      │ │
-            │   │                                       cgroup_id}         │ │
-            │   │   sock_addr.user_ip{4,6} = relay_ip{,6}                 │ │
-            │   │   sock_addr.user_port    = 12345                         │ │
-            │   └──────────────────────────────────────────────────────────┘ │
-            │     │                                                         │
-            │     │ TCP SYN to relay (or UDP for sendmsg DNS hijack)        │
-            │     ▼                                                         │
-            │   ┌─── eBPF skb_egress(BPF_CGROUP_INET_EGRESS) ──────────────┐ │
-            │   │  detect IP version (byte-0 high nibble)                  │ │
-            │   │   v4: protocol@9, IHL→TCP off                            │ │
-            │   │   v6: walk next-header chain past extension headers      │ │
-            │   │        (Hop-by-Hop / Routing / Fragment / DstOpts /      │ │
-            │   │         Mobility / HIP / Shim6, max 8 hops) → TCP off    │ │
-            │   │  read kernel-assigned src_port,                          │ │
-            │   │  move COOKIE_MAP entry → PORT_MAP[src_port]              │ │
-            │   └──────────────────────────────────────────────────────────┘ │
-            │                                                               │
-            └───────────────────────────────────────────────────────────────┘
-                  │
-                  │  SYN to relay_ip{,6}:12345
-                  ▼
-   ┌────────── Userspace daemon ─────────────────────────────────────────────┐
-   │                                                                          │
-   │   relay (dual-stack TcpListener on [::]:12345)                           │
-   │     │                                                                    │
-   │     │ accept() → src_port → PORT_MAP[src_port] → OrigDst                │
-   │     │   (OrigDst.family discriminates v4 vs v6 destination)              │
-   │     ▼                                                                    │
-   │   UnitResolver                                                          │
-   │     │  cgroup_id → (unit, slice) from /sys/fs/cgroup path                │
-   │     ▼                                                                    │
-   │   cli_overrides.get(cgroup_id)                                          │
-   │     │  hit → use heimdall-run-registered RunDecision                    │
-   │     │  miss → router::resolve_decision(cfg, unit_info) → Decision        │
-   │     ▼                                                                    │
-   │   fake-IP reverse lookup on OrigDst → SOCKS5 ATYP=0x03 hostname         │
-   │     │  (when miss, fall back to ATYP=0x01 IPv4 / 0x04 IPv6 literal)     │
-   │     ▼                                                                    │
-   │   SOCKS5 CONNECT to upstream → copy_bidirectional with the client stream│
-   │     │                                                                    │
-   │     │ insert flow_start row                                              │
-   │     │ push flow_id to OpenFlowIndex[cgroup_id]                           │
-   │     ▼                                                                    │
-   │   sqlite (flows + messages tables)                                       │
-   │     │                                                                    │
-   │     ▼                                                                    │
-   │   axum HTTP API + WebSocket → React UI                                   │
-   │                                                                          │
-   └──────────────────────────────────────────────────────────────────────────┘
+```text
+heimdall run -- command
+        |
+        | create transient cgroup and register proxy choice
+        v
+privileged heimdall daemon
+        |  eBPF redirects only the registered cgroup
+        |  fake-IP DNS preserves hostnames
+        v
+named SOCKS5 proxy
+        |
+        v
+destination
 ```
 
-### Tap pipeline (Phase B)
+## Boundaries
 
-Independent of the relay path. Fires on every libssl / Go TLS / rustls
-function call **regardless** of whether the connection went through
-the relay.
+The CLI is the product surface. It selects a named proxy, optionally chooses
+the DNS mode, creates a child cgroup, executes the command, forwards its exit
+status, and cleans up.
 
-```
-process calls SSL_write(buf, n)  /  Go (*Conn).Write  /  rustls write
-      │
-      │  uprobe attached at libssl::SSL_write,
-      │   crypto/tls.(*Conn).Write file offset (via .gopclntab),
-      │   or rustls PlaintextSink::write (mangled symbol match)
-      ▼
-   eBPF emit_tap()
-      │  cgroup_id = bpf_get_current_cgroup_id()
-      │  if (policy & POLICY_OBSERVE_OFF) return     ◄── observe gate
-      │  bpf_probe_read_user(buf, ≤256 bytes)
-      │  TAP_EVENTS.output(TapEvent{cgroup_id, dir, body, ...})
-      ▼
-   AsyncPerfEventArray (one buffer per CPU, in tap.rs)
-      │  decode → ObservedTap
-      ▼
-   spawn_store_writer task
-      │  flow_id = OpenFlowIndex[cgroup_id].latest()  ◄── correlation
-      │  store.insert_message(InsertMessage{flow_id, body, ...})
-      ▼
-   sqlite.messages
-```
+The daemon is implementation infrastructure. It loads the eBPF object,
+maintains a local cgroup-to-proxy registry, runs the TCP relay and fake-IP DNS,
+and reaps abandoned CLI cgroups. Its default eBPF policy is always bypass, so
+an unregistered process cannot be redirected accidentally.
 
-### Policy plane
+The configuration contains only named proxies, run defaults, and rarely-used
+daemon listener settings. There is no workload selector language and no
+orchestrator-shaped metadata.
 
-Independent control loop populating `CGROUP_POLICY` so the kernel
-programs above can gate per-cgroup.
+## Connection lifecycle
 
-```
-   /etc/heimdall/heimdall.{ncl,toml,json,yaml}   (auto-discovered)
-        │
-        ▼
-   HeimdallConfig (Routing.rules + Routing.default + cli.run)
-        │
-   UnitResolver (/sys/fs/cgroup walk; cgroup_id → unit + slice)
-        │
-        ▼
-   PolicyEngine (heimdall/src/policy.rs)
-     - reconciles every 5s, walking known cgroups
-     - encodes Decision → u8 flags (REDIRECT_OFF / OBSERVE_OFF /
-                                     NO_BYPASS_LOG / DNS_HIJACK)
-     - writes BPF CGROUP_POLICY[cgroup_id] = flags
-     - tracks `external` set so reconcile never wipes
-       heimdall-run-registered cgroups (those are owned by the
-       HTTP register/deregister lifecycle)
-```
+1. `heimdall run` re-enters through `systemd-run --user --scope` when needed.
+2. It creates an `heimdall-cli-*` cgroup below the delegated user subtree.
+3. It registers that cgroup ID, proxy name, and DNS mode with the local daemon.
+4. The child joins the cgroup and executes the requested command.
+5. eBPF rewrites the child's TCP destinations to the local relay. DNS traffic
+   is also redirected when `dns = "fake"`.
+6. The relay recovers the original destination and connects through the
+   selected SOCKS5 server.
+7. The parent forwards the child's exit status and deregisters the cgroup.
 
-### Bootstrap pass
+If the parent is killed, the daemon's bounded cgroup scan removes the orphan
+after it becomes empty.
 
-One-shot, runs 2s after PolicyEngine is up. Closes the gap for
-connections that already existed when the daemon started.
+## Non-goals
 
-```
-   for cgroup in UnitResolver.snapshot():
-      pid = first proc in cgroup.procs
-      for conn in /proc/<pid>/net/tcp where state == ESTABLISHED:
-         insert_flow_start(connection_name="bootstrap", unit, dst)
-         OpenFlowIndex[cgroup_id].push(flow_id)
-```
+- cluster or container orchestration integration
+- host-wide routing rules for services
+- workload labels, annotations, or admission hooks
+- a Web UI or public HTTP API as a primary interface
+- TLS plaintext collection as part of the proxy wrapper contract
 
-After this pass, tap events from those long-lived connections find a
-flow_id via OpenFlowIndex and end up correlated in the messages
-table.
-
-### `heimdall run` lifecycle
-
-`heimdall run` is a special CLI client of the same daemon, used to
-wrap arbitrary commands so they go through a chosen connection.
-Lifecycle in five phases:
-
-```
-1. Resolve RunDecision = (connection, observe, dns, tag) from
-   cli.run.{default → profiles[NAME] → flags}.
-
-2. Re-entry: if not already under user@<UID>.service/app.slice/,
-   exec systemd-run --user --scope --quiet -- heimdall run
-   --no-reentry … . This drops the process into a writable cgroup
-   subtree (user-ns delegation; non-root works without sudo).
-
-3. mkdir <parent>/heimdall-cli-<pid>-<rand>/ as a sibling cgroup.
-   inode of that dir == cgroup_id (cgroup v2).
-
-4. POST /api/cli/register {cgroup_id, connection, observe, dns}.
-   Daemon: cli_overrides[cgroup_id] = decision; PolicyEngine
-   .external += cgroup_id; CGROUP_POLICY BPF map row written
-   (DNS_HIJACK bit if dns=fake).
-
-5. fork()
-     child:
-       echo $$ > <cgroup>/cgroup.procs        # join the cgroup
-       strip http_proxy / https_proxy env vars
-       restore default SIGINT / SIGTERM handlers
-       if dns=fake:
-         unshare(CLONE_NEWUSER | CLONE_NEWNS)
-         write uid_map / setgroups / gid_map
-         mount(/, MS_PRIVATE | MS_REC)
-         bind /tmp/heimdall-cli-nsswitch-<id>.conf → /etc/nsswitch.conf
-              (hosts: files dns — skips nss-resolve)
-         bind /tmp/heimdall-cli-resolv-<id>.conf   → /etc/resolv.conf
-              (nameserver 127.0.0.1 — eBPF rewrites the :53 connect)
-         bind /dev/null                            → /var/run/nscd/socket
-              (forces glibc to skip nscd, hit our shimmed nsswitch)
-       execvp(cmd, args)
-     parent:
-       waitpid(child)
-       POST /api/cli/deregister?cgroup_id=N
-       rm tmp shim files
-       rmdir <cgroup>
-       exit(child status)
-```
-
-If the parent dies abnormally (kill -9, OOM kill) before phase-5's
-deregister-and-rmdir, the cgroup + BPF entry leak. The orphan-cgroup
-GC (next subsection) reaps them.
-
-### Orphan-cgroup GC
-
-```
-   tokio::time::interval(30s)
-        │
-        ▼
-   walk /sys/fs/cgroup/user.slice (depth ≤ 6)
-        │  match dirs starting with `heimdall-cli-`
-        │
-        ▼
-   for each candidate:
-      if cgroup.events: populated 0:
-         cli_overrides.write().remove(cgroup_id)
-         PolicyEngine.deregister_external(cgroup_id)
-            ↳ external set -= cgroup_id
-            ↳ CGROUP_POLICY BPF map row deleted
-         rmdir(path)                  # needs CAP_DAC_OVERRIDE
-                                      # because cgroup is user-owned
-```
-
-Idempotent and safe to run forever. Clean exits don't go through this
-path because phase-5 of the run lifecycle does the cleanup
-explicitly.
-
-## Where each piece of state lives
-
-| State | Where | Lifetime |
-|---|---|---|
-| eBPF maps (`COOKIE_MAP`, `PORT_MAP`, `CGROUP_POLICY`, `BYPASS_EVENTS`, `TAP_EVENTS`, `RELAY_ADDR{,6}`, `DNS_ADDR_V4`, `DNS_ADDR_V6`, `DNS_PORT_V6`, `GO_READ_STATE`, `SSL_READ_STATE`, `RUSTLS_READ_STATE`) | kernel | until daemon exits |
-| `flows` table | `<runtime.stateDir>/flows.db` | `runtime.flowRetentionSecs` (default 3 days) |
-| `messages` table | same db | shared retention window |
-| Unit / cgroup cache | in-memory in daemon (`UnitResolver`) | refreshed at startup + on-miss + 5s reconcile |
-| `cli_overrides` (`heimdall run` registrations) | in-memory `Arc<RwLock<HashMap<u64, Decision>>>` shared with HTTP API | until deregister or GC reap |
-| `PolicyEngine.external` set | in-memory `Arc<RwLock<HashSet<u64>>>` | until deregister or GC reap |
-| OpenFlowIndex | in-memory `parking_lot::RwLock<HashMap>` | populated by relay + bypass + bootstrap, used by tap consumer |
-| Per-cgroup mount-ns shim files | `/tmp/heimdall-cli-{nsswitch,resolv}-<cgroup_id>.conf` | written by `heimdall run` parent before fork; deleted after waitpid |
-
-## Process boundaries
-
-- One systemd unit (`heimdall.service`) — relay + tap + API + UI + GC
-  all in the same binary.
-- Caps required: `CAP_BPF`, `CAP_NET_ADMIN`, `CAP_SYS_ADMIN`,
-  `CAP_SYS_PTRACE`, `CAP_DAC_OVERRIDE`. Last two for the Phase B
-  Go-binary scanner (readlink other UIDs' `/proc/<pid>/exe`) and the
-  GC (rmdir user-owned heimdall-cli-* dirs).
-- Two TCP listeners on the relay port (`runtime.listen` defaults to
-  `0.0.0.0:12345`, auto-rewritten to `[::]:12345` for dual-stack
-  accept), one HTTP listener (`runtime.apiListen`, default
-  `127.0.0.1:9999`), one UDP listener (`runtime.dnsListen`, default
-  `0.0.0.0:5358`).
-
-## What heimdall does NOT do
-
-- **No MITM, no CA injection.** The relay sees the encrypted TLS
-  byte stream just like any SOCKS5 tunnel; plaintext only comes from
-  uprobes that observe the application's `SSL_*` / Go / rustls calls
-  before encryption / after decryption.
-- **No per-connection filtering.** Policy granularity is per-cgroup
-  (per-unit for systemd-managed services, per-`heimdall run` for CLI
-  processes). Different connections from the same cgroup can't have
-  different policies.
-- **No client-side reverse routing.** When `use: system` is chosen,
-  the unit's connection bypasses heimdall entirely; the relay never
-  sees it. We can still observe TLS plaintext (uprobes are
-  independent of the relay path), but `bytes_up` / `bytes_down`
-  stay zero on the synthetic flow row.
-- **No JVM TLS taps yet.** HotSpot's default `SunJSSE` is pure-Java
-  so libssl uprobes don't fire. Roadmap: a JVMTI agent that
-  retransforms `sun.security.ssl.SSLEngineImpl.{wrap,unwrap}` to
-  redirect through a native stub we can uprobe. See CHANGELOG.
-- **No relay for arbitrary UDP.** eBPF DNS hijack catches UDP `:53`
-  specifically (when `dns: fake` is in effect for the cgroup); other
-  UDP traffic goes direct.
+Destination-based routing belongs in the selected upstream proxy. Heimdall's
+job is only to choose a proxy for one command and transport its connections.

@@ -28,9 +28,6 @@ dependencies:
 build-ebpf:
     nix develop .#ebpf -c bash -euo pipefail -c 'cd heimdall-ebpf && cargo-nightly build --locked --release'
 
-build-ui:
-    cd heimdall-ui && deno install --frozen --allow-scripts && deno task typecheck && deno task build
-
 test:
     cargo test --workspace --all-features --locked --release
 
@@ -50,5 +47,5 @@ build-userspace:
 cache-stats:
     sccache --show-stats
 
-verify: toolchain-check check-format build-ebpf build-ui lint lint-ebpf dependencies test build-userspace
+verify: toolchain-check check-format build-ebpf lint lint-ebpf dependencies test build-userspace
     @echo "verify OK"

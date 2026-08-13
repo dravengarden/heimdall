@@ -12,25 +12,13 @@ target on accepted ideas is fast.
   rewrite a chunk twice.
 - Skim [docs/architecture.md](docs/architecture.md) to know which
   control loop your change lands in.
-- For changes touching `heimdall-config/src/lib.rs`: the schema is
-  also mirrored in `heimdall/src/cli/init_templates/lib.ncl` (Nickel
-  contracts) and `init_templates/README.md` (the AI-readable
-  reference). Update all three in lockstep.
+- For changes touching `heimdall-config/src/lib.rs`, update the four embedded
+  init templates, `docs/config.md`, and the bundled skill reference together.
 
 ## Dev setup
 
 ```bash
-# Toolchain prerequisites
-rustup toolchain install stable
-rustup toolchain install nightly        # eBPF needs nightly + build-std
-rustup target add bpfel-unknown-none --toolchain nightly
-rustup component add rust-src --toolchain nightly
-
-# Deno for the UI
-curl -fsSL https://deno.land/install.sh | sh
-
-# (NixOS) define a flake/devShell that pins nightly + bpfel target
-# + deno to get the same toolchain reproducibly.
+nix develop
 ```
 
 ## Building
@@ -39,22 +27,20 @@ eBPF must be built **before** the userspace daemon — `heimdall/src/main.rs`
 embeds the eBPF object via `include_bytes!`.
 
 ```bash
-( cd heimdall-ebpf && cargo +nightly build -Z build-std=core \
-                                          --target bpfel-unknown-none --release )
-( cd heimdall-ui && deno install --allow-scripts && deno task build )
-cargo build --release
+nix develop .#ebpf -c bash -c \
+  'cd heimdall-ebpf && cargo-nightly build --locked --release'
+nix develop -c just verify
 ```
 
 Tests:
 
 ```bash
-cargo test                          # workspace (heimdall + heimdall-config + heimdall-common)
-cd heimdall-ui && deno task typecheck
+nix develop -c cargo test --workspace --all-features --locked
 ```
 
 ## Code style
 
-- **Rust 2021** edition, default `cargo fmt` + `cargo clippy --all-targets`
+- **Rust 2024** edition, default `cargo fmt` + `cargo clippy --all-targets`
   before opening a PR.
 - Keep changes minimal and focused. A bug fix doesn't need surrounding
   cleanup; a one-shot operation doesn't need a helper.
@@ -77,9 +63,9 @@ file (`gc:`, `dns:`, `policy:`, `docs:`, `ebpf:`).
 
 ## PR checklist
 
-- [ ] Tests pass: `cargo test` + `cd heimdall-ui && deno task typecheck`
+- [ ] `nix develop -c just verify` passes
 - [ ] eBPF rebuild not skipped if the BPF source changed
-- [ ] Schema changes propagated to `lib.ncl` + `init_templates/README.md`
+- [ ] Schema changes propagated to all init formats, docs, and the Heimdall skill
 - [ ] User-visible behaviour change documented in `CHANGELOG.md`
       under the `## [Unreleased]` heading
 - [ ] No new private info / hostnames / paths committed (run
@@ -91,8 +77,8 @@ Use the GitHub issue template. Include:
 - Kernel version (`uname -r`)
 - `heimdall status` output (config path + connection / rule counts)
 - Relevant journal entries (`journalctl -u heimdall --since "5min ago"`)
-- For routing problems: a flow log row from
-  `curl http://127.0.0.1:9999/api/flows?limit=20`
+- For proxying problems: `heimdall agent` output and a
+  minimal wrapped-command reproduction
 
 ## Licensing
 

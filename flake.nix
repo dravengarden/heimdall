@@ -1,24 +1,18 @@
-# Heimdall flake — pure-Nix build of the eBPF object, the React/MUI
-# UI bundle, and the userspace daemon. `nix build` produces a binary
-# byte-identical to `cargo build --release` followed by `deno task build`,
-# without an external build orchestration step.
+# Heimdall flake — pure-Nix build of the eBPF object and CLI daemon.
 #
-# Three derivations:
+# Two derivations:
 #
 #   • heimdall-ebpf    — nightly Rust + bpfel-unknown-none + build-std,
 #                        produces an ELF with embedded BTF.
-#   • heimdall-ui      — Deno + Vite, produces dist/ static bundle.
-#   • heimdall         — stable Rust workspace build, embeds both via
-#                        include_bytes! and rust-embed.
+#   • heimdall         — stable Rust workspace build, embeds the eBPF ELF.
 #
 # Inputs:
-#   • nixpkgs unstable for bpf-linker; the UI toolchain is a vendored
-#     Deno 2.8.1 prebuilt (see the `deno` derivation below).
+#   • nixpkgs unstable for bpf-linker.
 #   • fenix for nightly Rust pinned to heimdall-ebpf/rust-toolchain.toml
 #     (its fromToolchainFile reader handles channel + components +
 #     targets in one shot).
 {
-  description = "heimdall — transparent SOCKS5 + TLS observability for k8s pods";
+  description = "heimdall — proxychains-style SOCKS5 wrapper using cgroup eBPF";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -33,12 +27,6 @@
     crane = {
       url = "github:ipetkov/crane";
     };
-    # Shared Nix builders (buildDenoViteApp) from the public shared-utils
-    # monorepo. The UI bundle is built via that shared builder — NOT a
-    # hand-rolled FOD here — so source changes always rebuild instead of
-    # silently reusing a stale dist.
-    shared-utils.url = "github:dravengarden/shared-utils";
-    shared-utils.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs =
@@ -47,7 +35,6 @@
       nixpkgs,
       fenix,
       crane,
-      shared-utils,
     }:
     let
       system = "x86_64-linux";
@@ -56,32 +43,6 @@
         overlays = [ fenix.overlays.default ];
       };
       lib = pkgs.lib;
-      shared = shared-utils.lib.${system};
-
-      # Deno 2.8.1 — nixpkgs `nixos-unstable` only ships 2.7.14 today, so we
-      # pull the official prebuilt binary directly (fetchurl → unzip →
-      # autoPatchelfHook fixes the dynamic linker). Once nixpkgs catches up,
-      # delete this and use `pkgs.deno`. Matches the pin used by every other
-      # columbus project (cowboy/omega/liveview/dashboard/theia/argus).
-      deno = pkgs.stdenvNoCC.mkDerivation rec {
-        pname = "deno";
-        version = "2.8.1";
-        src = pkgs.fetchurl {
-          url = "https://github.com/denoland/deno/releases/download/v${version}/deno-x86_64-unknown-linux-gnu.zip";
-          hash = "sha256-LXu2GVImrIMuC/cQmhFfCvZe5prHl6S73lsnoGzCQtk=";
-        };
-        nativeBuildInputs = [
-          pkgs.unzip
-          pkgs.autoPatchelfHook
-        ];
-        buildInputs = [
-          pkgs.stdenv.cc.cc.lib
-          pkgs.zlib
-        ];
-        unpackPhase = "unzip $src";
-        installPhase = "install -Dm755 deno $out/bin/deno";
-        meta.mainProgram = "deno";
-      };
 
       # Nightly pinned via heimdall-ebpf/rust-toolchain.toml. The
       # fakeHash gets replaced on first `nix build` — fenix prints the
@@ -284,33 +245,7 @@
         '';
       };
 
-      # ── heimdall-ui: deno install + vite build ────────────────────────
-      # Built through shared-utils' footgun-free `buildDenoViteApp` — NOT a
-      # hand-rolled FOD. The old shape wrapped the whole `deno install + vite
-      # build` in a single fixed-output derivation, addressed ONLY by its
-      # declared outputHash; but the bundle's bytes vary with source, so Nix
-      # reused the cached dist whenever the hash wasn't manually rebumped and
-      # silently embedded a STALE UI. The builder splits that into a deps-only
-      # FOD (keyed by the lockfiles → depsHash) + a normal content-addressed
-      # offline build, so any UI source edit rebuilds automatically.
-      #
-      # stageShell = false: heimdall-ui has its own SDK (no shared
-      # @shared-utils/ui _shell seam). installArgs preserves --allow-scripts
-      # (esbuild's npm postinstall fetches its platform binary) + --frozen
-      # (deno.lock is committed). webRoot = heimdall-ui (deno.json/dist live
-      # there). depsHash refreshes only when heimdall-ui's deno.lock /
-      # package.json change (lib.fakeHash → build → copy "got").
-      heimdall-ui = shared.buildDenoViteApp {
-        pname = "heimdall";
-        version = "0.1.0";
-        src = pkgs.lib.cleanSource ./.;
-        webRoot = "heimdall-ui";
-        stageShell = false;
-        installArgs = "--frozen --allow-scripts";
-        depsHash = "sha256-CBKSdGEHbeIb7i7KZfJYn+XPBEE33R4XSDBE67xuiZk=";
-      };
-
-      # ── heimdall: workspace daemon, embeds the two artifacts above ────
+      # ── heimdall: workspace daemon, embeds the eBPF artifact ─────────
       heimdall = rustPlatform.buildRustPackage {
         pname = "heimdall";
         version = "0.1.0";
@@ -332,15 +267,11 @@
 
         cargoLock.lockFile = ./Cargo.lock;
 
-        # Place the eBPF object and UI bundle at the literal paths
-        # heimdall/src/main.rs and api.rs expect (include_bytes! and
-        # rust-embed are compile-time relative-path lookups).
+        # Place the eBPF object at the path used by include_bytes!.
         preBuild = ''
           mkdir -p heimdall-ebpf/target/bpfel-unknown-none/release
           cp ${heimdall-ebpf}/heimdall-ebpf \
              heimdall-ebpf/target/bpfel-unknown-none/release/heimdall-ebpf
-          mkdir -p heimdall-ui/dist
-          cp -r ${heimdall-ui}/. heimdall-ui/dist/
         '';
 
         cargoBuildFlags = [
@@ -350,12 +281,19 @@
           "heimdall"
         ];
 
+        nativeBuildInputs = [ pkgs.makeWrapper ];
+
+        postFixup = ''
+          wrapProgram $out/bin/heimdall \
+            --prefix PATH : ${lib.makeBinPath [ pkgs.nickel ]}
+        '';
+
         # Tests touch /proc, /sys/fs/cgroup, and require root for the
         # eBPF / sqlite paths; not viable inside the sandbox.
         doCheck = false;
 
         meta = with lib; {
-          description = "Transparent SOCKS5 + TLS observability for Kubernetes pods";
+          description = "Proxychains-style SOCKS5 wrapper using cgroup eBPF";
           mainProgram = "heimdall";
           platforms = platforms.linux;
           license = licenses.asl20;
@@ -367,18 +305,15 @@
         inherit
           heimdall
           heimdall-ebpf
-          heimdall-ui
           bpf-linker
-          deno
           ;
         default = heimdall;
       };
 
       # `nix develop` shell with everything needed to iterate locally —
-      # nightly for eBPF, stable for userspace, deno for UI, plus the
-      # surrounding tooling the runbook expects.
+      # nightly for eBPF and stable for userspace.
       devShells.${system} = {
-        # Most edits touch userspace Rust or the UI. Keep the LLVM 22 eBPF
+        # Most edits touch userspace Rust. Keep the LLVM 22 eBPF
         # linker closure out of this common path.
         default = pkgs.mkShell {
           packages = [
@@ -388,13 +323,12 @@
             pkgs.cargo-deny
             pkgs.cargo-machete
             pkgs.rust-analyzer
-            deno
-            pkgs.nodejs_24
+            pkgs.jq
             pkgs.pkg-config
             pkgs.cargo-watch
             pkgs.just
-            pkgs.nickel
             pkgs.nixfmt
+            pkgs.nickel
           ];
 
         };

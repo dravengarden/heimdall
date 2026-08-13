@@ -1,12 +1,11 @@
 # Sample systemd unit for heimdall.
 #
-# heimdall runs as a single root-owned daemon (one relay + tap + API +
-# UI + GC in one binary). Install to /etc/systemd/system/heimdall.service
+# heimdall runs as a small root-owned relay, DNS, control API, and GC daemon.
+# Install to /etc/systemd/system/heimdall.service
 # and `systemctl daemon-reload && systemctl enable --now heimdall`.
 #
-# The NixOS module under /etc/nixos/services/heimdall/ in the hawk
-# config is the maintained version of this; this file is a reference
-# for non-Nix hosts.
+# This file is a reference for non-Nix hosts. Declarative distributions should
+# package the same command and capabilities in their native service module.
 
 [Unit]
 Description=heimdall transparent SOCKS5 proxy
@@ -16,20 +15,15 @@ Wants=network-online.target
 [Service]
 Type=notify
 NotifyAccess=main
-ExecStart=/usr/local/bin/heimdall serve
-# /var/lib/heimdall holds the flow store (sqlite). systemd creates it
-# 0750 root:root on first start.
-StateDirectory=heimdall
-StateDirectoryMode=0750
+ExecStart=/usr/local/bin/heimdall daemon
 Restart=on-failure
 RestartSec=2
 
 # eBPF program loading needs CAP_BPF + CAP_NET_ADMIN; CAP_SYS_ADMIN is
-# required for cgroup attach + perf event creation; CAP_SYS_PTRACE for
-# the libssl uprobe target discovery; CAP_DAC_OVERRIDE for the
-# orphan-cgroup GC to rmdir user-owned heimdall-cli-* directories.
-AmbientCapabilities=CAP_BPF CAP_NET_ADMIN CAP_SYS_ADMIN CAP_SYS_PTRACE CAP_DAC_OVERRIDE
-CapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN CAP_SYS_ADMIN CAP_SYS_PTRACE CAP_DAC_OVERRIDE
+# required for cgroup attachment; CAP_DAC_OVERRIDE lets orphan GC remove
+# empty user-owned heimdall-cli-* cgroups.
+AmbientCapabilities=CAP_BPF CAP_NET_ADMIN CAP_SYS_ADMIN CAP_DAC_OVERRIDE
+CapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN CAP_SYS_ADMIN CAP_DAC_OVERRIDE
 
 [Install]
 WantedBy=multi-user.target

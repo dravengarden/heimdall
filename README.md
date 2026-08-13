@@ -1,307 +1,115 @@
 # heimdall
 
-Transparent egress proxy + TLS observability for systemd units,
-powered by eBPF cgroup hooks and uprobes.
-
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
-[![Linux](https://img.shields.io/badge/linux-5.10%2B-lightgrey)](#requirements)
-[![cgroup](https://img.shields.io/badge/cgroup-v2-orange)](#requirements)
-
-Routes outbound TCP through a SOCKS5 upstream **and** captures
-decrypted TLS payloads at the application boundary — no MITM, no CA
-injection, no per-application configuration. Single binary
-(relay + tap + HTTP API + Web UI), runs as a systemd service; routes
-per-cgroup, identifying workloads by their systemd unit + slice.
-
-> **Status: alpha.** Daily-driven on a single NixOS host; CI, release
-> process, and multi-host deployment haven't been hardened yet. See
-> [CHANGELOG.md](CHANGELOG.md) for what's shipped and
-> [docs/runbook.md](docs/runbook.md) for the deploy story.
-
----
-
-## Quickstart
+Run one command through a SOCKS5 proxy without modifying that command.
 
 ```bash
-# 1. Build (eBPF first, then userspace; see Build section for the why)
-( cd heimdall-ebpf && cargo +nightly build -Z build-std=core \
-                                          --target bpfel-unknown-none --release )
-( cd heimdall-ui && deno install --allow-scripts && deno task build )
-cargo build --release
-
-# 2. Bootstrap a config directory
-sudo ./target/release/heimdall init --dir /etc/heimdall --format nickel
-
-# 3. Edit /etc/heimdall/heimdall.ncl (declares connections + routing rules).
-#    /etc/heimdall/README.md is auto-generated and dense; AI agents read it.
-
-# 4. Run the daemon (systemd in production; ad-hoc here for testing)
-sudo ./target/release/heimdall serve
-
-# 5. Wrap a CLI through a connection
-heimdall run -p corp -- curl https://internal.example.com/
-heimdall flows list --since 5m
+heimdall run -- curl https://example.com
+heimdall run -p corp -- ssh internal.example.com
 ```
 
-NixOS users: a fully declarative deploy is straightforward — point
-`services.heimdall` (or your equivalent module) at the `heimdall`
-binary and provision `/etc/heimdall/heimdall.ncl` + the
-`/etc/heimdall/secrets/` dir.
-
----
-
-## Core concepts: Flow vs Tap
-
-Two ideas drive the entire data model. Most documentation references
-both — internalize the distinction once and the rest follows.
-
-### Flow — one TCP connection
-
-A **flow** is a single TCP connection from a systemd unit (or a wrapped
-`heimdall run` process) to some destination, tracked from `connect()`
-to close. One row in the `flows` sqlite table per flow.
-
-Captured fields: `slice` + `unit` (systemd identity), `cgroup_id`,
-`dst_ip:port`, `dst_host` (when fake-IP DNS gave us a hostname),
-`connection_name` (`default` / `corp` / `bypass` / `bootstrap`),
-`upstream_addr`, `bytes_up/down`, start + end timestamps, error.
-
-A flow row is created in one of three places:
-
-| Origin | `connection_name` | When |
-|---|---|---|
-| Relay path | `default`, `corp`, … | eBPF redirected the connect to the relay; relay opens SOCKS5 to the named upstream |
-| Bypass path | `bypass` | Connection is in the kernel-bypass CIDR set OR the unit opted into `use: system`; relay never sees it but eBPF emits a perf event so we still record the metadata |
-| Bootstrap pass | `bootstrap` | One-shot scan at daemon startup that synthesizes flows for connections already established before heimdall came up (long-lived TLS streams from existing services) |
-
-### Tap (message) — one decrypted SSL_write / SSL_read
-
-A **tap event** (stored as a `messages` row) is a single
-`SSL_write()` or `SSL_read()` call captured by an eBPF uprobe at the
-libssl / Go `crypto/tls.(*Conn).{Write,Read}` / rustls boundary, with
-up to **256 bytes** of plaintext copied out via `bpf_probe_read_user`.
-
-Captured fields: direction (`send` / `recv`), `body` (the truncated
-plaintext), `total_len` (how big the call actually was), `cgroup_id`,
-`tgid`, `ts_us`, and `flow_id` (foreign key to `flows`, may be NULL).
-
-### Two orthogonal axes per unit
-
-A unit's behaviour toward heimdall is decided by two independent
-flags:
-
-- **`use`** (proxy choice): a connection name (e.g. `default`,
-  `corp`) or `system` (skip the relay; let the kernel route
-  natively).
-- **`observe`**: whether tap events fire for this unit's cgroup.
-
-Both come from `routing` rules in config. Rules select units by
-their systemd identity — `units` (`*.service` / `*.scope`) and
-`slices` (`*.slice`) — derived from the cgroup path:
-
-```nickel
-routing.rules = [
-  { name = "corp-apps",
-    match = { slices = [ "app.slice" ], units = [ "prefix:vault-" ] },
-    use   = "corp",
-    observe = true,
-  },
-]
-```
-
-A unit can route via the proxy while staying silenced (e.g. a chatty
-controller), or skip the proxy and stay observed (a host-bound
-daemon you still want plaintext for). See
-[`/etc/heimdall/README.md`](heimdall/src/cli/init_templates/README.md)
-(auto-generated by `heimdall init`) for the full schema and every
-combination.
-
----
-
-## Documentation
-
-| Doc | Covers |
-|---|---|
-| [docs/architecture.md](docs/architecture.md) | Components, three control loops (relay / tap / policy), bootstrap pass, where each piece of state lives |
-| [docs/config.md](docs/config.md) | Routing systemd units through heimdall (admin-side perspective) |
-| [docs/observability.md](docs/observability.md) | Phase B tap: TLS coverage matrix, `.gopclntab` parsing for stripped Go binaries, the Go RET-offset uprobe trick, flow_id correlation rules |
-| [docs/runbook.md](docs/runbook.md) | Daily build + deploy, expected startup log sequence, common failure modes |
-| `/etc/heimdall/README.md` | Auto-generated full schema reference (re-emitted by `heimdall init`); AI agents read this when editing the config |
-
-[`skills/`](skills/) contains agentskills.io-format SKILL.md files
-for `heimdall-{flows,status,init,serve,config,run}` — installable
-into Claude Code, Codex, Cursor, etc. via
-[`bunx skills add`](https://skills.sh/).
-
----
-
-## How it works (1-minute sketch)
-
-```
-Unit                            Host                          Upstream
-────                            ────                          ────────
-connect(1.2.3.4:443)
-  │
-  │  ┌─ eBPF connect4 / connect6 (BPF_CGROUP_INET{4,6}_CONNECT) ───┐
-  │  │  policy = CGROUP_POLICY[cgroup_id] or DEFAULT                │
-  │  │  if policy.DNS_HIJACK and dport == 53:                       │
-  │  │      rewrite dst → heimdall fake-IP DNS, return              │
-  │  │  if kernel-bypass IP OR policy.REDIRECT_OFF:                 │
-  │  │      maybe emit BYPASS_EVENT  → userspace flow row           │
-  │  │      return                                                   │
-  │  │  else:                                                         │
-  │  │      COOKIE_MAP[socket_cookie] = OrigDst                      │
-  │  │      rewrite dst → relay_ip:12345                             │
-  │  └──────────────────────────────────────────────────────────────┘
-  │
-  │  ┌─ eBPF skb_egress on first SYN ────────────────────────────────┐
-  │  │  detect IP version (v4 / v6 + ext-header chain), find TCP off │
-  │  │  read kernel-assigned src_port,                                │
-  │  │  move COOKIE_MAP entry → PORT_MAP[src_port]                    │
-  │  └──────────────────────────────────────────────────────────────┘
-  ▼
-heimdall relay ([::]:12345 dual-stack)
-  │  accept() → src_port → PORT_MAP[src_port] → OrigDst
-  │  cgroup_id → (unit, slice) via /sys/fs/cgroup path → connection
-  │  fake-IP reverse lookup → SOCKS5 ATYP=0x03 hostname when possible
-  ▼
-SOCKS5 CONNECT 1.2.3.4:443 ────────────────────────────────▶ 1.2.3.4:443
-```
-
-Plaintext capture is independent of the relay path. eBPF uprobes on
-`SSL_write` / `SSL_read` (libssl), `crypto/tls.(*Conn).Write` / `Read`
-(Go), and rustls `PlaintextSink::write` + `Reader::read` fire on every
-TLS call from any process whose cgroup has `POLICY_OBSERVE_OFF` clear,
-copying up to 256 bytes of plaintext into a perf event. Stripped Go
-binaries are handled by parsing `.gopclntab` (Go's runtime symbol
-table) instead of the ELF symtab. Go return-side capture uses
-RET-offset uprobes (Pixie/Coroot pattern) since the kernel uretprobe
-trampoline collides with Go's movable stacks.
-
-### Why eBPF instead of iptables TPROXY?
-
-Traditional transparent proxies use iptables `TPROXY` +
-`MASQUERADE`. Those two rules conflict in any environment that also
-SNATs — return packets get TPROXYed before conntrack can un-SNAT
-them, and the originating socket never receives a reply. heimdall
-hooks at the `connect()` syscall level — before the packet is
-created. No TPROXY marks, no conntrack interference, no MASQUERADE
-conflict.
-
----
-
-## `heimdall run` — proxychains for the cgroup era
+For an AI agent, start with one side-effect-free preflight:
 
 ```bash
-heimdall run -p corp -- curl https://vault.prod.internal/      # corp-VPN host
-heimdall run --connection direct -- git fetch origin           # public, observed
+heimdall agent
 ```
 
-Wraps an arbitrary command in a transient cgroup with its own routing
-+ observe + DNS-hijack policy. Non-root: `systemd-run --user --scope`
-re-entry lands the process in a writable cgroup subtree, then a
-unprivileged user+mount namespace bind-mounts a stripped-down
-`/etc/nsswitch.conf` + `/etc/resolv.conf` so the wrapped command's
-libc resolver hits heimdall's fake-IP DNS (UDP `127.0.0.1:53` → eBPF
-hijack → daemon DNS).
+It emits one versioned JSON document with config validity, stable error codes,
+daemon reachability, the resolved proxy/DNS decision, declared proxy names, and
+the exact next commands as argv arrays. Exit `0` means ready, `1` means not
+ready, and clap reserves `2` for invalid CLI usage.
 
-Works with statically-linked Go binaries, setuid binaries, and
-connectionless UDP — all things `LD_PRELOAD` shims (proxychains-ng)
-miss.
+Heimdall is deliberately a Linux CLI tool, not an orchestrator or a
+host-wide policy engine. Processes that were not started by `heimdall run`
+are left alone.
 
-See [`skills/heimdall/references/run.md`](skills/heimdall/references/run.md)
-for the full mechanics + failure modes.
+Unlike `proxychains4`, heimdall does not use `LD_PRELOAD`. A small privileged
+daemon attaches cgroup eBPF hooks; the unprivileged CLI places only the
+wrapped command in a transient cgroup. This also covers static binaries and
+lets DNS names be resolved by the upstream proxy.
 
----
+> **Status: alpha.** Linux 5.10+, cgroup v2, and systemd user scopes are
+> currently required.
+
+## Configuration
+
+Keep exactly one configuration file under `/etc/heimdall`: `config.toml`,
+`config.yaml`/`config.yml`, `config.json`, or `config.ncl`. The extension selects
+the parser; every syntax uses the same strict schema. Multiple discovered files,
+unknown fields, wrong types, bad references, malformed addresses, and invalid
+CIDRs are rejected.
+
+```toml
+[proxies.default]
+type = "socks5"
+addr = "127.0.0.1:1080"
+
+[proxies.corp]
+type = "socks5"
+addr = "127.0.0.1:1081"
+
+[run]
+proxy = "default"
+dns = "fake"
+```
+
+Optional authentication keeps the password out of the config:
+
+```toml
+[proxies.corp.auth]
+username = "alice"
+passwordFile = "/etc/heimdall/secrets/corp-password"
+```
+
+`dns = "fake"` sends hostname resolution through heimdall so the SOCKS5
+server resolves names. Use `dns = "system"` when the host resolver is
+preferred.
+
+## Getting started
+
+```bash
+# eBPF must be built before userspace because it is embedded in the binary.
+nix develop .#ebpf -c bash -c \
+  'cd heimdall-ebpf && cargo-nightly build --locked --release'
+nix develop -c cargo build --workspace --locked --release
+
+sudo ./target/release/heimdall init
+# Or: init --format yaml|json|nickel
+sudo ./target/release/heimdall daemon
+
+./target/release/heimdall run -- curl https://example.com
+```
+
+In production, install [`deploy/heimdall.service`](deploy/heimdall.service)
+and run the CLI as an ordinary user.
+
+## Command surface
+
+```text
+heimdall run [-p NAME] [--dns fake|system] -- COMMAND [ARGS...]
+heimdall agent [-p NAME] [--dns fake|system]
+heimdall daemon
+heimdall status [--json]
+heimdall config validate|show|path
+heimdall init [--dir PATH] [--format toml|yaml|json|nickel] [--force]
+```
+
+The daemon owns only the relay, fake-IP DNS, local control endpoint, eBPF
+maps, and stale CLI-cgroup cleanup. See [docs/architecture.md](docs/architecture.md)
+for the boundary and [docs/runbook.md](docs/runbook.md) for operations.
+
+`heimdall agent` never writes configuration, starts the daemon, registers a
+cgroup, or runs a command. Consumers should execute the returned
+`actions.execute_prefix` array followed by their own command arguments, without
+joining it into a shell string.
 
 ## Requirements
 
-| Requirement | Minimum |
-|---|---|
-| Linux kernel | **5.10+** (cgroup v2 + uprobes + perf event arrays) |
-| cgroup | v2 unified hierarchy (`/sys/fs/cgroup`) |
-| Capabilities | `CAP_BPF`, `CAP_NET_ADMIN`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE`, `CAP_DAC_OVERRIDE` |
-| SOCKS5 server | any (tested with v2raya, sing-box, hev-socks5-server) |
+- Linux 5.10 or newer
+- cgroup v2
+- a running systemd user manager
+- `CAP_BPF`, `CAP_NET_ADMIN`, `CAP_SYS_ADMIN`, and `CAP_DAC_OVERRIDE` for
+  the daemon
+- a SOCKS5 server
+- `nickel` when using `.ncl` outside the Nix package (the Nix package includes it)
 
-`CAP_SYS_PTRACE` is needed so the daemon can readlink other UIDs'
-`/proc/<pid>/exe` while scanning for Go binaries to attach uprobes
-to. `CAP_DAC_OVERRIDE` is needed so the orphan-cgroup GC can rmdir
-user-owned `heimdall-cli-*` directories under `user.slice`.
-
----
-
-## Build
-
-```bash
-# eBPF (different target — must build first; output is include_bytes!'d
-# into the daemon)
-( cd heimdall-ebpf && cargo +nightly build -Z build-std=core \
-                                          --target bpfel-unknown-none --release )
-
-# UI (only when components or hooks change)
-( cd heimdall-ui && deno install --allow-scripts && deno task build )
-
-# Daemon (embeds the eBPF object + UI bundle via rust-embed)
-cargo build --release
-```
-
-See [docs/runbook.md](docs/runbook.md) for deploy steps and expected
-startup log sequence.
-
----
-
-## Crate structure
-
-```
-heimdall/
-├── heimdall/             # userspace daemon (CLI binary)
-│   └── src/
-│       ├── main.rs            # daemon entrypoint, relay loop
-│       ├── api.rs             # axum HTTP API + WebSocket
-│       ├── tap.rs             # libssl + Go + rustls uprobe attach + perf consumer
-│       ├── gosym.rs           # .gopclntab parser (stripped Go)
-│       ├── policy.rs          # PolicyEngine: rules → CGROUP_POLICY
-│       ├── unit.rs             # UnitResolver: cgroup_id → (unit, slice)
-│       ├── router.rs          # resolve_decision (use, observe)
-│       ├── store.rs           # sqlite: flows + messages
-│       ├── bypass.rs          # synthesize flows for kernel-bypass paths
-│       ├── bootstrap.rs       # one-shot startup scan of /proc/net/tcp
-│       ├── dns.rs             # fake-IP DNS server (UDP, dual-stack)
-│       ├── gc.rs              # orphan heimdall-cli cgroup reaper
-│       └── cli/               # `heimdall {flows,status,init,run}`
-├── heimdall-ebpf/        # eBPF kernel programs (bpfel-unknown-none)
-│   └── src/main.rs       # connect4, connect6, udp4_sendmsg, udp6_sendmsg, skb_egress, uprobes
-├── heimdall-common/      # shared types (no_std + std features)
-├── heimdall-config/      # YAML/JSON/TOML/Nickel schema + validator
-├── heimdall-ui/          # React 19 + MUI + deno + Vite
-├── docs/                 # design + ops documentation
-└── skills/               # agentskills.io SKILL.md per CLI subcommand
-```
-
----
-
-## Limitations
-
-- **TCP only for relay.** UDP isn't proxied; eBPF DNS hijack catches
-  port 53 specifically when `dns: fake` is in effect.
-- **JVM TLS not tapped** (roadmap, see [CHANGELOG.md](CHANGELOG.md)).
-  HotSpot's default `SunJSSE` provider is pure-Java, so libssl uprobes
-  don't fire on `SSLEngineImpl.{wrap,unwrap}`. The plan is a JVMTI
-  agent that retransforms those classes to call a fixed-address native
-  stub which we then uprobe like libssl.
-- **Linux only.** cgroup eBPF hooks are Linux-specific.
-- **IPv6 extension headers in `skb_egress`**: bounded walk handles
-  Hop-by-Hop / Routing / Fragment / Destination Options / Mobility /
-  HIP / Shim6, max 8 hops. Unknown ext headers cause that single flow
-  to skip the relay (very rare for application traffic).
-
----
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup, build flow, and
-PR conventions. Security issues: [SECURITY.md](SECURITY.md).
-
-## License
-
-[Apache License 2.0](LICENSE).
+Licensed under Apache-2.0.

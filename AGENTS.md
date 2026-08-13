@@ -5,17 +5,16 @@ these rules; this file is the standardized project entry point.
 
 ## Project at a glance
 
-- **What**: per-cgroup transparent egress proxy + TLS observability
-  for systemd units and ad-hoc CLI processes (`heimdall run`), written
+- **What**: command-scoped transparent egress proxy for CLI processes
+  started through `heimdall run`, written
   in Rust + aya eBPF.
 - **Where to start reading**: [`README.md`](README.md) for the
   90-second pitch, [`docs/architecture.md`](docs/architecture.md) for
   the data flow + control loops.
 - **Where to start coding**: pick a doc that mentions the file you
-  want to change. Most non-trivial changes touch one of `heimdall/`
-  (userspace daemon), `heimdall-ebpf/` (kernel programs),
-  `heimdall-config/` (schema), `heimdall-ui/` (React UI). The four are
-  built independently — see `docs/runbook.md` for build order.
+  want to change. Most non-trivial changes touch `heimdall/` (CLI and
+  daemon), `heimdall-ebpf/` (kernel programs), or `heimdall-config/`
+  (the small format-independent schema). See `docs/runbook.md` for build order.
 
 ## House rules
 
@@ -51,8 +50,8 @@ includes a checklist box for this.
 A reader can read the code. Comment hidden constraints, past
 incidents, kernel quirks, surprising invariants. Skip narration
 ("loop over units", "handle error case"). The eBPF programs in
-`heimdall-ebpf/src/main.rs` and the cgroup/iptables glue in
-`heimdall/src/{policy,bypass}.rs` are the reference style — every
+`heimdall-ebpf/src/main.rs` and the cgroup policy glue in
+`heimdall/src/policy.rs` are the reference style — every
 non-obvious line has a "Why:" block.
 
 ### Don't add backwards-compatibility shims
@@ -73,32 +72,22 @@ nix develop .#ebpf -c bash -c \
 nix develop -c just verify
 ```
 
-### Schema changes mirror in three places
+### Config changes stay small
 
-`heimdall-config/src/lib.rs` is the source of truth for the config
-schema, but two derived files **must stay in sync**:
-
-- `heimdall/src/cli/init_templates/lib.ncl` — Nickel contracts
-- `heimdall/src/cli/init_templates/README.md` — AI-readable reference
-
-The PR template has a checklist for this. CI doesn't enforce it yet.
+`heimdall-config/src/lib.rs` is the source of truth. Keep the four embedded
+`heimdall init` templates, `docs/config.md`, and
+`skills/heimdall/references/config.md` in sync. Every syntax must enter the same
+strict schema; do not add a workload policy language.
 
 ### Commit messages
 
 - Subject in imperative voice (`add X`, not `added X`).
-- Optional `<scope>: ` prefix when touching one area (`tap: …`,
-  `dns: …`, `runbook: …`, `ui: …`).
+- Optional `<scope>: ` prefix when touching one area (`run: …`,
+  `dns: …`, `runbook: …`, `ebpf: …`).
 - Body explains WHY when non-obvious; reference incidents/links.
 - Don't add automated-agent `Co-Authored-By` lines. The agent
   isn't a coauthor in the legal sense and the noise piles up over
   time. Attribution belongs in the PR description if anywhere.
-
-### Testing UI changes
-
-`deno task typecheck` + `deno task build` are the lower-bar checks. For
-anything touching components or hooks, also run the dev server and
-exercise the changed surface in a browser before declaring done. Type
-checks verify code correctness, not feature correctness.
 
 ### Don't touch what you don't need to
 
@@ -114,7 +103,7 @@ remember to ask for more if needed.
   This caused mysterious axum Handler trait failures historically.
 - **One help command, two verbosity levels.** Don't multiply flags.
   - `heimdall help [path…]` — concise per-command help (same content
-    as `<sub> --help`). Drill with `heimdall help flows list` etc.
+    as `<sub> --help`). Drill with `heimdall help config validate` etc.
   - `heimdall help [path…] -v` — verbose: recurse into every
     subcommand and inline every option. **AI agents that want the
     full surface in one read should use this.**
@@ -122,13 +111,15 @@ remember to ask for more if needed.
     `heimdall help` at the corresponding scope.
   The concise help has a footer line (`Tip: heimdall help -v …`)
   that points AI agents at the verbose form. Don't strip the footer.
-- `heimdall init` always rewrites `lib.ncl` and `README.md`, but
-  preserves `heimdall.<ext>` unless `--force`. Don't change this:
+- `heimdall agent` is the stable automation entry point. Keep it read-only,
+  single-document JSON, versioned as `heimdall.agent/v1`, and shell-safe by
+  representing commands as argv arrays. Exit 0 means ready, 1 means not ready,
+  and 2 remains clap usage failure. Additive v1 fields are allowed; renaming or
+  changing existing field semantics requires a new contract version.
+- `heimdall init` preserves `config.<ext>` unless `--force`. Don't change this:
   losing live config to a doc refresh has bitten the user already.
-- The daemon uses a **dual-stack** TCP listener (`[::]:12345`) but
-  the config defaults to `0.0.0.0:12345`. The bind path rewrites the
-  v4 form to `[::]:` so v6 clients reach the relay. Don't "fix" the
-  rewrite; don't change the default.
+- When configured with `0.0.0.0:<port>`, the daemon uses a dual-stack TCP
+  listener (`[::]:<port>`). Don't remove that compatibility rewrite.
 - IPv6 ULA range `fc00::/7` is **not** in the default bypass list,
   because the fake-IP v6 pool (`fc00:198:19::/96`) lives inside it.
   Bypassing fc00::/7 would break v6 redirect.

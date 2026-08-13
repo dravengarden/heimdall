@@ -11,8 +11,7 @@
 //! Re-emitting the parsed config with defaults filled in (i.e. an
 //! "effective config" view) would require `Serialize` impls across
 //! `heimdall-config`. For now we surface the source file as-is —
-//! `heimdall init` already documents the defaults in
-//! `/etc/heimdall/README.md`.
+//! Every supported syntax is decoded into the same strict schema.
 
 use std::path::Path;
 
@@ -30,9 +29,7 @@ pub enum ConfigCmd {
     /// it in a stable envelope (path + format + content).
     Show(ShowArgs),
 
-    /// Print which config file the daemon would load (auto-discovery
-    /// against /etc/heimdall/heimdall.{ncl,toml,json,yaml} or the value
-    /// of `--config` / `HEIMDALL_CONFIG`).
+    /// Print the canonical config path or the `--config` override.
     Path,
 }
 

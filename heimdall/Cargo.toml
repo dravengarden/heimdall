@@ -57,45 +57,13 @@ parking_lot = "0.12"
 # DNS message parsing/serialization for heimdall's fake-IP DNS server.
 hickory-proto = { version = "0.26", default-features = false }
 
-# Flow store: sqlite for metadata, 3-day retention.
-sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio", "macros"] }
-
-# Time helpers
-chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
-
-# Pretty CLI table output
-comfy-table = "7"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 
 # HTTP API + future Web UI
 axum = { version = "0.8", features = ["ws", "macros"] }
-tower-http = { version = "0.6", features = ["cors", "trace"] }
 
-# Bundle the Dioxus UI build output into the daemon binary.
-rust-embed = { version = "8", features = ["debug-embed"] }
-mime_guess = "2"
-
-# Phase B tap: aya's perf event API hands us BytesMut buffers.
-bytes = "1"
-
-# Phase B Go uprobe: parse pod ELFs to detect Go binaries (.gopclntab)
-# and find crypto/tls.(*Conn).Write symbol offsets. aya already pulls
-# `object` in transitively, but we use it directly for the pre-attach
-# scan so we can filter non-Go binaries before paying the symbol
-# resolution cost.
-object = { version = "0.36", default-features = false, features = ["read", "elf", "std"] }
-
-# Pure-Rust x86-64 disassembler. Phase B uses it to walk the body of
-# crypto/tls.(*Conn).Read and find every RET instruction, since Go's
-# movable stacks make uretprobes unsafe — we attach a regular uprobe
-# at each return site instead (Pixie/Coroot pattern).
-iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info"] }
 
 [[bin]]
 name = "heimdall"
 path = "src/main.rs"
-
-[dev-dependencies]
-tempfile = "3.27.0"
-serde_yaml = "0.9"

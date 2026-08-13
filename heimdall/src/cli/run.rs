@@ -8,8 +8,7 @@
 //!
 //! Flow:
 //!
-//!   1. Resolve final (connection, observe, tag) by merging
-//!      `cli.run.default` ← `cli.run.profiles.<--profile>` ← flags.
+//!   1. Resolve the proxy and DNS mode from `[run]`, then CLI flags.
 //!   2. Verify we're inside `user@<UID>.service` (where the user has
 //!      cgroup write permission). If not, re-exec via
 //!      `systemd-run --user --scope --quiet -- heimdall run --no-reentry …`
@@ -39,7 +38,7 @@ use nix::sched::{CloneFlags, unshare};
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
-use heimdall_config::{CliRunProfile, HeimdallConfig, SYSTEM_TAG};
+use heimdall_config::HeimdallConfig;
 use nix::sys::signal::{self, SigHandler, Signal};
 use nix::sys::wait::{WaitStatus, waitpid};
 use nix::unistd::{ForkResult, Pid, fork};
@@ -48,26 +47,9 @@ use tracing::warn;
 
 #[derive(Args, Debug)]
 pub struct RunArgs {
-    /// Connection name to use (or the reserved `system` to bypass
-    /// the relay entirely). Overrides any value from
-    /// `cli.run.default` and the active --profile.
-    #[arg(short = 'c', long)]
-    pub connection: Option<String>,
-
-    /// Apply `cli.run.profiles.<NAME>` from the config before flag
-    /// overrides. Resolution order: flag > profile > cli.run.default.
+    /// Named proxy from `[proxies.<name>]`. Overrides `run.proxy`.
     #[arg(short = 'p', long)]
-    pub profile: Option<String>,
-
-    /// Capture plaintext for the wrapped command's TLS sessions.
-    /// Requires `runtime.tap.enabled = true` on the daemon side to
-    /// actually attach uprobes.
-    #[arg(long)]
-    pub observe: Option<bool>,
-
-    /// Free-form label, surfaces in the flow log entries.
-    #[arg(long)]
-    pub tag: Option<String>,
+    pub proxy: Option<String>,
 
     /// DNS strategy for the wrapped command. `fake` makes heimdall
     /// hijack DNS lookups (UDP/TCP :53 destinations) for the cgroup
@@ -79,11 +61,6 @@ pub struct RunArgs {
     /// public DNS only.
     #[arg(long, value_parser = ["fake", "system"])]
     pub dns: Option<String>,
-
-    /// Print the resolved RunDecision as JSON and exit without
-    /// running the command. Useful for debugging profile resolution.
-    #[arg(long)]
-    pub print_decision: bool,
 
     /// Skip the systemd-run --user --scope re-exec. Set automatically
     /// by the re-exec path so we don't loop. Hidden from --help.
@@ -103,17 +80,15 @@ pub struct RunArgs {
     pub command: Vec<String>,
 }
 
-/// Final knobs after profile + flag resolution.
+/// Final knobs after config + flag resolution.
 #[derive(Debug, Clone, Serialize)]
 struct RunDecision {
     connection: String,
-    observe: bool,
     /// `"fake"` (heimdall hijacks :53 lookups for this cgroup) or
     /// `"system"` (host resolver / systemd-resolved). Defaults to
     /// `"fake"` because most `heimdall run` use cases want the
     /// upstream proxy's DNS scope (corp VPN), not the host's.
     dns: String,
-    tag: Option<String>,
 }
 
 /// JSON body for `POST /api/cli/register`.
@@ -121,7 +96,6 @@ struct RunDecision {
 struct RegisterReq {
     cgroup_id: u64,
     connection: String,
-    observe: bool,
     dns: String,
 }
 
@@ -131,7 +105,6 @@ struct RegisterReq {
 struct RegisterResp {
     cgroup_id: u64,
     connection: String,
-    observe: bool,
 }
 
 pub fn run(config_path: &Path, args: RunArgs) -> Result<()> {
@@ -139,11 +112,6 @@ pub fn run(config_path: &Path, args: RunArgs) -> Result<()> {
         .with_context(|| format!("loading config from {}", config_path.display()))?;
 
     let decision = resolve_decision(&cfg, &args)?;
-
-    if args.print_decision {
-        println!("{}", serde_json::to_string_pretty(&decision)?);
-        return Ok(());
-    }
 
     if args.command.is_empty() {
         bail!(
@@ -252,75 +220,33 @@ fn prepare_dns_shim(cgroup_id: u64) -> Result<DnsShim> {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Decision resolution: cli.run.default ← profile ← flags
+// Decision resolution: config defaults ← flags
 // ────────────────────────────────────────────────────────────────────────────
 
 fn resolve_decision(cfg: &HeimdallConfig, args: &RunArgs) -> Result<RunDecision> {
-    let base = &cfg.cli.run.default;
-    let profile: Option<&CliRunProfile> = match &args.profile {
-        Some(name) => Some(cfg.cli.run.profiles.get(name).ok_or_else(|| {
-            let known: Vec<&str> = cfg.cli.run.profiles.keys().map(String::as_str).collect();
-            anyhow!(
-                "unknown profile `{name}` — declared profiles: [{}]",
-                known.join(", ")
-            )
-        })?),
-        None => None,
-    };
-
-    // Resolve in order: compiled-in default → cli.run.default → profile → flag.
-    let connection = pick(
-        args.connection.clone(),
-        profile.and_then(|p| p.connection.clone()),
-        base.connection.clone(),
-        || "default".into(),
-    );
-    let observe = pick(
-        args.observe,
-        profile.and_then(|p| p.observe),
-        base.observe,
-        || true,
-    );
-    // DNS strategy: `--dns fake|system` flag wins, then profile, then
-    // cli.run.default. Compiled fallback is "fake" — heimdall run's
+    let connection = args.proxy.clone().unwrap_or_else(|| cfg.run.proxy.clone());
+    // DNS strategy: `--dns fake|system` wins over `run.dns`.
     // primary use case is reaching scoped/internal hosts that the
     // host resolver doesn't know about.
     let dns = args
         .dns
         .clone()
-        .or_else(|| profile.and_then(|p| p.dns).map(dns_strategy_str))
-        .or_else(|| base.dns.map(dns_strategy_str))
+        .or_else(|| Some(dns_strategy_str(cfg.run.dns)))
         .unwrap_or_else(|| "fake".into());
     if dns != "fake" && dns != "system" {
         bail!("invalid dns strategy `{dns}` — expected `fake` or `system`");
     }
-    let tag = args
-        .tag
-        .clone()
-        .or_else(|| profile.and_then(|p| p.tag.clone()))
-        .or_else(|| base.tag.clone());
-
     // Validate connection name against the live config so we surface
     // typos before round-tripping to the daemon.
-    if connection != SYSTEM_TAG && !cfg.connections.contains_key(&connection) {
-        let known: Vec<&str> = cfg
-            .connections
-            .keys()
-            .map(String::as_str)
-            .chain(std::iter::once(SYSTEM_TAG))
-            .collect();
+    if !cfg.connections.contains_key(&connection) {
+        let known: Vec<&str> = cfg.connections.keys().map(String::as_str).collect();
         bail!(
-            "unknown connection `{connection}` — declared connections + reserved tag: [{}]",
+            "unknown proxy `{connection}` — declared proxies: [{}]",
             known.join(", ")
         );
     }
 
-    Ok(RunDecision {
-        connection,
-        observe,
-        dns,
-        tag,
-    })
+    Ok(RunDecision { connection, dns })
 }
 
 fn dns_strategy_str(d: heimdall_config::DnsStrategy) -> String {
@@ -328,13 +254,6 @@ fn dns_strategy_str(d: heimdall_config::DnsStrategy) -> String {
         heimdall_config::DnsStrategy::Fake => "fake".into(),
         heimdall_config::DnsStrategy::System => "system".into(),
     }
-}
-
-fn pick<T, F>(flag: Option<T>, profile: Option<T>, base: Option<T>, fallback: F) -> T
-where
-    F: FnOnce() -> T,
-{
-    flag.or(profile).or(base).unwrap_or_else(fallback)
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -367,17 +286,11 @@ fn reexec_via_systemd_run(args: &RunArgs) -> Result<()> {
     cmd.arg(&exe);
     cmd.arg("run");
     cmd.arg("--no-reentry");
-    if let Some(c) = &args.connection {
-        cmd.arg("--connection").arg(c);
+    if let Some(proxy) = &args.proxy {
+        cmd.arg("--proxy").arg(proxy);
     }
-    if let Some(p) = &args.profile {
-        cmd.arg("--profile").arg(p);
-    }
-    if let Some(o) = args.observe {
-        cmd.arg("--observe").arg(o.to_string());
-    }
-    if let Some(t) = &args.tag {
-        cmd.arg("--tag").arg(t);
+    if let Some(dns) = &args.dns {
+        cmd.arg("--dns").arg(dns);
     }
     if args.keep_cgroup {
         cmd.arg("--keep-cgroup");
@@ -448,7 +361,6 @@ fn register_with_daemon(base: &str, cgroup_id: u64, d: &RunDecision) -> Result<(
     let body = RegisterReq {
         cgroup_id,
         connection: d.connection.clone(),
-        observe: d.observe,
         dns: d.dns.clone(),
     };
     let url = format!("{base}/api/cli/register");
