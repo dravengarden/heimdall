@@ -66,15 +66,19 @@ orchestrator-shaped metadata.
 If the parent is killed, the daemon's bounded cgroup scan removes the orphan
 after it becomes empty.
 
-Fake-IP mappings remain stable for the daemon lifetime. A depleted pool returns
-DNS `SERVFAIL` instead of reassigning an address that an application may still
-hold in its cache.
+Fake-IP mappings remain stable for the current boot and survive a daemon
+restart. A depleted pool returns DNS `SERVFAIL` instead of reassigning an
+address that an application may still hold in its cache.
 
 The daemon currently owns its eBPF links and maps in process memory. Stopping
-or crashing it removes those links, and a restart creates new empty maps.
-Heimdall therefore does not promise transparent continuity for commands that
-outlive a daemon restart; `heimdall agent` exposes this boundary as
-`capabilities.lifecycle.daemon_restart_continuity = false`.
+or crashing it removes those links, and a restart creates new empty maps. A
+root-only runtime journal records active CLI cgroup registrations and fake-DNS
+mappings. Once the replacement daemon has attached its programs, it restores
+policies for still-populated cgroups and reuses their hostname mappings; stale
+registrations are removed. This is recovery, not uninterrupted continuity:
+traffic is not intercepted while the links are absent, and existing TCP or UDP
+relay sessions are not preserved. `heimdall agent` exposes all three boundaries
+through `capabilities.lifecycle`.
 
 TCP and connected IPv6 relay keys include both address family and ephemeral
 source port. IPv4 UDP instead rewrites each socket-and-destination flow to a

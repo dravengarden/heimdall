@@ -61,8 +61,11 @@ protocols such as Git. Inspect `capabilities.lifecycle` before depending on
 exit/signal propagation or failure boundaries. An unavailable daemon prevents
 the wrapped command from starting and an unreachable selected upstream fails
 instead of falling back to direct egress. Daemon restart continuity is not
-currently supported; reject workflows that require it when the reported field
-is false.
+currently supported. `daemon_restart_policy_recovery` and
+`daemon_restart_fake_dns_recovery` mean active commands recover after the new
+daemon is ready. They do not cover traffic during the restart window or preserve
+connections; reject workflows that require either while the corresponding
+continuity fields are false.
 
 ## Diagnose failures
 

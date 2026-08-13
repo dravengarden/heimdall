@@ -156,6 +156,9 @@ in
       NotifyAccess = "main";
       ExecStart = "${heimdallPackage}/bin/heimdall --config ${heimdallConfig} daemon";
       Restart = "on-failure";
+      RuntimeDirectory = "heimdall";
+      RuntimeDirectoryMode = "0700";
+      RuntimeDirectoryPreserve = "restart";
       AmbientCapabilities = [
         "CAP_BPF"
         "CAP_NET_ADMIN"

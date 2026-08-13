@@ -26,8 +26,8 @@ use anyhow::{Context, Result};
 use std::os::unix::fs::MetadataExt;
 use tracing::{debug, info, warn};
 
-use crate::policy::PolicyEngine;
 use crate::{CliOverrides, UdpSessions, close_udp_sessions_for_cgroup};
+use crate::{policy::PolicyEngine, state};
 
 const GC_INTERVAL: Duration = Duration::from_secs(30);
 const USER_SLICE: &str = "/sys/fs/cgroup/user.slice";
@@ -37,6 +37,28 @@ const CGROUP_NAME_PREFIX: &str = "heimdall-cli-";
 /// levels; `+1` to descend into the heimdall-cli dir itself when
 /// checking `cgroup.events`. Keeps the walk linear.
 const MAX_DEPTH: usize = 6;
+
+pub struct CommandCgroup {
+    pub id: u64,
+    pub path: PathBuf,
+    pub populated: bool,
+}
+
+pub fn command_cgroups() -> Result<Vec<CommandCgroup>> {
+    let mut cgroups = Vec::new();
+    for path in find_cgroups(Path::new(USER_SLICE))? {
+        let id = std::fs::metadata(&path)
+            .with_context(|| format!("stat {}", path.display()))?
+            .ino();
+        let populated = read_populated(&path)?;
+        cgroups.push(CommandCgroup {
+            id,
+            path,
+            populated,
+        });
+    }
+    Ok(cgroups)
+}
 
 pub fn spawn(
     cli_overrides: CliOverrides,
@@ -101,6 +123,9 @@ async fn gc_pass(
 
         match std::fs::remove_dir(&path) {
             Ok(_) => {
+                if let Err(error) = state::remove_registration(cgroup_id) {
+                    warn!(cgroup_id, %error, "gc: remove persisted registration failed");
+                }
                 info!(cgroup_id, path = %path.display(), "gc: reaped orphan cgroup");
                 removed += 1;
             }

@@ -34,6 +34,7 @@ mod cli;
 mod dns;
 mod gc;
 mod policy;
+mod state;
 
 use std::{
     collections::HashMap as StdHashMap,
@@ -677,6 +678,55 @@ fn print_command_recursive(cmd: &mut clap::Command, path: &[&str]) {
     }
 }
 
+async fn restore_cli_registrations(
+    shared: &Shared,
+    cli_overrides: &CliOverrides,
+    engine: &policy::PolicyEngine,
+) -> Result<usize> {
+    let live = gc::command_cgroups()?
+        .into_iter()
+        .map(|cgroup| (cgroup.id, cgroup))
+        .collect::<StdHashMap<_, _>>();
+    let mut restored = 0;
+
+    for registration in state::load_registrations()? {
+        let Some(cgroup) = live.get(&registration.cgroup_id) else {
+            state::remove_registration(registration.cgroup_id)?;
+            continue;
+        };
+        if !cgroup.populated {
+            state::remove_registration(registration.cgroup_id)?;
+            if let Err(error) = std::fs::remove_dir(&cgroup.path) {
+                debug!(path = %cgroup.path.display(), %error, "stale CLI cgroup removal deferred to GC");
+            }
+            continue;
+        }
+        let policy = shared.cfg.policy(&registration.policy).with_context(|| {
+            format!(
+                "active cgroup {} references removed policy `{}`",
+                registration.cgroup_id, registration.policy
+            )
+        })?;
+        engine
+            .register_external(
+                registration.cgroup_id,
+                policy.dns_hijack(),
+                matches!(policy.dns.mode, heimdall_config::DnsMode::System),
+                policy.rejects_all_udp(),
+            )
+            .await?;
+        cli_overrides.write().insert(
+            registration.cgroup_id,
+            heimdall_config::Decision {
+                policy: registration.policy,
+            },
+        );
+        restored += 1;
+    }
+
+    Ok(restored)
+}
+
 async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
     // ─── Load config ──────────────────────────────────────────────────────
     let cfg = HeimdallConfig::load(config_path).map_err(|error| {
@@ -695,12 +745,20 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
     let upstreams = resolve_all(&cfg)?;
     info!(outbounds = upstreams.len(), "all outbounds resolved");
 
+    state::prepare_runtime_dir()?;
+
     let _ = &args;
 
     // ─── Fake-IP DNS server ──────────────────────────────────────────────
     let dns = Arc::new(
-        DnsResolver::new(&cfg.daemon.fake_ip_cidr, &cfg.daemon.fake_ip6_cidr)
-            .context("initialize fake-IP DNS resolver")?,
+        DnsResolver::with_state(
+            &cfg.daemon.fake_ip_cidr,
+            &cfg.daemon.fake_ip6_cidr,
+            std::path::Path::new(state::RUNTIME_DIR)
+                .join("fake-dns.json")
+                .as_path(),
+        )
+        .context("initialize fake-IP DNS resolver")?,
     );
     let dns_server = dns.clone().bind(cfg.daemon.dns_port).await?;
     tokio::spawn(async move {
@@ -1063,10 +1121,11 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
                 .context("CGROUP_POLICY not found")?,
         )?;
         let engine = std::sync::Arc::new(policy::PolicyEngine::new(policy_map));
+        let restored = restore_cli_registrations(&shared, &cli_overrides, &engine).await?;
         // Hand a clone to the HTTP API so /api/cli/register endpoints
         // can write the policy byte alongside its userspace proxy choice.
         *policy_engine_slot.lock() = Some(engine.clone());
-        info!("CLI policy registry started");
+        info!(restored, "CLI policy registry started");
 
         // GC orphan `heimdall run` cgroups: when the wrapping CLI is
         // killed before it can deregister + rmdir, the transient

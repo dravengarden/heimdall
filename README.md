@@ -94,7 +94,9 @@ See [docs/config.md](docs/config.md) for the complete schema.
 The disposable real-eBPF acceptance VM covers static Go `netgo`, Java,
 Node.js, Rust, Python, C, curl, and Git. It also verifies command exit and
 signal status, descendant lifetime, unavailable-daemon behavior, and
-unreachable-upstream failure. `heimdall agent` reports this evidence under
+unreachable-upstream failure. It also restarts the daemon around an active
+fake-DNS command and verifies that policy and hostname mappings recover.
+`heimdall agent` reports this evidence under
 `capabilities.runtime_acceptance`, `capabilities.cli_acceptance`, and
 `capabilities.lifecycle`; agents should inspect it instead of inferring
 support from a language or command name alone.
@@ -136,8 +138,10 @@ for the boundary and [docs/runbook.md](docs/runbook.md) for operations.
 cgroup, or runs a command. Consumers should execute the returned
 `actions.execute_prefix` array followed by their own command arguments, without
 joining it into a shell string. Check `capabilities.lifecycle` before relying
-on failure semantics. Daemon restart continuity is currently false: stopping
-the daemon removes its process-owned eBPF state.
+on failure semantics. Active policy registrations and fake-DNS mappings recover
+after a daemon restart, but seamless continuity is false: process-owned eBPF
+links and relay sessions disappear during the restart, and existing connections
+are not preserved.
 
 ## Requirements
 

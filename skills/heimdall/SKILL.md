@@ -77,7 +77,9 @@ Inspect `capabilities.cli_acceptance` for protocol-specific CLI evidence and
 workflow. Descendants remain inside the command policy after their immediate
 parent exits. Do not add environment proxy variables or a direct fallback for
 them. Refuse a workflow that requires uninterrupted enforcement across a
-daemon restart while `daemon_restart_continuity` is false.
+daemon restart while `daemon_restart_continuity` is false. Policy and fake-DNS
+recovery fields only mean an active command is restored after daemon readiness;
+they do not imply that the restart gap or existing connections are protected.
 
 ## Run a command
 

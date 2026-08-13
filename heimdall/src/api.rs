@@ -17,6 +17,7 @@ use tracing::info;
 use crate::{
     CliOverrides, PolicyEngineSlot, UdpSessions, close_udp_sessions_for_cgroup,
     policy::PolicyEngine,
+    state::{self, Registration},
 };
 
 #[derive(Clone)]
@@ -71,7 +72,12 @@ async fn register_cli(
     })?;
     let reject_udp = policy.rejects_all_udp();
     let engine = engine(&state)?;
-    engine
+    state::persist_registration(&Registration {
+        cgroup_id: request.cgroup_id,
+        policy: request.policy.clone(),
+    })
+    .map_err(internal)?;
+    if let Err(error) = engine
         .register_external(
             request.cgroup_id,
             policy.dns_hijack(),
@@ -79,7 +85,10 @@ async fn register_cli(
             reject_udp,
         )
         .await
-        .map_err(internal)?;
+    {
+        let _ = state::remove_registration(request.cgroup_id);
+        return Err(internal(error));
+    }
     state.cli_overrides.write().insert(
         request.cgroup_id,
         Decision {
@@ -108,6 +117,7 @@ async fn deregister_cli(
         .deregister_external(params.cgroup_id)
         .await
         .map_err(internal)?;
+    state::remove_registration(params.cgroup_id).map_err(internal)?;
     info!(cgroup_id = params.cgroup_id, "CLI cgroup deregistered");
     Ok(Json(serde_json::json!({"ok": true})))
 }

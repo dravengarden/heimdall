@@ -22,8 +22,12 @@
 //! hold in its DNS cache.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
+    fs::{self, OpenOptions},
+    io::Write,
     net::{Ipv4Addr, Ipv6Addr},
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    path::{Path, PathBuf},
     str::FromStr,
     sync::{
         Arc,
@@ -40,7 +44,8 @@ use hickory_proto::{
     },
     serialize::binary::{BinDecodable, BinEncodable},
 };
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
+use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream, UdpSocket},
@@ -62,6 +67,9 @@ pub struct DnsResolver {
     by_ip: RwLock<HashMap<u32, String>>,
     /// hostname → fake_ip (network byte order u32).
     by_name: RwLock<HashMap<String, u32>>,
+
+    state_path: Option<PathBuf>,
+    state_write: Mutex<()>,
 
     /// IPv6 fake-IP pool: only populated when `fake_ip6_cidr` is set.
     /// Mirror of the v4 fields, scaled up: 128-bit base + 64-bit ring
@@ -92,6 +100,14 @@ struct V6Pool {
     by_name: RwLock<HashMap<String, [u8; 16]>>,
 }
 
+#[derive(Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedMappings {
+    version: u8,
+    ipv4: BTreeMap<String, Ipv4Addr>,
+    ipv6: BTreeMap<String, Ipv6Addr>,
+}
+
 pub struct DnsServer {
     resolver: Arc<DnsResolver>,
     udp4: Arc<UdpSocket>,
@@ -104,7 +120,16 @@ pub struct DnsServer {
 impl DnsResolver {
     /// `fake_cidr` is the IPv4 CIDR; `fake6_cidr` is the optional IPv6
     /// CIDR for AAAA synthesis (pass empty string to disable IPv6).
+    #[cfg(test)]
     pub fn new(fake_cidr: &str, fake6_cidr: &str) -> Result<Self> {
+        Self::new_inner(fake_cidr, fake6_cidr, None)
+    }
+
+    pub fn with_state(fake_cidr: &str, fake6_cidr: &str, state_path: &Path) -> Result<Self> {
+        Self::new_inner(fake_cidr, fake6_cidr, Some(state_path.to_path_buf()))
+    }
+
+    fn new_inner(fake_cidr: &str, fake6_cidr: &str, state_path: Option<PathBuf>) -> Result<Self> {
         let (base, prefix) = parse_v4_cidr(fake_cidr)
             .with_context(|| format!("parse fake_ip_cidr `{fake_cidr}`"))?;
         anyhow::ensure!(
@@ -138,24 +163,32 @@ impl DnsResolver {
             })
         };
 
-        Ok(Self {
+        let resolver = Self {
             fake_base_be: u32::from(base).to_be(),
             fake_size: size,
             next_offset: AtomicU64::new(1), // skip the network address
             by_ip: RwLock::new(HashMap::new()),
             by_name: RwLock::new(HashMap::new()),
+            state_path,
+            state_write: Mutex::new(()),
             v6,
-        })
+        };
+        resolver.load_state()?;
+        Ok(resolver)
     }
 
     /// Allocate or retrieve the fake IP for `hostname`.
     ///
     /// Hostname is canonicalised to lowercase, no trailing dot.
-    pub fn allocate(&self, hostname: &str) -> Option<Ipv4Addr> {
+    pub fn allocate(&self, hostname: &str) -> Result<Option<Ipv4Addr>> {
+        // Why: allocation and publication form one transaction. Serializing
+        // them prevents an older snapshot from replacing a newer one and
+        // prevents a failed allocation from being published by another task.
+        let _state_write = self.state_write.lock();
         let canon = canonicalise(hostname);
         let mut by_name = self.by_name.write();
         if let Some(&fake_be) = by_name.get(&canon) {
-            return Some(Ipv4Addr::from(u32::from_be(fake_be)));
+            return Ok(Some(Ipv4Addr::from(u32::from_be(fake_be))));
         }
 
         // Offset 0 is the network address and size - 1 is broadcast.
@@ -163,7 +196,7 @@ impl DnsResolver {
         // IP; recycling could send a stale application cache to another host.
         let offset = self.next_offset.fetch_add(1, Ordering::Relaxed);
         if offset >= self.fake_size - 1 {
-            return None;
+            return Ok(None);
         }
 
         let base_host = u32::from_be(self.fake_base_be);
@@ -173,9 +206,16 @@ impl DnsResolver {
 
         let mut by_ip = self.by_ip.write();
         by_ip.insert(fake_be, canon.clone());
-        by_name.insert(canon, fake_be);
+        by_name.insert(canon.clone(), fake_be);
+        drop(by_ip);
+        drop(by_name);
+        if let Err(error) = self.persist_state() {
+            self.by_ip.write().remove(&fake_be);
+            self.by_name.write().remove(&canon);
+            return Err(error);
+        }
 
-        Some(fake)
+        Ok(Some(fake))
     }
 
     /// Reverse lookup: fake IP (network byte order) → hostname.
@@ -185,17 +225,20 @@ impl DnsResolver {
 
     /// IPv6 sibling of [`allocate`] — returns None when no IPv6 pool
     /// is configured.
-    pub fn allocate6(&self, hostname: &str) -> Option<Ipv6Addr> {
-        let pool = self.v6.as_ref()?;
+    pub fn allocate6(&self, hostname: &str) -> Result<Option<Ipv6Addr>> {
+        let _state_write = self.state_write.lock();
+        let Some(pool) = self.v6.as_ref() else {
+            return Ok(None);
+        };
         let canon = canonicalise(hostname);
         let mut by_name = pool.by_name.write();
         if let Some(addr) = by_name.get(&canon) {
-            return Some(Ipv6Addr::from(*addr));
+            return Ok(Some(Ipv6Addr::from(*addr)));
         }
 
         let offset = pool.next_offset.fetch_add(1, Ordering::Relaxed);
         if offset >= pool.size {
-            return None;
+            return Ok(None);
         }
 
         // Compose: base bytes + (offset spread across the host bits).
@@ -217,9 +260,16 @@ impl DnsResolver {
 
         let mut by_ip = pool.by_ip.write();
         by_ip.insert(addr, canon.clone());
-        by_name.insert(canon, addr);
+        by_name.insert(canon.clone(), addr);
+        drop(by_ip);
+        drop(by_name);
+        if let Err(error) = self.persist_state() {
+            pool.by_ip.write().remove(&addr);
+            pool.by_name.write().remove(&canon);
+            return Err(error);
+        }
 
-        Some(Ipv6Addr::from(addr))
+        Ok(Some(Ipv6Addr::from(addr)))
     }
 
     /// Reverse lookup for IPv6 fake addresses. Returns None when no
@@ -227,6 +277,132 @@ impl DnsResolver {
     pub fn lookup6(&self, addr: &Ipv6Addr) -> Option<String> {
         let pool = self.v6.as_ref()?;
         pool.by_ip.read().get(&addr.octets()).cloned()
+    }
+
+    fn load_state(&self) -> Result<()> {
+        let Some(path) = self.state_path.as_ref() else {
+            return Ok(());
+        };
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
+        };
+        let state: PersistedMappings =
+            serde_json::from_slice(&bytes).with_context(|| format!("decode {}", path.display()))?;
+        anyhow::ensure!(state.version == 1, "unsupported fake-DNS state version");
+
+        let base = u32::from_be(self.fake_base_be);
+        let mut next_v4 = 1u64;
+        let mut by_ip = self.by_ip.write();
+        let mut by_name = self.by_name.write();
+        for (name, address) in state.ipv4 {
+            let canonical = canonicalise(&name);
+            anyhow::ensure!(
+                canonical == name,
+                "non-canonical hostname in fake-DNS state"
+            );
+            let address_host = u32::from(address);
+            let offset = address_host
+                .checked_sub(base)
+                .context("IPv4 fake-DNS state address is below configured pool")?
+                as u64;
+            anyhow::ensure!(
+                offset > 0 && offset < self.fake_size - 1,
+                "IPv4 fake-DNS state address is outside configured usable pool"
+            );
+            let address_be = address_host.to_be();
+            anyhow::ensure!(
+                by_ip.insert(address_be, name.clone()).is_none(),
+                "duplicate IPv4 address in fake-DNS state"
+            );
+            by_name.insert(name, address_be);
+            next_v4 = next_v4.max(offset + 1);
+        }
+        self.next_offset.store(next_v4, Ordering::Relaxed);
+        drop(by_ip);
+        drop(by_name);
+
+        match (&self.v6, state.ipv6.is_empty()) {
+            (None, false) => {
+                anyhow::bail!("fake-DNS state contains IPv6 mappings but fake_ip6_cidr is disabled")
+            }
+            (None, true) => {}
+            (Some(pool), _) => {
+                let base = u128::from_be_bytes(pool.base);
+                let mut next_v6 = 1u64;
+                let mut by_ip = pool.by_ip.write();
+                let mut by_name = pool.by_name.write();
+                for (name, address) in state.ipv6 {
+                    let canonical = canonicalise(&name);
+                    anyhow::ensure!(
+                        canonical == name,
+                        "non-canonical hostname in fake-DNS state"
+                    );
+                    let offset = u128::from(address)
+                        .checked_sub(base)
+                        .context("IPv6 fake-DNS state address is below configured pool")?;
+                    anyhow::ensure!(
+                        offset > 0 && offset <= u128::from(u64::MAX),
+                        "IPv6 fake-DNS state address is outside supported allocation range"
+                    );
+                    let offset = offset as u64;
+                    anyhow::ensure!(
+                        offset < pool.size,
+                        "IPv6 fake-DNS state address is outside configured pool"
+                    );
+                    let octets = address.octets();
+                    anyhow::ensure!(
+                        by_ip.insert(octets, name.clone()).is_none(),
+                        "duplicate IPv6 address in fake-DNS state"
+                    );
+                    by_name.insert(name, octets);
+                    next_v6 = next_v6.max(offset + 1);
+                }
+                pool.next_offset.store(next_v6, Ordering::Relaxed);
+            }
+        }
+        Ok(())
+    }
+
+    fn persist_state(&self) -> Result<()> {
+        let Some(path) = self.state_path.as_ref() else {
+            return Ok(());
+        };
+        let ipv4 = self
+            .by_name
+            .read()
+            .iter()
+            .map(|(name, address)| (name.clone(), Ipv4Addr::from(u32::from_be(*address))))
+            .collect();
+        let ipv6 = self.v6.as_ref().map_or_else(BTreeMap::new, |pool| {
+            pool.by_name
+                .read()
+                .iter()
+                .map(|(name, address)| (name.clone(), Ipv6Addr::from(*address)))
+                .collect()
+        });
+        let state = PersistedMappings {
+            version: 1,
+            ipv4,
+            ipv6,
+        };
+        let parent = path.parent().context("fake-DNS state path has no parent")?;
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("secure {}", parent.display()))?;
+        let temporary = parent.join(format!(".fake-dns.{}.tmp", std::process::id()));
+        let bytes = serde_json::to_vec(&state).context("encode fake-DNS state")?;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&temporary)
+            .with_context(|| format!("open {}", temporary.display()))?;
+        file.write_all(&bytes)
+            .with_context(|| format!("write {}", temporary.display()))?;
+        fs::rename(&temporary, path).with_context(|| format!("publish {}", path.display()))
     }
 
     /// Bind UDP and TCP before daemon readiness so a valid fake-DNS policy
@@ -343,7 +519,10 @@ impl DnsResolver {
 
             match q.query_type() {
                 RecordType::A => {
-                    let Some(fake) = self.allocate(&host_trim) else {
+                    let Some(fake) = self.allocate(&host_trim).unwrap_or_else(|error| {
+                        warn!(host = %host_trim, %error, "persist fake IPv4 mapping failed");
+                        None
+                    }) else {
                         warn!(host = %host_trim, "fake IPv4 pool exhausted");
                         response.metadata.response_code = ResponseCode::ServFail;
                         return response;
@@ -354,7 +533,10 @@ impl DnsResolver {
                     response.add_answer(rec);
                     debug!(host = %host_trim, %fake, "A → fake IP");
                 }
-                RecordType::AAAA => match self.allocate6(&host_trim) {
+                RecordType::AAAA => match self.allocate6(&host_trim).unwrap_or_else(|error| {
+                    warn!(host = %host_trim, %error, "persist fake IPv6 mapping failed");
+                    None
+                }) {
                     Some(fake6) => {
                         let mut rec = Record::from_rdata(
                             q.name().clone(),
@@ -507,23 +689,23 @@ mod tests {
     #[test]
     fn allocate_returns_stable_ip_for_same_host() {
         let r = DnsResolver::new("198.19.0.0/16", "").unwrap();
-        let a = r.allocate("foo.example").unwrap();
-        let b = r.allocate("foo.example").unwrap();
+        let a = r.allocate("foo.example").unwrap().unwrap();
+        let b = r.allocate("foo.example").unwrap().unwrap();
         assert_eq!(a, b, "same host must get same fake IP");
     }
 
     #[test]
     fn allocate_distinct_ips_for_distinct_hosts() {
         let r = DnsResolver::new("198.19.0.0/16", "").unwrap();
-        let a = r.allocate("a.test").unwrap();
-        let b = r.allocate("b.test").unwrap();
+        let a = r.allocate("a.test").unwrap().unwrap();
+        let b = r.allocate("b.test").unwrap().unwrap();
         assert_ne!(a, b);
     }
 
     #[test]
     fn fake_ip_falls_in_pool() {
         let r = DnsResolver::new("198.19.0.0/16", "").unwrap();
-        let ip = r.allocate("x.test").unwrap();
+        let ip = r.allocate("x.test").unwrap().unwrap();
         let octets = ip.octets();
         assert_eq!(octets[0], 198);
         assert_eq!(octets[1], 19);
@@ -532,9 +714,9 @@ mod tests {
     #[test]
     fn case_insensitive_canonicalisation() {
         let r = DnsResolver::new("198.19.0.0/16", "").unwrap();
-        let a = r.allocate("Foo.Example").unwrap();
-        let b = r.allocate("foo.example").unwrap();
-        let c = r.allocate("foo.example.").unwrap();
+        let a = r.allocate("Foo.Example").unwrap().unwrap();
+        let b = r.allocate("foo.example").unwrap().unwrap();
+        let c = r.allocate("foo.example.").unwrap().unwrap();
         assert_eq!(a, b);
         assert_eq!(b, c);
     }
@@ -542,7 +724,7 @@ mod tests {
     #[test]
     fn lookup_round_trip() {
         let r = DnsResolver::new("198.19.0.0/16", "").unwrap();
-        let ip = r.allocate("svc.example").unwrap();
+        let ip = r.allocate("svc.example").unwrap().unwrap();
         let be = u32::from(ip).to_be();
         assert_eq!(r.lookup_be(be).as_deref(), Some("svc.example"));
     }
@@ -558,14 +740,37 @@ mod tests {
     fn small_pool_never_reassigns_a_stale_fake_ip() {
         // /30 has two usable addresses after network and broadcast.
         let r = DnsResolver::new("198.19.0.0/30", "").unwrap();
-        let first = r.allocate("first.test").unwrap();
-        let second = r.allocate("second.test").unwrap();
+        let first = r.allocate("first.test").unwrap().unwrap();
+        let second = r.allocate("second.test").unwrap().unwrap();
         assert_ne!(first, second);
-        assert_eq!(r.allocate("third.test"), None);
-        assert_eq!(r.allocate("first.test"), Some(first));
+        assert_eq!(r.allocate("third.test").unwrap(), None);
+        assert_eq!(r.allocate("first.test").unwrap(), Some(first));
         assert_eq!(
             r.lookup_be(u32::from(first).to_be()).as_deref(),
             Some("first.test")
         );
+    }
+
+    #[test]
+    fn persisted_mapping_survives_resolver_restart() {
+        let dir = std::env::temp_dir().join(format!("heimdall-dns-state-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("fake-dns.json");
+        let first = DnsResolver::with_state("198.19.0.0/16", "fc00:198:19::/96", &path).unwrap();
+        let ipv4 = first.allocate("cached.example").unwrap().unwrap();
+        let ipv6 = first.allocate6("cached.example").unwrap().unwrap();
+        let state_mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(state_mode, 0o600);
+        drop(first);
+
+        let restored = DnsResolver::with_state("198.19.0.0/16", "fc00:198:19::/96", &path).unwrap();
+        assert_eq!(restored.allocate("cached.example").unwrap(), Some(ipv4));
+        assert_eq!(restored.allocate6("cached.example").unwrap(), Some(ipv6));
+        assert_eq!(
+            restored.lookup_be(u32::from(ipv4).to_be()).as_deref(),
+            Some("cached.example")
+        );
+        assert_eq!(restored.lookup6(&ipv6).as_deref(), Some("cached.example"));
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

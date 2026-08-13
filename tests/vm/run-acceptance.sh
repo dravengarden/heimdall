@@ -48,7 +48,10 @@ as_tester heimdall agent \
     and .capabilities.lifecycle.signal_exit_code == "128+signal"
     and .capabilities.lifecycle.upstream_unreachable_fail_closed
     and .capabilities.lifecycle.daemon_unreachable_prevents_exec
-    and (.capabilities.lifecycle.daemon_restart_continuity | not)'
+    and (.capabilities.lifecycle.daemon_restart_continuity | not)
+    and .capabilities.lifecycle.daemon_restart_policy_recovery
+    and .capabilities.lifecycle.daemon_restart_fake_dns_recovery
+    and (.capabilities.lifecycle.daemon_restart_existing_connections | not)'
 
 CGO_ENABLED=0 go build -tags netgo -trimpath \
   -o /run/heimdall-test/runtime-go /etc/heimdall-test/runtime_client.go
@@ -220,6 +223,38 @@ test "$(grep -c '"atyp": 4' /run/heimdall-test/socks.log)" -eq 100
 : > /run/heimdall-test/socks.log
 test "$(as_tester curl -4fsS --max-time 5 http://127.0.0.1:18080/)" = "fixture-v4"
 test ! -s /run/heimdall-test/socks.log
+
+rm -f /tmp/heimdall-restart-ready /tmp/heimdall-restart-go \
+  /tmp/heimdall-restart.out
+as_tester heimdall run --policy fake -- sh -c \
+  'getent ahostsv4 fixture.test >/dev/null; touch /tmp/heimdall-restart-ready; while test ! -e /tmp/heimdall-restart-go; do sleep 0.02; done; curl -4fsS --max-time 5 http://fixture.test:18080/ > /tmp/heimdall-restart.out' &
+restart_run_pid=$!
+for _ in $(seq 1 250); do
+  test -e /tmp/heimdall-restart-ready && break
+  sleep 0.02
+done
+test -e /tmp/heimdall-restart-ready
+test "$(find /run/heimdall/registrations -type f -name '*.json' | wc -l)" -eq 1
+systemctl restart heimdall.service
+systemctl is-active --quiet heimdall.service
+journalctl -u heimdall.service -n 100 --no-pager | grep -q 'restored=1'
+: > /run/heimdall-test/socks.log
+touch /tmp/heimdall-restart-go
+for _ in $(seq 1 500); do
+  ! kill -0 "$restart_run_pid" 2>/dev/null && break
+  sleep 0.02
+done
+if kill -0 "$restart_run_pid" 2>/dev/null; then
+  journalctl -u heimdall.service -n 100 --no-pager >&2
+  kill "$restart_run_pid" 2>/dev/null || true
+  wait "$restart_run_pid" 2>/dev/null || true
+  echo "wrapped command did not resume after daemon restart" >&2
+  exit 1
+fi
+wait "$restart_run_pid"
+test "$(cat /tmp/heimdall-restart.out)" = "fixture-v4"
+grep -q '"host": "fixture.test"' /run/heimdall-test/socks.log
+test "$(find /run/heimdall/registrations -type f -name '*.json' | wc -l)" -eq 0
 
 systemctl stop heimdall.service
 set +e

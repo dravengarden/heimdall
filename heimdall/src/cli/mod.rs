@@ -83,6 +83,9 @@ pub mod agent {
         upstream_unreachable_fail_closed: bool,
         daemon_unreachable_prevents_exec: bool,
         daemon_restart_continuity: bool,
+        daemon_restart_policy_recovery: bool,
+        daemon_restart_fake_dns_recovery: bool,
+        daemon_restart_existing_connections: bool,
     }
 
     #[derive(Debug, Serialize)]
@@ -368,6 +371,9 @@ pub mod agent {
                 upstream_unreachable_fail_closed: true,
                 daemon_unreachable_prevents_exec: true,
                 daemon_restart_continuity: false,
+                daemon_restart_policy_recovery: true,
+                daemon_restart_fake_dns_recovery: true,
+                daemon_restart_existing_connections: false,
             },
         }
     }
@@ -427,6 +433,9 @@ pub mod agent {
             assert!(lifecycle.upstream_unreachable_fail_closed);
             assert!(lifecycle.daemon_unreachable_prevents_exec);
             assert!(!lifecycle.daemon_restart_continuity);
+            assert!(lifecycle.daemon_restart_policy_recovery);
+            assert!(lifecycle.daemon_restart_fake_dns_recovery);
+            assert!(!lifecycle.daemon_restart_existing_connections);
         }
     }
 }

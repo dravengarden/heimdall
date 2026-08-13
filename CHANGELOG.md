@@ -6,6 +6,10 @@ All notable changes to heimdall are documented here.
 
 ### Fixed
 
+- Restore active CLI cgroup policies and fake-DNS hostname mappings after a
+  daemon service restart. Runtime state is atomic, strict, and root-only; stale
+  registrations are removed during recovery. Existing connections and the
+  process-owned eBPF link replacement window remain explicitly unsupported.
 - Keep a command policy registered until every descendant exits its cgroup,
   preventing background children from losing proxy enforcement when their
   immediate parent finishes. Disable `systemd-run` environment expansion so
@@ -32,6 +36,9 @@ All notable changes to heimdall are documented here.
 
 ### Changed
 
+- Added real-eBPF acceptance for an active fake-DNS command across a daemon
+  restart and exposed policy recovery, DNS recovery, connection survival, and
+  uninterrupted-continuity boundaries separately through `heimdall agent`.
 - Added real-eBPF lifecycle acceptance for Git, exit and signal propagation,
   background descendants, unavailable-daemon pre-exec failure, and
   unreachable-upstream fail-closed behavior. Exposed the results and the

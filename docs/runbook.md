@@ -113,7 +113,10 @@ It is read-only and always prints exactly one JSON value before exiting:
       "signal_exit_code": "128+signal",
       "upstream_unreachable_fail_closed": true,
       "daemon_unreachable_prevents_exec": true,
-      "daemon_restart_continuity": false
+      "daemon_restart_continuity": false,
+      "daemon_restart_policy_recovery": true,
+      "daemon_restart_fake_dns_recovery": true,
+      "daemon_restart_existing_connections": false
     }
   },
   "decision": {
@@ -167,10 +170,13 @@ protocols; Git is tested with `git ls-remote` over fake-DNS TCP. Agents must
 also inspect `capabilities.lifecycle`. A wrapped command keeps its policy until
 all descendants leave the cgroup, preserves normal exit and signal status,
 fails rather than bypassing an unreachable upstream, and is not executed when
-the daemon cannot register it. `daemon_restart_continuity` remains false:
-stopping the daemon removes its process-owned eBPF links and maps, so do not
-run a workflow that requires uninterrupted proxy enforcement across a daemon
-restart.
+the daemon cannot register it. Active command policies and fake-DNS mappings
+recover once a restarted daemon is ready, as reported by the two
+`daemon_restart_*_recovery` fields. `daemon_restart_continuity` remains false:
+stopping the daemon removes its process-owned eBPF links, leaves a temporary
+interception gap, and does not preserve existing connections. Do not run a
+workflow that requires uninterrupted enforcement or connection survival across
+a daemon restart.
 
 ## Common failures
 
@@ -191,6 +197,8 @@ restart.
   relay endpoint from that proxy's interception rules.
 
 Stopping heimdall removes the eBPF links, so normal host networking remains
-available. It also means already-running wrapped commands do not retain proxy
-enforcement across the stop/restart boundary. Unregistered processes bypass
-heimdall while it is running.
+available. During an explicit service restart, systemd preserves the root-only
+runtime journal; after readiness, still-running wrapped commands regain their
+policy and fake-DNS mappings. They are not enforced during the link replacement
+window, and connections established before the restart are not preserved.
+Unregistered processes bypass heimdall while it is running.
