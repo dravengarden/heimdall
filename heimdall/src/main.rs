@@ -37,6 +37,8 @@ mod ebpf;
 mod gc;
 mod policy;
 mod state;
+mod tls_mitm;
+mod tls_transparent;
 
 use std::{
     collections::HashMap as StdHashMap,
@@ -350,6 +352,10 @@ enum Cmd {
     #[command(subcommand)]
     Ebpf(cli::ebpf::EbpfCmd),
 
+    /// Generate and inspect TLS trust material used by MITM decryption.
+    #[command(subcommand)]
+    Tls(cli::tls::TlsCmd),
+
     /// Show the selected config and local daemon health.
     Status(StatusArgs),
 
@@ -486,6 +492,7 @@ struct Shared {
     cfg: HeimdallConfig,
     upstreams: StdHashMap<String, Arc<Upstream>>,
     capture: Option<capture::CaptureManager>,
+    mitm: Option<Arc<tls_mitm::Mitm>>,
     /// Fake-IP DNS resolver. None when DNS server failed to bind
     /// (relay degrades to plain IP-mode SOCKS5 in that case).
     dns: Option<Arc<DnsResolver>>,
@@ -585,6 +592,7 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
+        Cmd::Tls(sub) => cli::tls::run(sub),
         Cmd::Status(args) => {
             let config_path = resolve_config_path(cli.config.as_deref())?;
             cli::status::run(&config_path, args).await
@@ -765,6 +773,23 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
     let capture = capture::CaptureManager::from_config(&cfg.capture)
         .await
         .context("initialize transport capture")?;
+    let mitm = (cfg.decrypt.mode == heimdall_config::DecryptMode::Mitm)
+        .then(|| {
+            let ca_cert = cfg
+                .decrypt
+                .ca_cert
+                .as_deref()
+                .context("strict config accepted MITM without ca_cert")?;
+            let ca_key = cfg
+                .decrypt
+                .ca_key
+                .as_deref()
+                .context("strict config accepted MITM without ca_key")?;
+            Ok::<_, anyhow::Error>(Arc::new(
+                tls_mitm::Mitm::load(ca_cert, ca_key).context("initialize TLS MITM")?,
+            ))
+        })
+        .transpose()?;
 
     let _ = &args;
 
@@ -818,6 +843,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
         cfg,
         upstreams,
         capture,
+        mitm,
         dns,
         cli_overrides: cli_overrides.clone(),
     });
@@ -834,6 +860,15 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
             .context("STATE_SCHEMA not found")?,
     )?;
     let mut link_transaction = ebpf::LinkTransaction::new();
+
+    if shared.cfg.decrypt.mode == heimdall_config::DecryptMode::Transparent {
+        let capture = shared
+            .capture
+            .clone()
+            .context("strict config enabled transparent decrypt without capture")?;
+        tls_transparent::start(&mut bpf, capture)
+            .context("initialize transparent TLS decryption")?;
+    }
 
     {
         let relay_ip_be = u32::from(Ipv4Addr::LOCALHOST).to_be();
@@ -1542,6 +1577,7 @@ async fn relay(mut client: TcpStream, key: u32, map: PortMap, shared: Arc<Shared
                         destination: &dst_label,
                         destination_port: dst_port,
                         action: &action,
+                        payload: "opaque_transport",
                     },
                 )
                 .await?;
@@ -1563,6 +1599,7 @@ async fn relay(mut client: TcpStream, key: u32, map: PortMap, shared: Arc<Shared
                         destination: &dst_label,
                         destination_port: dst_port,
                         action: "direct",
+                        payload: "opaque_transport",
                     },
                 )
                 .await?;
@@ -1579,16 +1616,25 @@ async fn relay(mut client: TcpStream, key: u32, map: PortMap, shared: Arc<Shared
     result.map(|_| ())
 }
 
-async fn copy_tcp_transport<A, B>(
-    client: &mut A,
-    remote: &mut B,
+async fn copy_tcp_transport(
+    client: &mut TcpStream,
+    remote: &mut TcpStream,
     shared: &Shared,
-    meta: capture::FlowMeta<'_>,
-) -> Result<(u64, u64)>
-where
-    A: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
-    B: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
-{
+    mut meta: capture::FlowMeta<'_>,
+) -> Result<(u64, u64)> {
+    if let Some(mitm) = &shared.mitm
+        && tls_mitm::looks_like_client_hello(client).await?
+    {
+        let manager = shared
+            .capture
+            .as_ref()
+            .context("strict config enabled MITM without capture")?;
+        meta.payload = "tls_plaintext";
+        let fallback_name = meta.destination.to_owned();
+        return mitm
+            .copy(client, remote, &fallback_name, manager, meta)
+            .await;
+    }
     match &shared.capture {
         Some(manager) => capture::copy_tcp(client, remote, manager.open(meta).await?).await,
         None => copy_bidirectional(client, remote).await.map_err(Into::into),
@@ -1838,6 +1884,7 @@ async fn open_udp_capture(
             destination: &destination,
             destination_port: spec.dst_port,
             action,
+            payload: "opaque_transport",
         })
         .await
         .map(Some)

@@ -142,9 +142,9 @@ decision. `--network` defaults to `tcp` for compatibility.
 
 ## Capture and decrypt
 
-The three product layers are independent. Proxy decides whether and where a
-connection is relayed. Capture can record the bytes the relay observes without
-interpreting them. Decrypt remains unavailable:
+The three product layers are ordered and independently explicit. Proxy decides
+whether and where a connection is relayed. Capture decides whether bytes are
+retained. Decrypt chooses what those retained bytes represent:
 
 ```toml
 [capture]
@@ -155,6 +155,37 @@ max_bytes_per_flow = 1048576
 [decrypt]
 mode = "off"
 ```
+
+TLS decryption has two opt-in modes:
+
+```toml
+# Observe supported application TLS APIs without terminating TLS.
+[decrypt]
+mode = "transparent"
+```
+
+```toml
+# Terminate and rebuild TLS at the relay, independent of client language.
+[decrypt]
+mode = "mitm"
+ca_cert = "/var/lib/heimdall/tls/ca.pem"
+ca_key = "/var/lib/heimdall/tls/ca-key.pem"
+```
+
+Both modes require `capture.mode = "on"`; otherwise validation returns
+`decrypt_requires_capture`. `transparent` currently attaches OpenSSL
+`SSL_read`/`SSL_write` uprobes. It requires no trust change and remains
+compatible with certificate pinning and mTLS, but does not claim coverage for
+Go, rustls, BoringSSL, JVM, or stripped/static TLS implementations.
+
+`mitm` detects TLS ClientHello records at the relay, verifies the upstream
+certificate with the native trust store, mirrors the negotiated ALPN, signs a
+per-host leaf certificate, and captures the resulting plaintext. Non-TLS TCP
+passes through unchanged. Generate the CA with
+`heimdall tls init-ca --dir /var/lib/heimdall/tls --json`, then explicitly trust
+`ca.pem` in each wrapped client. The private key must be a regular file with no
+group or other permissions. Certificate pinning and client-certificate mTLS
+are intentionally unsupported in this mode.
 
 `capture.mode` is `off` or `on`. The directory must be absolute; it defaults to
 `/var/lib/heimdall/captures`. `max_bytes_per_flow` defaults to 1 MiB and must be
@@ -172,9 +203,10 @@ fails the affected relay instead of silently producing an incomplete accepted
 capture.
 
 Capture contains sensitive application bytes and has no automatic retention or
-upload. Operators own deletion and capacity policy. For TLS connections these
-bytes are encrypted TLS records, not plaintext. `decrypt.mode` accepts only
-`off`; any other decrypt mode is rejected instead of becoming a no-op.
+upload. Operators own deletion and capacity policy. An `open` record's
+`payload` is `opaque_transport` for decrypt-off traffic and non-TLS passthrough,
+or `tls_plaintext` for decrypted events. Never infer plaintext from the port or
+filename.
 
 ## Daemon settings
 

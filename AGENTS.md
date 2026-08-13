@@ -74,7 +74,7 @@ nix develop -c just verify
 
 ### Config changes stay small
 
-`heimdall-config/src/lib.rs` is the source of truth. Keep the four embedded
+`heimdall-config/src/lib.rs` is the source of truth. Keep the three embedded
 `heimdall init` templates, `docs/config.md`, and
 `skills/heimdall/references/config.md` in sync. Every syntax must enter the same
 strict schema; do not add a workload policy language.
@@ -112,9 +112,9 @@ remember to ask for more if needed.
   The concise help has a footer line (`Tip: heimdall help -v …`)
   that points AI agents at the verbose form. Don't strip the footer.
 - `heimdall agent` is the stable automation entry point. Keep it read-only,
-  single-document JSON, versioned as `heimdall.agent/v2`, and shell-safe by
+  single-document JSON, currently versioned as `heimdall.agent/v3`, and shell-safe by
   representing commands as argv arrays. Exit 0 means ready, 1 means not ready,
-  and 2 remains clap usage failure. Additive v2 fields are allowed; renaming or
+  and 2 remains clap usage failure. Additive v3 fields are allowed; renaming or
   changing existing field semantics requires a new contract version.
 - `heimdall init` preserves `config.<ext>` unless `--force`. Don't change this:
   losing live config to a doc refresh has bitten the user already.

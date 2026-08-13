@@ -198,7 +198,7 @@ pub struct HeimdallConfig {
     #[serde(default)]
     pub capture: CaptureConfig,
     #[serde(default)]
-    pub decrypt: FeatureConfig,
+    pub decrypt: DecryptConfig,
     #[serde(default)]
     pub daemon: Runtime,
 }
@@ -352,22 +352,30 @@ pub enum RejectMethod {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct FeatureConfig {
-    pub mode: FeatureMode,
+pub struct DecryptConfig {
+    pub mode: DecryptMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_cert: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_key: Option<PathBuf>,
 }
 
-impl Default for FeatureConfig {
+impl Default for DecryptConfig {
     fn default() -> Self {
         Self {
-            mode: FeatureMode::Off,
+            mode: DecryptMode::Off,
+            ca_cert: None,
+            ca_key: None,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub enum FeatureMode {
+pub enum DecryptMode {
     Off,
+    Transparent,
+    Mitm,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -520,6 +528,7 @@ impl HeimdallConfig {
         }
 
         validate_capture(&mut errors, &self.capture);
+        validate_decrypt(&mut errors, &self.capture, &self.decrypt);
 
         validate_runtime(&mut errors, &self.daemon);
 
@@ -993,6 +1002,78 @@ fn validate_capture(errors: &mut Vec<ConfigDiagnostic>, capture: &CaptureConfig)
     }
 }
 
+fn validate_decrypt(
+    errors: &mut Vec<ConfigDiagnostic>,
+    capture: &CaptureConfig,
+    decrypt: &DecryptConfig,
+) {
+    if decrypt.mode != DecryptMode::Off && capture.mode != CaptureMode::On {
+        push(
+            errors,
+            "decrypt_requires_capture",
+            "$.capture.mode",
+            format!(
+                "decrypt mode `{:?}` has nowhere to store plaintext while capture is off",
+                decrypt.mode
+            )
+            .to_ascii_lowercase(),
+            "Set capture.mode to `on`, or set decrypt.mode to `off`.",
+        );
+    }
+
+    if decrypt.mode == DecryptMode::Mitm {
+        for (path, value) in [
+            ("$.decrypt.ca_cert", decrypt.ca_cert.as_ref()),
+            ("$.decrypt.ca_key", decrypt.ca_key.as_ref()),
+        ] {
+            let Some(value) = value else {
+                push(
+                    errors,
+                    "missing_mitm_ca_path",
+                    path,
+                    "MITM mode requires this path",
+                    "Set both ca_cert and ca_key to absolute PEM paths.",
+                );
+                continue;
+            };
+            if !value.is_absolute() {
+                push(
+                    errors,
+                    "relative_mitm_ca_path",
+                    path,
+                    format!("`{}` is not absolute", value.display()),
+                    "Use an absolute path to Heimdall-owned PEM material.",
+                );
+            }
+        }
+        if decrypt.ca_cert.is_some() && decrypt.ca_cert == decrypt.ca_key {
+            push(
+                errors,
+                "shared_mitm_ca_path",
+                "$.decrypt.ca_key",
+                "ca_cert and ca_key resolve to the same path",
+                "Use separate PEM files for the public CA certificate and private signing key.",
+            );
+        }
+    } else {
+        for (path, value) in [
+            ("$.decrypt.ca_cert", decrypt.ca_cert.as_ref()),
+            ("$.decrypt.ca_key", decrypt.ca_key.as_ref()),
+        ] {
+            if value.is_some() {
+                push(
+                    errors,
+                    "unexpected_decrypt_field",
+                    path,
+                    format!("this field is not valid in {:?} mode", decrypt.mode)
+                        .to_ascii_lowercase(),
+                    "Remove the field, or set decrypt.mode to `mitm` and configure both CA paths.",
+                );
+            }
+        }
+    }
+}
+
 fn validate_runtime(errors: &mut Vec<ConfigDiagnostic>, runtime: &Runtime) {
     let api = validated_socket(errors, "$.daemon.api_listen", &runtime.api_listen);
     if runtime.dns_port == 0 {
@@ -1439,6 +1520,83 @@ action = { type = "direct" }
         }));
         assert!(diagnostics.iter().any(|item| {
             item.code == "invalid_capture_limit" && item.path == "$.capture.max_bytes_per_flow"
+        }));
+    }
+
+    #[test]
+    fn accepts_both_tls_decrypt_modes() {
+        let transparent: HeimdallConfig = toml::from_str(
+            &valid_toml()
+                .replace(
+                    "mode = \"off\"\n\n            [decrypt]",
+                    "mode = \"on\"\n\n            [decrypt]",
+                )
+                .replace(
+                    "[decrypt]\n            mode = \"off\"",
+                    "[decrypt]\n            mode = \"transparent\"",
+                ),
+        )
+        .unwrap();
+        transparent.validate().unwrap();
+        assert_eq!(transparent.decrypt.mode, DecryptMode::Transparent);
+
+        let mitm: HeimdallConfig = toml::from_str(
+            &valid_toml()
+                .replace("mode = \"off\"\n\n            [decrypt]", "mode = \"on\"\n\n            [decrypt]")
+                .replace(
+                    "[decrypt]\n            mode = \"off\"",
+                    "[decrypt]\n            mode = \"mitm\"\n            ca_cert = \"/etc/heimdall/ca.pem\"\n            ca_key = \"/etc/heimdall/ca-key.pem\"",
+                ),
+        )
+        .unwrap();
+        mitm.validate().unwrap();
+        assert_eq!(mitm.decrypt.mode, DecryptMode::Mitm);
+    }
+
+    #[test]
+    fn decrypt_diagnostics_are_machine_repairable() {
+        let config: HeimdallConfig = toml::from_str(&valid_toml().replace(
+            "[decrypt]\n            mode = \"off\"",
+            "[decrypt]\n            mode = \"mitm\"\n            ca_cert = \"ca.pem\"\n            ca_key = \"ca.pem\"",
+        ))
+        .unwrap();
+        let diagnostics = config.validate().unwrap_err().diagnostics();
+        assert!(diagnostics.iter().any(|item| {
+            item.code == "decrypt_requires_capture" && item.path == "$.capture.mode"
+        }));
+        assert!(diagnostics.iter().any(|item| {
+            item.code == "relative_mitm_ca_path" && item.path == "$.decrypt.ca_cert"
+        }));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|item| item.code == "shared_mitm_ca_path")
+        );
+    }
+
+    #[test]
+    fn rejects_mode_specific_decrypt_fields() {
+        let config = toml::from_str::<HeimdallConfig>(&valid_toml().replace(
+            "[decrypt]\n            mode = \"off\"",
+            "[decrypt]\n            mode = \"transparent\"\n            ca_cert = \"/tmp/ca.pem\"",
+        ))
+        .unwrap();
+        let diagnostics = config.validate().unwrap_err().diagnostics();
+        assert!(diagnostics.iter().any(|item| {
+            item.code == "unexpected_decrypt_field" && item.path == "$.decrypt.ca_cert"
+        }));
+    }
+
+    #[test]
+    fn rejects_mitm_without_both_ca_paths() {
+        let config = toml::from_str::<HeimdallConfig>(&valid_toml().replace(
+            "[decrypt]\n            mode = \"off\"",
+            "[decrypt]\n            mode = \"mitm\"\n            ca_cert = \"/tmp/ca.pem\"",
+        ))
+        .unwrap();
+        let diagnostics = config.validate().unwrap_err().diagnostics();
+        assert!(diagnostics.iter().any(|item| {
+            item.code == "missing_mitm_ca_path" && item.path == "$.decrypt.ca_key"
         }));
     }
 

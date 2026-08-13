@@ -16,17 +16,25 @@ Run:
 heimdall agent
 ```
 
-Parse the single `heimdall.agent/v2` JSON object. Exit 0 means ready, exit 1
+Parse the single `heimdall.agent/v3` JSON object. Exit 0 means ready, exit 1
 means the document explains why, and exit 2 is invalid CLI usage. Read stable
 error `code` values before messages. Execute `actions` as argv arrays; never
 join or evaluate them as shell text.
 
 Use `heimdall help -v` only when deeper command discovery is needed.
 
-If capture is requested, inspect `config.capture` and
-`capabilities.capture`. Require `mode: on`, a suitable byte limit, and
-`payload: opaque_transport`. `tls_plaintext: false` is a hard boundary: do not
-present TLS records as decrypted content or install trust material.
+If capture is requested, inspect `config.capture`, `config.decrypt`,
+`capabilities.capture`, and `capabilities.decrypt`. Require capture `mode: on`
+and a suitable byte limit before either decrypt mode. Read each capture open
+record's `payload`; only `tls_plaintext` is decrypted.
+
+Choose `transparent` only when `transparent_runtimes` contains the client's TLS
+implementation. It changes no trust and supports pinning/mTLS, but absence from
+that array means no plaintext guarantee. Choose `mitm` for runtime-independent
+capture only with explicit authority to install local trust. If
+`ca_material_ready` is false, execute `actions.tls_ca_init` as an argv array,
+then trust its public `ca_cert`; never expose or copy `ca_key`. Do not select
+MITM for certificate-pinned or client-certificate mTLS traffic.
 
 ## Validate and repair configuration
 
@@ -108,7 +116,8 @@ not a per-run override. Keep the wrapped command after `--`. Read
 - Do not start the privileged daemon when the user asked only for config review.
 - For runtime failures, collect `heimdall agent`, `heimdall status --json`, and
   recent `heimdall.service` logs before changing state.
-- Do not infer removed workload, UI, or TLS-observability commands.
+- Do not claim transparent runtime coverage beyond
+  `capabilities.decrypt.transparent_runtimes`.
 - Do not enable capture without explicit retention intent; its root-only files
   can contain credentials and other application data. Heimdall does not rotate
   them.

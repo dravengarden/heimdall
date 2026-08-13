@@ -21,7 +21,7 @@ as_tester() {
 as_tester heimdall config validate --json \
   | jq -e '.contract == "heimdall.config.validate/v1" and .valid'
 as_tester heimdall agent \
-  | jq -e '.contract == "heimdall.agent/v2"
+  | jq -e '.contract == "heimdall.agent/v3"
     and .ready
     and .config.capture.mode == "on"
     and .config.capture.directory == "/run/heimdall-test/captures"
@@ -30,8 +30,9 @@ as_tester heimdall agent \
     and .capabilities.capture.format == "jsonl"
     and .capabilities.capture.tcp
     and .capabilities.capture.udp
-    and .capabilities.capture.payload == "opaque_transport"
-    and (.capabilities.capture.tls_plaintext | not)
+    and .capabilities.capture.payload == "mode_dependent"
+    and .capabilities.capture.tls_plaintext
+    and .capabilities.decrypt.modes == ["off", "transparent", "mitm"]
     and .capabilities.udp.connected
     and .capabilities.udp.association_reuse
     and .capabilities.udp.multi_response

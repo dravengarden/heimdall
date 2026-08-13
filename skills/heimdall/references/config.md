@@ -14,7 +14,9 @@ proxy.policies.<name>.final.udp = route | direct | reject
 capture.mode = off | on
 capture.directory = absolute path (default /var/lib/heimdall/captures)
 capture.max_bytes_per_flow = 1..67108864 (default 1048576)
-decrypt.mode = off
+decrypt.mode = off | transparent | mitm
+decrypt.ca_cert = absolute PEM path (mitm only)
+decrypt.ca_key = absolute protected PEM path (mitm only)
 daemon = optional implementation settings
 ```
 
@@ -79,18 +81,22 @@ Configuration validity does not prove a particular language runtime. After
 validation, compare the intended path with `capabilities.runtime_acceptance`;
 probe the actual command when its runtime is absent from that path's array.
 
-## Capture boundary
+## Capture and decrypt boundary
 
 Enable capture only when the user intends to retain traffic. It writes one
-root-only JSONL file per TCP or UDP flow using `heimdall.capture/v1`. The byte
-limit is shared across both directions. Payload is base64-encoded opaque
-transport data: TLS remains ciphertext and `decrypt.mode` remains `off`.
+root-only JSONL using `heimdall.capture/v1`. The byte limit is shared across
+both directions. With decrypt off, payload is opaque transport. Transparent
+mode is CA-free but currently covers only the runtimes listed by
+`agent.capabilities.decrypt.transparent_runtimes`. MITM is runtime-independent
+but requires client trust and does not support pinning or client-certificate
+mTLS. Both decrypt modes require capture on.
 
 Validate the absolute directory and bounded limit, then inspect the normalized
-values at `agent.config.capture` and capability boundary at
-`agent.capabilities.capture`. Never add a CA, weaken file permissions, or claim
-TLS plaintext. Heimdall does not rotate or upload captures; retention is an
-operator decision.
+values at `agent.config.capture`/`agent.config.decrypt` and capability boundary
+at `agent.capabilities.capture`/`agent.capabilities.decrypt`. Use
+`heimdall tls init-ca --json` only after explicit MITM trust authority. Never
+weaken file permissions or expose `ca_key`. Heimdall does not rotate or upload
+captures; retention is an operator decision.
 
 ## DNS invariants
 

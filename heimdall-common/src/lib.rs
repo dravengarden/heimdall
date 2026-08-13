@@ -63,6 +63,31 @@ pub const FAMILY_V4: u8 = 4;
 pub const FAMILY_V6: u8 = 6;
 pub const RELAY_PORT: u16 = 12345;
 
+#[repr(u32)]
+#[derive(Clone, Copy, Debug)]
+pub enum TapDir {
+    Send = 0,
+    Recv = 1,
+}
+
+pub const TAP_DATA_LEN: usize = 256;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TapEvent {
+    pub tgid_pid: u64,
+    pub cgroup_id: u64,
+    pub dir: u32,
+    pub captured_len: u32,
+    pub total_len: u32,
+    #[allow(
+        clippy::pub_underscore_fields,
+        reason = "the explicit ABI padding is shared with eBPF"
+    )]
+    pub _pad: u32,
+    pub data: [u8; TAP_DATA_LEN],
+}
+
 /// Correlate a redirected relay connection without allowing IPv4 and IPv6
 /// sockets that reuse the same ephemeral port to overwrite each other.
 #[must_use]
@@ -83,6 +108,13 @@ unsafe impl aya::Pod for OrigDst {}
     reason = "repr(C) contains only fixed-width Pod fields shared verbatim with eBPF"
 )]
 unsafe impl aya::Pod for UdpFlowKey {}
+
+#[cfg(feature = "user")]
+#[allow(
+    unsafe_code,
+    reason = "repr(C) contains only fixed-width Pod fields shared verbatim with eBPF"
+)]
+unsafe impl aya::Pod for TapEvent {}
 
 // ---------------------------------------------------------------------------
 // Per-cgroup policy flags written by `heimdall run` and read by the eBPF

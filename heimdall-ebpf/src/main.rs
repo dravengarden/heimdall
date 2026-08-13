@@ -27,14 +27,18 @@
 
 use aya_ebpf::{
     EbpfContext,
-    helpers::{bpf_get_current_cgroup_id, bpf_get_socket_cookie},
-    macros::{cgroup_skb, cgroup_sock, cgroup_sock_addr, map},
-    maps::{Array, HashMap, LruHashMap},
-    programs::{SkBuffContext, SockAddrContext, SockContext},
+    helpers::{
+        bpf_get_current_cgroup_id, bpf_get_current_pid_tgid, bpf_get_socket_cookie,
+        r#gen::bpf_probe_read_user,
+    },
+    macros::{cgroup_skb, cgroup_sock, cgroup_sock_addr, map, uprobe, uretprobe},
+    maps::{Array, HashMap, LruHashMap, PerfEventArray},
+    programs::{ProbeContext, RetProbeContext, SkBuffContext, SockAddrContext, SockContext},
 };
 use heimdall_common::{
     DEFAULT_POLICY, FAMILY_V4, FAMILY_V6, OrigDst, POLICY_DNS_HIJACK, POLICY_DNS_SYSTEM,
-    POLICY_REDIRECT_OFF, POLICY_UDP_REJECT, RELAY_PORT, UdpFlowKey, relay_key,
+    POLICY_REDIRECT_OFF, POLICY_UDP_REJECT, RELAY_PORT, TAP_DATA_LEN, TapDir, TapEvent, UdpFlowKey,
+    relay_key,
 };
 
 const DNS_PORT: u16 = 53;
@@ -972,6 +976,108 @@ fn try_skb_egress(ctx: &SkBuffContext) -> Result<i32, ()> {
     }
 
     Ok(1)
+}
+
+// Transparent TLS decryption observes OpenSSL buffers without terminating TLS.
+// The cgroup policy lookup prevents plaintext from unregistered processes from
+// crossing the userspace boundary.
+#[map]
+static TAP_EVENTS: PerfEventArray<TapEvent> = PerfEventArray::new(0);
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ReadEntry {
+    buf: u64,
+}
+
+#[map]
+static SSL_READ_STATE: HashMap<u64, ReadEntry> = HashMap::with_max_entries(8192, 0);
+
+#[uprobe]
+pub fn ssl_write(ctx: ProbeContext) -> u32 {
+    if let (Some(buf), Some(num)) = (ctx.arg::<*const u8>(1), ctx.arg::<i32>(2))
+        && num > 0
+        && !buf.is_null()
+    {
+        emit_tap(&ctx, TapDir::Send, num as u32, buf);
+    }
+    0
+}
+
+#[uprobe]
+pub fn ssl_read_enter(ctx: ProbeContext) -> u32 {
+    if let Some(buf) = ctx.arg::<*const u8>(1) {
+        let pid_tgid = bpf_get_current_pid_tgid();
+        let _ = SSL_READ_STATE.insert(&pid_tgid, &ReadEntry { buf: buf as u64 }, 0);
+    }
+    0
+}
+
+#[uretprobe]
+pub fn ssl_read_exit(ctx: RetProbeContext) -> u32 {
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let Some(entry) = (unsafe { SSL_READ_STATE.get(&pid_tgid) }).copied() else {
+        return 0;
+    };
+    let _ = SSL_READ_STATE.remove(&pid_tgid);
+    if let Some(ret) = ctx.ret::<i32>()
+        && ret > 0
+    {
+        emit_tap_ret(&ctx, TapDir::Recv, ret as u32, entry.buf as *const u8);
+    }
+    0
+}
+
+#[inline(always)]
+fn emit_tap(ctx: &ProbeContext, dir: TapDir, total: u32, buf: *const u8) {
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    if policy_for(cgroup_id) == DEFAULT_POLICY {
+        return;
+    }
+    let mut event: TapEvent = unsafe { core::mem::zeroed() };
+    event.tgid_pid = bpf_get_current_pid_tgid();
+    event.cgroup_id = cgroup_id;
+    event.dir = dir as u32;
+    event.total_len = total;
+    event.captured_len = if total > TAP_DATA_LEN as u32 {
+        TAP_DATA_LEN as u32
+    } else {
+        total
+    };
+    unsafe {
+        let _ = bpf_probe_read_user(
+            event.data.as_mut_ptr() as *mut _,
+            event.captured_len,
+            buf as *const _,
+        );
+    }
+    TAP_EVENTS.output(ctx, &event, 0);
+}
+
+#[inline(always)]
+fn emit_tap_ret(ctx: &RetProbeContext, dir: TapDir, total: u32, buf: *const u8) {
+    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    if policy_for(cgroup_id) == DEFAULT_POLICY {
+        return;
+    }
+    let mut event: TapEvent = unsafe { core::mem::zeroed() };
+    event.tgid_pid = bpf_get_current_pid_tgid();
+    event.cgroup_id = cgroup_id;
+    event.dir = dir as u32;
+    event.total_len = total;
+    event.captured_len = if total > TAP_DATA_LEN as u32 {
+        TAP_DATA_LEN as u32
+    } else {
+        total
+    };
+    unsafe {
+        let _ = bpf_probe_read_user(
+            event.data.as_mut_ptr() as *mut _,
+            event.captured_len,
+            buf as *const _,
+        );
+    }
+    TAP_EVENTS.output(ctx, &event, 0);
 }
 
 #[panic_handler]

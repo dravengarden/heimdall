@@ -4,6 +4,15 @@ All notable changes to heimdall are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Add strict `transparent` and `mitm` TLS decrypt modes. Transparent mode
+  observes registered OpenSSL clients without changing trust; MITM mode
+  verifies upstream TLS, mirrors ALPN, issues per-host leaves from an explicit
+  protected CA, preserves non-TLS passthrough, and captures plaintext.
+- Add `heimdall tls init-ca --json` plus `heimdall.agent/v3` decrypt
+  capabilities and repair argv for agent-driven setup.
+
 ### Fixed
 
 - Version pinned map layouts, replace cgroup programs as one rollback-capable
@@ -46,7 +55,7 @@ All notable changes to heimdall are documented here.
 
 - Added opt-in, bounded TCP and UDP relay capture as root-only
   `heimdall.capture/v1` JSONL files. Capture covers direct and SOCKS5 actions,
-  remains opaque to TLS, fails affected flows on write errors, and exposes its
+  records its payload boundary explicitly, fails affected flows on write errors, and exposes its
   exact boundary through `heimdall agent`.
 - Added real-eBPF acceptance for an active fake-DNS command across a daemon
   restart and exposed policy recovery, DNS recovery, connection survival, and

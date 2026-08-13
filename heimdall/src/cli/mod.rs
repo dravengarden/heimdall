@@ -4,6 +4,7 @@
 //! small loopback registration API.
 
 pub mod ebpf;
+pub mod tls;
 
 pub mod agent {
     //! Stable, side-effect-free machine contract for AI agents and automation.
@@ -15,11 +16,12 @@ pub mod agent {
 
     use anyhow::Result;
     use heimdall_config::{
-        Action, CaptureMode, ConfigDiagnostic, ConfigError, ConfigFormat, DnsMode, HeimdallConfig,
+        Action, CaptureMode, ConfigDiagnostic, ConfigError, ConfigFormat, DecryptConfig, DnsMode,
+        HeimdallConfig,
     };
     use serde::Serialize;
 
-    const CONTRACT_VERSION: &str = "heimdall.agent/v2";
+    const CONTRACT_VERSION: &str = "heimdall.agent/v3";
 
     #[derive(clap::Args, Debug)]
     pub struct AgentArgs {
@@ -49,6 +51,7 @@ pub mod agent {
         format: Option<&'static str>,
         valid: bool,
         capture: Option<CaptureConfigReport>,
+        decrypt: Option<DecryptConfigReport>,
         error: Option<MachineError>,
     }
 
@@ -60,6 +63,14 @@ pub mod agent {
     }
 
     #[derive(Debug, Serialize)]
+    struct DecryptConfigReport {
+        mode: &'static str,
+        ca_cert: Option<String>,
+        ca_key: Option<String>,
+        ca_material_ready: bool,
+    }
+
+    #[derive(Debug, Serialize)]
     struct DaemonReport {
         reachable: Option<bool>,
         control: Option<String>,
@@ -68,6 +79,7 @@ pub mod agent {
     #[derive(Debug, Serialize)]
     struct Capabilities {
         capture: CaptureCapabilities,
+        decrypt: DecryptCapabilities,
         udp: UdpCapabilities,
         runtime_acceptance: RuntimeAcceptance,
         cli_acceptance: CliAcceptance,
@@ -82,6 +94,19 @@ pub mod agent {
         udp: bool,
         payload: &'static str,
         tls_plaintext: bool,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct DecryptCapabilities {
+        modes: &'static [&'static str],
+        transparent_runtimes: &'static [&'static str],
+        transparent_requires_ca_trust: bool,
+        transparent_supports_pinning_and_mtls: bool,
+        mitm_runtime_independent: bool,
+        mitm_requires_ca_trust: bool,
+        mitm_supports_pinning_and_mtls: bool,
+        upstream_certificate_verification: bool,
+        non_tls_passthrough: bool,
     }
 
     #[derive(Debug, Serialize)]
@@ -155,6 +180,7 @@ pub mod agent {
         validate: Vec<String>,
         status: Vec<String>,
         execute_prefix: Option<Vec<String>>,
+        tls_ca_init: Option<Vec<String>>,
     }
 
     #[derive(Debug, Serialize)]
@@ -200,6 +226,7 @@ pub mod agent {
                     format,
                     valid: false,
                     capture: None,
+                    decrypt: None,
                     error: Some(config_error(error)),
                 },
                 daemon: DaemonReport {
@@ -214,6 +241,7 @@ pub mod agent {
                     validate: validate_argv,
                     status: status_argv,
                     execute_prefix: None,
+                    tls_ca_init: None,
                 },
                 exit_codes: exit_codes(),
             },
@@ -291,6 +319,7 @@ pub mod agent {
                     directory: config.capture.directory.display().to_string(),
                     max_bytes_per_flow: config.capture.max_bytes_per_flow,
                 }),
+                decrypt: Some(decrypt_report(&config.decrypt)),
                 error: None,
             },
             daemon: DaemonReport {
@@ -311,6 +340,7 @@ pub mod agent {
                 validate: argv_for(&path, &["config", "validate", "--json"]),
                 status: argv_for(&path, &["status", "--json"]),
                 execute_prefix,
+                tls_ca_init: mitm_ca_init_argv(&config.decrypt),
             },
             exit_codes: exit_codes(),
         }
@@ -361,6 +391,58 @@ pub mod agent {
         }
     }
 
+    fn decrypt_report(config: &DecryptConfig) -> DecryptConfigReport {
+        match config.mode {
+            heimdall_config::DecryptMode::Off => DecryptConfigReport {
+                mode: "off",
+                ca_cert: None,
+                ca_key: None,
+                ca_material_ready: true,
+            },
+            heimdall_config::DecryptMode::Transparent => DecryptConfigReport {
+                mode: "transparent",
+                ca_cert: None,
+                ca_key: None,
+                ca_material_ready: true,
+            },
+            heimdall_config::DecryptMode::Mitm => DecryptConfigReport {
+                mode: "mitm",
+                ca_cert: config
+                    .ca_cert
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+                ca_key: config
+                    .ca_key
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+                ca_material_ready: config.ca_cert.as_ref().is_some_and(|path| path.is_file())
+                    && config.ca_key.as_ref().is_some_and(|path| path.is_file()),
+            },
+        }
+    }
+
+    fn mitm_ca_init_argv(config: &DecryptConfig) -> Option<Vec<String>> {
+        if config.mode != heimdall_config::DecryptMode::Mitm {
+            return None;
+        }
+        let ca_cert = config.ca_cert.as_ref()?;
+        let ca_key = config.ca_key.as_ref()?;
+        let directory = ca_cert.parent()?;
+        (ca_key.parent() == Some(directory)
+            && ca_cert.file_name().is_some_and(|name| name == "ca.pem")
+            && ca_key.file_name().is_some_and(|name| name == "ca-key.pem"))
+        .then(|| {
+            vec![
+                "heimdall".into(),
+                "tls".into(),
+                "init-ca".into(),
+                "--dir".into(),
+                directory.display().to_string(),
+                "--json".into(),
+            ]
+        })
+    }
+
     const fn exit_codes() -> ExitCodes {
         ExitCodes {
             ready: 0,
@@ -376,8 +458,19 @@ pub mod agent {
                 format: "jsonl",
                 tcp: true,
                 udp: true,
-                payload: "opaque_transport",
-                tls_plaintext: false,
+                payload: "mode_dependent",
+                tls_plaintext: true,
+            },
+            decrypt: DecryptCapabilities {
+                modes: &["off", "transparent", "mitm"],
+                transparent_runtimes: &["openssl"],
+                transparent_requires_ca_trust: false,
+                transparent_supports_pinning_and_mtls: true,
+                mitm_runtime_independent: true,
+                mitm_requires_ca_trust: true,
+                mitm_supports_pinning_and_mtls: false,
+                upstream_certificate_verification: true,
+                non_tls_passthrough: true,
             },
             udp: UdpCapabilities {
                 connected: true,
@@ -479,8 +572,9 @@ pub mod agent {
             assert_eq!(capture.format, "jsonl");
             assert!(capture.tcp);
             assert!(capture.udp);
-            assert_eq!(capture.payload, "opaque_transport");
-            assert!(!capture.tls_plaintext);
+            assert_eq!(capture.payload, "mode_dependent");
+            assert!(capture.tls_plaintext);
+            assert_eq!(capabilities().decrypt.modes, ["off", "transparent", "mitm"]);
         }
 
         #[test]

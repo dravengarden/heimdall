@@ -87,12 +87,16 @@ registrations. Existing TCP or UDP relay sessions are not preserved, so this is
 enforcement continuity rather than full connection continuity. `heimdall agent`
 exposes both boundaries through `capabilities.lifecycle`.
 
-Capture is a relay-layer facility, not a kernel packet recorder. Its
+Capture is a relay/application-boundary facility, not a kernel packet recorder. Its
 `heimdall.capture/v1` files preserve ordered open/data/close events and count
 both wire directions under one per-flow byte budget. The root-only output
 directory is permission-checked before eBPF attachment. Storage retention remains an
-operator responsibility, and plaintext decryption remains outside the current
-product contract.
+operator responsibility. Transparent decryption emits supported OpenSSL
+application buffers through a bounded perf array without terminating TLS. MITM
+decryption classifies ClientHello at the relay, validates upstream TLS, presents
+a Heimdall-CA-signed leaf to the client, and records plaintext after both
+handshakes. The capture `payload` field distinguishes these records from opaque
+transport.
 
 A pinned bootstrap array records the map-layout schema. A binary rejects an
 unknown schema before loading or replacing programs and points the operator at

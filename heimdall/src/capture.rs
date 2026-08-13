@@ -1,4 +1,4 @@
-//! Opaque transport capture for bytes already crossing Heimdall's relay.
+//! Bounded capture for relay transport and decrypted TLS payloads.
 
 use std::{
     fs::OpenOptions,
@@ -52,6 +52,7 @@ pub struct FlowMeta<'a> {
     pub destination: &'a str,
     pub destination_port: u16,
     pub action: &'a str,
+    pub payload: &'a str,
 }
 
 #[derive(Clone)]
@@ -87,6 +88,8 @@ struct Record<'a> {
     destination_port: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     action: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    payload: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     direction: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -202,6 +205,7 @@ impl CaptureManager {
             destination: Some(meta.destination),
             destination_port: Some(meta.destination_port),
             action: Some(meta.action),
+            payload: Some(meta.payload),
             direction: None,
             payload_base64: None,
             original_bytes: None,
@@ -248,6 +252,7 @@ impl CaptureFlow {
             destination: None,
             destination_port: None,
             action: None,
+            payload: None,
             direction: Some(direction.name()),
             payload_base64: Some(STANDARD.encode(&payload[..take])),
             original_bytes: Some(original_bytes),
@@ -278,6 +283,7 @@ impl CaptureFlow {
             destination: None,
             destination_port: None,
             action: None,
+            payload: None,
             direction: None,
             payload_base64: None,
             original_bytes: None,

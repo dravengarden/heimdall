@@ -15,9 +15,20 @@ heimdall status --json
 `agent` is the primary machine contract: one versioned JSON object, stable
 error categories, and next actions represented as argv arrays. Exit 0 means
 ready, 1 means not ready, and 2 means CLI usage error. It never mutates state.
-Read `config.capture` for the normalized mode, directory, and per-flow limit;
-read `capabilities.capture` before consuming a capture file. The payload is
-opaque transport data and `tls_plaintext` is false.
+Read `config.capture` and `config.decrypt` for normalized modes and limits;
+read both capture and decrypt capabilities before consuming a file. Branch on
+the open record's `payload`: `opaque_transport` is not decrypted, while
+`tls_plaintext` is.
+
+For an explicitly approved MITM setup, generate trust material without shell
+evaluation:
+
+```bash
+heimdall tls init-ca --dir /var/lib/heimdall/tls --json
+```
+
+Trust only the reported public `ca_cert` in the wrapped client. Keep the
+reported `ca_key` daemon-only and mode `0600`.
 
 `config show` prints source text, not a normalized form. `config validate`
 decodes the selected syntax, rejects unknown

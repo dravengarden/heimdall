@@ -80,7 +80,7 @@ It is read-only and always prints exactly one JSON value before exiting:
 
 ```json
 {
-  "contract": "heimdall.agent/v2",
+  "contract": "heimdall.agent/v3",
   "version": "0.1.0",
   "ready": true,
   "config": {
@@ -97,8 +97,8 @@ It is read-only and always prints exactly one JSON value before exiting:
       "format": "jsonl",
       "tcp": true,
       "udp": true,
-      "payload": "opaque_transport",
-      "tls_plaintext": false
+      "payload": "mode_dependent",
+      "tls_plaintext": true
     },
     "udp": {
       "connected": true,
@@ -162,14 +162,26 @@ It is read-only and always prints exactly one JSON value before exiting:
 Treat argv arrays as arrays; never concatenate or shell-evaluate them. When
 config cannot be loaded, `config.error.code` is a stable category and
 `diagnostics` contains stable code/path/message/hint records. The contract may
-add fields within v2; consumers
+add fields within v3; consumers
 must ignore unknown fields.
 
-Before enabling capture, agents must inspect `capabilities.capture` and the
-normalized `config.capture` report. `opaque_transport` means relay-observed
-application transport bytes: HTTP may be readable, while HTTPS stays encrypted
-TLS records because `tls_plaintext` is false. Never describe these files as
-decrypted traffic.
+Before enabling capture, agents must inspect `capabilities.capture`,
+`capabilities.decrypt`, and the normalized capture/decrypt config. The agent
+capability says plaintext is available, not that every file is plaintext.
+Inspect each open record: `opaque_transport` is relay-observed transport;
+`tls_plaintext` is decrypted content.
+
+Transparent mode requires no trust change and currently covers only OpenSSL.
+MITM mode is language-independent but requires clients to trust the generated
+CA and is incompatible with pinning and client-certificate mTLS. Generate its
+material only with explicit trust authority:
+
+```bash
+sudo heimdall tls init-ca --dir /var/lib/heimdall/tls --json
+```
+
+The command prints a shell-safe JSON contract and matching config paths. Trust
+only `ca_cert`; keep `ca_key` private to the daemon.
 
 Capture files are sensitive and root-only. Inspect them without changing daemon
 state:
