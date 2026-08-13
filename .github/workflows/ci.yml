@@ -15,8 +15,8 @@ jobs:
     name: rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.100.0
         with:
           components: rustfmt
       - name: cargo fmt --check
@@ -26,7 +26,7 @@ jobs:
     name: eBPF build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly-2026-03-13
         with:
           components: rust-src
@@ -39,7 +39,7 @@ jobs:
           cargo +nightly build -Z build-std=core \
                                --target bpfel-unknown-none --release
       - name: Upload eBPF artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: heimdall-ebpf
           path: heimdall-ebpf/target/bpfel-unknown-none/release/heimdall-ebpf
@@ -49,7 +49,7 @@ jobs:
     name: UI typecheck + build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: denoland/setup-deno@v2
         with:
           deno-version: "2.8.1"
@@ -63,7 +63,7 @@ jobs:
         working-directory: heimdall-ui
         run: deno task build
       - name: Upload UI bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: heimdall-ui-dist
           path: heimdall-ui/dist
@@ -74,18 +74,18 @@ jobs:
     needs: [ebpf, ui]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.100.0
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Download eBPF artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: heimdall-ebpf
           path: heimdall-ebpf/target/bpfel-unknown-none/release
       - name: Download UI bundle
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: heimdall-ui-dist
           path: heimdall-ui/dist
