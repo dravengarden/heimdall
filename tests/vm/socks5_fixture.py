@@ -30,7 +30,7 @@ class Handler(socketserver.BaseRequestHandler):
         version, command, reserved, atyp = struct.unpack(
             "!BBBB", read_exact(self.request, 4)
         )
-        if (version, command, reserved) != (5, 1, 0):
+        if version != 5 or reserved != 0:
             return
         if atyp == 1:
             host = socket.inet_ntop(socket.AF_INET, read_exact(self.request, 4))
@@ -41,6 +41,11 @@ class Handler(socketserver.BaseRequestHandler):
         else:
             return
         port = struct.unpack("!H", read_exact(self.request, 2))[0]
+        if command == 3:
+            self.udp_associate()
+            return
+        if command != 1:
+            return
         with open(LOG_PATH, "a", encoding="utf-8") as log:
             log.write(json.dumps({"atyp": atyp, "host": host, "port": port}) + "\n")
 
@@ -64,6 +69,61 @@ class Handler(socketserver.BaseRequestHandler):
                         return
                     target = upstream if source is self.request else self.request
                     target.sendall(payload)
+
+    def udp_associate(self):
+        udp = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+        udp.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        udp.bind(("::1", 0))
+        relay_port = udp.getsockname()[1]
+        self.request.sendall(
+            b"\x05\x00\x00\x04" + socket.inet_pton(socket.AF_INET6, "::1")
+            + struct.pack("!H", relay_port)
+        )
+        client = None
+        with udp:
+            while True:
+                readable, _, _ = select.select([self.request, udp], [], [], 10)
+                if self.request in readable:
+                    if not self.request.recv(1):
+                        return
+                if udp not in readable:
+                    continue
+                packet, sender = udp.recvfrom(65535)
+                if client is None or sender == client:
+                    client = sender
+                    target, header, payload = parse_udp_frame(packet)
+                    family = socket.AF_INET6 if ":" in target[0] else socket.AF_INET
+                    with socket.socket(family, socket.SOCK_DGRAM) as upstream:
+                        upstream.settimeout(5)
+                        upstream.sendto(payload, target)
+                        response, _ = upstream.recvfrom(65535)
+                    udp.sendto(b"\x00\x00\x00" + header + response, client)
+
+
+def parse_udp_frame(packet):
+    if len(packet) < 4 or packet[:3] != b"\x00\x00\x00":
+        raise ValueError("invalid SOCKS5 UDP frame")
+    atyp = packet[3]
+    offset = 4
+    if atyp == 1:
+        host = socket.inet_ntop(socket.AF_INET, packet[offset : offset + 4])
+        offset += 4
+    elif atyp == 3:
+        length = packet[offset]
+        offset += 1
+        host = packet[offset : offset + length].decode("ascii")
+        offset += length
+    elif atyp == 4:
+        host = socket.inet_ntop(socket.AF_INET6, packet[offset : offset + 16])
+        offset += 16
+    else:
+        raise ValueError("unknown SOCKS5 UDP ATYP")
+    port = struct.unpack("!H", packet[offset : offset + 2])[0]
+    offset += 2
+    with open(LOG_PATH, "a", encoding="utf-8") as log:
+        log.write(json.dumps({"udp": True, "atyp": atyp, "host": host, "port": port}) + "\n")
+    connect_host = "127.0.0.1" if host == "fixture.test" else host
+    return (connect_host, port), packet[3:offset], packet[offset:]
 
 
 class Server(socketserver.ThreadingTCPServer):

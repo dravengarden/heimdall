@@ -38,19 +38,28 @@ heimdall config validate --json
 
 If validation fails, process every `diagnostics` entry. Use `code` for control
 flow, `path` to locate the field, and `hint` as the repair constraint. Repeat
-until `valid` is true. Do not weaken UDP to direct to silence a capability
-error. Never put a password value in config; use an absolute `password_file`.
+until `valid` is true. An `outbound_network_mismatch` must be repaired by
+enabling the required protocol on that outbound or selecting a capable
+outbound; never silently change `route` to `direct`. Never put a password value
+in config; use an absolute `password_file`.
 
 Then run:
 
 ```bash
 heimdall config explain --policy <policy> --domain example.com --port 443 --json
+heimdall config explain --policy <policy> --network udp --domain example.com --port 443 --json
 heimdall agent --policy <policy>
 ```
 
 Use `config explain` to verify ordered rule selection before execution. Do not
 treat configuration validity or an explained decision as daemon or network
 acceptance.
+
+Before choosing a UDP workload, inspect `capabilities.udp` in the agent report.
+Only connected sockets and one-request/one-response exchanges are supported.
+Do not use Heimdall for connectionless non-DNS `sendto`/`sendmsg`, QUIC,
+multicast, multi-response UDP, or concurrent sockets sharing one source port
+until those capabilities are reported.
 
 ## Run a command
 

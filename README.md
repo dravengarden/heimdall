@@ -76,10 +76,13 @@ username = "alice"
 password_file = "/etc/heimdall/secrets/default-password"
 ```
 
-Policies contain ordered TCP rules with `route`, `direct`, or `reject` actions
-and mandatory TCP/UDP final actions. Fake DNS preserves hostnames for domain
-rules; system DNS exposes resolved IPs. Non-DNS UDP is rejected until a real UDP
-relay exists. See [docs/config.md](docs/config.md) for the complete schema.
+Policies contain ordered TCP/UDP rules with `route`, `direct`, or `reject`
+actions and mandatory final actions for both protocols. Fake DNS preserves
+hostnames for domain rules; system DNS exposes resolved IPs. Connected UDP can
+use SOCKS5 UDP ASSOCIATE or direct egress. Connectionless non-DNS UDP fails
+closed, and the current UDP relay is a bounded one-request/one-response exchange
+rather than a long-lived QUIC transport. See [docs/config.md](docs/config.md) for
+the complete schema.
 
 ## Getting started
 

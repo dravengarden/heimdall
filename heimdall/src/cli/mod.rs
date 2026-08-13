@@ -33,6 +33,7 @@ pub mod agent {
         ready: bool,
         config: ConfigReport,
         daemon: DaemonReport,
+        capabilities: Capabilities,
         decision: Option<DecisionReport>,
         policies: Vec<String>,
         outbounds: Vec<String>,
@@ -52,6 +53,19 @@ pub mod agent {
     struct DaemonReport {
         reachable: Option<bool>,
         control: Option<String>,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct Capabilities {
+        udp: UdpCapabilities,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct UdpCapabilities {
+        connected: bool,
+        connectionless: bool,
+        concurrent_shared_source_port: bool,
+        exchange: &'static str,
     }
 
     #[derive(Debug, Serialize)]
@@ -125,6 +139,7 @@ pub mod agent {
                     reachable: None,
                     control: None,
                 },
+                capabilities: capabilities(),
                 decision: None,
                 policies: Vec::new(),
                 outbounds: Vec::new(),
@@ -207,6 +222,7 @@ pub mod agent {
                 reachable: Some(reachable),
                 control: Some(control),
             },
+            capabilities: capabilities(),
             decision: Some(DecisionReport {
                 policy,
                 dns,
@@ -275,6 +291,17 @@ pub mod agent {
             ready: 0,
             not_ready: 1,
             usage: 2,
+        }
+    }
+
+    const fn capabilities() -> Capabilities {
+        Capabilities {
+            udp: UdpCapabilities {
+                connected: true,
+                connectionless: false,
+                concurrent_shared_source_port: false,
+                exchange: "one-request-one-response",
+            },
         }
     }
 

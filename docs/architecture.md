@@ -24,8 +24,8 @@ The CLI is the product surface. It selects a named policy, creates a child
 cgroup, executes the command, forwards its exit status, and cleans up.
 
 The daemon is implementation infrastructure. It loads the eBPF object,
-maintains a local cgroup-to-policy registry, runs the TCP relay and fake-IP DNS,
-and reaps abandoned CLI cgroups. Its default eBPF policy is always bypass, so
+maintains a local cgroup-to-policy registry, runs the TCP/UDP relay and fake-IP
+DNS, and reaps abandoned CLI cgroups. Its default eBPF policy is always bypass, so
 an unregistered process cannot be redirected accidentally.
 
 The internal relay binds fixed IPv4 and IPv6 loopback sockets on port 12345;
@@ -43,11 +43,14 @@ orchestrator-shaped metadata.
 2. It creates an `heimdall-cli-*` cgroup below the delegated user subtree.
 3. It registers that cgroup ID and policy name with the local daemon.
 4. The child joins the cgroup and executes the requested command.
-5. eBPF rewrites the child's TCP destinations to the local relay. DNS traffic
-   is redirected over UDP or TCP when the policy uses fake DNS. System DNS is
-   explicitly allowed to port 53. Other UDP is rejected fail-closed.
+5. eBPF rewrites the child's TCP and connected UDP destinations to the local
+   relay. DNS traffic is redirected over UDP or TCP when the policy uses fake
+   DNS. System DNS is explicitly allowed to port 53. Connectionless non-DNS UDP
+   is rejected fail-closed.
 6. The relay recovers the original destination, evaluates the policy's ordered
-   TCP rules, and routes, connects directly, or rejects it.
+   protocol rules, and routes, connects directly, or rejects it. UDP is a
+   bounded one-request/one-response exchange; it does not yet preserve a
+   long-lived upstream association.
 7. Application bytes, including TLS records, pass through unchanged. Heimdall
    never uses SNI to reinterpret an IP destination: fake DNS produces a SOCKS5
    domain request, while system DNS preserves the resolved IP address.
@@ -62,7 +65,9 @@ hold in its cache.
 
 Redirect correlation keys include both address family and ephemeral source
 port. IPv4 and IPv6 sockets may legally reuse the same port, so a port-only key
-would allow concurrent dual-stack connections to overwrite each other.
+would allow concurrent dual-stack connections to overwrite each other. UDP
+keeps its socket-cookie mapping for the connected socket lifetime so repeated
+datagrams retain their original peer and `getpeername` remains transparent.
 
 ## Non-goals
 

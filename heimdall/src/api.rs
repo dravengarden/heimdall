@@ -10,7 +10,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use heimdall_config::{Action, Decision, DnsMode, ProxyPolicy};
+use heimdall_config::{Decision, DnsMode, ProxyPolicy};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
@@ -65,7 +65,7 @@ async fn register_cli(
             format!("unknown policy `{}`", request.policy),
         )
     })?;
-    let reject_udp = matches!(policy.final_.udp, Action::Reject { .. });
+    let reject_udp = policy.rejects_all_udp();
     let engine = engine(&state)?;
     engine
         .register_external(

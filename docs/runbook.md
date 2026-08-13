@@ -19,9 +19,10 @@ nix develop -c just test-vm
 ```
 
 The check boots a disposable NixOS guest and verifies real eBPF attachment,
-fake/system DNS, SOCKS5 IPv4/IPv6/domain requests, direct/reject actions,
-non-DNS UDP fail-closed behavior, unregistered bypass, cgroup cleanup, and 100
-same-source-port dual-stack connection pairs.
+fake/system DNS, SOCKS5 IPv4/IPv6/domain requests, connected UDP through SOCKS5
+and direct egress, transparent UDP `getpeername`, connectionless UDP fail-closed
+behavior, unregistered bypass, cgroup cleanup, and 100 same-source-port
+dual-stack connection pairs.
 
 ## Install
 
@@ -70,6 +71,14 @@ It is read-only and always prints exactly one JSON value before exiting:
   "ready": true,
   "config": { "path": "...", "format": "toml", "valid": true, "error": null },
   "daemon": { "reachable": true, "control": "127.0.0.1:9999" },
+  "capabilities": {
+    "udp": {
+      "connected": true,
+      "connectionless": false,
+      "concurrent_shared_source_port": false,
+      "exchange": "one-request-one-response"
+    }
+  },
   "decision": {
     "policy": "default",
     "dns": "fake",
@@ -93,6 +102,12 @@ config cannot be loaded, `config.error.code` is a stable category and
 `diagnostics` contains stable code/path/message/hint records. The contract may
 add fields within v2; consumers
 must ignore unknown fields.
+
+Agents must inspect `capabilities.udp` before choosing a UDP workload. A false
+`connectionless` value means non-DNS `sendto`/`sendmsg` workloads are expected
+to fail closed even when a UDP route is configured. A false
+`concurrent_shared_source_port` value excludes applications that bind multiple
+simultaneous sockets to the same local port.
 
 ## Common failures
 

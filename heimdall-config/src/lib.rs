@@ -555,7 +555,21 @@ impl ProxyPolicy {
 
     #[must_use]
     pub fn decide_tcp(&self, domain: Option<&str>, ip: Option<IpAddr>, port: u16) -> &Action {
-        self.explain_tcp(domain, ip, port).1
+        self.explain(Network::Tcp, domain, ip, port).1
+    }
+
+    #[must_use]
+    pub fn decide_udp(&self, domain: Option<&str>, ip: Option<IpAddr>, port: u16) -> &Action {
+        self.explain(Network::Udp, domain, ip, port).1
+    }
+
+    #[must_use]
+    pub fn rejects_all_udp(&self) -> bool {
+        matches!(self.final_.udp, Action::Reject { .. })
+            && self.rules.iter().all(|rule| {
+                !rule.matcher.network.contains(&Network::Udp)
+                    || matches!(rule.action, Action::Reject { .. })
+            })
     }
 
     /// Return the first matching TCP rule and the selected action.
@@ -566,16 +580,52 @@ impl ProxyPolicy {
         ip: Option<IpAddr>,
         port: u16,
     ) -> (Option<&RouteRule>, &Action) {
+        self.explain(Network::Tcp, domain, ip, port)
+    }
+
+    /// Return the first matching UDP rule and the selected action.
+    #[must_use]
+    pub fn explain_udp(
+        &self,
+        domain: Option<&str>,
+        ip: Option<IpAddr>,
+        port: u16,
+    ) -> (Option<&RouteRule>, &Action) {
+        self.explain(Network::Udp, domain, ip, port)
+    }
+
+    fn explain(
+        &self,
+        network: Network,
+        domain: Option<&str>,
+        ip: Option<IpAddr>,
+        port: u16,
+    ) -> (Option<&RouteRule>, &Action) {
         self.rules
             .iter()
-            .find(|rule| rule.matcher.matches_tcp(domain, ip, port))
-            .map_or((None, &self.final_.tcp), |rule| (Some(rule), &rule.action))
+            .find(|rule| rule.matcher.matches(network, domain, ip, port))
+            .map_or_else(
+                || {
+                    let final_action = match network {
+                        Network::Tcp => &self.final_.tcp,
+                        Network::Udp => &self.final_.udp,
+                    };
+                    (None, final_action)
+                },
+                |rule| (Some(rule), &rule.action),
+            )
     }
 }
 
 impl RuleMatch {
-    fn matches_tcp(&self, domain: Option<&str>, ip: Option<IpAddr>, port: u16) -> bool {
-        if !self.network.contains(&Network::Tcp) {
+    fn matches(
+        &self,
+        network: Network,
+        domain: Option<&str>,
+        ip: Option<IpAddr>,
+        port: u16,
+    ) -> bool {
+        if !self.network.contains(&network) {
             return false;
         }
         let has_domains = !self.domain.is_empty() || !self.domain_suffix.is_empty();
@@ -635,7 +685,7 @@ fn validate_socks5(errors: &mut Vec<ConfigDiagnostic>, base: &str, socks: &Socks
             "empty_outbound_network",
             format!("{base}.network"),
             "network must contain at least one protocol",
-            "Use [\"tcp\"] with the current data plane.",
+            "Use [\"tcp\"], [\"udp\"], or [\"tcp\", \"udp\"].",
         );
     }
     let unique: BTreeSet<_> = socks.network.iter().collect();
@@ -646,15 +696,6 @@ fn validate_socks5(errors: &mut Vec<ConfigDiagnostic>, base: &str, socks: &Socks
             format!("{base}.network"),
             "network contains duplicate values",
             "Remove duplicate protocol names.",
-        );
-    }
-    if socks.network.contains(&Network::Udp) {
-        push(
-            errors,
-            "unsupported_outbound_network",
-            format!("{base}.network"),
-            "SOCKS5 UDP ASSOCIATE is not implemented yet",
-            "Use [\"tcp\"] and keep every policy final.udp action set to reject.",
         );
     }
     if parse_duration(&socks.connect_timeout).is_none() {
@@ -730,6 +771,7 @@ fn validate_policy(
             &format!("{rule_path}.action"),
             &rule.action,
             outbounds,
+            &rule.matcher.network,
         );
     }
     validate_action(
@@ -737,16 +779,15 @@ fn validate_policy(
         &format!("{base}.final.tcp"),
         &policy.final_.tcp,
         outbounds,
+        &[Network::Tcp],
     );
-    if !matches!(policy.final_.udp, Action::Reject { .. }) {
-        push(
-            errors,
-            "unsupported_udp_action",
-            format!("{base}.final.udp"),
-            "the current data plane can only reject non-DNS UDP",
-            "Set final.udp to { type = \"reject\", method = \"refused\" }.",
-        );
-    }
+    validate_action(
+        errors,
+        &format!("{base}.final.udp"),
+        &policy.final_.udp,
+        outbounds,
+        &[Network::Udp],
+    );
 }
 
 fn validate_match(
@@ -777,13 +818,13 @@ fn validate_match(
             "Move catch-all behavior to final or add explicit match fields.",
         );
     }
-    if matcher.network != [Network::Tcp] {
+    if matcher.network.is_empty() {
         push(
             errors,
-            "unsupported_rule_network",
+            "empty_rule_network",
             format!("{base}.network"),
-            "route rules currently require exactly [\"tcp\"]",
-            "Use [\"tcp\"]; non-DNS UDP is governed by final.udp and must be rejected.",
+            "every ordered rule must select at least one network",
+            "Use [\"tcp\"], [\"udp\"], or [\"tcp\", \"udp\"].",
         );
     }
     let has_domain = !matcher.domain.is_empty() || !matcher.domain_suffix.is_empty();
@@ -878,17 +919,37 @@ fn validate_action(
     path: &str,
     action: &Action,
     outbounds: &BTreeMap<String, Outbound>,
+    networks: &[Network],
 ) {
-    if let Action::Route { outbound } = action
-        && !outbounds.contains_key(outbound)
-    {
-        push(
-            errors,
-            "unknown_outbound",
-            format!("{path}.outbound"),
-            format!("outbound `{outbound}` is not declared"),
-            format!("Choose one of: {}.", join_keys(outbounds)),
-        );
+    if let Action::Route { outbound } = action {
+        let Some(target) = outbounds.get(outbound) else {
+            push(
+                errors,
+                "unknown_outbound",
+                format!("{path}.outbound"),
+                format!("outbound `{outbound}` is not declared"),
+                format!("Choose one of: {}.", join_keys(outbounds)),
+            );
+            return;
+        };
+        let Outbound::Socks5(socks) = target;
+        for network in networks {
+            if !socks.network.contains(network) {
+                push(
+                    errors,
+                    "outbound_network_mismatch",
+                    format!("{path}.outbound"),
+                    format!("outbound `{outbound}` does not enable {network:?}"),
+                    format!(
+                        "Add `{}` to $.proxy.outbounds.{outbound}.network or choose another outbound.",
+                        match network {
+                            Network::Tcp => "tcp",
+                            Network::Udp => "udp",
+                        }
+                    ),
+                );
+            }
+        }
     }
 }
 
@@ -1404,7 +1465,7 @@ action = { type = "direct" }
                 "default_policy = \"missing\"",
             )
             .replace("server_port = 1080", "server_port = 0")
-            .replace("network = [\"tcp\"]", "network = [\"tcp\", \"udp\"]");
+            .replace("network = [\"tcp\"]", "network = [\"tcp\", \"tcp\"]");
         let cfg: HeimdallConfig = toml::from_str(&source).unwrap();
         let error = cfg.validate().unwrap_err();
         let diagnostics = error.diagnostics();
@@ -1427,7 +1488,7 @@ action = { type = "direct" }
         assert!(
             diagnostics
                 .iter()
-                .any(|item| item.code == "unsupported_outbound_network")
+                .any(|item| item.code == "duplicate_outbound_network")
         );
     }
 
@@ -1500,6 +1561,47 @@ ip_cidr = ["10.0.0.0/8"]
                 .0
                 .is_none()
         );
+    }
+
+    #[test]
+    fn ordered_udp_rules_choose_route_or_final() {
+        let source = valid_toml()
+            .replace("network = [\"tcp\"]", "network = [\"tcp\", \"udp\"]")
+            .replace(
+                "[proxy.policies.default.final]",
+                r#"[[proxy.policies.default.rules]]
+name = "dns-over-udp"
+action = { type = "route", outbound = "default" }
+[proxy.policies.default.rules.match]
+network = ["udp"]
+port = [853]
+
+[proxy.policies.default.final]"#,
+            );
+        let cfg: HeimdallConfig = toml::from_str(&source).unwrap();
+        cfg.validate().unwrap();
+        let policy = cfg.default_policy();
+        let (rule, action) = policy.explain_udp(None, Some("203.0.113.10".parse().unwrap()), 853);
+        assert_eq!(rule.map(|rule| rule.name.as_str()), Some("dns-over-udp"));
+        assert!(matches!(action, Action::Route { outbound } if outbound == "default"));
+        assert!(matches!(
+            policy.decide_udp(None, Some("203.0.113.10".parse().unwrap()), 443),
+            Action::Reject { .. }
+        ));
+    }
+
+    #[test]
+    fn rejects_udp_route_to_tcp_only_outbound() {
+        let source = valid_toml().replace(
+            "udp = { type = \"reject\", method = \"refused\" }",
+            "udp = { type = \"route\", outbound = \"default\" }",
+        );
+        let cfg: HeimdallConfig = toml::from_str(&source).unwrap();
+        let diagnostics = cfg.validate().unwrap_err().diagnostics();
+        assert!(diagnostics.iter().any(|item| {
+            item.code == "outbound_network_mismatch"
+                && item.path == "$.proxy.policies.default.final.udp.outbound"
+        }));
     }
 
     #[test]

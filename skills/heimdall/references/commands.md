@@ -8,6 +8,7 @@ heimdall config path
 heimdall config show
 heimdall config validate --json
 heimdall config explain --policy default --domain example.com --port 443 --json
+heimdall config explain --policy default --network udp --domain example.com --port 443 --json
 heimdall status --json
 ```
 
@@ -19,9 +20,10 @@ ready, 1 means not ready, and 2 means CLI usage error. It never mutates state.
 evaluates Nickel when applicable, decodes the selected syntax, rejects unknown
 fields and types, then runs semantic validation.
 
-`config explain` evaluates one TCP destination against the selected policy and
-returns the first matching rule plus its structured action. Use `--ip` instead
-of `--domain` for IP/CIDR rules; omit both to test port-only and final actions.
+`config explain` evaluates one TCP or UDP destination against the selected
+policy and returns the first matching rule plus its structured action. TCP is
+the default; add `--network udp` for UDP. Use `--ip` instead of `--domain` for
+IP/CIDR rules; omit both to test port-only and final actions.
 
 ## Run through a proxy
 
@@ -35,6 +37,12 @@ heimdall run --policy corp -- curl https://internal.example.com
 The selected policy owns DNS, ordered rules, and final TCP/UDP actions. The
 wrapped process may be re-executed through `systemd-run --user --scope` to
 obtain an isolated cgroup.
+
+Inspect `agent.capabilities.udp` before wrapping a UDP command. Connected,
+one-request/one-response traffic is supported. Connectionless non-DNS UDP and
+long-lived session protocols such as QUIC are expected to fail closed or be
+semantically incomplete. Do not use concurrent sockets sharing one source port
+while `concurrent_shared_source_port` is false.
 
 ## Diagnose failures
 

@@ -79,6 +79,12 @@ static DNS_PORT_V6: Array<u32> = Array::with_max_entries(1, 0);
 #[map]
 static COOKIE_MAP: LruHashMap<u64, OrigDst> = LruHashMap::with_max_entries(65536, 0);
 
+// Connected UDP sockets keep their destination for the socket lifetime. Unlike
+// TCP, the entry cannot be consumed on the first packet because every later
+// datagram and getpeername() call needs the same transparent association.
+#[map]
+static UDP_COOKIE_MAP: LruHashMap<u64, OrigDst> = LruHashMap::with_max_entries(65536, 0);
+
 // Stage-2 map: (address family, client_ephemeral_port) → original destination
 // Populated in skb_egress, consumed by the userspace relay after accept().
 //
@@ -88,6 +94,11 @@ static COOKIE_MAP: LruHashMap<u64, OrigDst> = LruHashMap::with_max_entries(65536
 // accept). LRU keeps the map self-healing under those edge cases.
 #[map]
 static PORT_MAP: LruHashMap<u32, OrigDst> = LruHashMap::with_max_entries(65536, 0);
+
+// Connected UDP sibling of PORT_MAP. The daemon reads without removing: one
+// connected socket can emit any number of datagrams to its fixed peer.
+#[map]
+static UDP_PORT_MAP: LruHashMap<u32, OrigDst> = LruHashMap::with_max_entries(65536, 0);
 
 // Per-cgroup policy. `heimdall run` registers a cgroup before launching
 // the command and removes it afterward.
@@ -229,7 +240,8 @@ fn try_connect4(ctx: SockAddrContext) -> Result<(), ()> {
         return Ok(());
     }
 
-    if unsafe { (*sa).type_ } == SOCK_DGRAM && (policy & POLICY_UDP_REJECT) != 0 {
+    let is_udp = unsafe { (*sa).type_ } == SOCK_DGRAM;
+    if is_udp && (policy & POLICY_UDP_REJECT) != 0 {
         return Err(());
     }
 
@@ -257,7 +269,11 @@ fn try_connect4(ctx: SockAddrContext) -> Result<(), ()> {
     // skipping the rewrite would change policy unexpectedly. Past incident:
     // a `?` here on a full
     // (non-LRU) map silently broke every new redirect on the host.
-    let _ = COOKIE_MAP.insert(&cookie, &orig, 0);
+    if is_udp {
+        let _ = UDP_COOKIE_MAP.insert(&cookie, &orig, 0);
+    } else {
+        let _ = COOKIE_MAP.insert(&cookie, &orig, 0);
+    }
 
     unsafe {
         (*sa).user_ip4 = relay_ip_be;
@@ -331,7 +347,8 @@ fn try_connect6(ctx: SockAddrContext) -> Result<(), ()> {
         return Ok(());
     }
 
-    if unsafe { (*sa).type_ } == SOCK_DGRAM && (policy & POLICY_UDP_REJECT) != 0 {
+    let is_udp = unsafe { (*sa).type_ } == SOCK_DGRAM;
+    if is_udp && (policy & POLICY_UDP_REJECT) != 0 {
         return Err(());
     }
 
@@ -352,7 +369,11 @@ fn try_connect6(ctx: SockAddrContext) -> Result<(), ()> {
     // Best-effort: see the matching comment in `try_connect4`. The
     // rewrite below MUST run regardless of whether the cookie was
     // recorded.
-    let _ = COOKIE_MAP.insert(&cookie, &orig, 0);
+    if is_udp {
+        let _ = UDP_COOKIE_MAP.insert(&cookie, &orig, 0);
+    } else {
+        let _ = COOKIE_MAP.insert(&cookie, &orig, 0);
+    }
 
     unsafe {
         // Rewrite destination to the relay's v6 address. user_ip6 takes
@@ -372,6 +393,50 @@ fn try_connect6(ctx: SockAddrContext) -> Result<(), ()> {
     }
 
     Ok(())
+}
+
+// Preserve the peer identity observed by connected UDP applications after the
+// kernel-level destination was rewritten to the loopback relay.
+#[cgroup_sock_addr(getpeername4)]
+pub fn getpeername4(ctx: SockAddrContext) -> i32 {
+    let cookie = unsafe { bpf_get_socket_cookie(ctx.as_ptr()) };
+    let Some(orig) = (unsafe { UDP_COOKIE_MAP.get(&cookie) }) else {
+        return 1;
+    };
+    if orig.family != FAMILY_V4 {
+        return 1;
+    }
+    unsafe {
+        (*ctx.sock_addr).user_ip4 =
+            u32::from_ne_bytes([orig.addr[0], orig.addr[1], orig.addr[2], orig.addr[3]]);
+        (*ctx.sock_addr).user_port = u32::from(orig.port);
+    }
+    1
+}
+
+#[cgroup_sock_addr(getpeername6)]
+pub fn getpeername6(ctx: SockAddrContext) -> i32 {
+    let cookie = unsafe { bpf_get_socket_cookie(ctx.as_ptr()) };
+    let Some(orig) = (unsafe { UDP_COOKIE_MAP.get(&cookie) }) else {
+        return 1;
+    };
+    if orig.family != FAMILY_V6 {
+        return 1;
+    }
+    let mut words = [0u32; 4];
+    for (i, word) in words.iter_mut().enumerate() {
+        *word = u32::from_ne_bytes([
+            orig.addr[i * 4],
+            orig.addr[i * 4 + 1],
+            orig.addr[i * 4 + 2],
+            orig.addr[i * 4 + 3],
+        ]);
+    }
+    unsafe {
+        (*ctx.sock_addr).user_ip6 = words;
+        (*ctx.sock_addr).user_port = u32::from(orig.port);
+    }
+    1
 }
 
 // ---------------------------------------------------------------------------
@@ -402,6 +467,7 @@ fn try_connect6(ctx: SockAddrContext) -> Result<(), ()> {
 pub fn sock_release(ctx: SockContext) -> i32 {
     let cookie = unsafe { bpf_get_socket_cookie(ctx.as_ptr()) };
     let _ = COOKIE_MAP.remove(&cookie);
+    let _ = UDP_COOKIE_MAP.remove(&cookie);
     1
 }
 
@@ -434,7 +500,10 @@ pub fn udp4_sendmsg(ctx: SockAddrContext) -> i32 {
     if (policy & POLICY_DNS_SYSTEM) != 0 && u16::from_be(dst_port_be) == DNS_PORT {
         return 1;
     }
-    i32::from((policy & POLICY_UDP_REJECT) == 0)
+    // A connectionless socket can target multiple peers concurrently, while
+    // cgroup sendmsg exposes no stable per-datagram key to userspace. Registered
+    // commands therefore fail closed here; connected UDP is handled by connect4.
+    i32::from((policy & POLICY_REDIRECT_OFF) != 0)
 }
 
 #[cgroup_sock_addr(sendmsg6)]
@@ -449,7 +518,7 @@ pub fn udp6_sendmsg(ctx: SockAddrContext) -> i32 {
     if (policy & POLICY_DNS_SYSTEM) != 0 && u16::from_be(dst_port_be) == DNS_PORT {
         return 1;
     }
-    i32::from((policy & POLICY_UDP_REJECT) == 0)
+    i32::from((policy & POLICY_REDIRECT_OFF) != 0)
 }
 
 // ---------------------------------------------------------------------------
@@ -468,8 +537,9 @@ pub fn skb_egress(ctx: SkBuffContext) -> i32 {
     }
 }
 
-// IPv4 + TCP header field offsets (IP starts at byte 0 in cgroup_skb).
+// IPv4 + transport header field offsets (IP starts at byte 0 in cgroup_skb).
 const IPPROTO_TCP: u8 = 6;
+const IPPROTO_UDP: u8 = 17;
 // IPv4 protocol field is at offset 9 in the IP header.
 const OFF_IPV4_PROTO: usize = 9;
 // IPv6 next-header is at offset 6 in the fixed 40-byte header.
@@ -501,15 +571,15 @@ fn try_skb_egress(ctx: &SkBuffContext) -> Result<(), ()> {
     let ver_ihl: u8 = ctx.load(0).map_err(|_| ())?;
     let version = ver_ihl >> 4;
 
-    let tcp_off = match version {
+    let (transport_off, protocol) = match version {
         4 => {
             // IPv4: protocol at offset 9, header length encoded as IHL
             // (low nibble of byte 0, in 32-bit words).
             let proto: u8 = ctx.load(OFF_IPV4_PROTO).map_err(|_| ())?;
-            if proto != IPPROTO_TCP {
+            if proto != IPPROTO_TCP && proto != IPPROTO_UDP {
                 return Ok(());
             }
-            ((ver_ihl & 0x0f) as usize) * 4
+            (((ver_ihl & 0x0f) as usize) * 4, proto)
         }
         6 => {
             // IPv6: walk the next-header chain past extension headers
@@ -522,7 +592,7 @@ fn try_skb_egress(ctx: &SkBuffContext) -> Result<(), ()> {
             // Bounded loop for the verifier — enough for any realistic
             // packet (RFC 8200 hints at small fixed limits).
             for _ in 0..MAX_IPV6_EXT_HDRS {
-                if next == IPPROTO_TCP {
+                if next == IPPROTO_TCP || next == IPPROTO_UDP {
                     break;
                 }
                 let (nh, hdr_len) = match next {
@@ -536,39 +606,33 @@ fn try_skb_egress(ctx: &SkBuffContext) -> Result<(), ()> {
                         let nh: u8 = ctx.load(off).map_err(|_| ())?;
                         (nh, 8)
                     }
-                    _ => return Ok(()), // not TCP and not an ext header we know
+                    _ => return Ok(()),
                 };
                 next = nh;
                 off += hdr_len;
             }
-            if next != IPPROTO_TCP {
+            if next != IPPROTO_TCP && next != IPPROTO_UDP {
                 return Ok(());
             }
-            off
+            (off, next)
         }
         _ => return Ok(()),
     };
 
-    // Look up COOKIE_MAP for this socket. Only intercepted connections have entries.
     let cookie = unsafe { bpf_get_socket_cookie(ctx.as_ptr()) };
-    let orig = match unsafe { COOKIE_MAP.get(&cookie) } {
-        Some(v) => *v,
-        None => return Ok(()),
-    };
-
-    // Read TCP source port (network byte order → host byte order).
-    // inet_hash_connect has already assigned this ephemeral port.
-    let src_port_be: u16 = ctx.load(tcp_off).map_err(|_| ())?;
+    let src_port_be: u16 = ctx.load(transport_off).map_err(|_| ())?;
     let src_port = u16::from_be(src_port_be);
     let family = if version == 4 { FAMILY_V4 } else { FAMILY_V6 };
     let key = relay_key(family, src_port);
 
-    // Best-effort. PORT_MAP is LRU so insert won't fail under
-    // pressure; if it does (-EAGAIN race), we still want to clear the
-    // cookie below so the same connection's next packet doesn't retry
-    // forever on a stale entry.
-    let _ = PORT_MAP.insert(&key, &orig, 0);
-    let _ = COOKIE_MAP.remove(&cookie);
+    if protocol == IPPROTO_UDP {
+        if let Some(orig) = unsafe { UDP_COOKIE_MAP.get(&cookie) } {
+            let _ = UDP_PORT_MAP.insert(&key, orig, 0);
+        }
+    } else if let Some(orig) = unsafe { COOKIE_MAP.get(&cookie) } {
+        let _ = PORT_MAP.insert(&key, orig, 0);
+        let _ = COOKIE_MAP.remove(&cookie);
+    }
 
     Ok(())
 }

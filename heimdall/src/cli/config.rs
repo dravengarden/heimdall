@@ -3,7 +3,7 @@
 //!
 //! Four verbs:
 //! - `validate`: parse + run schema checks; exit 0/1. CI-friendly.
-//! - `explain`: evaluate one TCP destination against the ordered rules.
+//! - `explain`: evaluate one TCP or UDP destination against the ordered rules.
 //! - `show`: print the file content (auto-discovered) so you can
 //!   see what the daemon is actually reading.
 //! - `path`: just the resolved path on stdout. Useful for
@@ -26,7 +26,7 @@ pub enum ConfigCmd {
     /// success, 1 on parse or schema error.
     Validate(ValidateArgs),
 
-    /// Explain which ordered rule handles one TCP destination.
+    /// Explain which ordered rule handles one TCP or UDP destination.
     Explain(ExplainArgs),
 
     /// Print the resolved config file's content. Add `--json` to wrap
@@ -65,13 +65,32 @@ pub struct ExplainArgs {
     #[arg(long, conflicts_with = "domain")]
     ip: Option<IpAddr>,
 
-    /// Destination TCP port.
+    /// Transport protocol to evaluate.
+    #[arg(long, value_enum, default_value_t = ExplainNetwork::Tcp)]
+    network: ExplainNetwork,
+
+    /// Destination TCP or UDP port.
     #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
     port: u16,
 
     /// Emit one versioned JSON document.
     #[arg(long)]
     json: bool,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum ExplainNetwork {
+    Tcp,
+    Udp,
+}
+
+impl ExplainNetwork {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Tcp => "tcp",
+            Self::Udp => "udp",
+        }
+    }
 }
 
 pub async fn run(config_path: &Path, cmd: ConfigCmd) -> Result<()> {
@@ -128,7 +147,10 @@ fn explain(config_path: &Path, args: ExplainArgs) -> Result<()> {
                 .join(", ")
         )
     })?;
-    let (rule, action) = policy.explain_tcp(args.domain.as_deref(), args.ip, args.port);
+    let (rule, action) = match args.network {
+        ExplainNetwork::Tcp => policy.explain_tcp(args.domain.as_deref(), args.ip, args.port),
+        ExplainNetwork::Udp => policy.explain_udp(args.domain.as_deref(), args.ip, args.port),
+    };
     let matched_rule = rule.map(|value| value.name.as_str());
 
     if args.json {
@@ -140,7 +162,7 @@ fn explain(config_path: &Path, args: ExplainArgs) -> Result<()> {
                 DnsMode::System => "system",
             },
             target: ExplainTarget {
-                network: "tcp",
+                network: args.network.name(),
                 domain: args.domain.as_deref(),
                 ip: args.ip,
                 port: args.port,
@@ -151,6 +173,7 @@ fn explain(config_path: &Path, args: ExplainArgs) -> Result<()> {
         println!("{}", serde_json::to_string(&output)?);
     } else {
         println!("policy: {policy_name}");
+        println!("network: {}", args.network.name());
         println!("rule: {}", matched_rule.unwrap_or("<final>"));
         println!("action: {}", action_label(action));
     }

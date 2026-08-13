@@ -49,7 +49,7 @@ use heimdall_common::{FAMILY_V4, FAMILY_V6, OrigDst, RELAY_PORT, relay_key};
 use heimdall_config::{Action, HeimdallConfig, Outbound, Socks5Auth, Socks5Outbound};
 use tokio::{
     io::copy_bidirectional,
-    net::{TcpListener, TcpStream},
+    net::{TcpListener, TcpStream, UdpSocket},
     sync::RwLock,
 };
 use tracing::{debug, info, warn};
@@ -72,6 +72,7 @@ static EBPF_OBJ: AlignedBytes<
 const EBPF_BYTES: &[u8] = &EBPF_OBJ.0;
 
 type PortMap = Arc<RwLock<HashMap<aya::maps::MapData, u32, OrigDst>>>;
+type UdpPortMap = Arc<RwLock<HashMap<aya::maps::MapData, u32, OrigDst>>>;
 
 // ---------------------------------------------------------------------------
 // CLI — top level
@@ -659,6 +660,29 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
             }
         }
     }
+    for name in ["getpeername4", "getpeername6"] {
+        let prog: &mut CgroupSockAddr = bpf
+            .program_mut(name)
+            .with_context(|| format!("{name} eBPF program not found"))?
+            .try_into()?;
+        prog.load()
+            .with_context(|| format!("failed to load {name}"))?;
+        prog.attach(&cgroup, CgroupAttachMode::default())
+            .with_context(|| format!("failed to attach {name}"))?;
+        info!(cgroup = %shared.cfg.daemon.cgroup, prog = name, "eBPF peer identity hook attached");
+        if let Some(user_cg) = user_slice_file.as_ref() {
+            match prog.attach(user_cg, CgroupAttachMode::default()) {
+                Ok(_) => info!(
+                    cgroup = USER_SLICE,
+                    prog = name,
+                    "eBPF peer identity hook attached (extra)"
+                ),
+                Err(e) => {
+                    warn!(error = %e, cgroup = USER_SLICE, prog = name, "extra peer identity hook attach failed")
+                }
+            }
+        }
+    }
     // sock_release: reap COOKIE_MAP entries when the kernel destroys a
     // socket, regardless of whether it ever sent a packet. Without this,
     // sockets that connect() but never egress (glibc src-addr probes,
@@ -686,8 +710,9 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
         }
     }
     // udp{4,6}_sendmsg: catch connectionless UDP DNS sends (Go's
-    // pure-Go resolver, etc.) — connect4/connect6 don't fire on
-    // sendto without a prior connect.
+    // pure-Go resolver, etc.) and fail closed for non-DNS traffic whose
+    // destination cannot be correlated safely. connect4/connect6 own the
+    // connected UDP relay path.
     for name in ["udp4_sendmsg", "udp6_sendmsg"] {
         let prog: &mut CgroupSockAddr = bpf
             .program_mut(name)
@@ -740,6 +765,10 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
     let port_map: PortMap = Arc::new(RwLock::new(HashMap::try_from(
         bpf.take_map("PORT_MAP").context("PORT_MAP not found")?,
     )?));
+    let udp_port_map: UdpPortMap = Arc::new(RwLock::new(HashMap::try_from(
+        bpf.take_map("UDP_PORT_MAP")
+            .context("UDP_PORT_MAP not found")?,
+    )?));
 
     // ─── CLI-owned cgroup policy registry ───────────────────────────────
     {
@@ -770,6 +799,16 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
     let relay_v6 = TcpListener::bind((Ipv6Addr::LOCALHOST, RELAY_PORT))
         .await
         .context("bind IPv6 relay loopback")?;
+    let udp_v4 = Arc::new(
+        UdpSocket::bind((Ipv4Addr::LOCALHOST, RELAY_PORT))
+            .await
+            .context("bind IPv4 UDP relay loopback")?,
+    );
+    let udp_v6 = Arc::new(
+        UdpSocket::bind((Ipv6Addr::LOCALHOST, RELAY_PORT))
+            .await
+            .context("bind IPv6 UDP relay loopback")?,
+    );
     info!(ipv4 = %relay_v4.local_addr()?, ipv6 = %relay_v6.local_addr()?, "heimdall ready");
 
     // ─── systemd notify: READY + WATCHDOG ─────────────────────────────────
@@ -807,22 +846,53 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
         debug!("systemd WATCHDOG_USEC unset; no heartbeat");
     }
 
+    let mut udp4_buf = vec![0u8; 65_535];
+    let mut udp6_buf = vec![0u8; 65_535];
     loop {
-        let (stream, peer) = tokio::select! {
-            accepted = relay_v4.accept() => accepted?,
-            accepted = relay_v6.accept() => accepted?,
-        };
-        let map = port_map.clone();
-        let shared = shared.clone();
-
-        tokio::spawn(async move {
-            let key = relay_key_for_peer(peer);
-            debug!(key, %peer, "accepted redirected connection");
-            if let Err(e) = relay(stream, key, map, shared).await {
-                warn!(key, "relay error: {e:#}");
+        tokio::select! {
+            accepted = relay_v4.accept() => {
+                let (stream, peer) = accepted?;
+                spawn_tcp_relay(stream, peer, port_map.clone(), shared.clone());
             }
-        });
+            accepted = relay_v6.accept() => {
+                let (stream, peer) = accepted?;
+                spawn_tcp_relay(stream, peer, port_map.clone(), shared.clone());
+            }
+            received = udp_v4.recv_from(&mut udp4_buf) => {
+                let (len, peer) = received?;
+                spawn_udp_relay(udp4_buf[..len].to_vec(), peer, udp_v4.clone(), udp_port_map.clone(), shared.clone());
+            }
+            received = udp_v6.recv_from(&mut udp6_buf) => {
+                let (len, peer) = received?;
+                spawn_udp_relay(udp6_buf[..len].to_vec(), peer, udp_v6.clone(), udp_port_map.clone(), shared.clone());
+            }
+        }
     }
+}
+
+fn spawn_tcp_relay(stream: TcpStream, peer: SocketAddr, map: PortMap, shared: Arc<Shared>) {
+    tokio::spawn(async move {
+        let key = relay_key_for_peer(peer);
+        debug!(key, %peer, "accepted redirected connection");
+        if let Err(e) = relay(stream, key, map, shared).await {
+            warn!(key, "relay error: {e:#}");
+        }
+    });
+}
+
+fn spawn_udp_relay(
+    payload: Vec<u8>,
+    peer: SocketAddr,
+    relay: Arc<UdpSocket>,
+    map: UdpPortMap,
+    shared: Arc<Shared>,
+) {
+    tokio::spawn(async move {
+        let key = relay_key_for_peer(peer);
+        if let Err(e) = relay_udp(payload, peer, relay, key, map, shared).await {
+            warn!(key, "UDP relay error: {e:#}");
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -832,6 +902,28 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
 fn relay_key_for_peer(peer: SocketAddr) -> u32 {
     let family = if peer.is_ipv4() { FAMILY_V4 } else { FAMILY_V6 };
     relay_key(family, peer.port())
+}
+
+fn destination_from_orig(orig: &OrigDst, shared: &Shared) -> Dst {
+    match orig.family {
+        FAMILY_V6 => {
+            let ip = Ipv6Addr::from(orig.addr);
+            shared
+                .dns
+                .as_ref()
+                .and_then(|dns| dns.lookup6(&ip))
+                .map_or(Dst::Ip6(ip), Dst::Domain)
+        }
+        _ => {
+            let raw = u32::from_ne_bytes([orig.addr[0], orig.addr[1], orig.addr[2], orig.addr[3]]);
+            let ip = Ipv4Addr::from(u32::from_be(raw));
+            shared
+                .dns
+                .as_ref()
+                .and_then(|dns| dns.lookup_be(raw))
+                .map_or(Dst::Ip4(ip), Dst::Domain)
+        }
+    }
 }
 
 async fn relay(mut client: TcpStream, key: u32, map: PortMap, shared: Arc<Shared>) -> Result<()> {
@@ -845,40 +937,7 @@ async fn relay(mut client: TcpStream, key: u32, map: PortMap, shared: Arc<Shared
 
     let dst_port = u16::from_be(orig.port);
 
-    // ─── Dual-stack destination decode + fake-IP reverse lookup ───────────
-    // OrigDst.addr is 16 bytes network-byte-order; for v4 the first 4 bytes
-    // are the address and the rest are zero. Pick the right family per
-    // `orig.family`. If the dst falls in heimdall's fake-IP pool (v4 OR v6)
-    // we have a hostname for it and prefer SOCKS5 ATYP=0x03 so the upstream
-    // proxy resolves it via its own resolver (which knows internal /
-    // VPN-pushed DNS we don't).
-    let dst = match orig.family {
-        heimdall_common::FAMILY_V6 => {
-            let v6 = std::net::Ipv6Addr::from(orig.addr);
-            let from_dns = shared.dns.as_ref().and_then(|d| d.lookup6(&v6));
-            match from_dns {
-                Some(host) => {
-                    debug!(addr = %v6, %host, "fake-IP reverse lookup hit (v6)");
-                    Dst::Domain(host)
-                }
-                None => Dst::Ip6(v6),
-            }
-        }
-        _ => {
-            // v4 (default for older OrigDst with family=0).
-            let v4_be =
-                u32::from_ne_bytes([orig.addr[0], orig.addr[1], orig.addr[2], orig.addr[3]]);
-            let v4 = Ipv4Addr::from(u32::from_be(v4_be));
-            let from_dns = shared.dns.as_ref().and_then(|d| d.lookup_be(v4_be));
-            match from_dns {
-                Some(host) => {
-                    debug!(addr = %v4, %host, "fake-IP reverse lookup hit (v4)");
-                    Dst::Domain(host)
-                }
-                None => Dst::Ip4(v4),
-            }
-        }
-    };
+    let dst = destination_from_orig(&orig, &shared);
 
     // ─── Resolve decision → connection name directly ─────────────────────
     // `heimdall run` registers a per-cgroup override here before exec.
@@ -968,6 +1027,95 @@ async fn relay(mut client: TcpStream, key: u32, map: PortMap, shared: Arc<Shared
     result.map(|_| ())
 }
 
+async fn relay_udp(
+    payload: Vec<u8>,
+    peer: SocketAddr,
+    relay: Arc<UdpSocket>,
+    key: u32,
+    map: UdpPortMap,
+    shared: Arc<Shared>,
+) -> Result<()> {
+    let orig = map
+        .read()
+        .await
+        .get(&key, 0)
+        .with_context(|| format!("BPF map miss for UDP relay key {key:#010x}"))?;
+    let decision = shared
+        .cli_overrides
+        .read()
+        .get(&orig.cgroup_id)
+        .cloned()
+        .with_context(|| format!("redirected cgroup {} is not registered", orig.cgroup_id))?;
+    let policy = shared
+        .cfg
+        .policy(&decision.policy)
+        .with_context(|| format!("policy `{}` not in registry", decision.policy))?;
+    let dst = destination_from_orig(&orig, &shared);
+    let dst_port = u16::from_be(orig.port);
+    let (domain, ip) = match &dst {
+        Dst::Domain(domain) => (Some(domain.as_str()), None),
+        Dst::Ip4(ip) => (None, Some(std::net::IpAddr::V4(*ip))),
+        Dst::Ip6(ip) => (None, Some(std::net::IpAddr::V6(*ip))),
+    };
+
+    let response = match policy.decide_udp(domain, ip, dst_port).clone() {
+        Action::Route { outbound } => {
+            let upstream = shared
+                .upstreams
+                .get(&outbound)
+                .with_context(|| format!("resolved outbound `{outbound}` not in registry"))?;
+            socks5_udp_exchange(upstream, &dst, dst_port, &payload).await?
+        }
+        Action::Direct => direct_udp_exchange(&dst, dst_port, &payload).await?,
+        Action::Reject { method } => anyhow::bail!(
+            "policy `{}` rejected UDP destination port {dst_port} with {method:?}",
+            decision.policy
+        ),
+    };
+    relay
+        .send_to(&response, peer)
+        .await
+        .with_context(|| format!("return UDP response to {peer}"))?;
+    Ok(())
+}
+
+async fn direct_udp_exchange(dst: &Dst, port: u16, payload: &[u8]) -> Result<Vec<u8>> {
+    let bind = match dst {
+        Dst::Ip6(_) => "[::]:0",
+        Dst::Ip4(_) | Dst::Domain(_) => "0.0.0.0:0",
+    };
+    let socket = UdpSocket::bind(bind)
+        .await
+        .context("bind direct UDP socket")?;
+    let target = destination_socket_addr(dst, port).await?;
+    socket
+        .connect(target)
+        .await
+        .context("connect direct UDP socket")?;
+    socket
+        .send(payload)
+        .await
+        .context("send direct UDP payload")?;
+    let mut response = vec![0u8; 65_535];
+    let len = tokio::time::timeout(SOCKS5_HANDSHAKE_TIMEOUT, socket.recv(&mut response))
+        .await
+        .context("timed out waiting for direct UDP response")??;
+    response.truncate(len);
+    Ok(response)
+}
+
+async fn destination_socket_addr(dst: &Dst, port: u16) -> Result<SocketAddr> {
+    match dst {
+        Dst::Ip4(ip) => Ok(SocketAddr::new((*ip).into(), port)),
+        Dst::Ip6(ip) => Ok(SocketAddr::new((*ip).into(), port)),
+        Dst::Domain(domain) => tokio::net::lookup_host((domain.as_str(), port))
+            .await
+            .with_context(|| format!("resolve UDP destination {domain}:{port}"))?
+            .next()
+            .with_context(|| format!("no address for UDP destination {domain}:{port}")),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // SOCKS5 handshake (RFC 1928 + RFC 1929 user/pass)
 // ---------------------------------------------------------------------------
@@ -976,6 +1124,176 @@ const M_NO_AUTH: u8 = 0x00;
 const M_USER_PASS: u8 = 0x02;
 const M_NO_ACCEPTABLE: u8 = 0xFF;
 const SOCKS5_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+async fn socks5_udp_exchange(
+    upstream: &Upstream,
+    dst: &Dst,
+    port: u16,
+    payload: &[u8],
+) -> Result<Vec<u8>> {
+    let Upstream::Socks5 {
+        addr,
+        auth,
+        connect_timeout,
+    } = upstream;
+    let mut control = tokio::time::timeout(*connect_timeout, TcpStream::connect(addr))
+        .await
+        .with_context(|| format!("timed out connecting to SOCKS5 {addr}"))?
+        .with_context(|| format!("connect to SOCKS5 {addr}"))?;
+    let relay_addr = tokio::time::timeout(
+        SOCKS5_HANDSHAKE_TIMEOUT,
+        socks5_udp_associate(&mut control, auth.as_ref()),
+    )
+    .await
+    .with_context(|| format!("timed out negotiating SOCKS5 UDP with {addr}"))??;
+    let relay_addr = if relay_addr.ip().is_unspecified() {
+        SocketAddr::new(control.peer_addr()?.ip(), relay_addr.port())
+    } else {
+        relay_addr
+    };
+    let bind = if relay_addr.is_ipv6() {
+        "[::]:0"
+    } else {
+        "0.0.0.0:0"
+    };
+    let socket = UdpSocket::bind(bind)
+        .await
+        .context("bind SOCKS5 UDP socket")?;
+    socket
+        .connect(relay_addr)
+        .await
+        .with_context(|| format!("connect SOCKS5 UDP relay {relay_addr}"))?;
+    let mut frame = Vec::with_capacity(payload.len() + 262);
+    frame.extend_from_slice(&[0, 0, 0]);
+    encode_socks5_destination(&mut frame, dst, port)?;
+    frame.extend_from_slice(payload);
+    socket.send(&frame).await.context("send SOCKS5 UDP frame")?;
+    let mut response = vec![0u8; 65_535];
+    let len = tokio::time::timeout(SOCKS5_HANDSHAKE_TIMEOUT, socket.recv(&mut response))
+        .await
+        .context("timed out waiting for SOCKS5 UDP response")??;
+    response.truncate(len);
+    decode_socks5_udp_payload(&response).map(ToOwned::to_owned)
+}
+
+async fn socks5_udp_associate(
+    stream: &mut TcpStream,
+    auth: Option<&ResolvedAuth>,
+) -> Result<SocketAddr> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    socks5_negotiate(stream, auth).await?;
+    stream
+        .write_all(&[0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+        .await?;
+    let mut header = [0u8; 4];
+    stream.read_exact(&mut header).await?;
+    anyhow::ensure!(header[0] == 5, "SOCKS5: bad UDP ASSOCIATE version");
+    anyhow::ensure!(
+        header[1] == 0,
+        "SOCKS5 UDP ASSOCIATE rejected: code=0x{:02x}",
+        header[1]
+    );
+    anyhow::ensure!(header[2] == 0, "SOCKS5: non-zero reserved reply byte");
+    read_socks5_socket_addr(stream, header[3]).await
+}
+
+async fn socks5_negotiate(stream: &mut TcpStream, auth: Option<&ResolvedAuth>) -> Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let methods: &[u8] = if auth.is_some() {
+        &[M_USER_PASS]
+    } else {
+        &[M_NO_AUTH]
+    };
+    stream.write_all(&[5, methods.len() as u8]).await?;
+    stream.write_all(methods).await?;
+    let mut selected = [0u8; 2];
+    stream.read_exact(&mut selected).await?;
+    anyhow::ensure!(selected[0] == 5, "SOCKS5: bad method reply version");
+    match (selected[1], auth) {
+        (M_NO_AUTH, None) => Ok(()),
+        (M_USER_PASS, Some(auth)) => socks5_userpass(stream, &auth.username, &auth.password).await,
+        (M_NO_ACCEPTABLE, _) => anyhow::bail!("SOCKS5: server rejected all offered methods"),
+        (method, _) => anyhow::bail!(
+            "SOCKS5: server selected method 0x{method:02x} that the client did not offer"
+        ),
+    }
+}
+
+async fn read_socks5_socket_addr(stream: &mut TcpStream, atyp: u8) -> Result<SocketAddr> {
+    use tokio::io::AsyncReadExt;
+
+    let ip = match atyp {
+        1 => {
+            let mut raw = [0u8; 4];
+            stream.read_exact(&mut raw).await?;
+            std::net::IpAddr::V4(Ipv4Addr::from(raw))
+        }
+        4 => {
+            let mut raw = [0u8; 16];
+            stream.read_exact(&mut raw).await?;
+            std::net::IpAddr::V6(Ipv6Addr::from(raw))
+        }
+        3 => anyhow::bail!("SOCKS5 UDP relay replies must use an IP address"),
+        other => anyhow::bail!("SOCKS5: unknown reply ATYP 0x{other:02x}"),
+    };
+    let mut raw_port = [0u8; 2];
+    stream.read_exact(&mut raw_port).await?;
+    Ok(SocketAddr::new(ip, u16::from_be_bytes(raw_port)))
+}
+
+fn encode_socks5_destination(output: &mut Vec<u8>, dst: &Dst, port: u16) -> Result<()> {
+    match dst {
+        Dst::Ip4(ip) => {
+            output.push(1);
+            output.extend_from_slice(&ip.octets());
+        }
+        Dst::Ip6(ip) => {
+            output.push(4);
+            output.extend_from_slice(&ip.octets());
+        }
+        Dst::Domain(host) => {
+            anyhow::ensure!(
+                (1..=255).contains(&host.len()),
+                "SOCKS5: invalid domain length"
+            );
+            anyhow::ensure!(valid_socks5_domain(host), "SOCKS5: invalid domain name");
+            output.push(3);
+            output.push(host.len() as u8);
+            output.extend_from_slice(host.as_bytes());
+        }
+    }
+    output.extend_from_slice(&port.to_be_bytes());
+    Ok(())
+}
+
+fn decode_socks5_udp_payload(frame: &[u8]) -> Result<&[u8]> {
+    anyhow::ensure!(frame.len() >= 4, "SOCKS5 UDP response is truncated");
+    anyhow::ensure!(
+        frame[0..2] == [0, 0],
+        "SOCKS5 UDP response has non-zero RSV"
+    );
+    anyhow::ensure!(
+        frame[2] == 0,
+        "fragmented SOCKS5 UDP responses are unsupported"
+    );
+    let address_len = match frame[3] {
+        1 => 4,
+        4 => 16,
+        3 => {
+            anyhow::ensure!(frame.len() >= 5, "SOCKS5 UDP domain response is truncated");
+            1 + frame[4] as usize
+        }
+        other => anyhow::bail!("SOCKS5 UDP response has unknown ATYP 0x{other:02x}"),
+    };
+    let payload_offset = 4 + address_len + 2;
+    anyhow::ensure!(
+        frame.len() >= payload_offset,
+        "SOCKS5 UDP response is truncated"
+    );
+    Ok(&frame[payload_offset..])
+}
 
 async fn open_socks5_tunnel_with_timeouts(
     addr: &str,
@@ -1172,6 +1490,33 @@ mod socks5_tests {
         assert_ne!(relay_key_for_peer(v4), relay_key_for_peer(v6));
         assert_eq!(relay_key_for_peer(v4), relay_key(FAMILY_V4, 40_000));
         assert_eq!(relay_key_for_peer(v6), relay_key(FAMILY_V6, 40_000));
+    }
+
+    #[test]
+    fn encodes_and_decodes_socks5_udp_frames() {
+        let cases = [
+            Dst::Ip4(Ipv4Addr::new(203, 0, 113, 8)),
+            Dst::Ip6("2001:db8::8".parse().unwrap()),
+            Dst::Domain("internal.example.com".into()),
+        ];
+
+        for dst in cases {
+            let mut frame = vec![0, 0, 0];
+            encode_socks5_destination(&mut frame, &dst, 5353).unwrap();
+            frame.extend_from_slice(b"payload");
+            assert_eq!(decode_socks5_udp_payload(&frame).unwrap(), b"payload");
+        }
+    }
+
+    #[test]
+    fn rejects_fragmented_or_truncated_socks5_udp_frames() {
+        assert!(
+            decode_socks5_udp_payload(&[0, 0, 1, 1, 127, 0, 0, 1, 0, 53])
+                .unwrap_err()
+                .to_string()
+                .contains("fragmented")
+        );
+        assert!(decode_socks5_udp_payload(&[0, 0, 0, 4, 0]).is_err());
     }
 
     async fn tcp_pair() -> (TcpStream, TcpStream) {

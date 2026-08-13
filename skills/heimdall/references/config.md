@@ -6,11 +6,11 @@ discovered `/etc/heimdall/config.<format>` file. All formats use this model:
 ```text
 version = 1
 proxy.default_policy -> proxy.policies.<name>
-proxy.outbounds.<name> = SOCKS5 TCP endpoint
+proxy.outbounds.<name> = SOCKS5 TCP/UDP endpoint
 proxy.policies.<name>.dns.mode = fake | system
 proxy.policies.<name>.rules[] = ordered match + terminal action
 proxy.policies.<name>.final.tcp = route | direct | reject
-proxy.policies.<name>.final.udp = reject
+proxy.policies.<name>.final.udp = route | direct | reject
 capture.mode = off
 decrypt.mode = off
 daemon = optional implementation settings
@@ -28,20 +28,21 @@ proxy:
       type: socks5
       server: 127.0.0.1
       server_port: 1080
-      network: [tcp]
+      network: [tcp, udp]
       connect_timeout: 10s
 ```
 
 Optional auth uses `auth.username` and an absolute `auth.password_file`. Never
-put the password value in config. UDP outbounds are not implemented and are
-rejected by validation.
+put the password value in config. `network` declares strict protocol
+capabilities; a rule or final action cannot route UDP through a TCP-only
+outbound (or TCP through a UDP-only outbound).
 
 ## Rule
 
 ```yaml
 - name: corp-domains
   match:
-    network: [tcp]
+    network: [tcp, udp]
     domain_suffix: [internal.example.com]
     port: [443]
   action:
@@ -55,12 +56,17 @@ different fields are AND. Do not mix domain and IP matchers in one rule.
 
 Actions:
 
-- `route` requires an existing TCP-capable `outbound`.
+- `route` requires an existing outbound capable of every protocol selected by
+  that rule or final action.
 - `direct` explicitly authorizes a native connection from the daemon.
 - `reject` currently requires `method: refused`.
 
-`final.tcp` and `final.udp` are mandatory. UDP must be rejected until the data
-plane implements a real relay.
+`final.tcp` and `final.udp` are mandatory. Connected UDP may route through
+SOCKS5 UDP ASSOCIATE, connect directly, or reject. The current relay performs
+one request and accepts one response per datagram. Connectionless non-DNS UDP,
+QUIC sessions, multicast, fragmented SOCKS5 responses, and multi-response
+protocols are not supported. Concurrent connected sockets sharing one
+address-family/source-port pair are also unsupported.
 
 ## DNS invariants
 
@@ -77,14 +83,15 @@ Run `heimdall config validate --json`. Iterate over every `diagnostics` item:
 2. Branch on stable `code`, not message text.
 3. Apply `hint` without inventing unsupported values.
 4. Validate again until `valid` is true.
-5. Explain representative domain/IP decisions with `heimdall config explain`.
+5. Explain representative domain/IP decisions with `heimdall config explain`;
+   add `--network udp` for UDP (the default is TCP).
 6. Run `heimdall agent --policy <name>` before execution.
 
 Use `heimdall config explain --policy NAME --domain HOST --port PORT --json`
 or replace `--domain` with `--ip` to verify first-match rule ordering without
 executing a command.
 
-Never respond to `unsupported_outbound_network` by weakening UDP to direct.
+Never respond to `outbound_network_mismatch` by weakening UDP to direct.
 Never respond to `domain_rule_requires_fake_dns` by keeping a rule that cannot
 match; choose fake DNS or rewrite the policy using IP matchers.
 

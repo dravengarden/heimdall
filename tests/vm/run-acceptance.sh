@@ -4,6 +4,7 @@ set -euo pipefail
 systemctl is-active --quiet heimdall.service
 systemctl is-active --quiet heimdall-test-socks.service
 systemctl is-active --quiet heimdall-test-http.service
+systemctl is-active --quiet heimdall-test-udp.service
 systemctl start user@1000.service
 
 as_tester() {
@@ -57,6 +58,25 @@ except PermissionError:
 else:
     raise SystemExit("non-DNS UDP unexpectedly allowed")
 '
+
+: > /run/heimdall-test/socks.log
+test "$(as_tester heimdall run --policy udp -- \
+  python3 /etc/heimdall-test/udp_client.py 127.0.0.1 18082 udp-v4:probe)" = "udp-v4:probe"
+test "$(as_tester heimdall run --policy udp -- \
+  python3 /etc/heimdall-test/udp_client.py ::1 18083 udp-v6:probe)" = "udp-v6:probe"
+test "$(as_tester heimdall run --policy udp -- \
+  python3 /etc/heimdall-test/udp_client.py fixture.test 18082 udp-v4:probe)" = "udp-v4:probe"
+grep -q '"udp": true, "atyp": 1, "host": "127.0.0.1", "port": 18082' \
+  /run/heimdall-test/socks.log
+grep -q '"udp": true, "atyp": 4, "host": "::1", "port": 18083' \
+  /run/heimdall-test/socks.log
+grep -q '"udp": true, "atyp": 3, "host": "fixture.test", "port": 18082' \
+  /run/heimdall-test/socks.log
+
+test "$(as_tester heimdall run --policy udp-direct -- \
+  python3 /etc/heimdall-test/udp_client.py 127.0.0.1 18082 udp-v4:probe)" = "udp-v4:probe"
+test "$(as_tester heimdall run --policy udp-direct -- \
+  python3 /etc/heimdall-test/udp_client.py ::1 18083 udp-v6:probe)" = "udp-v6:probe"
 
 : > /run/heimdall-test/socks.log
 as_tester heimdall run --policy system -- \

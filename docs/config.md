@@ -39,14 +39,14 @@ ordered decision for one `heimdall run` invocation. The CLI uses
 
 ## Outbounds
 
-The current data plane supports SOCKS5 TCP:
+The data plane supports SOCKS5 TCP CONNECT and UDP ASSOCIATE:
 
 ```toml
 [proxy.outbounds.corp]
 type = "socks5"
 server = "127.0.0.1"
 server_port = 1081
-network = ["tcp"]
+network = ["tcp", "udp"]
 connect_timeout = "10s"
 
 [proxy.outbounds.corp.auth]
@@ -59,9 +59,10 @@ accept positive integer `ms`, `s`, or `m` values. Passwords never belong in the
 config; the daemon reads the absolute `password_file`, removes one trailing
 newline, and enforces the SOCKS5 1–255 byte limit.
 
-`network = ["udp"]` is rejected until SOCKS5 UDP ASSOCIATE is implemented.
-This prevents an apparently valid configuration from silently sending UDP
-directly.
+`network` is a strict capability declaration. A `route` action is rejected
+when its rule or final protocol is absent from the selected outbound. Use
+`["tcp"]`, `["udp"]`, or both; Heimdall never silently changes a routed flow to
+direct egress.
 
 ## Policies and ordered rules
 
@@ -74,7 +75,7 @@ name = "corp-domains"
 action = { type = "route", outbound = "corp" }
 
 [proxy.policies.default.rules.match]
-network = ["tcp"]
+network = ["tcp", "udp"]
 domain_suffix = ["internal.example.com"]
 port = [443]
 
@@ -110,7 +111,17 @@ udp = { type = "reject", method = "refused" }
 
 There is no implicit first outbound and no failure fallback to direct.
 `route` must name an existing outbound, `direct` is an explicit authorization,
-and `reject` fails the connection. Non-DNS UDP currently requires `reject`.
+and `reject` fails the connection or datagram.
+
+UDP proxying currently covers connected datagram sockets. Each datagram uses a
+bounded one-request/one-response SOCKS5 association (or direct exchange), and
+fragmented SOCKS5 UDP responses are rejected. Connectionless non-DNS
+`sendto`/`sendmsg` fails closed because a shared source port cannot provide an
+unambiguous per-datagram destination correlation. Do not treat this release as
+support for QUIC sessions, multicast, or multi-response UDP protocols.
+Simultaneous connected sockets that reuse the same address-family/source-port
+pair are also unsupported because the transparent relay correlation key would
+be ambiguous.
 
 ## DNS
 
@@ -121,6 +132,9 @@ domain request. Domain rules therefore require fake DNS.
 `dns.mode = "system"` explicitly allows UDP/TCP port 53 to reach the host
 resolver. The relay then sees resolved IPs, so domain rules are rejected and
 policies must use `ip_cidr`, `port`, or protocol matchers.
+
+Use `heimdall config explain --network udp ... --json` to inspect a UDP policy
+decision. `--network` defaults to `tcp` for compatibility.
 
 ## Capture and decrypt
 

@@ -16,7 +16,7 @@ let
     type = "socks5"
     server = "127.0.0.1"
     server_port = 1080
-    network = ["tcp"]
+    network = ["tcp", "udp"]
     connect_timeout = "2s"
 
     [proxy.policies.fake.dns]
@@ -42,6 +42,18 @@ let
     [proxy.policies.reject.final]
     tcp = { type = "reject", method = "refused" }
     udp = { type = "reject", method = "refused" }
+
+    [proxy.policies.udp.dns]
+    mode = "fake"
+    [proxy.policies.udp.final]
+    tcp = { type = "reject", method = "refused" }
+    udp = { type = "route", outbound = "default" }
+
+    [proxy.policies.udp-direct.dns]
+    mode = "system"
+    [proxy.policies.udp-direct.final]
+    tcp = { type = "reject", method = "refused" }
+    udp = { type = "direct" }
 
     [capture]
     mode = "off"
@@ -85,6 +97,14 @@ in
     };
   };
 
+  systemd.services.heimdall-test-udp = {
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      ExecStart = "${pkgs.python3}/bin/python3 ${./udp_fixture.py}";
+      Restart = "on-failure";
+    };
+  };
+
   systemd.services.heimdall = {
     wantedBy = [ "multi-user.target" ];
     after = [
@@ -117,11 +137,13 @@ in
     after = [
       "heimdall.service"
       "heimdall-test-http.service"
+      "heimdall-test-udp.service"
       "user@1000.service"
     ];
     requires = [
       "heimdall.service"
       "heimdall-test-http.service"
+      "heimdall-test-udp.service"
     ];
     serviceConfig = {
       Type = "oneshot";
@@ -130,6 +152,7 @@ in
   };
 
   environment.etc."heimdall-test/dual_stack_client.py".source = ./dual_stack_client.py;
+  environment.etc."heimdall-test/udp_client.py".source = ./udp_client.py;
   environment.etc."heimdall-test/run-acceptance.sh" = {
     source = ./run-acceptance.sh;
     mode = "0755";

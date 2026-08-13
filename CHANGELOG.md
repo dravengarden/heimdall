@@ -16,13 +16,17 @@ All notable changes to heimdall are documented here.
 
 ### Changed
 
+- Added strict connected UDP routing through SOCKS5 UDP ASSOCIATE or direct
+  egress, UDP-aware `config explain`, transparent `getpeername`, and explicit
+  machine-readable capability limits. Connectionless non-DNS UDP remains
+  fail-closed.
 - Replaced `proxies` and per-run DNS overrides with named SOCKS5 outbounds and
-  command-selected policies containing ordered TCP rules and explicit
+  command-selected policies containing ordered TCP/UDP rules and explicit
   `route`, `direct`, or `reject` final actions.
 - Added aggregated configuration diagnostics with stable codes, JSON paths,
   and repair hints plus `config explain` for deterministic rule inspection;
   all four starter formats are now tested through the same canonical loader.
-- Made non-DNS UDP fail closed, removed implicit address bypasses from
+- Made connectionless non-DNS UDP fail closed, removed implicit address bypasses from
   registered cgroups, completed fake DNS over TCP as well as UDP, and made DNS
   plus control-listener binding fail before daemon readiness.
 - Reframed heimdall as a proxychains-style command wrapper.
