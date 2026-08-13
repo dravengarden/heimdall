@@ -72,6 +72,13 @@ evidence, not as a general allowlist. An absent runtime means unverified and
 should trigger a bounded probe with the actual command when compatibility is
 required.
 
+Inspect `capabilities.cli_acceptance` for protocol-specific CLI evidence and
+`capabilities.lifecycle` before executing a long-lived or failure-sensitive
+workflow. Descendants remain inside the command policy after their immediate
+parent exits. Do not add environment proxy variables or a direct fallback for
+them. Refuse a workflow that requires uninterrupted enforcement across a
+daemon restart while `daemon_restart_continuity` is false.
+
 ## Run a command
 
 ```bash

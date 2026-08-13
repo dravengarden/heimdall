@@ -27,8 +27,9 @@ are left alone.
 
 Unlike `proxychains4`, heimdall does not use `LD_PRELOAD`. A small privileged
 daemon attaches cgroup eBPF hooks; the unprivileged CLI places only the
-wrapped command in a transient cgroup. This also covers static binaries and
-lets DNS names be resolved by the upstream proxy.
+wrapped command and all of its descendants in a transient cgroup. The policy
+remains registered until that entire process tree exits. This also covers
+static binaries and lets DNS names be resolved by the upstream proxy.
 
 > **Status: alpha.** Linux 5.10+, cgroup v2, and systemd user scopes are
 > currently required.
@@ -91,9 +92,12 @@ dual-stack TCP behavior used by Java and similar runtimes.
 See [docs/config.md](docs/config.md) for the complete schema.
 
 The disposable real-eBPF acceptance VM covers static Go `netgo`, Java,
-Node.js, Rust, Python, C, and curl. `heimdall agent` reports the precise
-per-protocol runtime matrix under `capabilities.runtime_acceptance`; agents
-should inspect it instead of inferring support from a language name alone.
+Node.js, Rust, Python, C, curl, and Git. It also verifies command exit and
+signal status, descendant lifetime, unavailable-daemon behavior, and
+unreachable-upstream failure. `heimdall agent` reports this evidence under
+`capabilities.runtime_acceptance`, `capabilities.cli_acceptance`, and
+`capabilities.lifecycle`; agents should inspect it instead of inferring
+support from a language or command name alone.
 
 ## Getting started
 
@@ -131,7 +135,9 @@ for the boundary and [docs/runbook.md](docs/runbook.md) for operations.
 `heimdall agent` never writes configuration, starts the daemon, registers a
 cgroup, or runs a command. Consumers should execute the returned
 `actions.execute_prefix` array followed by their own command arguments, without
-joining it into a shell string.
+joining it into a shell string. Check `capabilities.lifecycle` before relying
+on failure semantics. Daemon restart continuity is currently false: stopping
+the daemon removes its process-owned eBPF state.
 
 ## Requirements
 

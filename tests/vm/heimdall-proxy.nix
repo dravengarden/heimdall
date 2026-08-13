@@ -20,6 +20,13 @@ let
     network = ["tcp", "udp"]
     connect_timeout = "2s"
 
+    [proxy.outbounds.dead]
+    type = "socks5"
+    server = "127.0.0.1"
+    server_port = 1099
+    network = ["tcp"]
+    connect_timeout = "200ms"
+
     [proxy.policies.fake.dns]
     mode = "fake"
     [proxy.policies.fake.final]
@@ -42,6 +49,12 @@ let
     mode = "system"
     [proxy.policies.reject.final]
     tcp = { type = "reject", method = "refused" }
+    udp = { type = "reject", method = "refused" }
+
+    [proxy.policies.upstream-down.dns]
+    mode = "fake"
+    [proxy.policies.upstream-down.final]
+    tcp = { type = "route", outbound = "dead" }
     udp = { type = "reject", method = "refused" }
 
     [proxy.policies.udp.dns]
@@ -79,6 +92,7 @@ in
     testPython
     pkgs.gcc
     pkgs.go
+    pkgs.git
     pkgs.jdk_headless
     pkgs.nodejs
     pkgs.openssl
@@ -121,6 +135,15 @@ in
     };
   };
 
+  systemd.services.heimdall-test-git = {
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      ExecStartPre = "${pkgs.git}/bin/git init --bare /run/heimdall-test/repo.git";
+      ExecStart = "${pkgs.git}/bin/git daemon --reuseaddr --base-path=/run/heimdall-test --export-all --listen=127.0.0.1 --port=19418 /run/heimdall-test/repo.git";
+      Restart = "on-failure";
+    };
+  };
+
   systemd.services.heimdall = {
     wantedBy = [ "multi-user.target" ];
     after = [
@@ -155,6 +178,7 @@ in
       "heimdall-test-http.service"
       "heimdall-test-udp.service"
       "heimdall-test-http3.service"
+      "heimdall-test-git.service"
       "user@1000.service"
     ];
     requires = [
@@ -162,6 +186,7 @@ in
       "heimdall-test-http.service"
       "heimdall-test-udp.service"
       "heimdall-test-http3.service"
+      "heimdall-test-git.service"
     ];
     serviceConfig = {
       Type = "oneshot";

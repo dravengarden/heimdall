@@ -20,9 +20,10 @@
 //!      userspace cli_overrides map (relay reads) and the
 //!      CGROUP_POLICY BPF map (kernel-side connect4 reads).
 //!   5. Fork. Child writes its PID to `cgroup.procs` and exec's the
-//!      wrapped command. Parent waits.
-//!   6. On child exit, POST `/api/cli/deregister` and rmdir the
-//!      cgroup. Forwards the child's exit code (or signal) as our own.
+//!      wrapped command. Parent waits for the child and every descendant
+//!      inherited by the command cgroup.
+//!   6. Once the cgroup is empty, POST `/api/cli/deregister` and rmdir it.
+//!      Forward the immediate child's exit code (or signal) as our own.
 //!
 //! Permission model: completely non-root. Users land under their
 //! systemd user manager's delegated subtree; everything we do is
@@ -33,6 +34,7 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use nix::mount::{MsFlags, mount};
 use nix::sched::{CloneFlags, unshare};
@@ -138,14 +140,22 @@ pub fn run(config_path: &Path, args: RunArgs) -> Result<()> {
 
     let exit_code = fork_into_cgroup_and_exec(&cgroup_path, &args.command, dns_shim.as_ref());
 
-    // Always deregister + cleanup, even on child failure.
-    if let Err(e) = deregister_with_daemon(&api_addr, cgroup_id) {
-        warn!(error = %e, "deregister failed; daemon will GC eventually");
-    }
-    if !args.keep_cgroup
-        && let Err(e) = fs::remove_dir(&cgroup_path)
-    {
-        warn!(error = %e, path = %cgroup_path.display(), "rmdir cgroup failed");
+    // A shell or CLI can leave background descendants after its immediate
+    // process exits. Deregistering here would turn those still-running
+    // descendants into unproxied traffic. Keep the policy until cgroup v2
+    // reports that the entire command tree is empty.
+    let cgroup_empty = wait_for_cgroup_empty(&cgroup_path).inspect_err(|e| {
+        warn!(error = %e, path = %cgroup_path.display(), "cannot prove command cgroup is empty; retaining registration for daemon GC");
+    });
+    if cgroup_empty.is_ok() {
+        if let Err(e) = deregister_with_daemon(&api_addr, cgroup_id) {
+            warn!(error = %e, "deregister failed; daemon will GC eventually");
+        }
+        if !args.keep_cgroup
+            && let Err(e) = fs::remove_dir(&cgroup_path)
+        {
+            warn!(error = %e, path = %cgroup_path.display(), "rmdir cgroup failed");
+        }
     }
     if let Some(shim) = dns_shim {
         // Tmp files are cheap; ignore cleanup errors (parent might have
@@ -259,7 +269,18 @@ fn read_proc_self_cgroup() -> Result<String> {
 fn reexec_via_systemd_run(args: &RunArgs) -> Result<()> {
     let exe = std::env::current_exe().context("current_exe")?;
     let mut cmd = Command::new("systemd-run");
-    cmd.args(["--user", "--scope", "--quiet", "--collect", "--"]);
+    // systemd-run expands `$VAR`, `${VAR}`, and `$$` in argv by default.
+    // Agent commands are already structured argv and must reach execvp byte
+    // for byte; a shell snippet such as `kill -TERM $$` cannot survive that
+    // second interpretation. Disable expansion before the command separator.
+    cmd.args([
+        "--user",
+        "--scope",
+        "--quiet",
+        "--collect",
+        "--expand-environment=no",
+        "--",
+    ]);
     cmd.arg(&exe);
     cmd.arg("run");
     cmd.arg("--no-reentry");
@@ -317,6 +338,31 @@ fn create_sibling_cgroup() -> Result<PathBuf> {
 fn read_cgroup_id(path: &Path) -> Result<u64> {
     let m = fs::metadata(path).with_context(|| format!("stat {}", path.display()))?;
     Ok(m.ino())
+}
+
+fn wait_for_cgroup_empty(path: &Path) -> Result<()> {
+    let events = path.join("cgroup.events");
+    loop {
+        let raw =
+            fs::read_to_string(&events).with_context(|| format!("read {}", events.display()))?;
+        if !cgroup_is_populated(&raw)? {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn cgroup_is_populated(events: &str) -> Result<bool> {
+    events
+        .lines()
+        .find_map(|line| line.strip_prefix("populated "))
+        .map(|value| match value {
+            "0" => Ok(false),
+            "1" => Ok(true),
+            _ => bail!("invalid cgroup.events populated value `{value}`"),
+        })
+        .transpose()?
+        .ok_or_else(|| anyhow!("cgroup.events has no populated field"))
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -539,5 +585,22 @@ fn wait_for_child(child: Pid) -> i32 {
                 return 127;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cgroup_is_populated;
+
+    #[test]
+    fn parses_cgroup_population_without_field_order_assumptions() {
+        assert!(cgroup_is_populated("frozen 0\npopulated 1\n").unwrap());
+        assert!(!cgroup_is_populated("populated 0\nfrozen 0\n").unwrap());
+    }
+
+    #[test]
+    fn rejects_missing_or_invalid_population_state() {
+        assert!(cgroup_is_populated("frozen 0\n").is_err());
+        assert!(cgroup_is_populated("populated maybe\n").is_err());
     }
 }

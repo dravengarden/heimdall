@@ -59,6 +59,8 @@ pub mod agent {
     struct Capabilities {
         udp: UdpCapabilities,
         runtime_acceptance: RuntimeAcceptance,
+        cli_acceptance: CliAcceptance,
+        lifecycle: LifecycleCapabilities,
     }
 
     #[derive(Debug, Serialize)]
@@ -66,6 +68,21 @@ pub mod agent {
         tcp_fake_dns: &'static [&'static str],
         udp_ipv4: &'static [&'static str],
         udp_ipv6: &'static [&'static str],
+    }
+
+    #[derive(Debug, Serialize)]
+    struct CliAcceptance {
+        tcp_fake_dns: &'static [&'static str],
+    }
+
+    #[derive(Debug, Serialize)]
+    struct LifecycleCapabilities {
+        descendant_cgroup_lifetime: bool,
+        exit_code_passthrough: bool,
+        signal_exit_code: &'static str,
+        upstream_unreachable_fail_closed: bool,
+        daemon_unreachable_prevents_exec: bool,
+        daemon_restart_continuity: bool,
     }
 
     #[derive(Debug, Serialize)]
@@ -341,6 +358,17 @@ pub mod agent {
                 udp_ipv4: &["c", "go-netgo", "java", "nodejs", "python", "rust"],
                 udp_ipv6: &["go-netgo", "java", "nodejs", "python", "rust"],
             },
+            cli_acceptance: CliAcceptance {
+                tcp_fake_dns: &["git"],
+            },
+            lifecycle: LifecycleCapabilities {
+                descendant_cgroup_lifetime: true,
+                exit_code_passthrough: true,
+                signal_exit_code: "128+signal",
+                upstream_unreachable_fail_closed: true,
+                daemon_unreachable_prevents_exec: true,
+                daemon_restart_continuity: false,
+            },
         }
     }
 
@@ -384,10 +412,21 @@ pub mod agent {
 
         #[test]
         fn runtime_acceptance_is_machine_readable() {
-            let runtimes = capabilities().runtime_acceptance;
+            let capabilities = capabilities();
+            let runtimes = capabilities.runtime_acceptance;
             assert!(runtimes.tcp_fake_dns.contains(&"go-netgo"));
             assert!(runtimes.udp_ipv4.contains(&"nodejs"));
             assert!(runtimes.udp_ipv6.contains(&"java"));
+            assert!(capabilities.cli_acceptance.tcp_fake_dns.contains(&"git"));
+        }
+
+        #[test]
+        fn lifecycle_capabilities_expose_restart_boundary() {
+            let lifecycle = capabilities().lifecycle;
+            assert!(lifecycle.descendant_cgroup_lifetime);
+            assert!(lifecycle.upstream_unreachable_fail_closed);
+            assert!(lifecycle.daemon_unreachable_prevents_exec);
+            assert!(!lifecycle.daemon_restart_continuity);
         }
     }
 }

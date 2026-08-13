@@ -6,6 +6,7 @@ systemctl is-active --quiet heimdall-test-socks.service
 systemctl is-active --quiet heimdall-test-http.service
 systemctl is-active --quiet heimdall-test-udp.service
 systemctl is-active --quiet heimdall-test-http3.service
+systemctl is-active --quiet heimdall-test-git.service
 systemctl start user@1000.service
 
 as_tester() {
@@ -40,7 +41,14 @@ as_tester heimdall agent \
     and .capabilities.udp.max_socks5_payload_bytes == 65245
     and (.capabilities.runtime_acceptance.tcp_fake_dns | index("go-netgo")) != null
     and (.capabilities.runtime_acceptance.udp_ipv4 | index("nodejs")) != null
-    and (.capabilities.runtime_acceptance.udp_ipv6 | index("java")) != null'
+    and (.capabilities.runtime_acceptance.udp_ipv6 | index("java")) != null
+    and (.capabilities.cli_acceptance.tcp_fake_dns | index("git")) != null
+    and .capabilities.lifecycle.descendant_cgroup_lifetime
+    and .capabilities.lifecycle.exit_code_passthrough
+    and .capabilities.lifecycle.signal_exit_code == "128+signal"
+    and .capabilities.lifecycle.upstream_unreachable_fail_closed
+    and .capabilities.lifecycle.daemon_unreachable_prevents_exec
+    and (.capabilities.lifecycle.daemon_restart_continuity | not)'
 
 CGO_ENABLED=0 go build -tags netgo -trimpath \
   -o /run/heimdall-test/runtime-go /etc/heimdall-test/runtime_client.go
@@ -73,6 +81,35 @@ test "$(as_tester heimdall run --policy fake -- \
   curl -4fsS --max-time 5 http://fixture.test:18080/)" = "fixture-v4"
 grep -q '"atyp": 3, "host": "fixture.test", "port": 18080' \
   /run/heimdall-test/socks.log
+
+: > /run/heimdall-test/socks.log
+test -z "$(as_tester heimdall run --policy fake -- \
+  git ls-remote git://fixture.test:19418/repo.git)"
+grep -q '"atyp": 3, "host": "fixture.test", "port": 19418' \
+  /run/heimdall-test/socks.log
+
+set +e
+as_tester heimdall run --policy direct -- sh -c 'exit 42'
+exit_status=$?
+as_tester heimdall run --policy direct -- sh -c 'kill -TERM $$'
+signal_status=$?
+set -e
+test "$exit_status" -eq 42
+test "$signal_status" -eq 143
+
+rm -f /tmp/heimdall-descendant.out
+: > /run/heimdall-test/socks.log
+as_tester heimdall run --policy fake -- sh -c \
+  '(sleep 0.2; curl -4fsS --max-time 5 http://fixture.test:18080/ > /tmp/heimdall-descendant.out) &'
+test "$(cat /tmp/heimdall-descendant.out)" = "fixture-v4"
+grep -q '"atyp": 3, "host": "fixture.test", "port": 18080' \
+  /run/heimdall-test/socks.log
+
+if as_tester heimdall run --policy upstream-down -- \
+  curl -4fsS --max-time 2 http://fixture.test:18080/; then
+  echo "unreachable upstream unexpectedly allowed TCP" >&2
+  exit 1
+fi
 
 : > /run/heimdall-test/socks.log
 test "$(as_tester heimdall run --policy system -- \
@@ -183,6 +220,24 @@ test "$(grep -c '"atyp": 4' /run/heimdall-test/socks.log)" -eq 100
 : > /run/heimdall-test/socks.log
 test "$(as_tester curl -4fsS --max-time 5 http://127.0.0.1:18080/)" = "fixture-v4"
 test ! -s /run/heimdall-test/socks.log
+
+systemctl stop heimdall.service
+set +e
+daemon_report="$(as_tester heimdall agent)"
+agent_status=$?
+set -e
+test "$agent_status" -eq 1
+printf '%s' "$daemon_report" | jq -e '.ready == false and .daemon.reachable == false'
+rm -f /tmp/heimdall-unregistered-command
+if as_tester heimdall run --policy direct -- \
+  sh -c 'touch /tmp/heimdall-unregistered-command'; then
+  echo "command executed without daemon registration" >&2
+  exit 1
+fi
+test ! -e /tmp/heimdall-unregistered-command
+systemctl start heimdall.service
+systemctl is-active --quiet heimdall.service
+as_tester heimdall agent | jq -e '.ready and .daemon.reachable'
 
 if find /sys/fs/cgroup/user.slice -type d -name 'heimdall-cli-*' -print -quit \
   | grep -q .; then

@@ -36,7 +36,9 @@ heimdall run --policy corp -- curl https://internal.example.com
 
 The selected policy owns DNS, ordered rules, and final TCP/UDP actions. The
 wrapped process may be re-executed through `systemd-run --user --scope` to
-obtain an isolated cgroup.
+obtain an isolated cgroup. Its original argv is preserved without shell or
+systemd environment expansion. Heimdall returns the immediate child's status
+but retains the policy until every descendant leaves the cgroup.
 
 Inspect `agent.capabilities.udp` before wrapping a UDP command. Connected,
 bidirectional multi-response traffic reuses one association per socket.
@@ -53,6 +55,14 @@ Inspect `capabilities.runtime_acceptance` before asserting that a language
 runtime is covered. Membership is path-specific (`tcp_fake_dns`, `udp_ipv4`,
 or `udp_ipv6`). Absence means no committed VM evidence for that path, not a
 configuration error and not proof of incompatibility.
+
+Inspect `capabilities.cli_acceptance` for evidence about concrete command
+protocols such as Git. Inspect `capabilities.lifecycle` before depending on
+exit/signal propagation or failure boundaries. An unavailable daemon prevents
+the wrapped command from starting and an unreachable selected upstream fails
+instead of falling back to direct egress. Daemon restart continuity is not
+currently supported; reject workflows that require it when the reported field
+is false.
 
 ## Diagnose failures
 

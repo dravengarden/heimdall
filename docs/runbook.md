@@ -26,7 +26,9 @@ connectionless multi-target traffic, concurrent IPv4 same-source-port sockets,
 single-peer IPv6, fail-closed IPv6 multi-target/shared-port conflicts,
 IPv4-mapped dual-stack UDP, `sendmmsg`/`recvmmsg`, token stress across 128
 destinations, IPv4 and native IPv6 HTTP/3 with QUIC Retry and a 32 KiB response,
-unregistered bypass, cgroup cleanup, and 100 same-source-port dual-stack TCP
+unregistered bypass, whole-descendant cgroup lifetime, command exit/signal
+status, unavailable-daemon pre-exec failure, unreachable-upstream failure,
+cgroup cleanup, Git's native protocol, and 100 same-source-port dual-stack TCP
 connection pairs. It also compiles and executes static Go `netgo`, Java,
 Node.js, and Rust clients through fake-DNS TCP plus connected IPv4 and IPv6
 UDP. Existing C, curl, and Python fixtures cover syscall batching, HTTP, and
@@ -103,6 +105,15 @@ It is read-only and always prints exactly one JSON value before exiting:
       "tcp_fake_dns": ["curl", "go-netgo", "java", "nodejs", "rust"],
       "udp_ipv4": ["c", "go-netgo", "java", "nodejs", "python", "rust"],
       "udp_ipv6": ["go-netgo", "java", "nodejs", "python", "rust"]
+    },
+    "cli_acceptance": { "tcp_fake_dns": ["git"] },
+    "lifecycle": {
+      "descendant_cgroup_lifetime": true,
+      "exit_code_passthrough": true,
+      "signal_exit_code": "128+signal",
+      "upstream_unreachable_fail_closed": true,
+      "daemon_unreachable_prevents_exec": true,
+      "daemon_restart_continuity": false
     }
   },
   "decision": {
@@ -151,6 +162,16 @@ matrix is:
 | IPv4 UDP | C, static Go `netgo`, Java, Node.js, Python, Rust |
 | IPv6 UDP | static Go `netgo`, Java, Node.js, Python, Rust |
 
+`capabilities.cli_acceptance` records end-to-end evidence for concrete CLI
+protocols; Git is tested with `git ls-remote` over fake-DNS TCP. Agents must
+also inspect `capabilities.lifecycle`. A wrapped command keeps its policy until
+all descendants leave the cgroup, preserves normal exit and signal status,
+fails rather than bypassing an unreachable upstream, and is not executed when
+the daemon cannot register it. `daemon_restart_continuity` remains false:
+stopping the daemon removes its process-owned eBPF links and maps, so do not
+run a workflow that requires uninterrupted proxy enforcement across a daemon
+restart.
+
 ## Common failures
 
 - `unknown policy`: declare it below `proxy.policies` or choose a name reported
@@ -170,4 +191,6 @@ matrix is:
   relay endpoint from that proxy's interception rules.
 
 Stopping heimdall removes the eBPF links, so normal host networking remains
-available. Unregistered processes also bypass heimdall while it is running.
+available. It also means already-running wrapped commands do not retain proxy
+enforcement across the stop/restart boundary. Unregistered processes bypass
+heimdall while it is running.

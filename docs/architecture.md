@@ -59,7 +59,9 @@ orchestrator-shaped metadata.
 7. Application bytes, including TLS records, pass through unchanged. Heimdall
    never uses SNI to reinterpret an IP destination: fake DNS produces a SOCKS5
    domain request, while system DNS preserves the resolved IP address.
-8. The parent forwards the child's exit status and deregisters the cgroup.
+8. After the immediate child exits, the parent keeps the policy registered
+   until `cgroup.events` reports that every inherited descendant has exited.
+   It then deregisters the cgroup and returns the immediate child's exit status.
 
 If the parent is killed, the daemon's bounded cgroup scan removes the orphan
 after it becomes empty.
@@ -67,6 +69,12 @@ after it becomes empty.
 Fake-IP mappings remain stable for the daemon lifetime. A depleted pool returns
 DNS `SERVFAIL` instead of reassigning an address that an application may still
 hold in its cache.
+
+The daemon currently owns its eBPF links and maps in process memory. Stopping
+or crashing it removes those links, and a restart creates new empty maps.
+Heimdall therefore does not promise transparent continuity for commands that
+outlive a daemon restart; `heimdall agent` exposes this boundary as
+`capabilities.lifecycle.daemon_restart_continuity = false`.
 
 TCP and connected IPv6 relay keys include both address family and ephemeral
 source port. IPv4 UDP instead rewrites each socket-and-destination flow to a

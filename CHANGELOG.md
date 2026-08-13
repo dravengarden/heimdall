@@ -6,6 +6,10 @@ All notable changes to heimdall are documented here.
 
 ### Fixed
 
+- Keep a command policy registered until every descendant exits its cgroup,
+  preventing background children from losing proxy enforcement when their
+  immediate parent finishes. Disable `systemd-run` environment expansion so
+  structured argv containing `$` reaches the wrapped command unchanged.
 - Normalize IPv4-mapped destinations intercepted by `connect6`, preserving
   fake-DNS hostname recovery and transparent peer identity for runtimes such as
   Java that use dual-stack IPv6 sockets for IPv4 answers.
@@ -28,6 +32,10 @@ All notable changes to heimdall are documented here.
 
 ### Changed
 
+- Added real-eBPF lifecycle acceptance for Git, exit and signal propagation,
+  background descendants, unavailable-daemon pre-exec failure, and
+  unreachable-upstream fail-closed behavior. Exposed the results and the
+  unsupported daemon-restart continuity boundary through `heimdall agent`.
 - Added real cgroup eBPF acceptance for static Go `netgo`, Java, Node.js, and
   Rust across fake-DNS TCP plus connected IPv4 and IPv6 UDP, and exposed the
   tested matrix through `heimdall agent`.
