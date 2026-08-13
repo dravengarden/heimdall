@@ -70,15 +70,17 @@ Fake-IP mappings remain stable for the current boot and survive a daemon
 restart. A depleted pool returns DNS `SERVFAIL` instead of reassigning an
 address that an application may still hold in its cache.
 
-The daemon currently owns its eBPF links and maps in process memory. Stopping
-or crashing it removes those links, and a restart creates new empty maps. A
-root-only runtime journal records active CLI cgroup registrations and fake-DNS
-mappings. Once the replacement daemon has attached its programs, it restores
-policies for still-populated cgroups and reuses their hostname mappings; stale
-registrations are removed. This is recovery, not uninterrupted continuity:
-traffic is not intercepted while the links are absent, and existing TCP or UDP
-relay sessions are not preserved. `heimdall agent` exposes all three boundaries
-through `capabilities.lifecycle`.
+The daemon pins its eBPF maps and cgroup links below `/sys/fs/bpf/heimdall`.
+Every replacement loads against the same maps, then atomically redirects each
+stable cgroup link to its new program with `BPF_LINK_UPDATE`. Registered traffic
+therefore remains
+intercepted during a daemon restart and fails closed while the loopback relay is
+unavailable. A root-only runtime journal records active CLI cgroup
+registrations and fake-DNS mappings. Once the replacement daemon is ready, it
+restores userspace decisions for still-populated cgroups and removes stale
+registrations. Existing TCP or UDP relay sessions are not preserved, so this is
+enforcement continuity rather than full connection continuity. `heimdall agent`
+exposes both boundaries through `capabilities.lifecycle`.
 
 TCP and connected IPv6 relay keys include both address family and ephemeral
 source port. IPv4 UDP instead rewrites each socket-and-destination flow to a

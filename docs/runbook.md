@@ -114,6 +114,7 @@ It is read-only and always prints exactly one JSON value before exiting:
       "upstream_unreachable_fail_closed": true,
       "daemon_unreachable_prevents_exec": true,
       "daemon_restart_continuity": false,
+      "daemon_restart_enforcement_continuity": true,
       "daemon_restart_policy_recovery": true,
       "daemon_restart_fake_dns_recovery": true,
       "daemon_restart_existing_connections": false
@@ -172,11 +173,16 @@ all descendants leave the cgroup, preserves normal exit and signal status,
 fails rather than bypassing an unreachable upstream, and is not executed when
 the daemon cannot register it. Active command policies and fake-DNS mappings
 recover once a restarted daemon is ready, as reported by the two
-`daemon_restart_*_recovery` fields. `daemon_restart_continuity` remains false:
-stopping the daemon removes its process-owned eBPF links, leaves a temporary
-interception gap, and does not preserve existing connections. Do not run a
-workflow that requires uninterrupted enforcement or connection survival across
-a daemon restart.
+`daemon_restart_*_recovery` fields. Pinned maps and atomic link updates
+make `daemon_restart_enforcement_continuity` true: registered traffic remains
+intercepted and fails closed while the relay is unavailable.
+`daemon_restart_continuity` remains false because existing connections and
+relay sessions do not survive. Do not run a workflow that requires connection
+survival across a daemon restart.
+
+The first upgrade from a release that did not pin cgroup links requires one
+ordinary daemon restart to install them. Enforcement continuity applies to
+later stops and restarts after that startup succeeds.
 
 ## Common failures
 
@@ -196,9 +202,11 @@ a daemon restart.
 - another transparent proxy catches relay traffic: exempt the exact local
   relay endpoint from that proxy's interception rules.
 
-Stopping heimdall removes the eBPF links, so normal host networking remains
-available. During an explicit service restart, systemd preserves the root-only
-runtime journal; after readiness, still-running wrapped commands regain their
-policy and fake-DNS mappings. They are not enforced during the link replacement
-window, and connections established before the restart are not preserved.
-Unregistered processes bypass heimdall while it is running.
+Stopping heimdall leaves its pinned eBPF maps and links active. Registered
+cgroups fail closed until the relay returns; unregistered processes continue to
+bypass heimdall. During an explicit service restart, systemd preserves the
+root-only runtime journal; after readiness, still-running wrapped commands
+regain their userspace policy decisions and fake-DNS mappings. Connections
+established before the restart are not preserved. Before permanently removing
+heimdall, remove `/sys/fs/bpf/heimdall` only after every wrapped command has
+exited.

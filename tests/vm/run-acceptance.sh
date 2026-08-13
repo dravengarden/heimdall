@@ -49,6 +49,7 @@ as_tester heimdall agent \
     and .capabilities.lifecycle.upstream_unreachable_fail_closed
     and .capabilities.lifecycle.daemon_unreachable_prevents_exec
     and (.capabilities.lifecycle.daemon_restart_continuity | not)
+    and .capabilities.lifecycle.daemon_restart_enforcement_continuity
     and .capabilities.lifecycle.daemon_restart_policy_recovery
     and .capabilities.lifecycle.daemon_restart_fake_dns_recovery
     and (.capabilities.lifecycle.daemon_restart_existing_connections | not)'
@@ -224,10 +225,12 @@ test "$(grep -c '"atyp": 4' /run/heimdall-test/socks.log)" -eq 100
 test "$(as_tester curl -4fsS --max-time 5 http://127.0.0.1:18080/)" = "fixture-v4"
 test ! -s /run/heimdall-test/socks.log
 
-rm -f /tmp/heimdall-restart-ready /tmp/heimdall-restart-go \
+rm -f /tmp/heimdall-restart-ready /tmp/heimdall-restart-stop-go \
+  /tmp/heimdall-restart-stop-done /tmp/heimdall-restart-start-go \
+  /tmp/heimdall-restart-blocked /tmp/heimdall-restart-bypass \
   /tmp/heimdall-restart.out
 as_tester heimdall run --policy fake -- sh -c \
-  'getent ahostsv4 fixture.test >/dev/null; touch /tmp/heimdall-restart-ready; while test ! -e /tmp/heimdall-restart-go; do sleep 0.02; done; curl -4fsS --max-time 5 http://fixture.test:18080/ > /tmp/heimdall-restart.out' &
+  'getent ahostsv4 fixture.test >/dev/null; touch /tmp/heimdall-restart-ready; while test ! -e /tmp/heimdall-restart-stop-go; do sleep 0.02; done; if curl -4fsS --max-time 2 http://192.0.2.1:18080/ >/dev/null; then touch /tmp/heimdall-restart-bypass; else touch /tmp/heimdall-restart-blocked; fi; touch /tmp/heimdall-restart-stop-done; while test ! -e /tmp/heimdall-restart-start-go; do sleep 0.02; done; curl -4fsS --max-time 5 http://fixture.test:18080/ > /tmp/heimdall-restart.out' &
 restart_run_pid=$!
 for _ in $(seq 1 250); do
   test -e /tmp/heimdall-restart-ready && break
@@ -235,11 +238,24 @@ for _ in $(seq 1 250); do
 done
 test -e /tmp/heimdall-restart-ready
 test "$(find /run/heimdall/registrations -type f -name '*.json' | wc -l)" -eq 1
-systemctl restart heimdall.service
+test "$(find /sys/fs/bpf/heimdall/links -type f | wc -l)" -ge 10
+systemctl stop heimdall.service
+test "$(find /sys/fs/bpf/heimdall/links -type f | wc -l)" -ge 10
+: > /run/heimdall-test/socks.log
+touch /tmp/heimdall-restart-stop-go
+for _ in $(seq 1 250); do
+  test -e /tmp/heimdall-restart-stop-done && break
+  sleep 0.02
+done
+test -e /tmp/heimdall-restart-stop-done
+test -e /tmp/heimdall-restart-blocked
+test ! -e /tmp/heimdall-restart-bypass
+test ! -s /run/heimdall-test/socks.log
+systemctl start heimdall.service
 systemctl is-active --quiet heimdall.service
 journalctl -u heimdall.service -n 100 --no-pager | grep -q 'restored=1'
 : > /run/heimdall-test/socks.log
-touch /tmp/heimdall-restart-go
+touch /tmp/heimdall-restart-start-go
 for _ in $(seq 1 500); do
   ! kill -0 "$restart_run_pid" 2>/dev/null && break
   sleep 0.02

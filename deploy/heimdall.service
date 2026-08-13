@@ -20,7 +20,7 @@ Restart=on-failure
 RestartSec=2
 RuntimeDirectory=heimdall
 RuntimeDirectoryMode=0700
-RuntimeDirectoryPreserve=restart
+RuntimeDirectoryPreserve=yes
 
 # eBPF program loading needs CAP_BPF + CAP_NET_ADMIN; CAP_SYS_ADMIN is
 # required for cgroup attachment; CAP_DAC_OVERRIDE lets orphan GC remove

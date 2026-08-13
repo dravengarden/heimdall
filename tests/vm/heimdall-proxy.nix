@@ -77,6 +77,12 @@ let
 in
 {
   networking.hostName = "heimdall-test";
+  networking.interfaces.lo.ipv4.addresses = [
+    {
+      address = "192.0.2.1";
+      prefixLength = 32;
+    }
+  ];
   security.unprivilegedUsernsClone = true;
 
   users.users.tester = {
@@ -158,7 +164,7 @@ in
       Restart = "on-failure";
       RuntimeDirectory = "heimdall";
       RuntimeDirectoryMode = "0700";
-      RuntimeDirectoryPreserve = "restart";
+      RuntimeDirectoryPreserve = "yes";
       AmbientCapabilities = [
         "CAP_BPF"
         "CAP_NET_ADMIN"

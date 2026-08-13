@@ -76,10 +76,12 @@ Inspect `capabilities.cli_acceptance` for protocol-specific CLI evidence and
 `capabilities.lifecycle` before executing a long-lived or failure-sensitive
 workflow. Descendants remain inside the command policy after their immediate
 parent exits. Do not add environment proxy variables or a direct fallback for
-them. Refuse a workflow that requires uninterrupted enforcement across a
-daemon restart while `daemon_restart_continuity` is false. Policy and fake-DNS
-recovery fields only mean an active command is restored after daemon readiness;
-they do not imply that the restart gap or existing connections are protected.
+them. `daemon_restart_enforcement_continuity` means registered traffic remains
+intercepted and fails closed while a restarted daemon is unavailable. Refuse a
+workflow that requires existing connections to survive while
+`daemon_restart_continuity` or `daemon_restart_existing_connections` is false.
+Policy and fake-DNS recovery fields mean the userspace decision is restored
+after daemon readiness.
 
 ## Run a command
 

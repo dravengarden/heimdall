@@ -10,7 +10,7 @@ workspace = true
 
 [dependencies]
 # eBPF userspace management: load programs, attach to cgroups, read/write maps
-aya = { version = "0.13", features = ["async_tokio"] }
+aya = "0.14"
 
 # Shared data types with the eBPF programs
 heimdall-common = { path = "../heimdall-common" }

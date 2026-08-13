@@ -6,10 +6,15 @@ All notable changes to heimdall are documented here.
 
 ### Fixed
 
+- Keep registered cgroups intercepted across daemon restarts with pinned eBPF
+  maps and atomic link updates. Traffic fails closed while the relay is
+  unavailable; existing relay sessions and connections remain unsupported. The
+  first upgrade from a release without pinned links still requires one ordinary
+  restart to install them.
 - Restore active CLI cgroup policies and fake-DNS hostname mappings after a
   daemon service restart. Runtime state is atomic, strict, and root-only; stale
-  registrations are removed during recovery. Existing connections and the
-  process-owned eBPF link replacement window remain explicitly unsupported.
+  registrations are removed during recovery. Existing connections remain
+  explicitly unsupported.
 - Keep a command policy registered until every descendant exits its cgroup,
   preventing background children from losing proxy enforcement when their
   immediate parent finishes. Disable `systemd-run` environment expansion so

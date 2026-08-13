@@ -34,6 +34,10 @@ if __name__ == "__main__":
         ),
         threading.Thread(
             target=serve,
+            args=(ThreadingHTTPServer, ("192.0.2.1", 18080), "fixture-v4"),
+        ),
+        threading.Thread(
+            target=serve,
             args=(V6Server, ("::1", 18081), "fixture-v6"),
         ),
     ]

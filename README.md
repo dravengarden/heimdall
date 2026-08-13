@@ -139,9 +139,11 @@ cgroup, or runs a command. Consumers should execute the returned
 `actions.execute_prefix` array followed by their own command arguments, without
 joining it into a shell string. Check `capabilities.lifecycle` before relying
 on failure semantics. Active policy registrations and fake-DNS mappings recover
-after a daemon restart, but seamless continuity is false: process-owned eBPF
-links and relay sessions disappear during the restart, and existing connections
-are not preserved.
+after a daemon restart. Pinned eBPF links and maps keep registered traffic
+intercepted and fail closed while the relay is unavailable. Seamless continuity
+is still false because relay sessions and existing connections are not
+preserved. Upgrading from a release without pinned links requires one ordinary
+restart before enforcement continuity is available on later restarts.
 
 ## Requirements
 

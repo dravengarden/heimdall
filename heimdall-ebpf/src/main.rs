@@ -42,28 +42,28 @@ const SOCK_DGRAM: u32 = 2;
 
 // Relay IPv4 address in network byte order, set by userspace at startup.
 #[map]
-static RELAY_ADDR: Array<u32> = Array::with_max_entries(2, 0);
+static RELAY_ADDR: Array<u32> = Array::pinned(2, 0);
 
 // Relay IPv6 address (16 bytes, network byte order) — set to loopback by
 // userspace at startup. Stored as a
 // 4×u32 array so it's a flat POD for the verifier.
 #[map]
-static RELAY_ADDR6: Array<[u8; 16]> = Array::with_max_entries(1, 0);
+static RELAY_ADDR6: Array<[u8; 16]> = Array::pinned(1, 0);
 
 // Heimdall fake-IP DNS endpoint, IPv4. Slot 0 = ip in network byte
 // order, slot 1 = port in network byte order (16-bit value stored in
 // u32 lower bits). Populated at startup from `daemon.dns_port`.
 // Used by connect4 + udp4_sendmsg when the cgroup has POLICY_DNS_HIJACK.
 #[map]
-static DNS_ADDR_V4: Array<u32> = Array::with_max_entries(2, 0);
+static DNS_ADDR_V4: Array<u32> = Array::pinned(2, 0);
 
 // Heimdall fake-IP DNS endpoint, IPv6. addr at slot 0 (16 bytes),
 // port at slot 0 of DNS_PORT_V6 (separate map to keep the value type
 // simple).
 #[map]
-static DNS_ADDR_V6: Array<[u8; 16]> = Array::with_max_entries(1, 0);
+static DNS_ADDR_V6: Array<[u8; 16]> = Array::pinned(1, 0);
 #[map]
-static DNS_PORT_V6: Array<u32> = Array::with_max_entries(1, 0);
+static DNS_PORT_V6: Array<u32> = Array::pinned(1, 0);
 
 // Stage-1 map: socket_cookie → original destination
 // Populated in connect4, consumed in skb_egress.
@@ -80,13 +80,13 @@ static DNS_PORT_V6: Array<u32> = Array::with_max_entries(1, 0);
 // PORT_MAP correlation but the rewrite still happens, which is the
 // correct trade-off (lose one destination lookup > lose redirect entirely).
 #[map]
-static COOKIE_MAP: LruHashMap<u64, OrigDst> = LruHashMap::with_max_entries(65536, 0);
+static COOKIE_MAP: LruHashMap<u64, OrigDst> = LruHashMap::pinned(65536, 0);
 
 // Connected UDP sockets keep their destination for the socket lifetime. Unlike
 // TCP, the entry cannot be consumed on the first packet because every later
 // datagram and getpeername() call needs the same transparent association.
 #[map]
-static UDP_COOKIE_MAP: LruHashMap<u64, OrigDst> = LruHashMap::with_max_entries(65536, 0);
+static UDP_COOKIE_MAP: LruHashMap<u64, OrigDst> = LruHashMap::pinned(65536, 0);
 
 // UDP relay correlation cannot use the client source port: SO_REUSEPORT and
 // connectionless sockets make that value ambiguous. Each socket+destination
@@ -94,9 +94,9 @@ static UDP_COOKIE_MAP: LruHashMap<u64, OrigDst> = LruHashMap::with_max_entries(6
 // the destination address through IP_PKTINFO and responses carry the same
 // token as their source address for recvmsg4 to reverse.
 #[map]
-static UDP_FLOW_MAP: LruHashMap<UdpFlowKey, u32> = LruHashMap::with_max_entries(65536, 0);
+static UDP_FLOW_MAP: LruHashMap<UdpFlowKey, u32> = LruHashMap::pinned(65536, 0);
 #[map]
-static UDP_TOKEN_MAP: LruHashMap<u32, OrigDst> = LruHashMap::with_max_entries(65536, 0);
+static UDP_TOKEN_MAP: LruHashMap<u32, OrigDst> = LruHashMap::pinned(65536, 0);
 
 // Stage-2 map: (address family, client_ephemeral_port) → original destination
 // Populated in skb_egress, consumed by the userspace relay after accept().
@@ -106,33 +106,33 @@ static UDP_TOKEN_MAP: LruHashMap<u32, OrigDst> = LruHashMap::with_max_entries(65
 // listener torn down mid-connect / connection RST'd between SYN and
 // accept). LRU keeps the map self-healing under those edge cases.
 #[map]
-static PORT_MAP: LruHashMap<u32, OrigDst> = LruHashMap::with_max_entries(65536, 0);
+static PORT_MAP: LruHashMap<u32, OrigDst> = LruHashMap::pinned(65536, 0);
 
 // IPv6 UDP retains family+source-port correlation because Linux does not permit
 // a UDP6 sendmsg hook to rewrite to an IPv4-mapped token address. This covers
 // connected sockets and one peer per connectionless socket. IPv4 uses tokens.
 #[map]
-static UDP_PORT_MAP: LruHashMap<u32, OrigDst> = LruHashMap::with_max_entries(65536, 0);
+static UDP_PORT_MAP: LruHashMap<u32, OrigDst> = LruHashMap::pinned(65536, 0);
 
 // Reverse ownership for IPv6 relay keys. sock_release uses this to remove a
 // family+source-port entry only when it still belongs to the closing socket;
 // without it, a reused source port could remain blocked by stale ownership.
 #[map]
-static UDP_RELAY_KEY_MAP: LruHashMap<u64, u32> = LruHashMap::with_max_entries(65536, 0);
+static UDP_RELAY_KEY_MAP: LruHashMap<u64, u32> = LruHashMap::pinned(65536, 0);
 
 // Explicit IPv6 binds can otherwise create several redirected sockets with
 // the same relay tuple. Reserve nonzero source ports for one live socket and
 // release the ownership from sock_release. Ephemeral port zero remains safe:
 // the kernel assigns distinct ports before egress.
 #[map]
-static UDP6_BIND_MAP: LruHashMap<u16, u64> = LruHashMap::with_max_entries(65536, 0);
+static UDP6_BIND_MAP: LruHashMap<u16, u64> = LruHashMap::pinned(65536, 0);
 #[map]
-static UDP6_BIND_REVERSE: LruHashMap<u64, u16> = LruHashMap::with_max_entries(65536, 0);
+static UDP6_BIND_REVERSE: LruHashMap<u64, u16> = LruHashMap::pinned(65536, 0);
 
 // Per-cgroup policy. `heimdall run` registers a cgroup before launching
 // the command and removes it afterward.
 #[map]
-static CGROUP_POLICY: HashMap<u64, u8> = HashMap::with_max_entries(65536, 0);
+static CGROUP_POLICY: HashMap<u64, u8> = HashMap::pinned(65536, 0);
 
 #[inline(always)]
 fn policy_for(cgroup_id: u64) -> u8 {
