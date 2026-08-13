@@ -113,12 +113,14 @@ There is no implicit first outbound and no failure fallback to direct.
 `route` must name an existing outbound, `direct` is an explicit authorization,
 and `reject` fails the connection or datagram.
 
-UDP proxying currently covers connected datagram sockets. Each datagram uses a
-bounded one-request/one-response SOCKS5 association (or direct exchange), and
-fragmented SOCKS5 UDP responses are rejected. Connectionless non-DNS
+UDP proxying currently covers connected datagram sockets. One bidirectional
+SOCKS5 association (or direct socket) is reused for the transparent socket
+lifetime, including asynchronous and multiple responses. Fragmented SOCKS5 UDP
+responses are rejected, and SOCKS5 payloads are limited to 65,245 bytes so the
+largest domain header still fits one UDP datagram. Connectionless non-DNS
 `sendto`/`sendmsg` fails closed because a shared source port cannot provide an
-unambiguous per-datagram destination correlation. Do not treat this release as
-support for QUIC sessions, multicast, or multi-response UDP protocols.
+unambiguous per-datagram destination correlation. QUIC has not yet passed a
+dedicated compatibility gate and must not be inferred from generic UDP tests.
 Simultaneous connected sockets that reuse the same address-family/source-port
 pair are also unsupported because the transparent relay correlation key would
 be ambiguous.

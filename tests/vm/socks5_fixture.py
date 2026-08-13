@@ -71,6 +71,8 @@ class Handler(socketserver.BaseRequestHandler):
                     target.sendall(payload)
 
     def udp_associate(self):
+        with open(LOG_PATH, "a", encoding="utf-8") as log:
+            log.write(json.dumps({"udp_associate": True}) + "\n")
         udp = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
         udp.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
         udp.bind(("::1", 0))
@@ -94,10 +96,14 @@ class Handler(socketserver.BaseRequestHandler):
                     target, header, payload = parse_udp_frame(packet)
                     family = socket.AF_INET6 if ":" in target[0] else socket.AF_INET
                     with socket.socket(family, socket.SOCK_DGRAM) as upstream:
-                        upstream.settimeout(5)
+                        upstream.settimeout(0.1)
                         upstream.sendto(payload, target)
-                        response, _ = upstream.recvfrom(65535)
-                    udp.sendto(b"\x00\x00\x00" + header + response, client)
+                        while True:
+                            try:
+                                response, _ = upstream.recvfrom(65535)
+                            except TimeoutError:
+                                break
+                            udp.sendto(b"\x00\x00\x00" + header + response, client)
 
 
 def parse_udp_frame(packet):

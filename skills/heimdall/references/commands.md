@@ -39,10 +39,10 @@ wrapped process may be re-executed through `systemd-run --user --scope` to
 obtain an isolated cgroup.
 
 Inspect `agent.capabilities.udp` before wrapping a UDP command. Connected,
-one-request/one-response traffic is supported. Connectionless non-DNS UDP and
-long-lived session protocols such as QUIC are expected to fail closed or be
-semantically incomplete. Do not use concurrent sockets sharing one source port
-while `concurrent_shared_source_port` is false.
+bidirectional multi-response traffic reuses one association per socket.
+Connectionless non-DNS UDP remains fail-closed. Do not use concurrent sockets
+sharing one source port while `concurrent_shared_source_port` is false, exceed
+`max_socks5_payload_bytes`, or claim QUIC support while `quic` is `unverified`.
 
 ## Diagnose failures
 

@@ -20,9 +20,10 @@ nix develop -c just test-vm
 
 The check boots a disposable NixOS guest and verifies real eBPF attachment,
 fake/system DNS, SOCKS5 IPv4/IPv6/domain requests, connected UDP through SOCKS5
-and direct egress, transparent UDP `getpeername`, connectionless UDP fail-closed
-behavior, unregistered bypass, cgroup cleanup, and 100 same-source-port
-dual-stack connection pairs.
+and direct egress, persistent association reuse, multi-response delivery,
+sequential source-port reuse, transparent UDP `getpeername`, connectionless UDP
+fail-closed behavior, unregistered bypass, cgroup cleanup, and 100
+same-source-port dual-stack connection pairs.
 
 ## Install
 
@@ -76,7 +77,11 @@ It is read-only and always prints exactly one JSON value before exiting:
       "connected": true,
       "connectionless": false,
       "concurrent_shared_source_port": false,
-      "exchange": "one-request-one-response"
+      "association_reuse": true,
+      "multi_response": true,
+      "max_socks5_payload_bytes": 65245,
+      "quic": "unverified",
+      "exchange": "bidirectional-session"
     }
   },
   "decision": {
@@ -108,6 +113,7 @@ Agents must inspect `capabilities.udp` before choosing a UDP workload. A false
 to fail closed even when a UDP route is configured. A false
 `concurrent_shared_source_port` value excludes applications that bind multiple
 simultaneous sockets to the same local port.
+`quic: "unverified"` is not permission to claim QUIC compatibility.
 
 ## Common failures
 

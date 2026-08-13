@@ -26,8 +26,8 @@ use anyhow::{Context, Result};
 use std::os::unix::fs::MetadataExt;
 use tracing::{debug, info, warn};
 
-use crate::CliOverrides;
 use crate::policy::PolicyEngine;
+use crate::{CliOverrides, UdpSessions, close_udp_sessions_for_cgroup};
 
 const GC_INTERVAL: Duration = Duration::from_secs(30);
 const USER_SLICE: &str = "/sys/fs/cgroup/user.slice";
@@ -41,6 +41,7 @@ const MAX_DEPTH: usize = 6;
 pub fn spawn(
     cli_overrides: CliOverrides,
     policy_engine: Arc<parking_lot::Mutex<Option<Arc<PolicyEngine>>>>,
+    udp_sessions: UdpSessions,
 ) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(GC_INTERVAL);
@@ -50,7 +51,7 @@ pub fn spawn(
         loop {
             interval.tick().await;
             let engine_snap = policy_engine.lock().clone();
-            match gc_pass(&cli_overrides, engine_snap.as_deref()).await {
+            match gc_pass(&cli_overrides, engine_snap.as_deref(), &udp_sessions).await {
                 Ok(0) => debug!("gc: no orphans"),
                 Ok(n) => info!(removed = n, "gc: cleaned orphan heimdall-cli cgroups"),
                 Err(e) => warn!(error = %e, "gc: pass failed"),
@@ -59,7 +60,11 @@ pub fn spawn(
     });
 }
 
-async fn gc_pass(overrides: &CliOverrides, engine: Option<&PolicyEngine>) -> Result<usize> {
+async fn gc_pass(
+    overrides: &CliOverrides,
+    engine: Option<&PolicyEngine>,
+    udp_sessions: &UdpSessions,
+) -> Result<usize> {
     let candidates = find_cgroups(Path::new(USER_SLICE))?;
     debug!(found = candidates.len(), "gc: walked user.slice");
     let mut removed = 0;
@@ -87,6 +92,7 @@ async fn gc_pass(overrides: &CliOverrides, engine: Option<&PolicyEngine>) -> Res
         // Userspace map first so the relay can't resolve against this
         // entry while we're tearing it down. (Mirror of api.rs DELETE.)
         overrides.write().remove(&cgroup_id);
+        close_udp_sessions_for_cgroup(udp_sessions, cgroup_id).await;
         if let Some(engine) = engine
             && let Err(e) = engine.deregister_external(cgroup_id).await
         {

@@ -10,7 +10,11 @@ def serve(family, address, prefix):
     sock.bind(address)
     while True:
         payload, peer = sock.recvfrom(65535)
-        sock.sendto(prefix + payload, peer)
+        if payload == b"multi":
+            sock.sendto(prefix + b"multi-1", peer)
+            sock.sendto(prefix + b"multi-2", peer)
+        else:
+            sock.sendto(prefix + payload, peer)
 
 
 threads = [
@@ -21,6 +25,10 @@ threads = [
     threading.Thread(
         target=serve,
         args=(socket.AF_INET6, ("::1", 18083), b"udp-v6:"),
+    ),
+    threading.Thread(
+        target=serve,
+        args=(socket.AF_INET, ("127.0.0.1", 18084), b"udp-v4-alt:"),
     ),
 ]
 for thread in threads:

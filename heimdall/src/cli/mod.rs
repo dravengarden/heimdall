@@ -65,6 +65,10 @@ pub mod agent {
         connected: bool,
         connectionless: bool,
         concurrent_shared_source_port: bool,
+        association_reuse: bool,
+        multi_response: bool,
+        max_socks5_payload_bytes: usize,
+        quic: &'static str,
         exchange: &'static str,
     }
 
@@ -300,7 +304,11 @@ pub mod agent {
                 connected: true,
                 connectionless: false,
                 concurrent_shared_source_port: false,
-                exchange: "one-request-one-response",
+                association_reuse: true,
+                multi_response: true,
+                max_socks5_payload_bytes: 65_245,
+                quic: "unverified",
+                exchange: "bidirectional-session",
             },
         }
     }

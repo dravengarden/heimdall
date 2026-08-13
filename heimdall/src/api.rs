@@ -14,13 +14,17 @@ use heimdall_config::{Decision, DnsMode, ProxyPolicy};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use crate::{CliOverrides, PolicyEngineSlot, policy::PolicyEngine};
+use crate::{
+    CliOverrides, PolicyEngineSlot, UdpSessions, close_udp_sessions_for_cgroup,
+    policy::PolicyEngine,
+};
 
 #[derive(Clone)]
 pub struct AppState {
     pub policies: BTreeMap<String, ProxyPolicy>,
     pub cli_overrides: CliOverrides,
     pub policy_engine: PolicyEngineSlot,
+    pub udp_sessions: UdpSessions,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -99,6 +103,7 @@ async fn deregister_cli(
     Query(params): Query<DeregisterParams>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     state.cli_overrides.write().remove(&params.cgroup_id);
+    close_udp_sessions_for_cgroup(&state.udp_sessions, params.cgroup_id).await;
     engine(&state)?
         .deregister_external(params.cgroup_id)
         .await

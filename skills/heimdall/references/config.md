@@ -62,11 +62,13 @@ Actions:
 - `reject` currently requires `method: refused`.
 
 `final.tcp` and `final.udp` are mandatory. Connected UDP may route through
-SOCKS5 UDP ASSOCIATE, connect directly, or reject. The current relay performs
-one request and accepts one response per datagram. Connectionless non-DNS UDP,
-QUIC sessions, multicast, fragmented SOCKS5 responses, and multi-response
-protocols are not supported. Concurrent connected sockets sharing one
-address-family/source-port pair are also unsupported.
+SOCKS5 UDP ASSOCIATE, connect directly, or reject. One bidirectional association
+is reused per connected socket and supports multiple responses. SOCKS5 payloads
+must not exceed the `agent.capabilities.udp.max_socks5_payload_bytes` value.
+Connectionless non-DNS UDP, multicast, and fragmented SOCKS5 responses are not
+supported. Concurrent connected sockets sharing one address-family/source-port
+pair are also unsupported. Treat QUIC as unsupported while its capability is
+`unverified`.
 
 ## DNS invariants
 

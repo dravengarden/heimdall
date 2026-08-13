@@ -48,9 +48,9 @@ orchestrator-shaped metadata.
    DNS. System DNS is explicitly allowed to port 53. Connectionless non-DNS UDP
    is rejected fail-closed.
 6. The relay recovers the original destination, evaluates the policy's ordered
-   protocol rules, and routes, connects directly, or rejects it. UDP is a
-   bounded one-request/one-response exchange; it does not yet preserve a
-   long-lived upstream association.
+   protocol rules, and routes, connects directly, or rejects it. Each connected
+   UDP socket reuses one bidirectional upstream association identified by its
+   kernel socket cookie.
 7. Application bytes, including TLS records, pass through unchanged. Heimdall
    never uses SNI to reinterpret an IP destination: fake DNS produces a SOCKS5
    domain request, while system DNS preserves the resolved IP address.
@@ -68,6 +68,9 @@ port. IPv4 and IPv6 sockets may legally reuse the same port, so a port-only key
 would allow concurrent dual-stack connections to overwrite each other. UDP
 keeps its socket-cookie mapping for the connected socket lifetime so repeated
 datagrams retain their original peer and `getpeername` remains transparent.
+The daemon verifies that cookie before returning every upstream datagram, and
+closes the session when the socket disappears, its CLI cgroup deregisters, the
+orphan GC runs, or the session remains idle for 60 seconds.
 
 ## Non-goals
 

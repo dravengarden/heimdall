@@ -56,10 +56,10 @@ treat configuration validity or an explained decision as daemon or network
 acceptance.
 
 Before choosing a UDP workload, inspect `capabilities.udp` in the agent report.
-Only connected sockets and one-request/one-response exchanges are supported.
-Do not use Heimdall for connectionless non-DNS `sendto`/`sendmsg`, QUIC,
-multicast, multi-response UDP, or concurrent sockets sharing one source port
-until those capabilities are reported.
+Bidirectional, multi-response sessions are supported for connected sockets.
+Respect `max_socks5_payload_bytes`. Do not use Heimdall for connectionless
+non-DNS `sendto`/`sendmsg`, multicast, concurrent sockets sharing one source
+port, or QUIC while its capability remains `unverified`.
 
 ## Run a command
 

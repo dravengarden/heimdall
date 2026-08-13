@@ -16,6 +16,9 @@ All notable changes to heimdall are documented here.
 
 ### Changed
 
+- Reused one bidirectional direct or SOCKS5 UDP association per connected
+  socket, added multi-response delivery, socket/cgroup-aware cleanup, bounded
+  queues and sessions, and machine-readable payload and QUIC limits.
 - Added strict connected UDP routing through SOCKS5 UDP ASSOCIATE or direct
   egress, UDP-aware `config explain`, transparent `getpeername`, and explicit
   machine-readable capability limits. Connectionless non-DNS UDP remains

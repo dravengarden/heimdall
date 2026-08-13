@@ -34,7 +34,10 @@ use std::{
     collections::HashMap as StdHashMap,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -48,9 +51,9 @@ use clap::Parser;
 use heimdall_common::{FAMILY_V4, FAMILY_V6, OrigDst, RELAY_PORT, relay_key};
 use heimdall_config::{Action, HeimdallConfig, Outbound, Socks5Auth, Socks5Outbound};
 use tokio::{
-    io::copy_bidirectional,
+    io::{AsyncReadExt, copy_bidirectional},
     net::{TcpListener, TcpStream, UdpSocket},
-    sync::RwLock,
+    sync::{Mutex, RwLock, mpsc},
 };
 use tracing::{debug, info, warn};
 
@@ -73,6 +76,40 @@ const EBPF_BYTES: &[u8] = &EBPF_OBJ.0;
 
 type PortMap = Arc<RwLock<HashMap<aya::maps::MapData, u32, OrigDst>>>;
 type UdpPortMap = Arc<RwLock<HashMap<aya::maps::MapData, u32, OrigDst>>>;
+type UdpCookieMap = Arc<RwLock<HashMap<aya::maps::MapData, u64, OrigDst>>>;
+pub(crate) type UdpSessions = Arc<Mutex<StdHashMap<u64, UdpSessionHandle>>>;
+
+const UDP_SESSION_QUEUE: usize = 128;
+const UDP_MAX_SESSIONS: usize = 4096;
+const UDP_SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const UDP_SESSION_LIVENESS_INTERVAL: Duration = Duration::from_secs(1);
+static NEXT_UDP_SESSION_ID: AtomicU64 = AtomicU64::new(1);
+
+pub(crate) struct UdpSessionHandle {
+    id: u64,
+    cgroup_id: u64,
+    tx: mpsc::Sender<UdpRequest>,
+}
+
+struct UdpRequest {
+    payload: Vec<u8>,
+}
+
+#[derive(Clone)]
+struct UdpRelayContext {
+    relay: Arc<UdpSocket>,
+    ports: UdpPortMap,
+    cookies: UdpCookieMap,
+    sessions: UdpSessions,
+    shared: Arc<Shared>,
+}
+
+struct UdpSessionRuntime {
+    peer: SocketAddr,
+    relay: Arc<UdpSocket>,
+    cookies: UdpCookieMap,
+    shared: Arc<Shared>,
+}
 
 // ---------------------------------------------------------------------------
 // CLI — top level
@@ -266,6 +303,13 @@ struct Shared {
     /// HTTP register endpoints write here in lockstep with the
     /// PolicyEngine BPF map update.
     cli_overrides: CliOverrides,
+}
+
+pub(crate) async fn close_udp_sessions_for_cgroup(sessions: &UdpSessions, cgroup_id: u64) {
+    sessions
+        .lock()
+        .await
+        .retain(|_, handle| handle.cgroup_id != cgroup_id);
 }
 
 /// Shared (cgroup_id → Decision) override map for `heimdall run`
@@ -486,6 +530,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
     // so AppState gets a clone before it's spawned. See type aliases
     // above for semantics.
     let cli_overrides: CliOverrides = Arc::new(parking_lot::RwLock::new(StdHashMap::new()));
+    let udp_sessions: UdpSessions = Arc::new(Mutex::new(StdHashMap::new()));
     let policy_engine_slot: PolicyEngineSlot = Arc::new(parking_lot::Mutex::new(None));
     let api_listen: SocketAddr = cfg
         .daemon
@@ -496,6 +541,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
         policies: cfg.proxy.policies.clone(),
         cli_overrides: cli_overrides.clone(),
         policy_engine: policy_engine_slot.clone(),
+        udp_sessions: udp_sessions.clone(),
     };
     let api_listener = TcpListener::bind(api_listen)
         .await
@@ -769,6 +815,10 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
         bpf.take_map("UDP_PORT_MAP")
             .context("UDP_PORT_MAP not found")?,
     )?));
+    let udp_cookie_map: UdpCookieMap = Arc::new(RwLock::new(HashMap::try_from(
+        bpf.take_map("UDP_COOKIE_MAP")
+            .context("UDP_COOKIE_MAP not found")?,
+    )?));
 
     // ─── CLI-owned cgroup policy registry ───────────────────────────────
     {
@@ -786,7 +836,11 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
         // killed before it can deregister + rmdir, the transient
         // cgroup + BPF policy entry leak. Periodic walker reaps any
         // empty `heimdall-cli-*` cgroups under user.slice.
-        gc::spawn(cli_overrides.clone(), policy_engine_slot.clone());
+        gc::spawn(
+            cli_overrides.clone(),
+            policy_engine_slot.clone(),
+            udp_sessions.clone(),
+        );
         info!("orphan-cgroup GC spawned (interval 30s)");
     }
 
@@ -848,6 +902,20 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
 
     let mut udp4_buf = vec![0u8; 65_535];
     let mut udp6_buf = vec![0u8; 65_535];
+    let udp4_context = UdpRelayContext {
+        relay: udp_v4,
+        ports: udp_port_map.clone(),
+        cookies: udp_cookie_map.clone(),
+        sessions: udp_sessions.clone(),
+        shared: shared.clone(),
+    };
+    let udp6_context = UdpRelayContext {
+        relay: udp_v6,
+        ports: udp_port_map,
+        cookies: udp_cookie_map,
+        sessions: udp_sessions,
+        shared: shared.clone(),
+    };
     loop {
         tokio::select! {
             accepted = relay_v4.accept() => {
@@ -858,13 +926,13 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
                 let (stream, peer) = accepted?;
                 spawn_tcp_relay(stream, peer, port_map.clone(), shared.clone());
             }
-            received = udp_v4.recv_from(&mut udp4_buf) => {
+            received = udp4_context.relay.recv_from(&mut udp4_buf) => {
                 let (len, peer) = received?;
-                spawn_udp_relay(udp4_buf[..len].to_vec(), peer, udp_v4.clone(), udp_port_map.clone(), shared.clone());
+                spawn_udp_relay(udp4_buf[..len].to_vec(), peer, udp4_context.clone());
             }
-            received = udp_v6.recv_from(&mut udp6_buf) => {
+            received = udp6_context.relay.recv_from(&mut udp6_buf) => {
                 let (len, peer) = received?;
-                spawn_udp_relay(udp6_buf[..len].to_vec(), peer, udp_v6.clone(), udp_port_map.clone(), shared.clone());
+                spawn_udp_relay(udp6_buf[..len].to_vec(), peer, udp6_context.clone());
             }
         }
     }
@@ -880,16 +948,10 @@ fn spawn_tcp_relay(stream: TcpStream, peer: SocketAddr, map: PortMap, shared: Ar
     });
 }
 
-fn spawn_udp_relay(
-    payload: Vec<u8>,
-    peer: SocketAddr,
-    relay: Arc<UdpSocket>,
-    map: UdpPortMap,
-    shared: Arc<Shared>,
-) {
+fn spawn_udp_relay(payload: Vec<u8>, peer: SocketAddr, context: UdpRelayContext) {
     tokio::spawn(async move {
         let key = relay_key_for_peer(peer);
-        if let Err(e) = relay_udp(payload, peer, relay, key, map, shared).await {
+        if let Err(e) = dispatch_udp(payload, peer, key, context).await {
             warn!(key, "UDP relay error: {e:#}");
         }
     });
@@ -1027,19 +1089,112 @@ async fn relay(mut client: TcpStream, key: u32, map: PortMap, shared: Arc<Shared
     result.map(|_| ())
 }
 
-async fn relay_udp(
+enum UdpSessionAction {
+    Route {
+        outbound: String,
+        upstream: Arc<Upstream>,
+    },
+    Direct,
+}
+
+struct UdpSessionSpec {
+    socket_cookie: u64,
+    cgroup_id: u64,
+    policy: String,
+    dst: Dst,
+    dst_port: u16,
+    action: UdpSessionAction,
+}
+
+async fn dispatch_udp(
     payload: Vec<u8>,
     peer: SocketAddr,
-    relay: Arc<UdpSocket>,
     key: u32,
-    map: UdpPortMap,
-    shared: Arc<Shared>,
+    context: UdpRelayContext,
 ) -> Result<()> {
-    let orig = map
+    let orig = context
+        .ports
         .read()
         .await
         .get(&key, 0)
         .with_context(|| format!("BPF map miss for UDP relay key {key:#010x}"))?;
+    anyhow::ensure!(orig.socket_cookie != 0, "UDP relay has no socket cookie");
+
+    let request = UdpRequest { payload };
+    let request = {
+        let mut active = context.sessions.lock().await;
+        if let Some(handle) = active.get(&orig.socket_cookie) {
+            match handle.tx.try_send(request) {
+                Ok(()) => return Ok(()),
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    anyhow::bail!("UDP session queue is full")
+                }
+                Err(mpsc::error::TrySendError::Closed(request)) => {
+                    active.remove(&orig.socket_cookie);
+                    request
+                }
+            }
+        } else {
+            request
+        }
+    };
+
+    let spec = resolve_udp_session(&orig, &context.shared)?;
+    let (tx, mut rx) = mpsc::channel(UDP_SESSION_QUEUE);
+    tx.try_send(request)
+        .map_err(|_| anyhow::anyhow!("new UDP session queue rejected its first datagram"))?;
+    let id = NEXT_UDP_SESSION_ID.fetch_add(1, Ordering::Relaxed);
+
+    {
+        let mut active = context.sessions.lock().await;
+        if let Some(handle) = active.get(&orig.socket_cookie) {
+            let request = rx
+                .try_recv()
+                .map_err(|_| anyhow::anyhow!("new UDP session lost its first datagram"))?;
+            handle
+                .tx
+                .try_send(request)
+                .map_err(|error| anyhow::anyhow!("UDP session enqueue failed: {error}"))?;
+            return Ok(());
+        }
+        anyhow::ensure!(
+            active.len() < UDP_MAX_SESSIONS,
+            "UDP session limit reached ({UDP_MAX_SESSIONS})"
+        );
+        active.insert(
+            orig.socket_cookie,
+            UdpSessionHandle {
+                id,
+                cgroup_id: orig.cgroup_id,
+                tx,
+            },
+        );
+    }
+
+    let cleanup_sessions = context.sessions.clone();
+    let socket_cookie = orig.socket_cookie;
+    tokio::spawn(async move {
+        let runtime = UdpSessionRuntime {
+            peer,
+            relay: context.relay,
+            cookies: context.cookies,
+            shared: context.shared,
+        };
+        if let Err(error) = run_udp_session(spec, rx, runtime).await {
+            warn!(socket_cookie, "UDP session error: {error:#}");
+        }
+        let mut active = cleanup_sessions.lock().await;
+        if active
+            .get(&socket_cookie)
+            .is_some_and(|handle| handle.id == id)
+        {
+            active.remove(&socket_cookie);
+        }
+    });
+    Ok(())
+}
+
+fn resolve_udp_session(orig: &OrigDst, shared: &Shared) -> Result<UdpSessionSpec> {
     let decision = shared
         .cli_overrides
         .read()
@@ -1050,7 +1205,7 @@ async fn relay_udp(
         .cfg
         .policy(&decision.policy)
         .with_context(|| format!("policy `{}` not in registry", decision.policy))?;
-    let dst = destination_from_orig(&orig, &shared);
+    let dst = destination_from_orig(orig, shared);
     let dst_port = u16::from_be(orig.port);
     let (domain, ip) = match &dst {
         Dst::Domain(domain) => (Some(domain.as_str()), None),
@@ -1058,50 +1213,73 @@ async fn relay_udp(
         Dst::Ip6(ip) => (None, Some(std::net::IpAddr::V6(*ip))),
     };
 
-    let response = match policy.decide_udp(domain, ip, dst_port).clone() {
+    let action = match policy.decide_udp(domain, ip, dst_port).clone() {
         Action::Route { outbound } => {
             let upstream = shared
                 .upstreams
                 .get(&outbound)
+                .cloned()
                 .with_context(|| format!("resolved outbound `{outbound}` not in registry"))?;
-            socks5_udp_exchange(upstream, &dst, dst_port, &payload).await?
+            UdpSessionAction::Route { outbound, upstream }
         }
-        Action::Direct => direct_udp_exchange(&dst, dst_port, &payload).await?,
+        Action::Direct => UdpSessionAction::Direct,
         Action::Reject { method } => anyhow::bail!(
             "policy `{}` rejected UDP destination port {dst_port} with {method:?}",
             decision.policy
         ),
     };
-    relay
-        .send_to(&response, peer)
-        .await
-        .with_context(|| format!("return UDP response to {peer}"))?;
-    Ok(())
+    Ok(UdpSessionSpec {
+        socket_cookie: orig.socket_cookie,
+        cgroup_id: orig.cgroup_id,
+        policy: decision.policy,
+        dst,
+        dst_port,
+        action,
+    })
 }
 
-async fn direct_udp_exchange(dst: &Dst, port: u16, payload: &[u8]) -> Result<Vec<u8>> {
-    let bind = match dst {
-        Dst::Ip6(_) => "[::]:0",
-        Dst::Ip4(_) | Dst::Domain(_) => "0.0.0.0:0",
-    };
-    let socket = UdpSocket::bind(bind)
-        .await
-        .context("bind direct UDP socket")?;
-    let target = destination_socket_addr(dst, port).await?;
-    socket
-        .connect(target)
-        .await
-        .context("connect direct UDP socket")?;
-    socket
-        .send(payload)
-        .await
-        .context("send direct UDP payload")?;
-    let mut response = vec![0u8; 65_535];
-    let len = tokio::time::timeout(SOCKS5_HANDSHAKE_TIMEOUT, socket.recv(&mut response))
-        .await
-        .context("timed out waiting for direct UDP response")??;
-    response.truncate(len);
-    Ok(response)
+async fn run_udp_session(
+    spec: UdpSessionSpec,
+    rx: mpsc::Receiver<UdpRequest>,
+    runtime: UdpSessionRuntime,
+) -> Result<()> {
+    match &spec.action {
+        UdpSessionAction::Route { outbound, upstream } => {
+            let (control, socket) = open_socks5_udp_association(upstream).await?;
+            info!(
+                socket_cookie = spec.socket_cookie,
+                cgroup_id = spec.cgroup_id,
+                policy = %spec.policy,
+                outbound = %outbound,
+                dst_port = spec.dst_port,
+                "SOCKS5 UDP session established"
+            );
+            run_socks5_udp_session(&spec, &runtime, rx, control, socket).await
+        }
+        UdpSessionAction::Direct => {
+            let target = destination_socket_addr(&spec.dst, spec.dst_port).await?;
+            let bind = if target.is_ipv6() {
+                "[::]:0"
+            } else {
+                "0.0.0.0:0"
+            };
+            let socket = UdpSocket::bind(bind)
+                .await
+                .context("bind direct UDP socket")?;
+            socket
+                .connect(target)
+                .await
+                .context("connect direct UDP socket")?;
+            info!(
+                socket_cookie = spec.socket_cookie,
+                cgroup_id = spec.cgroup_id,
+                policy = %spec.policy,
+                dst = %target,
+                "direct UDP session established"
+            );
+            run_direct_udp_session(&spec, &runtime, rx, socket).await
+        }
+    }
 }
 
 async fn destination_socket_addr(dst: &Dst, port: u16) -> Result<SocketAddr> {
@@ -1116,6 +1294,120 @@ async fn destination_socket_addr(dst: &Dst, port: u16) -> Result<SocketAddr> {
     }
 }
 
+async fn udp_session_active(
+    spec: &UdpSessionSpec,
+    cookies: &UdpCookieMap,
+    shared: &Shared,
+) -> bool {
+    let registered = shared
+        .cli_overrides
+        .read()
+        .get(&spec.cgroup_id)
+        .is_some_and(|decision| decision.policy == spec.policy);
+    if !registered {
+        return false;
+    }
+    cookies.read().await.get(&spec.socket_cookie, 0).is_ok()
+}
+
+fn reset_udp_idle(idle: &mut std::pin::Pin<&mut tokio::time::Sleep>) {
+    idle.as_mut()
+        .reset(tokio::time::Instant::now() + UDP_SESSION_IDLE_TIMEOUT);
+}
+
+async fn run_direct_udp_session(
+    spec: &UdpSessionSpec,
+    runtime: &UdpSessionRuntime,
+    mut rx: mpsc::Receiver<UdpRequest>,
+    socket: UdpSocket,
+) -> Result<()> {
+    let idle = tokio::time::sleep(UDP_SESSION_IDLE_TIMEOUT);
+    tokio::pin!(idle);
+    let mut liveness = tokio::time::interval(UDP_SESSION_LIVENESS_INTERVAL);
+    liveness.tick().await;
+    let mut response = vec![0u8; 65_535];
+
+    loop {
+        tokio::select! {
+            request = rx.recv() => {
+                let Some(request) = request else { return Ok(()) };
+                if !udp_session_active(spec, &runtime.cookies, &runtime.shared).await {
+                    return Ok(());
+                }
+                socket.send(&request.payload).await.context("send direct UDP payload")?;
+                reset_udp_idle(&mut idle);
+            }
+            received = socket.recv(&mut response) => {
+                let len = received.context("receive direct UDP response")?;
+                if !udp_session_active(spec, &runtime.cookies, &runtime.shared).await {
+                    return Ok(());
+                }
+                runtime.relay.send_to(&response[..len], runtime.peer).await
+                    .with_context(|| format!("return direct UDP response to {}", runtime.peer))?;
+                reset_udp_idle(&mut idle);
+            }
+            _ = liveness.tick() => {
+                if !udp_session_active(spec, &runtime.cookies, &runtime.shared).await {
+                    return Ok(());
+                }
+            }
+            () = &mut idle => return Ok(()),
+        }
+    }
+}
+
+async fn run_socks5_udp_session(
+    spec: &UdpSessionSpec,
+    runtime: &UdpSessionRuntime,
+    mut rx: mpsc::Receiver<UdpRequest>,
+    mut control: TcpStream,
+    socket: UdpSocket,
+) -> Result<()> {
+    let idle = tokio::time::sleep(UDP_SESSION_IDLE_TIMEOUT);
+    tokio::pin!(idle);
+    let mut liveness = tokio::time::interval(UDP_SESSION_LIVENESS_INTERVAL);
+    liveness.tick().await;
+    let mut response = vec![0u8; 65_535];
+    let mut control_byte = [0u8; 1];
+
+    loop {
+        tokio::select! {
+            request = rx.recv() => {
+                let Some(request) = request else { return Ok(()) };
+                if !udp_session_active(spec, &runtime.cookies, &runtime.shared).await {
+                    return Ok(());
+                }
+                let frame = encode_socks5_udp_frame(&spec.dst, spec.dst_port, &request.payload)?;
+                socket.send(&frame).await.context("send SOCKS5 UDP frame")?;
+                reset_udp_idle(&mut idle);
+            }
+            received = socket.recv(&mut response) => {
+                let len = received.context("receive SOCKS5 UDP response")?;
+                let payload = decode_socks5_udp_payload(&response[..len])?;
+                if !udp_session_active(spec, &runtime.cookies, &runtime.shared).await {
+                    return Ok(());
+                }
+                runtime.relay.send_to(payload, runtime.peer).await
+                    .with_context(|| format!("return SOCKS5 UDP response to {}", runtime.peer))?;
+                reset_udp_idle(&mut idle);
+            }
+            control_read = control.read(&mut control_byte) => {
+                match control_read {
+                    Ok(0) => anyhow::bail!("SOCKS5 UDP control connection closed"),
+                    Ok(_) => anyhow::bail!("SOCKS5 UDP control connection sent unexpected data"),
+                    Err(error) => return Err(error).context("read SOCKS5 UDP control connection"),
+                }
+            }
+            _ = liveness.tick() => {
+                if !udp_session_active(spec, &runtime.cookies, &runtime.shared).await {
+                    return Ok(());
+                }
+            }
+            () = &mut idle => return Ok(()),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // SOCKS5 handshake (RFC 1928 + RFC 1929 user/pass)
 // ---------------------------------------------------------------------------
@@ -1124,13 +1416,9 @@ const M_NO_AUTH: u8 = 0x00;
 const M_USER_PASS: u8 = 0x02;
 const M_NO_ACCEPTABLE: u8 = 0xFF;
 const SOCKS5_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const SOCKS5_UDP_MAX_PAYLOAD: usize = 65_245;
 
-async fn socks5_udp_exchange(
-    upstream: &Upstream,
-    dst: &Dst,
-    port: u16,
-    payload: &[u8],
-) -> Result<Vec<u8>> {
+async fn open_socks5_udp_association(upstream: &Upstream) -> Result<(TcpStream, UdpSocket)> {
     let Upstream::Socks5 {
         addr,
         auth,
@@ -1163,17 +1451,7 @@ async fn socks5_udp_exchange(
         .connect(relay_addr)
         .await
         .with_context(|| format!("connect SOCKS5 UDP relay {relay_addr}"))?;
-    let mut frame = Vec::with_capacity(payload.len() + 262);
-    frame.extend_from_slice(&[0, 0, 0]);
-    encode_socks5_destination(&mut frame, dst, port)?;
-    frame.extend_from_slice(payload);
-    socket.send(&frame).await.context("send SOCKS5 UDP frame")?;
-    let mut response = vec![0u8; 65_535];
-    let len = tokio::time::timeout(SOCKS5_HANDSHAKE_TIMEOUT, socket.recv(&mut response))
-        .await
-        .context("timed out waiting for SOCKS5 UDP response")??;
-    response.truncate(len);
-    decode_socks5_udp_payload(&response).map(ToOwned::to_owned)
+    Ok((control, socket))
 }
 
 async fn socks5_udp_associate(
@@ -1224,23 +1502,38 @@ async fn socks5_negotiate(stream: &mut TcpStream, auth: Option<&ResolvedAuth>) -
 async fn read_socks5_socket_addr(stream: &mut TcpStream, atyp: u8) -> Result<SocketAddr> {
     use tokio::io::AsyncReadExt;
 
-    let ip = match atyp {
+    let host = match atyp {
         1 => {
             let mut raw = [0u8; 4];
             stream.read_exact(&mut raw).await?;
-            std::net::IpAddr::V4(Ipv4Addr::from(raw))
+            Dst::Ip4(Ipv4Addr::from(raw))
         }
         4 => {
             let mut raw = [0u8; 16];
             stream.read_exact(&mut raw).await?;
-            std::net::IpAddr::V6(Ipv6Addr::from(raw))
+            Dst::Ip6(Ipv6Addr::from(raw))
         }
-        3 => anyhow::bail!("SOCKS5 UDP relay replies must use an IP address"),
+        3 => {
+            let mut raw_len = [0u8; 1];
+            stream.read_exact(&mut raw_len).await?;
+            anyhow::ensure!(raw_len[0] != 0, "SOCKS5 UDP relay domain is empty");
+            let mut raw = vec![0u8; raw_len[0] as usize];
+            stream.read_exact(&mut raw).await?;
+            let domain =
+                std::str::from_utf8(&raw).context("SOCKS5 UDP relay domain is not UTF-8")?;
+            anyhow::ensure!(
+                valid_socks5_domain(domain),
+                "SOCKS5 UDP relay domain is invalid"
+            );
+            Dst::Domain(domain.to_owned())
+        }
         other => anyhow::bail!("SOCKS5: unknown reply ATYP 0x{other:02x}"),
     };
     let mut raw_port = [0u8; 2];
     stream.read_exact(&mut raw_port).await?;
-    Ok(SocketAddr::new(ip, u16::from_be_bytes(raw_port)))
+    let port = u16::from_be_bytes(raw_port);
+    anyhow::ensure!(port != 0, "SOCKS5 UDP relay returned port zero");
+    destination_socket_addr(&host, port).await
 }
 
 fn encode_socks5_destination(output: &mut Vec<u8>, dst: &Dst, port: u16) -> Result<()> {
@@ -1266,6 +1559,18 @@ fn encode_socks5_destination(output: &mut Vec<u8>, dst: &Dst, port: u16) -> Resu
     }
     output.extend_from_slice(&port.to_be_bytes());
     Ok(())
+}
+
+fn encode_socks5_udp_frame(dst: &Dst, port: u16, payload: &[u8]) -> Result<Vec<u8>> {
+    anyhow::ensure!(
+        payload.len() <= SOCKS5_UDP_MAX_PAYLOAD,
+        "SOCKS5 UDP payload exceeds {SOCKS5_UDP_MAX_PAYLOAD} bytes"
+    );
+    let mut frame = Vec::with_capacity(payload.len() + 262);
+    frame.extend_from_slice(&[0, 0, 0]);
+    encode_socks5_destination(&mut frame, dst, port)?;
+    frame.extend_from_slice(payload);
+    Ok(frame)
 }
 
 fn decode_socks5_udp_payload(frame: &[u8]) -> Result<&[u8]> {
@@ -1506,6 +1811,16 @@ mod socks5_tests {
             frame.extend_from_slice(b"payload");
             assert_eq!(decode_socks5_udp_payload(&frame).unwrap(), b"payload");
         }
+        assert!(
+            encode_socks5_udp_frame(
+                &Dst::Domain("internal.example.com".into()),
+                5353,
+                &vec![0; SOCKS5_UDP_MAX_PAYLOAD + 1],
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds")
+        );
     }
 
     #[test]
@@ -1524,6 +1839,33 @@ mod socks5_tests {
         let addr = listener.local_addr().unwrap();
         let (client, accepted) = tokio::join!(TcpStream::connect(addr), listener.accept());
         (client.unwrap(), accepted.unwrap().0)
+    }
+
+    #[tokio::test]
+    async fn udp_associate_accepts_domain_relay_and_rejects_port_zero() {
+        for (port, should_succeed) in [(19000u16, true), (0, false)] {
+            let (mut client, mut server) = tcp_pair().await;
+            let server_task = tokio::spawn(async move {
+                let mut greeting = [0u8; 3];
+                server.read_exact(&mut greeting).await.unwrap();
+                server.write_all(&[0x05, M_NO_AUTH]).await.unwrap();
+                let mut request = [0u8; 10];
+                server.read_exact(&mut request).await.unwrap();
+                assert_eq!(request[0..4], [0x05, 0x03, 0x00, 0x01]);
+                let host = b"localhost";
+                let mut response = vec![0x05, 0x00, 0x00, 0x03, host.len() as u8];
+                response.extend_from_slice(host);
+                response.extend_from_slice(&port.to_be_bytes());
+                server.write_all(&response).await.unwrap();
+            });
+
+            let result = socks5_udp_associate(&mut client, None).await;
+            assert_eq!(result.is_ok(), should_succeed);
+            if let Ok(address) = result {
+                assert_eq!(address.port(), port);
+            }
+            server_task.await.unwrap();
+        }
     }
 
     fn request_bytes(dst: &Dst, port: u16) -> Vec<u8> {

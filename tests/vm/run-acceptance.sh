@@ -19,7 +19,14 @@ as_tester() {
 as_tester heimdall config validate --json \
   | jq -e '.contract == "heimdall.config.validate/v1" and .valid'
 as_tester heimdall agent \
-  | jq -e '.contract == "heimdall.agent/v2" and .ready'
+  | jq -e '.contract == "heimdall.agent/v2"
+    and .ready
+    and .capabilities.udp.connected
+    and .capabilities.udp.association_reuse
+    and .capabilities.udp.multi_response
+    and (.capabilities.udp.connectionless | not)
+    and .capabilities.udp.quic == "unverified"
+    and .capabilities.udp.max_socks5_payload_bytes == 65245'
 
 : > /run/heimdall-test/socks.log
 test "$(as_tester heimdall run --policy fake -- \
@@ -73,10 +80,23 @@ grep -q '"udp": true, "atyp": 4, "host": "::1", "port": 18083' \
 grep -q '"udp": true, "atyp": 3, "host": "fixture.test", "port": 18082' \
   /run/heimdall-test/socks.log
 
+: > /run/heimdall-test/socks.log
+test "$(as_tester heimdall run --policy udp -- \
+  python3 /etc/heimdall-test/udp_session_client.py 127.0.0.1 18082 udp-v4:)" = "udp-session-ok"
+test "$(grep -c '"udp_associate": true' /run/heimdall-test/socks.log)" -eq 1
+test "$(grep -c '"udp": true' /run/heimdall-test/socks.log)" -eq 3
+
+: > /run/heimdall-test/socks.log
+test "$(as_tester heimdall run --policy udp -- \
+  python3 /etc/heimdall-test/udp_port_reuse_client.py)" = "udp-port-reuse-ok"
+test "$(grep -c '"udp_associate": true' /run/heimdall-test/socks.log)" -eq 2
+
 test "$(as_tester heimdall run --policy udp-direct -- \
   python3 /etc/heimdall-test/udp_client.py 127.0.0.1 18082 udp-v4:probe)" = "udp-v4:probe"
 test "$(as_tester heimdall run --policy udp-direct -- \
   python3 /etc/heimdall-test/udp_client.py ::1 18083 udp-v6:probe)" = "udp-v6:probe"
+test "$(as_tester heimdall run --policy udp-direct -- \
+  python3 /etc/heimdall-test/udp_session_client.py 127.0.0.1 18082 udp-v4:)" = "udp-session-ok"
 
 : > /run/heimdall-test/socks.log
 as_tester heimdall run --policy system -- \
