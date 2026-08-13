@@ -12,7 +12,7 @@
 //!    For the first TCP packet on a redirected connection, inet_hash_connect has
 //!    already assigned the ephemeral source port. We read the socket cookie
 //!    (same value as connect4 stored), find orig_dst in COOKIE_MAP, and write
-//!    PORT_MAP[src_port] so the relay can find it after accept().
+//!    PORT_MAP[family, src_port] so the relay can find it after accept().
 //!
 //!    Why not sock_ops ACTIVE_ESTABLISHED_CB?
 //!    When Cilium's fast-path socket acceleration is active, the TCP_ESTABLISHED
@@ -31,7 +31,7 @@ use aya_ebpf::{
 };
 use heimdall_common::{
     DEFAULT_POLICY, FAMILY_V4, FAMILY_V6, OrigDst, POLICY_DNS_HIJACK, POLICY_DNS_SYSTEM,
-    POLICY_REDIRECT_OFF, POLICY_UDP_REJECT, RELAY_PORT,
+    POLICY_REDIRECT_OFF, POLICY_UDP_REJECT, RELAY_PORT, relay_key,
 };
 
 const DNS_PORT: u16 = 53;
@@ -79,7 +79,7 @@ static DNS_PORT_V6: Array<u32> = Array::with_max_entries(1, 0);
 #[map]
 static COOKIE_MAP: LruHashMap<u64, OrigDst> = LruHashMap::with_max_entries(65536, 0);
 
-// Stage-2 map: client_ephemeral_port → original destination
+// Stage-2 map: (address family, client_ephemeral_port) → original destination
 // Populated in skb_egress, consumed by the userspace relay after accept().
 //
 // LRU for the same reason as COOKIE_MAP: an entry can leak if the
@@ -458,7 +458,7 @@ pub fn udp6_sendmsg(ctx: SockAddrContext) -> i32 {
 // cgroup_skb egress fires after inet_hash_connect has assigned the ephemeral
 // source port but before any Cilium TC processing. The socket cookie matches
 // what connect4 stored. We read src_port from the TCP header and write
-// PORT_MAP[src_port] = orig_dst for the relay to consume after accept().
+// PORT_MAP[family, src_port] = orig_dst for the relay to consume after accept().
 // ---------------------------------------------------------------------------
 
 #[cgroup_skb(egress)]
@@ -559,13 +559,15 @@ fn try_skb_egress(ctx: &SkBuffContext) -> Result<(), ()> {
     // Read TCP source port (network byte order → host byte order).
     // inet_hash_connect has already assigned this ephemeral port.
     let src_port_be: u16 = ctx.load(tcp_off).map_err(|_| ())?;
-    let src_port = u16::from_be(src_port_be) as u32;
+    let src_port = u16::from_be(src_port_be);
+    let family = if version == 4 { FAMILY_V4 } else { FAMILY_V6 };
+    let key = relay_key(family, src_port);
 
     // Best-effort. PORT_MAP is LRU so insert won't fail under
     // pressure; if it does (-EAGAIN race), we still want to clear the
     // cookie below so the same connection's next packet doesn't retry
     // forever on a stale entry.
-    let _ = PORT_MAP.insert(&src_port, &orig, 0);
+    let _ = PORT_MAP.insert(&key, &orig, 0);
     let _ = COOKIE_MAP.remove(&cookie);
 
     Ok(())

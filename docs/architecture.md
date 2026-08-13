@@ -60,6 +60,10 @@ Fake-IP mappings remain stable for the daemon lifetime. A depleted pool returns
 DNS `SERVFAIL` instead of reassigning an address that an application may still
 hold in its cache.
 
+Redirect correlation keys include both address family and ephemeral source
+port. IPv4 and IPv6 sockets may legally reuse the same port, so a port-only key
+would allow concurrent dual-stack connections to overwrite each other.
+
 ## Non-goals
 
 - cluster or container orchestration integration

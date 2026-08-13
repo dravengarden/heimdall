@@ -12,11 +12,11 @@
 //!       │  Saves (orig, cgroup_id) in COOKIE_MAP[socket_cookie]
 //!       │
 //!       │  [eBPF BPF_CGROUP_INET_EGRESS on first SYN]
-//!       │  Moves COOKIE_MAP[cookie] → PORT_MAP[src_port]
+//!       │  Moves COOKIE_MAP[cookie] → PORT_MAP[family, src_port]
 //!       │
 //!       ▼
 //!   heimdall daemon
-//!     1. accept() → src_port → PORT_MAP → (orig_ip, orig_port, cgroup_id)
+//!     1. accept() → (family, src_port) → original destination + cgroup
 //!     2. cgroup_id → policy name from the active CLI registration
 //!     3. evaluate the ordered rules and execute route/direct/reject
 //!
@@ -45,7 +45,7 @@ use aya::{
     programs::{CgroupAttachMode, CgroupSkb, CgroupSkbAttachType, CgroupSock, CgroupSockAddr},
 };
 use clap::Parser;
-use heimdall_common::{OrigDst, RELAY_PORT};
+use heimdall_common::{FAMILY_V4, FAMILY_V6, OrigDst, RELAY_PORT, relay_key};
 use heimdall_config::{Action, HeimdallConfig, Outbound, Socks5Auth, Socks5Outbound};
 use tokio::{
     io::copy_bidirectional,
@@ -816,10 +816,10 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
         let shared = shared.clone();
 
         tokio::spawn(async move {
-            let client_port = peer.port() as u32;
-            debug!(client_port, %peer, "accepted redirected connection");
-            if let Err(e) = relay(stream, client_port, map, shared).await {
-                warn!(client_port, "relay error: {e:#}");
+            let key = relay_key_for_peer(peer);
+            debug!(key, %peer, "accepted redirected connection");
+            if let Err(e) = relay(stream, key, map, shared).await {
+                warn!(key, "relay error: {e:#}");
             }
         });
     }
@@ -829,19 +829,19 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
 // Per-connection relay: registered CLI cgroup → upstream
 // ---------------------------------------------------------------------------
 
-async fn relay(
-    mut client: TcpStream,
-    client_port: u32,
-    map: PortMap,
-    shared: Arc<Shared>,
-) -> Result<()> {
+fn relay_key_for_peer(peer: SocketAddr) -> u32 {
+    let family = if peer.is_ipv4() { FAMILY_V4 } else { FAMILY_V6 };
+    relay_key(family, peer.port())
+}
+
+async fn relay(mut client: TcpStream, key: u32, map: PortMap, shared: Arc<Shared>) -> Result<()> {
     // Pop the original destination (and cgroup_id) from the BPF map.
     let orig = {
         let m = map.read().await;
-        m.get(&client_port, 0)
-            .with_context(|| format!("BPF map miss for client port {client_port}"))?
+        m.get(&key, 0)
+            .with_context(|| format!("BPF map miss for relay key {key:#010x}"))?
     };
-    map.write().await.remove(&client_port).ok();
+    map.write().await.remove(&key).ok();
 
     let dst_port = u16::from_be(orig.port);
 
@@ -1164,6 +1164,15 @@ async fn socks5_userpass(s: &mut TcpStream, user: &str, pass: &[u8]) -> Result<(
 mod socks5_tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn relay_peer_key_separates_ipv4_and_ipv6() {
+        let v4: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        let v6: SocketAddr = "[::1]:40000".parse().unwrap();
+        assert_ne!(relay_key_for_peer(v4), relay_key_for_peer(v6));
+        assert_eq!(relay_key_for_peer(v4), relay_key(FAMILY_V4, 40_000));
+        assert_eq!(relay_key_for_peer(v6), relay_key(FAMILY_V6, 40_000));
+    }
 
     async fn tcp_pair() -> (TcpStream, TcpStream) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

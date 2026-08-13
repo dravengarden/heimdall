@@ -34,6 +34,10 @@ test:
 test-fast:
     cargo nextest run --workspace --all-features --locked
 
+# Boots a disposable NixOS guest and exercises the real cgroup/eBPF data path.
+test-vm:
+    nix build .#checks.x86_64-linux.vm-proxy -L
+
 # Explicitly opt in after confirming a representative workload benefits from
 # compiler caching. On 2026-07-18, a same-path clean rebuild took 7.24s with
 # 241 Rust cache hits versus 10.46s with plain Cargo; filling the cache took

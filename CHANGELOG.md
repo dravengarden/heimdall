@@ -6,6 +6,8 @@ All notable changes to heimdall are documented here.
 
 ### Fixed
 
+- Prevent IPv4 and IPv6 relay correlations from overwriting each other when
+  both sockets reuse the same ephemeral source port.
 - Preserve `dns = "system"` and literal-IP semantics by treating TLS as opaque
   payload instead of rewriting destinations from ClientHello SNI. SOCKS5
   connection setup now has bounded timeouts, strict reply/domain/credential

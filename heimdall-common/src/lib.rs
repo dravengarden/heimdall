@@ -46,6 +46,13 @@ pub const FAMILY_V4: u8 = 4;
 pub const FAMILY_V6: u8 = 6;
 pub const RELAY_PORT: u16 = 12345;
 
+/// Correlate a redirected relay connection without allowing IPv4 and IPv6
+/// sockets that reuse the same ephemeral port to overwrite each other.
+#[must_use]
+pub const fn relay_key(family: u8, source_port: u16) -> u32 {
+    (family as u32) << 16 | source_port as u32
+}
+
 #[cfg(feature = "user")]
 #[allow(
     unsafe_code,
@@ -85,3 +92,14 @@ pub const POLICY_DNS_SYSTEM: u8 = 1 << 3;
 
 /// Default for cgroups not present in `CGROUP_POLICY`: bypass heimdall.
 pub const DEFAULT_POLICY: u8 = POLICY_REDIRECT_OFF;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relay_key_separates_address_families_and_ports() {
+        assert_ne!(relay_key(FAMILY_V4, 40_000), relay_key(FAMILY_V6, 40_000));
+        assert_ne!(relay_key(FAMILY_V4, 40_000), relay_key(FAMILY_V4, 40_001));
+    }
+}

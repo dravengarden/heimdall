@@ -310,6 +310,23 @@
         default = heimdall;
       };
 
+      checks.${system}.vm-proxy = pkgs.testers.runNixOSTest {
+        name = "heimdall-proxy";
+        nodes.machine = {
+          imports = [ ./tests/vm/heimdall-proxy.nix ];
+          _module.args.heimdallPackage = heimdall;
+          virtualisation = {
+            memorySize = 2048;
+            cores = 2;
+          };
+        };
+        testScript = ''
+          machine.start()
+          machine.wait_until_succeeds("test -e /run/heimdall-test/ready")
+          machine.succeed("/etc/heimdall-test/run-acceptance.sh")
+        '';
+      };
+
       # `nix develop` shell with everything needed to iterate locally —
       # nightly for eBPF and stable for userspace.
       devShells.${system} = {

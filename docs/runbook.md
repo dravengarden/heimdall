@@ -10,6 +10,19 @@ nix develop .#ebpf -c bash -c \
 nix develop -c just verify
 ```
 
+`just verify` covers deterministic build, lint, dependency, and unit gates.
+Run the kernel data-plane acceptance separately when changing eBPF, cgroup,
+DNS, relay correlation, or routing behavior:
+
+```bash
+nix develop -c just test-vm
+```
+
+The check boots a disposable NixOS guest and verifies real eBPF attachment,
+fake/system DNS, SOCKS5 IPv4/IPv6/domain requests, direct/reject actions,
+non-DNS UDP fail-closed behavior, unregistered bypass, cgroup cleanup, and 100
+same-source-port dual-stack connection pairs.
+
 ## Install
 
 ```bash
