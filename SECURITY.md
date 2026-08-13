@@ -1,10 +1,10 @@
 # Security policy
 
-heimdall sits on the data path: it loads eBPF programs into the
-kernel, intercepts `connect()` syscalls, and reads plaintext TLS
-buffers via uprobes. Bugs in any of those layers can leak traffic,
-crash the host, or escalate privileges. We take security reports
-seriously.
+heimdall sits on the data path: it loads eBPF programs into the kernel,
+intercepts `connect()` syscalls for wrapped commands, and relays selected
+connections through SOCKS5. It may inspect the TLS ClientHello to recover SNI
+when fake DNS is not in use. Bugs in these layers can leak traffic, crash the
+host, or escalate privileges. We take security reports seriously.
 
 ## Reporting a vulnerability
 
@@ -51,8 +51,8 @@ Heimdall assumes:
   trust to the daemon (root or in the right groups).
 - `daemon.apiListen` is bound to localhost. Don't expose it to the
   network; the control protocol has no authentication.
-- The SOCKS5 upstream is trusted. heimdall forwards plaintext TLS
-  destinations (ATYP=0x03) to it; an evil upstream can MITM via
+- The SOCKS5 upstream is trusted. heimdall forwards destination hostnames
+  (SOCKS5 ATYP=0x03) to it; an evil upstream can MITM via
   cert injection on the upstream-of-the-upstream side, but heimdall
   itself doesn't inject CAs.
 - eBPF programs are loaded by the daemon (uid 0 with `CAP_BPF`).

@@ -1,18 +1,19 @@
 ---
 type: docs_index
-description: Heimdall proxy, observability, configuration, and operations documentation.
+description: Heimdall CLI proxy, strict configuration, architecture, and operations documentation.
 ---
 
 # Documentation index
 
 ## Scope
 
-Heimdall proxy, observability, configuration, and operations documentation. The index distinguishes stable contracts, design
-material, operational guidance, research evidence, and historical notes.
+Heimdall CLI proxy, strict configuration, architecture, and operations
+documentation. The index distinguishes stable contracts, design material, and
+operational guidance.
 
 ## Reading order
 
-- [`README.md`](README.md) — README
+- [`README.md`](../README.md) — Project overview and quick start
 - [`architecture.md`](architecture.md) — Architecture
 - [`runbook.md`](runbook.md) — Runbook
 
@@ -20,9 +21,7 @@ material, operational guidance, research evidence, and historical notes.
 
 ### Core documents
 
-- [`README.md`](README.md) — README
+- [`README.md`](../README.md) — Project overview and quick start
 - [`architecture.md`](architecture.md) — Architecture
 - [`config.md`](config.md) — Config
-- [`observability.md`](observability.md) — Observability
 - [`runbook.md`](runbook.md) — Runbook
-

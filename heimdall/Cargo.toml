@@ -15,7 +15,7 @@ aya = { version = "0.13", features = ["async_tokio"] }
 # Shared data types with the eBPF programs
 heimdall-common = { path = "../heimdall-common" }
 
-# Config schema (YAML at /etc/heimdall/config.yaml)
+# Strict shared schema for TOML, YAML, JSON, and Nickel configuration.
 heimdall-config = { path = "../heimdall-config" }
 
 # Async runtime
@@ -60,8 +60,8 @@ hickory-proto = { version = "0.26", default-features = false }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 
-# HTTP API + future Web UI
-axum = { version = "0.8", features = ["ws", "macros"] }
+# Loopback control API used by the CLI.
+axum = "0.8"
 
 
 [[bin]]

@@ -1,6 +1,9 @@
 # heimdall
 
-Run one command through a SOCKS5 proxy without modifying that command.
+Proxychains-style, command-scoped SOCKS5 proxying for AI agents and CLI tools,
+powered by cgroup eBPF.
+
+Run one command through a named proxy without modifying that command:
 
 ```bash
 heimdall run -- curl https://example.com
