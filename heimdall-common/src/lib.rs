@@ -11,11 +11,8 @@
 /// significant (rest are zero); for IPv6 all 16 bytes.
 ///
 /// `cgroup_id` is the leaf cgroup id of the calling process (from
-/// `bpf_get_current_cgroup_id`), used by userspace to resolve the
-/// systemd unit / slice identity. `socket_cookie` is the kernel's
-/// per-socket identifier (`bpf_get_socket_cookie`); the userspace
-/// relay uses it to correlate a flow with TLS plaintext events
-/// emitted by the tap (Phase B uprobes).
+/// `bpf_get_current_cgroup_id`). `socket_cookie` is the kernel's
+/// per-socket identifier (`bpf_get_socket_cookie`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct OrigDst {
@@ -37,8 +34,7 @@ pub struct OrigDst {
     pub cgroup_id: u64,
     /// Kernel socket cookie of the underlying TCP socket (set by
     /// `bpf_get_socket_cookie` in connect4 / connect6). Stable for the
-    /// lifetime of the connection and shared with eBPF kprobes /
-    /// uprobes that can look up the same cookie on the same socket.
+    /// lifetime of the connection.
     pub socket_cookie: u64,
 }
 
@@ -49,58 +45,6 @@ pub struct OrigDst {
 pub const FAMILY_V4: u8 = 4;
 pub const FAMILY_V6: u8 = 6;
 
-// ---------------------------------------------------------------------------
-// Phase B — TLS plaintext tap
-// ---------------------------------------------------------------------------
-
-/// Direction of a [`TapEvent`].
-#[repr(u32)]
-#[derive(Clone, Copy, Debug)]
-pub enum TapDir {
-    Send = 0,
-    Recv = 1,
-}
-
-/// Inline buffer length for [`TapEvent::data`]. Values above this are
-/// truncated; userspace records `total_len` separately so it knows how
-/// many bytes were really written/read.
-pub const TAP_DATA_LEN: usize = 256;
-
-/// Single `SSL_write` entry / `SSL_read` return event emitted by an eBPF
-/// uprobe to a perf event array. Fixed-size so the verifier is happy.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct TapEvent {
-    /// `bpf_get_current_pid_tgid`: high 32 bits = tgid, low 32 = pid.
-    pub tgid_pid: u64,
-    /// `bpf_ktime_get_ns()` at uprobe entry/return.
-    pub ts_ns: u64,
-    /// `bpf_get_current_cgroup_id()` of the calling task. Userspace uses
-    /// this to correlate the captured plaintext with a flow recorded by
-    /// the relay (which stamped the same `cgroup_id` at `connect4` time).
-    pub cgroup_id: u64,
-    /// 0 = send (`SSL_write`), 1 = recv (`SSL_read` return).
-    pub dir: u32,
-    /// Bytes captured into `data` (≤ `TAP_DATA_LEN`).
-    pub captured_len: u32,
-    /// `SSL_write`'s `num` argument or `SSL_read`'s return value (full size
-    /// the application asked for / received).
-    pub total_len: u32,
-    #[allow(
-        clippy::pub_underscore_fields,
-        reason = "the explicit ABI padding is shared with eBPF"
-    )]
-    pub _pad: u32,
-    pub data: [u8; TAP_DATA_LEN],
-}
-
-#[cfg(feature = "user")]
-#[allow(
-    unsafe_code,
-    reason = "repr(C) contains only fixed-width Pod fields shared verbatim with eBPF"
-)]
-unsafe impl aya::Pod for TapEvent {}
-
 #[cfg(feature = "user")]
 #[allow(
     unsafe_code,
@@ -109,53 +53,11 @@ unsafe impl aya::Pod for TapEvent {}
 unsafe impl aya::Pod for OrigDst {}
 
 // ---------------------------------------------------------------------------
-// Bypass notifications — emitted by connect4 when a destination falls into
-// `is_default_bypass` (so the relay never sees the connection). Userspace
-// uses these to create synthetic flow rows and populate the open-flow index
-// so plaintext events captured by the libssl / Go uprobes can still
-// correlate to a flow_id in the messages table.
-// ---------------------------------------------------------------------------
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct BypassEvent {
-    /// Kernel monotonic time at the connect4 / connect6 hook.
-    pub ts_ns: u64,
-    /// `bpf_get_current_cgroup_id()` of the calling task.
-    pub cgroup_id: u64,
-    /// `bpf_get_socket_cookie()` — stable per-socket id, shared with
-    /// the tap so future kprobe-based correlation can join on it.
-    pub socket_cookie: u64,
-    /// Destination address (network byte order). For IPv4, bytes 0..4
-    /// hold the address and bytes 4..16 are zero. Mirrors `OrigDst::addr`.
-    pub dst_addr: [u8; 16],
-    /// Destination TCP port in network byte order.
-    pub dst_port_be: u16,
-    /// `FAMILY_V4` (4) or `FAMILY_V6` (6).
-    pub family: u8,
-    #[allow(
-        clippy::pub_underscore_fields,
-        reason = "the explicit ABI padding is shared with eBPF"
-    )]
-    pub _pad: u8,
-}
-
-#[cfg(feature = "user")]
-#[allow(
-    unsafe_code,
-    reason = "repr(C) contains only fixed-width Pod fields shared verbatim with eBPF"
-)]
-unsafe impl aya::Pod for BypassEvent {}
-
-// ---------------------------------------------------------------------------
-// Per-cgroup policy flags. Userspace evaluates routing rules against the
-// unit / slice resolved from each cgroup's path and writes the resulting
-// flag bits into the BPF CGROUP_POLICY map keyed by cgroup_id; eBPF
-// programs read it per syscall.
+// Per-cgroup policy flags written by `heimdall run` and read by the eBPF
+// programs for each intercepted syscall.
 //
-// Map miss → DEFAULT_POLICY (observe OFF, redirect ON). The "observe OFF
-// on miss" choice means cgroups outside the rule set don't get tapped
-// unless an explicit entry opts them in.
+// A map miss bypasses heimdall. Only cgroups registered by `heimdall run`
+// are redirected.
 // ---------------------------------------------------------------------------
 
 /// Skip eBPF connect4 redirect — let the kernel route the connection
@@ -163,30 +65,16 @@ unsafe impl aya::Pod for BypassEvent {}
 /// `use: system`.
 pub const POLICY_REDIRECT_OFF: u8 = 1 << 0;
 
-/// Suppress tap events from this cgroup — both libssl uprobes and Go
-/// uprobes check the bit before emitting. Used for noisy units
-/// (background daemons, data stores).
-pub const POLICY_OBSERVE_OFF: u8 = 1 << 1;
-
-/// When set on an `is_kernel_bypass` or `REDIRECT_OFF` connection,
-/// suppress the synthetic flow row userspace would otherwise create.
-/// Tied to `POLICY_OBSERVE_OFF` in the default policy mapping (no
-/// observe → no synthetic flow), but available as a separate bit
-/// for future tuning.
-pub const POLICY_NO_BYPASS_LOG: u8 = 1 << 2;
-
 /// Hijack DNS for this cgroup: any TCP/UDP connect or UDP sendmsg to
 /// port 53 gets its destination rewritten to heimdall's fake-IP DNS
 /// server (taken from `DNS_ADDR_V4` / `DNS_ADDR_V6` maps). Used by
 /// `heimdall run` when the wrapped command's profile resolves to
 /// `dns: fake`, so the child uses heimdall's resolver instead of the
 /// host's systemd-resolved / /etc/resolv.conf.
-pub const POLICY_DNS_HIJACK: u8 = 1 << 3;
+pub const POLICY_DNS_HIJACK: u8 = 1 << 1;
 
-/// Default for cgroups not present in `CGROUP_POLICY`. Observe is OFF
-/// by default — units the rules match get explicit entries; everything
-/// else stays unobserved unless opted in.
-pub const DEFAULT_POLICY: u8 = POLICY_OBSERVE_OFF | POLICY_NO_BYPASS_LOG;
+/// Default for cgroups not present in `CGROUP_POLICY`: bypass heimdall.
+pub const DEFAULT_POLICY: u8 = POLICY_REDIRECT_OFF;
 
 /// Returns true if the given IPv4 address (network byte order) should bypass
 /// the proxy entirely (eBPF connect4 won't redirect it).
@@ -207,8 +95,6 @@ pub const DEFAULT_POLICY: u8 = POLICY_OBSERVE_OFF | POLICY_NO_BYPASS_LOG;
 /// chosen connection (e.g. `corp`), and the upstream proxy decides how
 /// to reach them.
 ///
-/// Userspace can extend the bypass set at runtime via `runtime.bypassCidrs`
-/// (not yet wired into the eBPF map; tracked for M5+).
 #[must_use]
 pub fn is_default_bypass(ip_be: u32) -> bool {
     let ip = u32::from_be(ip_be);
@@ -286,8 +172,8 @@ mod tests {
     #[test]
     fn bypasses_lan_192_168() {
         assert!(is_default_bypass(be(192, 168, 0, 1))); // router
-        assert!(is_default_bypass(be(192, 168, 0, 96))); // host
-        assert!(is_default_bypass(be(192, 168, 0, 155))); // Mac
+        assert!(is_default_bypass(be(192, 168, 0, 10))); // host
+        assert!(is_default_bypass(be(192, 168, 0, 20))); // workstation
         assert!(is_default_bypass(be(192, 168, 255, 255)));
     }
 
@@ -299,7 +185,6 @@ mod tests {
         assert!(!is_default_bypass(be(10, 0, 0, 1)));
         assert!(!is_default_bypass(be(10, 50, 1, 2)));
         assert!(!is_default_bypass(be(10, 96, 0, 1)));
-        assert!(!is_default_bypass(be(10, 244, 0, 1)));
         assert!(!is_default_bypass(be(10, 255, 255, 254)));
     }
 

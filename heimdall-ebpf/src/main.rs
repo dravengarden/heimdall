@@ -24,17 +24,13 @@
 
 use aya_ebpf::{
     EbpfContext,
-    helpers::{
-        bpf_get_current_cgroup_id, bpf_get_current_pid_tgid, bpf_get_socket_cookie,
-        bpf_ktime_get_ns, r#gen::bpf_probe_read_user,
-    },
-    macros::{cgroup_skb, cgroup_sock, cgroup_sock_addr, map, uprobe, uretprobe},
-    maps::{Array, HashMap, LruHashMap, PerfEventArray},
-    programs::{ProbeContext, RetProbeContext, SkBuffContext, SockAddrContext, SockContext},
+    helpers::{bpf_get_current_cgroup_id, bpf_get_socket_cookie},
+    macros::{cgroup_skb, cgroup_sock, cgroup_sock_addr, map},
+    maps::{Array, HashMap, LruHashMap},
+    programs::{SkBuffContext, SockAddrContext, SockContext},
 };
 use heimdall_common::{
-    BypassEvent, DEFAULT_POLICY, FAMILY_V4, FAMILY_V6, OrigDst, POLICY_DNS_HIJACK,
-    POLICY_NO_BYPASS_LOG, POLICY_OBSERVE_OFF, POLICY_REDIRECT_OFF, TAP_DATA_LEN, TapDir, TapEvent,
+    DEFAULT_POLICY, FAMILY_V4, FAMILY_V6, OrigDst, POLICY_DNS_HIJACK, POLICY_REDIRECT_OFF,
     is_default_bypass, is_default_bypass6,
 };
 
@@ -72,15 +68,14 @@ static DNS_PORT_V6: Array<u32> = Array::with_max_entries(1, 0);
 // LRU because skb_egress doesn't always fire to consume an entry —
 // e.g. a connect() that fails before sending its first SYN, or a
 // rewrite to a v6 relay address the source can't actually route to —
-// would leak forever in a regular HashMap. Past incident: opik-frontend
-// nginx hammered an OTLP v6 fake-IP, every connect6 added a cookie that
-// skb_egress never reaped, the map filled at 65536, and connect4's
+// would leak forever in a regular HashMap. A noisy client once filled
+// this map with failed IPv6 connections, and connect4's
 // `insert(...)?` started early-returning *before the dst rewrite* —
 // so EVERY new flow on the host (incl. `heimdall run`) silently went
 // to its un-rewritten original IP and got TPROXY-trapped by v2raya.
 // LRU evicts the oldest cookie under pressure; a stale cookie loses its
 // PORT_MAP correlation but the rewrite still happens, which is the
-// correct trade-off (lose tap-correlation > lose redirect entirely).
+// correct trade-off (lose one destination lookup > lose redirect entirely).
 #[map]
 static COOKIE_MAP: LruHashMap<u64, OrigDst> = LruHashMap::with_max_entries(65536, 0);
 
@@ -94,48 +89,16 @@ static COOKIE_MAP: LruHashMap<u64, OrigDst> = LruHashMap::with_max_entries(65536
 #[map]
 static PORT_MAP: LruHashMap<u32, OrigDst> = LruHashMap::with_max_entries(65536, 0);
 
-// Phase B: bypass notifications. Connect4 emits one event per bypassed
-// connection (loopback / link-local / LAN) so userspace can record a
-// synthetic flow row and let tap events correlate to it.
-#[map]
-static BYPASS_EVENTS: PerfEventArray<BypassEvent> = PerfEventArray::new(0);
-
-// Per-cgroup policy. Userspace populates this from UnitResolver + routing
-// rules; eBPF programs read it once per syscall to decide whether to
-// redirect / observe / log.
+// Per-cgroup policy. `heimdall run` registers a cgroup before launching
+// the command and removes it afterward.
 #[map]
 static CGROUP_POLICY: HashMap<u64, u8> = HashMap::with_max_entries(65536, 0);
 
-// Single-element map holding the policy applied to cgroups that aren't
-// in CGROUP_POLICY. Userspace writes index 0 at startup based on
-// `runtime.defaultEgressPolicy` in the config; this lets the operator
-// flip between fail-closed (redirect, the default) and fail-open
-// (bypass, emergency override) by editing the config + restarting
-// heimdall, instead of re-compiling the eBPF object.
-//
-// Initialised to 0 by the kernel; userspace must write before the
-// eBPF programs see real traffic. Until written, `policy_for`
-// short-circuits to the compile-time `DEFAULT_POLICY` const so we
-// don't accidentally bypass everything during the eBPF-loaded /
-// userspace-not-ready-yet window.
-#[map]
-static DEFAULT_POLICY_MAP: Array<u8> = Array::with_max_entries(1, 0);
-
 #[inline(always)]
 fn policy_for(cgroup_id: u64) -> u8 {
-    if let Some(p) = unsafe { CGROUP_POLICY.get(&cgroup_id) }.copied() {
-        return p;
-    }
-    // Userspace stores its desired default in DEFAULT_POLICY_MAP[0].
-    // A value of 0 means "not yet written" — fall back to the
-    // compile-time const which has REDIRECT_OFF unset (= redirect,
-    // current production behaviour).
-    let runtime_default = DEFAULT_POLICY_MAP.get(0).copied().unwrap_or(0);
-    if runtime_default == 0 {
-        DEFAULT_POLICY
-    } else {
-        runtime_default
-    }
+    unsafe { CGROUP_POLICY.get(&cgroup_id) }
+        .copied()
+        .unwrap_or(DEFAULT_POLICY)
 }
 
 // ---------------------------------------------------------------------------
@@ -147,8 +110,7 @@ fn policy_for(cgroup_id: u64) -> u8 {
 //
 // Returns true when the destination was rewritten — caller should treat
 // that as "this connection is going to heimdall DNS, NOT the relay" and
-// return early (don't store in COOKIE_MAP, don't emit BypassEvent, don't
-// run any other redirect logic).
+// return early (don't store in COOKIE_MAP or run redirect logic).
 // ---------------------------------------------------------------------------
 
 #[inline(always)]
@@ -240,8 +202,8 @@ fn try_connect4(ctx: SockAddrContext) -> Result<(), ()> {
     // socket to the destination with port 0, getsockname(), close.
     // No SYN/datagram ever leaves the socket, so skb_egress never
     // fires and any COOKIE_MAP entry from this connect would leak.
-    // Past incident: opik-frontend nginx-otel emitted ~hundreds of
-    // these per second per worker, filling COOKIE_MAP in a few
+    // A noisy telemetry client once emitted hundreds of these per
+    // second per worker, filling COOKIE_MAP in a few
     // hours. Short-circuiting here keeps the map healthy *and* avoids
     // pointlessly rewriting a connect that isn't going to send a
     // packet.
@@ -266,24 +228,6 @@ fn try_connect4(ctx: SockAddrContext) -> Result<(), ()> {
     let user_bypass = (policy & POLICY_REDIRECT_OFF) != 0;
 
     if kernel_bypass || user_bypass {
-        if (policy & POLICY_OBSERVE_OFF) == 0 && (policy & POLICY_NO_BYPASS_LOG) == 0 {
-            let mut bypass_ev = BypassEvent {
-                ts_ns: unsafe { bpf_ktime_get_ns() },
-                cgroup_id,
-                socket_cookie: cookie,
-                dst_addr: [0u8; 16],
-                dst_port_be,
-                family: FAMILY_V4,
-                _pad: 0,
-            };
-            // Store IPv4 in the first 4 bytes (network byte order).
-            let ip_bytes = dst_ip_be.to_ne_bytes();
-            bypass_ev.dst_addr[0] = ip_bytes[0];
-            bypass_ev.dst_addr[1] = ip_bytes[1];
-            bypass_ev.dst_addr[2] = ip_bytes[2];
-            bypass_ev.dst_addr[3] = ip_bytes[3];
-            BYPASS_EVENTS.output(&ctx, &bypass_ev, 0);
-        }
         return Ok(());
     }
     let mut orig = OrigDst {
@@ -301,9 +245,9 @@ fn try_connect4(ctx: SockAddrContext) -> Result<(), ()> {
     orig.addr[3] = ip_bytes[3];
     // Best-effort cookie store. If insert fails (-EAGAIN under LRU
     // pressure, verifier weirdness), proceed with the rewrite anyway —
-    // losing cookie→origdst correlation costs us tap-flow correlation
-    // for this one connection, but skipping the rewrite would break
-    // the whole connection. Past incident: a `?` here on a full
+    // losing destination correlation breaks this one connection, but
+    // skipping the rewrite would change policy unexpectedly. Past incident:
+    // a `?` here on a full
     // (non-LRU) map silently broke every new redirect on the host.
     let _ = COOKIE_MAP.insert(&cookie, &orig, 0);
 
@@ -319,8 +263,8 @@ fn try_connect4(ctx: SockAddrContext) -> Result<(), ()> {
 // connect6 — IPv6 sibling of connect4.
 //
 // Mirror logic: read user_ip6 + user_port from the sock_addr, consult
-// CGROUP_POLICY + is_default_bypass6, either emit a BypassEvent (with
-// family=FAMILY_V6) or rewrite the destination to RELAY_ADDR6 + PROXY_PORT.
+// CGROUP_POLICY + is_default_bypass6, then either bypass or rewrite the
+// destination to RELAY_ADDR6 + PROXY_PORT.
 // COOKIE_MAP entries from connect6 carry family=FAMILY_V6 so userspace
 // + skb_egress can decode the address bytes correctly.
 // ---------------------------------------------------------------------------
@@ -379,18 +323,6 @@ fn try_connect6(ctx: SockAddrContext) -> Result<(), ()> {
     let user_bypass = (policy & POLICY_REDIRECT_OFF) != 0;
 
     if kernel_bypass || user_bypass {
-        if (policy & POLICY_OBSERVE_OFF) == 0 && (policy & POLICY_NO_BYPASS_LOG) == 0 {
-            let bypass_ev = BypassEvent {
-                ts_ns: unsafe { bpf_ktime_get_ns() },
-                cgroup_id,
-                socket_cookie: cookie,
-                dst_addr,
-                dst_port_be,
-                family: FAMILY_V6,
-                _pad: 0,
-            };
-            BYPASS_EVENTS.output(&ctx, &bypass_ev, 0);
-        }
         return Ok(());
     }
 
@@ -610,366 +542,6 @@ fn try_skb_egress(ctx: &SkBuffContext) -> Result<(), ()> {
     let _ = COOKIE_MAP.remove(&cookie);
 
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Phase B uprobes — capture TLS plaintext at the libssl boundary.
-//
-// SSL_write(SSL *ssl, const void *buf, int num)
-//   x86_64 SysV: rdi=ssl, rsi=buf, rdx=num
-// SSL_read(SSL *ssl, void *buf, int num)
-//   entry: stash buf pointer keyed by tgid_pid
-//   ret  : look up state, read `ret` bytes from buf, emit
-// ---------------------------------------------------------------------------
-
-#[map]
-static TAP_EVENTS: PerfEventArray<TapEvent> = PerfEventArray::new(0);
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct ReadEntry {
-    buf: u64,
-}
-
-#[map]
-static SSL_READ_STATE: HashMap<u64, ReadEntry> = HashMap::with_max_entries(8192, 0);
-
-#[uprobe]
-pub fn ssl_write(ctx: ProbeContext) -> u32 {
-    let _ = try_ssl_write(&ctx);
-    0
-}
-
-#[inline(always)]
-fn try_ssl_write(ctx: &ProbeContext) -> Result<(), ()> {
-    let buf: *const u8 = ctx.arg(1).ok_or(())?;
-    let num: i32 = ctx.arg(2).ok_or(())?;
-    if num <= 0 || buf.is_null() {
-        return Ok(());
-    }
-    emit_tap(ctx, TapDir::Send, num as u32, buf);
-    Ok(())
-}
-
-#[uprobe]
-pub fn ssl_read_enter(ctx: ProbeContext) -> u32 {
-    let _ = try_ssl_read_enter(&ctx);
-    0
-}
-
-#[inline(always)]
-fn try_ssl_read_enter(ctx: &ProbeContext) -> Result<(), ()> {
-    let buf: *const u8 = ctx.arg(1).ok_or(())?;
-    let pid_tgid = bpf_get_current_pid_tgid();
-    let entry = ReadEntry { buf: buf as u64 };
-    let _ = SSL_READ_STATE.insert(&pid_tgid, &entry, 0);
-    Ok(())
-}
-
-#[uretprobe]
-pub fn ssl_read_exit(ctx: RetProbeContext) -> u32 {
-    let _ = try_ssl_read_exit(&ctx);
-    0
-}
-
-// ---------------------------------------------------------------------------
-// Go TLS: crypto/tls.(*Conn).Write — entry probe.
-//
-// Go uses its own ABI ("ABI Internal", x86_64). For methods on *Conn:
-//   func (c *Conn) Write(b []byte) (n int, err error)
-//
-// Register layout at entry:
-//   RAX = receiver  (*Conn)
-//   RBX = b.data    (slice ptr)
-//   RCX = b.len
-//   RDI = b.cap     (unused here)
-//
-// We don't try to attach a uretprobe — the kernel's uretprobe trampoline
-// patches the user-space stack, which collides with the Go runtime's
-// movable stacks. The send-side write probe is enough to surface
-// outbound HTTP requests (URL, headers, body) without needing the
-// return value.
-// ---------------------------------------------------------------------------
-
-#[uprobe]
-pub fn go_tls_write(ctx: ProbeContext) -> u32 {
-    let _ = try_go_tls_write(&ctx);
-    0
-}
-
-#[inline(always)]
-fn try_go_tls_write(ctx: &ProbeContext) -> Result<(), ()> {
-    let regs = unsafe { &*ctx.regs };
-    let buf = regs.rbx as *const u8;
-    let num = regs.rcx as i64;
-    if num <= 0 || buf.is_null() {
-        return Ok(());
-    }
-    let total = if num > i32::MAX as i64 {
-        i32::MAX as u32
-    } else {
-        num as u32
-    };
-    emit_tap(ctx, TapDir::Send, total, buf);
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Go TLS: crypto/tls.(*Conn).Read — paired entry + return probes.
-//
-//   func (c *Conn) Read(b []byte) (n int, err error)
-//
-// At entry:  RAX=*Conn, RBX=b.data, RCX=b.len, RDI=b.cap
-// At return: RAX=n, RBX=err.tab, RCX=err.data
-//
-// We can't use a uretprobe here because the kernel's uretprobe trampoline
-// rewrites the return address, which collides with Go's stack-growth
-// machinery (movable stacks copy frames around and the trampoline anchor
-// gets stale). The standard mitigation, used by Pixie and Coroot, is to
-// disassemble the function in userspace, find every RET instruction, and
-// attach a regular uprobe at each one. At those uprobes we read RAX as
-// the syscall return value.
-//
-// `go_tls_read_enter` stashes the buf pointer keyed by pid_tgid;
-// `go_tls_read_ret` reads RAX (return n) and copies n bytes from the
-// stashed buf.
-// ---------------------------------------------------------------------------
-
-#[map]
-static GO_READ_STATE: HashMap<u64, ReadEntry> = HashMap::with_max_entries(8192, 0);
-
-#[uprobe]
-pub fn go_tls_read_enter(ctx: ProbeContext) -> u32 {
-    let _ = try_go_tls_read_enter(&ctx);
-    0
-}
-
-#[inline(always)]
-fn try_go_tls_read_enter(ctx: &ProbeContext) -> Result<(), ()> {
-    let regs = unsafe { &*ctx.regs };
-    let buf = regs.rbx;
-    let pid_tgid = bpf_get_current_pid_tgid();
-    let entry = ReadEntry { buf };
-    let _ = GO_READ_STATE.insert(&pid_tgid, &entry, 0);
-    Ok(())
-}
-
-#[uprobe]
-pub fn go_tls_read_ret(ctx: ProbeContext) -> u32 {
-    let _ = try_go_tls_read_ret(&ctx);
-    0
-}
-
-// ---------------------------------------------------------------------------
-// rustls — paired entry + uretprobe pair on PlaintextSink::write and
-// <Reader as io::Read>::read.
-//
-// Unlike Go, Rust binaries have a fixed (non-movable) stack and are
-// uretprobe-safe. So the read side uses a real uretprobe — no need to
-// disassemble for RET offsets.
-//
-// Rust uses the SysV ABI on x86_64 for these `&mut self, &[u8]` →
-// `io::Result<usize>` methods:
-//
-//   At entry:
-//     RDI = &mut self        (PlaintextSink / Reader)
-//     RSI = buf.as_ptr()     (slice data)
-//     RDX = buf.len()        (slice length)
-//
-//   At return (`io::Result<usize>` is 16 bytes; passed in (RAX, RDX)):
-//     RAX = enum discriminant in low byte (0 = Ok, 1 = Err)
-//     RDX = the value (Ok→ usize n, Err→ error pointer)
-//
-// We trust that layout; if the captured plaintext looks right
-// (HTTP/2 frames, JSON, etc.) the ABI assumption is correct. If the
-// compiler ever switches to a different niche-packed layout for
-// `Result<usize, io::Error>`, this would need updating.
-// ---------------------------------------------------------------------------
-
-#[map]
-static RUSTLS_READ_STATE: HashMap<u64, ReadEntry> = HashMap::with_max_entries(8192, 0);
-
-#[uprobe]
-pub fn rustls_write(ctx: ProbeContext) -> u32 {
-    let _ = try_rustls_write(&ctx);
-    0
-}
-
-#[inline(always)]
-fn try_rustls_write(ctx: &ProbeContext) -> Result<(), ()> {
-    let regs = unsafe { &*ctx.regs };
-    let buf = regs.rsi as *const u8;
-    let num = regs.rdx as i64;
-    if num <= 0 || buf.is_null() {
-        return Ok(());
-    }
-    let total = if num > i32::MAX as i64 {
-        i32::MAX as u32
-    } else {
-        num as u32
-    };
-    emit_tap(ctx, TapDir::Send, total, buf);
-    Ok(())
-}
-
-#[uprobe]
-pub fn rustls_read_enter(ctx: ProbeContext) -> u32 {
-    let _ = try_rustls_read_enter(&ctx);
-    0
-}
-
-#[inline(always)]
-fn try_rustls_read_enter(ctx: &ProbeContext) -> Result<(), ()> {
-    let regs = unsafe { &*ctx.regs };
-    let buf = regs.rsi;
-    let pid_tgid = bpf_get_current_pid_tgid();
-    let entry = ReadEntry { buf };
-    let _ = RUSTLS_READ_STATE.insert(&pid_tgid, &entry, 0);
-    Ok(())
-}
-
-#[uretprobe]
-pub fn rustls_read_exit(ctx: RetProbeContext) -> u32 {
-    let _ = try_rustls_read_exit(&ctx);
-    0
-}
-
-#[inline(always)]
-fn try_rustls_read_exit(ctx: &RetProbeContext) -> Result<(), ()> {
-    let regs = unsafe { &*ctx.regs };
-    // Discriminant in low byte of RAX. 0 = Ok, anything else = Err.
-    if (regs.rax & 0xFF) != 0 {
-        return Ok(());
-    }
-    let n = regs.rdx as i64;
-    if n <= 0 {
-        return Ok(());
-    }
-
-    let pid_tgid = bpf_get_current_pid_tgid();
-    let entry = match unsafe { RUSTLS_READ_STATE.get(&pid_tgid) } {
-        Some(e) => *e,
-        None => return Ok(()),
-    };
-    let _ = RUSTLS_READ_STATE.remove(&pid_tgid);
-
-    let buf = entry.buf as *const u8;
-    if buf.is_null() {
-        return Ok(());
-    }
-    let total = if n > i32::MAX as i64 {
-        i32::MAX as u32
-    } else {
-        n as u32
-    };
-    emit_tap_ret(ctx, TapDir::Recv, total, buf);
-    Ok(())
-}
-
-#[inline(always)]
-fn try_go_tls_read_ret(ctx: &ProbeContext) -> Result<(), ()> {
-    let regs = unsafe { &*ctx.regs };
-    let n = regs.rax as i64;
-    if n <= 0 {
-        return Ok(());
-    }
-    let pid_tgid = bpf_get_current_pid_tgid();
-    let entry = match unsafe { GO_READ_STATE.get(&pid_tgid) } {
-        Some(e) => *e,
-        None => return Ok(()),
-    };
-    let _ = GO_READ_STATE.remove(&pid_tgid);
-    let buf = entry.buf as *const u8;
-    if buf.is_null() {
-        return Ok(());
-    }
-    let total = if n > i32::MAX as i64 {
-        i32::MAX as u32
-    } else {
-        n as u32
-    };
-    emit_tap(ctx, TapDir::Recv, total, buf);
-    Ok(())
-}
-
-#[inline(always)]
-fn try_ssl_read_exit(ctx: &RetProbeContext) -> Result<(), ()> {
-    let pid_tgid = bpf_get_current_pid_tgid();
-    let entry = match unsafe { SSL_READ_STATE.get(&pid_tgid) } {
-        Some(e) => *e,
-        None => return Ok(()),
-    };
-    let _ = SSL_READ_STATE.remove(&pid_tgid);
-
-    let ret: i32 = ctx.ret().ok_or(())?;
-    if ret <= 0 {
-        return Ok(());
-    }
-    let buf = entry.buf as *const u8;
-    if buf.is_null() {
-        return Ok(());
-    }
-    // Build a `ProbeContext`-shaped wrapper for emit_tap; ret context has
-    // its own ctx.as_ptr() — but PerfEventArray::output accepts any
-    // ContextLike, so we cast through `EbpfContext`.
-    emit_tap_ret(ctx, TapDir::Recv, ret as u32, buf);
-    Ok(())
-}
-
-// Emit a TapEvent. `total` is the application-visible length, `buf` is
-// the userspace pointer we'll read up to TAP_DATA_LEN bytes from.
-#[inline(always)]
-fn emit_tap(ctx: &ProbeContext, dir: TapDir, total: u32, buf: *const u8) {
-    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
-    if (policy_for(cgroup_id) & POLICY_OBSERVE_OFF) != 0 {
-        return;
-    }
-    let mut ev: TapEvent = unsafe { core::mem::zeroed() };
-    ev.tgid_pid = bpf_get_current_pid_tgid();
-    ev.ts_ns = unsafe { bpf_ktime_get_ns() };
-    ev.cgroup_id = cgroup_id;
-    ev.dir = dir as u32;
-    ev.total_len = total;
-    ev.captured_len = if total > TAP_DATA_LEN as u32 {
-        TAP_DATA_LEN as u32
-    } else {
-        total
-    };
-    unsafe {
-        let _ = bpf_probe_read_user(
-            ev.data.as_mut_ptr() as *mut _,
-            ev.captured_len,
-            buf as *const _,
-        );
-    }
-    TAP_EVENTS.output(ctx, &ev, 0);
-}
-
-#[inline(always)]
-fn emit_tap_ret(ctx: &RetProbeContext, dir: TapDir, total: u32, buf: *const u8) {
-    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
-    if (policy_for(cgroup_id) & POLICY_OBSERVE_OFF) != 0 {
-        return;
-    }
-    let mut ev: TapEvent = unsafe { core::mem::zeroed() };
-    ev.tgid_pid = bpf_get_current_pid_tgid();
-    ev.ts_ns = unsafe { bpf_ktime_get_ns() };
-    ev.cgroup_id = cgroup_id;
-    ev.dir = dir as u32;
-    ev.total_len = total;
-    ev.captured_len = if total > TAP_DATA_LEN as u32 {
-        TAP_DATA_LEN as u32
-    } else {
-        total
-    };
-    unsafe {
-        let _ = bpf_probe_read_user(
-            ev.data.as_mut_ptr() as *mut _,
-            ev.captured_len,
-            buf as *const _,
-        );
-    }
-    TAP_EVENTS.output(ctx, &ev, 0);
 }
 
 #[panic_handler]

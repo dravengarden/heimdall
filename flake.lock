@@ -56,8 +56,7 @@
       "inputs": {
         "crane": "crane",
         "fenix": "fenix",
-        "nixpkgs": "nixpkgs",
-        "shared-utils": "shared-utils"
+        "nixpkgs": "nixpkgs"
       }
     },
     "rust-analyzer-src": {
@@ -74,26 +73,6 @@
         "owner": "rust-lang",
         "ref": "nightly",
         "repo": "rust-analyzer",
-        "type": "github"
-      }
-    },
-    "shared-utils": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "lastModified": 1780674980,
-        "narHash": "sha256-aDstP1ITvQ9KhJvd6QKUmHtjhZ8M4hNTZxdZ+SLvkP8=",
-        "owner": "dravengarden",
-        "repo": "shared-utils",
-        "rev": "c9daa760016b93b27efa1d5884254944d0ce853f",
-        "type": "github"
-      },
-      "original": {
-        "owner": "dravengarden",
-        "repo": "shared-utils",
         "type": "github"
       }
     }
