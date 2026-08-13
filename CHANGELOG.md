@@ -14,11 +14,19 @@ All notable changes to heimdall are documented here.
 
 ### Changed
 
+- Replaced `proxies` and per-run DNS overrides with named SOCKS5 outbounds and
+  command-selected policies containing ordered TCP rules and explicit
+  `route`, `direct`, or `reject` final actions.
+- Added aggregated configuration diagnostics with stable codes, JSON paths,
+  and repair hints plus `config explain` for deterministic rule inspection;
+  all four starter formats are now tested through the same canonical loader.
+- Made non-DNS UDP fail closed, removed implicit address bypasses from
+  registered cgroups, completed fake DNS over TCP as well as UDP, and made DNS
+  plus control-listener binding fail before daemon readiness.
 - Reframed heimdall as a proxychains-style command wrapper.
 - Made unregistered cgroups bypass the relay by default; only commands started
   through `heimdall run` are redirected.
-- Replaced the orchestrator-shaped schema with one small format-independent
-  model containing `proxies`, `run`, and optional `daemon` settings.
+- Replaced the orchestrator-shaped schema with one format-independent model.
 - Added strict TOML, YAML, JSON, and Nickel decoding, including ambiguous-file,
   unknown-field, reference, address, listener, path, and CIDR validation.
 - Rebuilt the bundled Heimdall skill around the command-wrapper workflow and
@@ -26,7 +34,7 @@ All notable changes to heimdall are documented here.
 - Added `heimdall agent`, a side-effect-free versioned JSON preflight with
   stable error codes, readiness exit codes, decisions, and argv arrays.
 - Renamed the daemon subcommand for a clearer CLI surface.
-- Simplified `heimdall run` to `--proxy`, `--dns`, and the wrapped command.
+- Simplified `heimdall run` to `--policy` and the wrapped command.
 
 ### Removed
 

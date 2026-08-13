@@ -3,11 +3,11 @@
 Proxychains-style, command-scoped SOCKS5 proxying for AI agents and CLI tools,
 powered by cgroup eBPF.
 
-Run one command through a named proxy without modifying that command:
+Run one command through a named egress policy without modifying it:
 
 ```bash
 heimdall run -- curl https://example.com
-heimdall run -p corp -- ssh internal.example.com
+heimdall run --policy corp -- ssh internal.example.com
 ```
 
 For an AI agent, start with one side-effect-free preflight:
@@ -17,7 +17,7 @@ heimdall agent
 ```
 
 It emits one versioned JSON document with config validity, stable error codes,
-daemon reachability, the resolved proxy/DNS decision, declared proxy names, and
+daemon reachability, the resolved policy, declared policies/outbounds, and
 the exact next commands as argv arrays. Exit `0` means ready, `1` means not
 ready, and clap reserves `2` for invalid CLI usage.
 
@@ -38,34 +38,48 @@ lets DNS names be resolved by the upstream proxy.
 Keep exactly one configuration file under `/etc/heimdall`: `config.toml`,
 `config.yaml`/`config.yml`, `config.json`, or `config.ncl`. The extension selects
 the parser; every syntax uses the same strict schema. Multiple discovered files,
-unknown fields, wrong types, bad references, malformed addresses, and invalid
-CIDRs are rejected.
+unknown or duplicate fields, wrong types, bad references, unsupported protocol
+capabilities, contradictory rules, malformed addresses, and invalid CIDRs are
+rejected with stable paths and repair hints.
 
 ```toml
-[proxies.default]
-type = "socks5"
-addr = "127.0.0.1:1080"
+version = 1
 
-[proxies.corp]
-type = "socks5"
-addr = "127.0.0.1:1081"
+[proxy]
+default_policy = "default"
 
-[run]
-proxy = "default"
-dns = "fake"
+[proxy.outbounds.default]
+type = "socks5"
+server = "127.0.0.1"
+server_port = 1080
+network = ["tcp"]
+
+[proxy.policies.default.dns]
+mode = "fake"
+
+[proxy.policies.default.final]
+tcp = { type = "route", outbound = "default" }
+udp = { type = "reject", method = "refused" }
+
+[capture]
+mode = "off"
+
+[decrypt]
+mode = "off"
 ```
 
 Optional authentication keeps the password out of the config:
 
 ```toml
-[proxies.corp.auth]
+[proxy.outbounds.default.auth]
 username = "alice"
-passwordFile = "/etc/heimdall/secrets/corp-password"
+password_file = "/etc/heimdall/secrets/default-password"
 ```
 
-`dns = "fake"` sends hostname resolution through heimdall so the SOCKS5
-server resolves names. Use `dns = "system"` when the host resolver is
-preferred.
+Policies contain ordered TCP rules with `route`, `direct`, or `reject` actions
+and mandatory TCP/UDP final actions. Fake DNS preserves hostnames for domain
+rules; system DNS exposes resolved IPs. Non-DNS UDP is rejected until a real UDP
+relay exists. See [docs/config.md](docs/config.md) for the complete schema.
 
 ## Getting started
 
@@ -88,11 +102,11 @@ and run the CLI as an ordinary user.
 ## Command surface
 
 ```text
-heimdall run [-p NAME] [--dns fake|system] -- COMMAND [ARGS...]
-heimdall agent [-p NAME] [--dns fake|system]
+heimdall run [--policy NAME] -- COMMAND [ARGS...]
+heimdall agent [--policy NAME]
 heimdall daemon
 heimdall status [--json]
-heimdall config validate|show|path
+heimdall config validate|explain|show|path
 heimdall init [--dir PATH] [--format toml|yaml|json|nickel] [--force]
 ```
 

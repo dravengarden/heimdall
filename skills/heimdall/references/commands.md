@@ -7,6 +7,7 @@ heimdall agent
 heimdall config path
 heimdall config show
 heimdall config validate --json
+heimdall config explain --policy default --domain example.com --port 443 --json
 heimdall status --json
 ```
 
@@ -18,17 +19,22 @@ ready, 1 means not ready, and 2 means CLI usage error. It never mutates state.
 evaluates Nickel when applicable, decodes the selected syntax, rejects unknown
 fields and types, then runs semantic validation.
 
+`config explain` evaluates one TCP destination against the selected policy and
+returns the first matching rule plus its structured action. Use `--ip` instead
+of `--domain` for IP/CIDR rules; omit both to test port-only and final actions.
+
 ## Run through a proxy
 
 ```bash
 heimdall agent
 heimdall run -- curl https://example.com
-heimdall run -p corp --dns fake -- curl https://internal.example.com
+heimdall agent --policy corp
+heimdall run --policy corp -- curl https://internal.example.com
 ```
 
-`fake` DNS is for names the upstream proxy can resolve. Use `system` when the
-host resolver should resolve names normally. The wrapped process may be
-re-executed through `systemd-run --user --scope` to obtain an isolated cgroup.
+The selected policy owns DNS, ordered rules, and final TCP/UDP actions. The
+wrapped process may be re-executed through `systemd-run --user --scope` to
+obtain an isolated cgroup.
 
 ## Diagnose failures
 
@@ -40,9 +46,9 @@ re-executed through `systemd-run --user --scope` to obtain an isolated cgroup.
    journalctl -u heimdall --since "10 min ago" --no-pager
    ```
 
-4. Preview the exact run decision with `heimdall agent -p NAME --dns MODE`.
-5. Reproduce with a small command such as `curl`, preserving the same proxy and
-   DNS flags.
+4. Preview a destination with `heimdall config explain --policy NAME ... --json`.
+5. Preview daemon readiness with `heimdall agent --policy NAME`.
+6. Reproduce with a small command such as `curl`, preserving the same policy.
 
 Do not equate config validity with connectivity. A real acceptance check must
-exercise the named upstream through `heimdall run`.
+exercise the selected policy through `heimdall run`.

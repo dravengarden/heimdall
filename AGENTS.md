@@ -112,17 +112,18 @@ remember to ask for more if needed.
   The concise help has a footer line (`Tip: heimdall help -v …`)
   that points AI agents at the verbose form. Don't strip the footer.
 - `heimdall agent` is the stable automation entry point. Keep it read-only,
-  single-document JSON, versioned as `heimdall.agent/v1`, and shell-safe by
+  single-document JSON, versioned as `heimdall.agent/v2`, and shell-safe by
   representing commands as argv arrays. Exit 0 means ready, 1 means not ready,
-  and 2 remains clap usage failure. Additive v1 fields are allowed; renaming or
+  and 2 remains clap usage failure. Additive v2 fields are allowed; renaming or
   changing existing field semantics requires a new contract version.
 - `heimdall init` preserves `config.<ext>` unless `--force`. Don't change this:
   losing live config to a doc refresh has bitten the user already.
-- When configured with `0.0.0.0:<port>`, the daemon uses a dual-stack TCP
-  listener (`[::]:<port>`). Don't remove that compatibility rewrite.
-- IPv6 ULA range `fc00::/7` is **not** in the default bypass list,
-  because the fake-IP v6 pool (`fc00:198:19::/96`) lives inside it.
-  Bypassing fc00::/7 would break v6 redirect.
+- The internal relay binds fixed IPv4 and IPv6 loopback sockets on port 12345;
+  it is deliberately not configurable or exposed on a wildcard address.
+- Registered cgroups have no implicit destination bypass except relay
+  self-protection and policy-selected system DNS. Express private-network
+  exceptions as ordered `direct` rules; fake-IP ranges must remain eligible
+  for relay redirection.
 - v2raya (or any other transparent-host-proxy) on the same node will
   TPROXY-trap heimdall's relay traffic unless you whitelist
   `dst=relay_ip:12345` in the host's iptables/ip6tables. Document

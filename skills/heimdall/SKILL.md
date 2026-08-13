@@ -1,75 +1,72 @@
 ---
 name: heimdall
-description: Operate and configure the Heimdall proxychains-style CLI wrapper. Use when an agent needs to run a command through a named SOCKS5 proxy, create or strictly validate Heimdall TOML/YAML/JSON/Nickel configuration, inspect daemon health, diagnose command-scoped proxying or fake-IP DNS, or work with heimdall.service and /etc/heimdall/config.*.
+description: Operate and configure the Heimdall proxychains-style CLI wrapper. Use when an agent needs to run a command through a named egress policy, create or strictly repair Heimdall TOML/YAML/JSON/Nickel configuration, inspect daemon health, diagnose command-scoped SOCKS5 routing or fake/system DNS, or work with heimdall.service and /etc/heimdall/config.*.
 ---
 
 # Heimdall
 
-Treat Heimdall as a command wrapper, not a host-wide traffic router. The daemon
-redirects only cgroups registered by `heimdall run`; unrelated processes bypass
-it.
+Treat Heimdall as a command wrapper, not a host-wide traffic router. It affects
+only cgroups registered by `heimdall run`.
 
-## Start with the live interface
+## Start with the machine contract
 
-Run this first:
+Run:
 
 ```bash
 heimdall agent
 ```
 
-Parse its single `heimdall.agent/v1` JSON object. Exit 0 means ready; exit 1
-means the JSON explains why. Read `config.error.code` or `decision.error.code`
-before the human-readable message. Execute `actions` as argv arrays; never join
-or evaluate them as a shell string.
+Parse the single `heimdall.agent/v2` JSON object. Exit 0 means ready, exit 1
+means the document explains why, and exit 2 is invalid CLI usage. Read stable
+error `code` values before messages. Execute `actions` as argv arrays; never
+join or evaluate them as shell text.
 
-Use the human command tree only when deeper discovery is needed:
+Use `heimdall help -v` only when deeper command discovery is needed.
 
-```bash
-heimdall help -v
-heimdall config path
-heimdall config validate --json
-heimdall status --json
-```
+## Validate and repair configuration
 
-Use the installed CLI output as the authority for available flags. Do not infer
-removed workload-routing, flow-query, UI, or TLS-observability commands.
-
-## Route a command
-
-Preview readiness and selection before execution when changing proxy or DNS:
-
-```bash
-heimdall agent -p <proxy> --dns fake
-heimdall run -p <proxy> -- curl https://example.com
-```
-
-Omit `-p` and `--dns` to use the config's `run` defaults. Keep the command after
-`--`. Read [references/commands.md](references/commands.md) for diagnostics and
-the daemon boundary.
-
-## Edit configuration safely
-
-Keep exactly one `/etc/heimdall/config.{toml,yaml,yml,json,ncl}` file unless an
-explicit `--config` path is used. All formats decode into one strict schema;
-unknown fields, wrong types, bad references, malformed addresses, invalid
-listener collisions, unsafe cgroup paths, and malformed CIDRs are rejected.
+Read [references/config.md](references/config.md) before creating or changing a
+config. Keep exactly one discovered
+`/etc/heimdall/config.{toml,yaml,yml,json,ncl}` file unless `--config` is
+explicit.
 
 After every edit, run:
 
 ```bash
 heimdall config validate --json
-heimdall agent
 ```
 
-Read [references/config.md](references/config.md) before creating or changing a
-config. Never put a password directly in config; use an absolute `passwordFile`.
+If validation fails, process every `diagnostics` entry. Use `code` for control
+flow, `path` to locate the field, and `hint` as the repair constraint. Repeat
+until `valid` is true. Do not weaken UDP to direct to silence a capability
+error. Never put a password value in config; use an absolute `password_file`.
+
+Then run:
+
+```bash
+heimdall config explain --policy <policy> --domain example.com --port 443 --json
+heimdall agent --policy <policy>
+```
+
+Use `config explain` to verify ordered rule selection before execution. Do not
+treat configuration validity or an explained decision as daemon or network
+acceptance.
+
+## Run a command
+
+```bash
+heimdall run --policy <policy> -- curl https://example.com
+```
+
+Omit `--policy` to use `proxy.default_policy`. DNS belongs to the policy and is
+not a per-run override. Keep the wrapped command after `--`. Read
+[references/commands.md](references/commands.md) for runtime diagnostics.
 
 ## Preserve the ownership boundary
 
-- Do not change routing, firewall, DNS, or system-wide proxy state merely to use
+- Do not change host routing, firewall, DNS, or proxy state merely to use
   Heimdall.
 - Do not start the privileged daemon when the user asked only for config review.
-- Treat a successful config check as syntax and semantics proof, not daemon or
-  network acceptance.
-- For runtime failures, collect `heimdall agent`, `heimdall status --json`, and recent
-  `heimdall.service` logs before proposing a change.
+- For runtime failures, collect `heimdall agent`, `heimdall status --json`, and
+  recent `heimdall.service` logs before changing state.
+- Do not infer removed workload, UI, or TLS-observability commands.

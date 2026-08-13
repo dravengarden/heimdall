@@ -1,6 +1,6 @@
 //! Loopback-only control API used by `heimdall run`.
 
-use std::{collections::BTreeMap, net::SocketAddr, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 
 use anyhow::{Context, Result};
 use axum::{
@@ -10,7 +10,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use heimdall_config::{Connection, Decision};
+use heimdall_config::{Action, Decision, DnsMode, ProxyPolicy};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
@@ -18,7 +18,7 @@ use crate::{CliOverrides, PolicyEngineSlot, policy::PolicyEngine};
 
 #[derive(Clone)]
 pub struct AppState {
-    pub connections: BTreeMap<String, Connection>,
+    pub policies: BTreeMap<String, ProxyPolicy>,
     pub cli_overrides: CliOverrides,
     pub policy_engine: PolicyEngineSlot,
 }
@@ -31,10 +31,8 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-pub async fn serve(state: AppState, addr: SocketAddr) -> Result<()> {
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .with_context(|| format!("bind control API on {addr}"))?;
+pub async fn serve(state: AppState, listener: tokio::net::TcpListener) -> Result<()> {
+    let addr = listener.local_addr().context("read control API address")?;
     info!(addr = %addr, "control API listening");
     axum::serve(listener, router(state))
         .await
@@ -48,56 +46,46 @@ async fn health() -> &'static str {
 #[derive(Debug, Deserialize)]
 pub struct CliRegisterReq {
     pub cgroup_id: u64,
-    pub connection: String,
-    #[serde(default = "default_dns_strategy")]
-    pub dns: String,
-}
-
-fn default_dns_strategy() -> String {
-    "fake".into()
+    pub policy: String,
 }
 
 #[derive(Debug, Serialize)]
 pub struct CliOverrideEntry {
     pub cgroup_id: u64,
-    pub connection: String,
+    pub policy: String,
 }
 
 async fn register_cli(
     State(state): State<AppState>,
     Json(request): Json<CliRegisterReq>,
 ) -> Result<Json<CliOverrideEntry>, ApiError> {
-    if !state.connections.contains_key(&request.connection) {
-        return Err(ApiError(
+    let policy = state.policies.get(&request.policy).ok_or_else(|| {
+        ApiError(
             StatusCode::BAD_REQUEST,
-            format!("unknown proxy `{}`", request.connection),
-        ));
-    }
-    let dns_hijack = match request.dns.as_str() {
-        "fake" => true,
-        "system" => false,
-        other => {
-            return Err(ApiError(
-                StatusCode::BAD_REQUEST,
-                format!("invalid dns `{other}`; expected `fake` or `system`"),
-            ));
-        }
-    };
+            format!("unknown policy `{}`", request.policy),
+        )
+    })?;
+    let reject_udp = matches!(policy.final_.udp, Action::Reject { .. });
     let engine = engine(&state)?;
     engine
-        .register_external(request.cgroup_id, dns_hijack)
+        .register_external(
+            request.cgroup_id,
+            policy.dns_hijack(),
+            matches!(policy.dns.mode, DnsMode::System),
+            reject_udp,
+        )
         .await
         .map_err(internal)?;
     state.cli_overrides.write().insert(
         request.cgroup_id,
         Decision {
-            use_: request.connection.clone(),
+            policy: request.policy.clone(),
         },
     );
-    info!(cgroup_id = request.cgroup_id, proxy = %request.connection, dns = %request.dns, "CLI cgroup registered");
+    info!(cgroup_id = request.cgroup_id, policy = %request.policy, "CLI cgroup registered");
     Ok(Json(CliOverrideEntry {
         cgroup_id: request.cgroup_id,
-        connection: request.connection,
+        policy: request.policy,
     }))
 }
 

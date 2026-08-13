@@ -1,8 +1,9 @@
 //! `heimdall config <subcmd>` — inspect and validate the resolved
 //! config file.
 //!
-//! Three verbs:
+//! Four verbs:
 //! - `validate`: parse + run schema checks; exit 0/1. CI-friendly.
+//! - `explain`: evaluate one TCP destination against the ordered rules.
 //! - `show`: print the file content (auto-discovered) so you can
 //!   see what the daemon is actually reading.
 //! - `path`: just the resolved path on stdout. Useful for
@@ -13,10 +14,10 @@
 //! `heimdall-config`. For now we surface the source file as-is —
 //! Every supported syntax is decoded into the same strict schema.
 
-use std::path::Path;
+use std::{net::IpAddr, path::Path};
 
 use anyhow::{Context, Result};
-use heimdall_config::HeimdallConfig;
+use heimdall_config::{Action, DnsMode, HeimdallConfig};
 use serde::Serialize;
 
 #[derive(clap::Subcommand, Debug)]
@@ -24,6 +25,9 @@ pub enum ConfigCmd {
     /// Parse the config file and run schema validation. Exit 0 on
     /// success, 1 on parse or schema error.
     Validate(ValidateArgs),
+
+    /// Explain which ordered rule handles one TCP destination.
+    Explain(ExplainArgs),
 
     /// Print the resolved config file's content. Add `--json` to wrap
     /// it in a stable envelope (path + format + content).
@@ -35,8 +39,7 @@ pub enum ConfigCmd {
 
 #[derive(clap::Args, Debug)]
 pub struct ValidateArgs {
-    /// JSON output: `{"valid": bool, "path": "...", "error": null|"..."}`.
-    /// Stable contract for CI / AI agents.
+    /// Emit stable codes, JSON paths, messages, and repair hints.
     #[arg(long)]
     json: bool,
 }
@@ -48,9 +51,33 @@ pub struct ShowArgs {
     json: bool,
 }
 
+#[derive(clap::Args, Debug)]
+pub struct ExplainArgs {
+    /// Policy to inspect; defaults to proxy.default_policy.
+    #[arg(short = 'p', long)]
+    policy: Option<String>,
+
+    /// Destination domain recovered by fake-IP DNS.
+    #[arg(long, conflicts_with = "ip")]
+    domain: Option<String>,
+
+    /// Destination IPv4 or IPv6 address.
+    #[arg(long, conflicts_with = "domain")]
+    ip: Option<IpAddr>,
+
+    /// Destination TCP port.
+    #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
+    port: u16,
+
+    /// Emit one versioned JSON document.
+    #[arg(long)]
+    json: bool,
+}
+
 pub async fn run(config_path: &Path, cmd: ConfigCmd) -> Result<()> {
     match cmd {
         ConfigCmd::Validate(args) => validate(config_path, args).await,
+        ConfigCmd::Explain(args) => explain(config_path, args),
         ConfigCmd::Show(args) => show(config_path, args),
         ConfigCmd::Path => {
             println!("{}", config_path.display());
@@ -60,32 +87,116 @@ pub async fn run(config_path: &Path, cmd: ConfigCmd) -> Result<()> {
 }
 
 #[derive(Serialize)]
+struct ExplainJson<'a> {
+    contract: &'static str,
+    policy: &'a str,
+    dns: &'static str,
+    target: ExplainTarget<'a>,
+    matched_rule: Option<&'a str>,
+    action: &'a Action,
+}
+
+#[derive(Serialize)]
+struct ExplainTarget<'a> {
+    network: &'static str,
+    domain: Option<&'a str>,
+    ip: Option<IpAddr>,
+    port: u16,
+}
+
+fn explain(config_path: &Path, args: ExplainArgs) -> Result<()> {
+    let config = HeimdallConfig::load(config_path).map_err(|error| {
+        anyhow::anyhow!(
+            "invalid config {}\n\n{}",
+            config_path.display(),
+            error.actionable_message()
+        )
+    })?;
+    let policy_name = args
+        .policy
+        .as_deref()
+        .unwrap_or(&config.proxy.default_policy);
+    let policy = config.policy(policy_name).with_context(|| {
+        format!(
+            "unknown policy `{policy_name}`\nfix: use --policy with one of: {}",
+            config
+                .proxy
+                .policies
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    })?;
+    let (rule, action) = policy.explain_tcp(args.domain.as_deref(), args.ip, args.port);
+    let matched_rule = rule.map(|value| value.name.as_str());
+
+    if args.json {
+        let output = ExplainJson {
+            contract: "heimdall.config.explain/v1",
+            policy: policy_name,
+            dns: match policy.dns.mode {
+                DnsMode::Fake => "fake",
+                DnsMode::System => "system",
+            },
+            target: ExplainTarget {
+                network: "tcp",
+                domain: args.domain.as_deref(),
+                ip: args.ip,
+                port: args.port,
+            },
+            matched_rule,
+            action,
+        };
+        println!("{}", serde_json::to_string(&output)?);
+    } else {
+        println!("policy: {policy_name}");
+        println!("rule: {}", matched_rule.unwrap_or("<final>"));
+        println!("action: {}", action_label(action));
+    }
+    Ok(())
+}
+
+fn action_label(action: &Action) -> String {
+    match action {
+        Action::Route { outbound } => format!("route:{outbound}"),
+        Action::Direct => "direct".into(),
+        Action::Reject { method } => format!("reject:{method:?}").to_ascii_lowercase(),
+    }
+}
+
+#[derive(Serialize)]
 struct ValidateJson<'a> {
+    contract: &'static str,
     valid: bool,
     path: String,
-    error: Option<&'a str>,
+    diagnostics: &'a [heimdall_config::ConfigDiagnostic],
 }
 
 async fn validate(config_path: &Path, args: ValidateArgs) -> Result<()> {
     let result = HeimdallConfig::load(config_path);
-    let (ok, err_msg) = match &result {
-        Ok(_) => (true, None),
-        Err(e) => (false, Some(format!("{e:#}"))),
+    let (ok, diagnostics) = match &result {
+        Ok(_) => (true, Vec::new()),
+        Err(error) => (false, error.diagnostics()),
     };
 
     if args.json {
         let out = ValidateJson {
+            contract: "heimdall.config.validate/v1",
             valid: ok,
             path: config_path.display().to_string(),
-            error: err_msg.as_deref(),
+            diagnostics: &diagnostics,
         };
         println!("{}", serde_json::to_string(&out)?);
     } else if ok {
         println!("ok  {}", config_path.display());
     } else {
         eprintln!("INVALID  {}", config_path.display());
-        if let Some(msg) = &err_msg {
-            eprintln!("\n{msg}");
+        for diagnostic in &diagnostics {
+            eprintln!(
+                "\n{}  {}\n  {}\n  fix: {}",
+                diagnostic.code, diagnostic.path, diagnostic.message, diagnostic.hint
+            );
         }
     }
 

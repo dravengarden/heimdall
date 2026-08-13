@@ -1,4 +1,4 @@
 interface:
   display_name: "Heimdall"
-  short_description: "Operate the command-scoped SOCKS5 proxy wrapper"
-  default_prompt: "Use $heimdall to validate my config and run this command through the selected proxy."
+  short_description: "Validate policies and run command-scoped proxying"
+  default_prompt: "Use $heimdall to repair my config and run this command through the selected policy."

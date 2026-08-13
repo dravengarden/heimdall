@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use heimdall_config::HeimdallConfig;
 use serde::Serialize;
 
@@ -11,17 +11,24 @@ use crate::StatusArgs;
 #[derive(Serialize)]
 struct StatusJson<'a> {
     config: String,
-    proxies: usize,
-    default_proxy: &'a str,
-    relay_listen: &'a str,
+    outbounds: usize,
+    policies: usize,
+    default_policy: &'a str,
+    relay_listen: &'static str,
+    dns_port: u16,
     control_listen: &'a str,
     daemon_reachable: bool,
 }
 
 pub async fn run(config_path: &Path, args: StatusArgs) -> Result<()> {
-    let cfg = HeimdallConfig::load(config_path)
-        .with_context(|| format!("loading config from {}", config_path.display()))?;
-    let daemon_reachable = tokio::net::TcpStream::connect(&cfg.runtime.api_listen)
+    let cfg = HeimdallConfig::load(config_path).map_err(|error| {
+        anyhow::anyhow!(
+            "invalid config {}\n\n{}",
+            config_path.display(),
+            error.actionable_message()
+        )
+    })?;
+    let daemon_reachable = tokio::net::TcpStream::connect(&cfg.daemon.api_listen)
         .await
         .is_ok();
 
@@ -30,10 +37,12 @@ pub async fn run(config_path: &Path, args: StatusArgs) -> Result<()> {
             "{}",
             serde_json::to_string(&StatusJson {
                 config: config_path.display().to_string(),
-                proxies: cfg.connections.len(),
-                default_proxy: &cfg.run.proxy,
-                relay_listen: &cfg.runtime.listen,
-                control_listen: &cfg.runtime.api_listen,
+                outbounds: cfg.proxy.outbounds.len(),
+                policies: cfg.proxy.policies.len(),
+                default_policy: &cfg.proxy.default_policy,
+                relay_listen: "127.0.0.1:12345 + [::1]:12345",
+                dns_port: cfg.daemon.dns_port,
+                control_listen: &cfg.daemon.api_listen,
                 daemon_reachable,
             })?
         );
@@ -41,10 +50,15 @@ pub async fn run(config_path: &Path, args: StatusArgs) -> Result<()> {
     }
 
     println!("config         {}", config_path.display());
-    println!("proxies        {}", cfg.connections.len());
-    println!("default proxy  {}", cfg.run.proxy);
-    println!("relay listen   {}", cfg.runtime.listen);
-    println!("control listen {}", cfg.runtime.api_listen);
+    println!("outbounds      {}", cfg.proxy.outbounds.len());
+    println!("policies       {}", cfg.proxy.policies.len());
+    println!("default policy {}", cfg.proxy.default_policy);
+    println!("relay listen   127.0.0.1:12345 + [::1]:12345");
+    println!(
+        "DNS port       {} (IPv4/IPv6 loopback)",
+        cfg.daemon.dns_port
+    );
+    println!("control listen {}", cfg.daemon.api_listen);
     println!(
         "daemon         {}",
         if daemon_reachable { "ok" } else { "DOWN" }

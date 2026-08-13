@@ -23,7 +23,7 @@
 
 use std::{
     collections::HashMap,
-    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
+    net::{Ipv4Addr, Ipv6Addr},
     str::FromStr,
     sync::{
         Arc,
@@ -41,7 +41,10 @@ use hickory_proto::{
     serialize::binary::{BinDecodable, BinEncodable},
 };
 use parking_lot::RwLock;
-use tokio::net::UdpSocket;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream, UdpSocket},
+};
 use tracing::{debug, info, warn};
 
 const FAKE_IP_TTL_SEC: u32 = 30;
@@ -89,15 +92,24 @@ struct V6Pool {
     by_name: RwLock<HashMap<String, [u8; 16]>>,
 }
 
+pub struct DnsServer {
+    resolver: Arc<DnsResolver>,
+    udp4: Arc<UdpSocket>,
+    udp6: Arc<UdpSocket>,
+    tcp4: TcpListener,
+    tcp6: TcpListener,
+    port: u16,
+}
+
 impl DnsResolver {
     /// `fake_cidr` is the IPv4 CIDR; `fake6_cidr` is the optional IPv6
     /// CIDR for AAAA synthesis (pass empty string to disable IPv6).
     pub fn new(fake_cidr: &str, fake6_cidr: &str) -> Result<Self> {
-        let (base, prefix) =
-            parse_v4_cidr(fake_cidr).with_context(|| format!("parse fakeIpCidr `{fake_cidr}`"))?;
+        let (base, prefix) = parse_v4_cidr(fake_cidr)
+            .with_context(|| format!("parse fake_ip_cidr `{fake_cidr}`"))?;
         anyhow::ensure!(
             prefix <= 30,
-            "fakeIpCidr must be /30 or larger; got /{prefix}"
+            "fake_ip_cidr must be /30 or larger; got /{prefix}"
         );
         let size = 1u64 << (32 - prefix);
 
@@ -105,10 +117,10 @@ impl DnsResolver {
             None
         } else {
             let (base6, prefix6) = parse_v6_cidr(fake6_cidr)
-                .with_context(|| format!("parse fakeIp6Cidr `{fake6_cidr}`"))?;
+                .with_context(|| format!("parse fake_ip6_cidr `{fake6_cidr}`"))?;
             anyhow::ensure!(
                 prefix6 <= 124,
-                "fakeIp6Cidr must be /124 or larger; got /{prefix6}"
+                "fake_ip6_cidr must be /124 or larger; got /{prefix6}"
             );
             let host_bits = 128 - prefix6;
             let size6: u64 = if host_bits >= 64 {
@@ -217,14 +229,32 @@ impl DnsResolver {
         pool.by_ip.read().get(&addr.octets()).cloned()
     }
 
-    /// Run the UDP DNS server on `listen`. Loops forever.
-    pub async fn serve(self: Arc<Self>, listen: SocketAddr) -> Result<()> {
-        let sock = UdpSocket::bind(listen)
+    /// Bind UDP and TCP before daemon readiness so a valid fake-DNS policy
+    /// cannot silently start with an unusable resolver.
+    pub async fn bind(self: Arc<Self>, port: u16) -> Result<DnsServer> {
+        let udp4 = UdpSocket::bind((Ipv4Addr::LOCALHOST, port))
             .await
-            .with_context(|| format!("bind DNS UDP on {listen}"))?;
-        info!(listen = %listen, "fake-IP DNS server ready");
+            .with_context(|| format!("bind IPv4 DNS UDP on port {port}"))?;
+        let udp6 = UdpSocket::bind((Ipv6Addr::LOCALHOST, port))
+            .await
+            .with_context(|| format!("bind IPv6 DNS UDP on port {port}"))?;
+        let tcp4 = TcpListener::bind((Ipv4Addr::LOCALHOST, port))
+            .await
+            .with_context(|| format!("bind IPv4 DNS TCP on port {port}"))?;
+        let tcp6 = TcpListener::bind((Ipv6Addr::LOCALHOST, port))
+            .await
+            .with_context(|| format!("bind IPv6 DNS TCP on port {port}"))?;
+        Ok(DnsServer {
+            resolver: self,
+            udp4: Arc::new(udp4),
+            udp6: Arc::new(udp6),
+            tcp4,
+            tcp6,
+            port,
+        })
+    }
 
-        let sock = Arc::new(sock);
+    async fn serve_udp(self: Arc<Self>, sock: Arc<UdpSocket>) {
         let mut buf = vec![0u8; 4096];
         loop {
             let (n, peer) = match sock.recv_from(&mut buf).await {
@@ -254,6 +284,39 @@ impl DnsResolver {
             if let Err(e) = sock.send_to(&resp_bytes, peer).await {
                 warn!(error = %e, ?peer, "DNS send failed");
             }
+        }
+    }
+
+    async fn serve_tcp(&self, mut stream: TcpStream) -> Result<()> {
+        loop {
+            let length = match stream.read_u16().await {
+                Ok(length) => usize::from(length),
+                Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
+                Err(error) => return Err(error).context("read DNS TCP length"),
+            };
+            anyhow::ensure!(length > 0, "zero-length DNS TCP frame");
+            let mut request = vec![0_u8; length];
+            stream
+                .read_exact(&mut request)
+                .await
+                .context("read DNS TCP query")?;
+            let query = Message::from_bytes(&request).context("decode DNS TCP query")?;
+            let response = self
+                .handle(query)
+                .to_bytes()
+                .context("encode DNS TCP response")?;
+            anyhow::ensure!(
+                response.len() <= usize::from(u16::MAX),
+                "DNS TCP response too large"
+            );
+            stream
+                .write_u16(response.len() as u16)
+                .await
+                .context("write DNS TCP length")?;
+            stream
+                .write_all(&response)
+                .await
+                .context("write DNS TCP response")?;
         }
     }
 
@@ -320,6 +383,33 @@ impl DnsResolver {
     }
 }
 
+impl DnsServer {
+    /// Serve both DNS transports after [`DnsResolver::bind`] succeeded.
+    pub async fn serve(self) -> Result<()> {
+        info!(
+            port = self.port,
+            "fake-IP DNS ready on IPv4/IPv6 UDP/TCP loopback"
+        );
+        let resolver = self.resolver.clone();
+        tokio::spawn(async move { resolver.serve_udp(self.udp4).await });
+        let resolver = self.resolver.clone();
+        tokio::spawn(async move { resolver.serve_udp(self.udp6).await });
+
+        loop {
+            let (stream, peer) = tokio::select! {
+                accepted = self.tcp4.accept() => accepted.context("accept IPv4 DNS TCP")?,
+                accepted = self.tcp6.accept() => accepted.context("accept IPv6 DNS TCP")?,
+            };
+            let resolver = self.resolver.clone();
+            tokio::spawn(async move {
+                if let Err(error) = resolver.serve_tcp(stream).await {
+                    warn!(%peer, %error, "DNS TCP connection failed");
+                }
+            });
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
@@ -355,6 +445,64 @@ fn parse_v6_cidr(s: &str) -> Result<(Ipv6Addr, u8)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn bind_reserves_udp_and_tcp_before_serving() {
+        let resolver = Arc::new(DnsResolver::new("198.19.0.0/16", "").unwrap());
+        let probe = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        let _server = resolver.bind(port).await.unwrap();
+        assert!(UdpSocket::bind((Ipv4Addr::LOCALHOST, port)).await.is_err());
+        assert!(UdpSocket::bind((Ipv6Addr::LOCALHOST, port)).await.is_err());
+        assert!(
+            TcpListener::bind((Ipv4Addr::LOCALHOST, port))
+                .await
+                .is_err()
+        );
+        assert!(
+            TcpListener::bind((Ipv6Addr::LOCALHOST, port))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn tcp_dns_uses_rfc_length_frames() {
+        use hickory_proto::{
+            op::{MessageType, Query},
+            rr::Name,
+        };
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (client, accepted) = tokio::join!(TcpStream::connect(address), listener.accept());
+        let mut client = client.unwrap();
+        let resolver = Arc::new(DnsResolver::new("198.19.0.0/16", "").unwrap());
+        let server = tokio::spawn({
+            let resolver = resolver.clone();
+            async move { resolver.serve_tcp(accepted.unwrap().0).await }
+        });
+
+        let mut query = Message::new(42, MessageType::Query, OpCode::Query);
+        query.add_query(Query::query(
+            Name::from_ascii("example.com.").unwrap(),
+            RecordType::A,
+        ));
+        let bytes = query.to_bytes().unwrap();
+        client.write_u16(bytes.len() as u16).await.unwrap();
+        client.write_all(&bytes).await.unwrap();
+
+        let length = client.read_u16().await.unwrap();
+        let mut response = vec![0_u8; usize::from(length)];
+        client.read_exact(&mut response).await.unwrap();
+        let response = Message::from_bytes(&response).unwrap();
+        assert_eq!(response.id, 42);
+        assert_eq!(response.answers.len(), 1);
+
+        drop(client);
+        server.await.unwrap().unwrap();
+    }
 
     #[test]
     fn allocate_returns_stable_ip_for_same_host() {

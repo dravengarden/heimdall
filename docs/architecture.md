@@ -6,7 +6,7 @@ outbound connections.
 ```text
 heimdall run -- command
         |
-        | create transient cgroup and register proxy choice
+        | create transient cgroup and register policy choice
         v
 privileged heimdall daemon
         |  eBPF redirects only the registered cgroup
@@ -20,29 +20,34 @@ destination
 
 ## Boundaries
 
-The CLI is the product surface. It selects a named proxy, optionally chooses
-the DNS mode, creates a child cgroup, executes the command, forwards its exit
-status, and cleans up.
+The CLI is the product surface. It selects a named policy, creates a child
+cgroup, executes the command, forwards its exit status, and cleans up.
 
 The daemon is implementation infrastructure. It loads the eBPF object,
-maintains a local cgroup-to-proxy registry, runs the TCP relay and fake-IP DNS,
+maintains a local cgroup-to-policy registry, runs the TCP relay and fake-IP DNS,
 and reaps abandoned CLI cgroups. Its default eBPF policy is always bypass, so
 an unregistered process cannot be redirected accidentally.
 
-The configuration contains only named proxies, run defaults, and rarely-used
-daemon listener settings. There is no workload selector language and no
+The internal relay binds fixed IPv4 and IPv6 loopback sockets on port 12345;
+fake DNS binds both loopback families over UDP and TCP before readiness. These
+data-plane endpoints cannot be exposed or made inconsistent with eBPF by
+configuration.
+
+The configuration contains named outbounds and command-selected policies with
+ordered destination rules. It has no workload selector language or
 orchestrator-shaped metadata.
 
 ## Connection lifecycle
 
 1. `heimdall run` re-enters through `systemd-run --user --scope` when needed.
 2. It creates an `heimdall-cli-*` cgroup below the delegated user subtree.
-3. It registers that cgroup ID, proxy name, and DNS mode with the local daemon.
+3. It registers that cgroup ID and policy name with the local daemon.
 4. The child joins the cgroup and executes the requested command.
 5. eBPF rewrites the child's TCP destinations to the local relay. DNS traffic
-   is also redirected when `dns = "fake"`.
-6. The relay recovers the original destination and connects through the
-   selected SOCKS5 server.
+   is redirected over UDP or TCP when the policy uses fake DNS. System DNS is
+   explicitly allowed to port 53. Other UDP is rejected fail-closed.
+6. The relay recovers the original destination, evaluates the policy's ordered
+   TCP rules, and routes, connects directly, or rejects it.
 7. Application bytes, including TLS records, pass through unchanged. Heimdall
    never uses SNI to reinterpret an IP destination: fake DNS produces a SOCKS5
    domain request, while system DNS preserves the resolved IP address.
@@ -63,5 +68,6 @@ hold in its cache.
 - a Web UI or public HTTP API as a primary interface
 - TLS plaintext collection as part of the proxy wrapper contract
 
-Destination-based routing belongs in the selected upstream proxy. Heimdall's
-job is only to choose a proxy for one command and transport its connections.
+Heimdall's policy language is deliberately limited to destination identity,
+protocol, and port for one command cgroup. Complex upstream routing can still
+live in the selected SOCKS5 service.

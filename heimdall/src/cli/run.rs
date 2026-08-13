@@ -1,14 +1,14 @@
 //! `heimdall run` — proxychains-style CLI proxy via cgroup + eBPF.
 //!
 //! Wraps an arbitrary command so its egress flows through one of the
-//! `connections:` declared in /etc/heimdall/heimdall.<ext>. No
+//! named policy declared in /etc/heimdall/config.<ext>. No
 //! LD_PRELOAD: works with statically-linked Go binaries, setuid
-//! binaries, and UDP traffic, because heimdall's existing
+//! binaries, while non-DNS UDP is rejected until a real UDP relay exists. The
 //! cgroup-attached eBPF programs do the redirection.
 //!
 //! Flow:
 //!
-//!   1. Resolve the proxy and DNS mode from `[run]`, then CLI flags.
+//!   1. Resolve the policy from `proxy.default_policy`, then CLI flags.
 //!   2. Verify we're inside `user@<UID>.service` (where the user has
 //!      cgroup write permission). If not, re-exec via
 //!      `systemd-run --user --scope --quiet -- heimdall run --no-reentry …`
@@ -47,20 +47,9 @@ use tracing::warn;
 
 #[derive(Args, Debug)]
 pub struct RunArgs {
-    /// Named proxy from `[proxies.<name>]`. Overrides `run.proxy`.
+    /// Named policy from `proxy.policies`. Overrides proxy.default_policy.
     #[arg(short = 'p', long)]
-    pub proxy: Option<String>,
-
-    /// DNS strategy for the wrapped command. `fake` makes heimdall
-    /// hijack DNS lookups (UDP/TCP :53 destinations) for the cgroup
-    /// and serve them from the fake-IP DNS server, so hostnames in
-    /// the upstream proxy's scope (e.g. corporate VPN) resolve to a
-    /// fake IP that connect4/connect6 then routes via the relay.
-    /// `system` uses the host's normal resolver (systemd-resolved /
-    /// /etc/resolv.conf) — useful when the wrapped command needs
-    /// public DNS only.
-    #[arg(long, value_parser = ["fake", "system"])]
-    pub dns: Option<String>,
+    pub policy: Option<String>,
 
     /// Skip the systemd-run --user --scope re-exec. Set automatically
     /// by the re-exec path so we don't loop. Hidden from --help.
@@ -83,11 +72,7 @@ pub struct RunArgs {
 /// Final knobs after config + flag resolution.
 #[derive(Debug, Clone, Serialize)]
 struct RunDecision {
-    connection: String,
-    /// `"fake"` (heimdall hijacks :53 lookups for this cgroup) or
-    /// `"system"` (host resolver / systemd-resolved). Defaults to
-    /// `"fake"` because most `heimdall run` use cases want the
-    /// upstream proxy's DNS scope (corp VPN), not the host's.
+    policy: String,
     dns: String,
 }
 
@@ -95,8 +80,7 @@ struct RunDecision {
 #[derive(Debug, Serialize)]
 struct RegisterReq {
     cgroup_id: u64,
-    connection: String,
-    dns: String,
+    policy: String,
 }
 
 /// Response shape — mirrors api::CliOverrideEntry.
@@ -104,12 +88,17 @@ struct RegisterReq {
 #[allow(dead_code)]
 struct RegisterResp {
     cgroup_id: u64,
-    connection: String,
+    policy: String,
 }
 
 pub fn run(config_path: &Path, args: RunArgs) -> Result<()> {
-    let cfg = HeimdallConfig::load(config_path)
-        .with_context(|| format!("loading config from {}", config_path.display()))?;
+    let cfg = HeimdallConfig::load(config_path).map_err(|error| {
+        anyhow!(
+            "invalid config {}\n\n{}",
+            config_path.display(),
+            error.actionable_message()
+        )
+    })?;
 
     let decision = resolve_decision(&cfg, &args)?;
 
@@ -125,7 +114,7 @@ pub fn run(config_path: &Path, args: RunArgs) -> Result<()> {
         return reexec_via_systemd_run(&args);
     }
 
-    let api_addr = api_loopback_addr(&cfg.runtime.api_listen);
+    let api_addr = api_loopback_addr(&cfg.daemon.api_listen);
     let cgroup_path = create_sibling_cgroup()?;
     let cgroup_id = read_cgroup_id(&cgroup_path)?;
 
@@ -224,36 +213,23 @@ fn prepare_dns_shim(cgroup_id: u64) -> Result<DnsShim> {
 // ────────────────────────────────────────────────────────────────────────────
 
 fn resolve_decision(cfg: &HeimdallConfig, args: &RunArgs) -> Result<RunDecision> {
-    let connection = args.proxy.clone().unwrap_or_else(|| cfg.run.proxy.clone());
-    // DNS strategy: `--dns fake|system` wins over `run.dns`.
-    // primary use case is reaching scoped/internal hosts that the
-    // host resolver doesn't know about.
-    let dns = args
-        .dns
+    let policy = args
+        .policy
         .clone()
-        .or_else(|| Some(dns_strategy_str(cfg.run.dns)))
-        .unwrap_or_else(|| "fake".into());
-    if dns != "fake" && dns != "system" {
-        bail!("invalid dns strategy `{dns}` — expected `fake` or `system`");
-    }
-    // Validate connection name against the live config so we surface
-    // typos before round-tripping to the daemon.
-    if !cfg.connections.contains_key(&connection) {
-        let known: Vec<&str> = cfg.connections.keys().map(String::as_str).collect();
-        bail!(
-            "unknown proxy `{connection}` — declared proxies: [{}]",
+        .unwrap_or_else(|| cfg.proxy.default_policy.clone());
+    let selected = cfg.policy(&policy).ok_or_else(|| {
+        let known: Vec<&str> = cfg.proxy.policies.keys().map(String::as_str).collect();
+        anyhow!(
+            "unknown policy `{policy}` — declared policies: [{}]; fix: choose one with --policy NAME or update proxy.default_policy",
             known.join(", ")
-        );
+        )
+    })?;
+    let dns = match selected.dns.mode {
+        heimdall_config::DnsMode::Fake => "fake",
+        heimdall_config::DnsMode::System => "system",
     }
-
-    Ok(RunDecision { connection, dns })
-}
-
-fn dns_strategy_str(d: heimdall_config::DnsStrategy) -> String {
-    match d {
-        heimdall_config::DnsStrategy::Fake => "fake".into(),
-        heimdall_config::DnsStrategy::System => "system".into(),
-    }
+    .to_string();
+    Ok(RunDecision { policy, dns })
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -286,11 +262,8 @@ fn reexec_via_systemd_run(args: &RunArgs) -> Result<()> {
     cmd.arg(&exe);
     cmd.arg("run");
     cmd.arg("--no-reentry");
-    if let Some(proxy) = &args.proxy {
-        cmd.arg("--proxy").arg(proxy);
-    }
-    if let Some(dns) = &args.dns {
-        cmd.arg("--dns").arg(dns);
+    if let Some(policy) = &args.policy {
+        cmd.arg("--policy").arg(policy);
     }
     if args.keep_cgroup {
         cmd.arg("--keep-cgroup");
@@ -350,18 +323,13 @@ fn read_cgroup_id(path: &Path) -> Result<u64> {
 // ────────────────────────────────────────────────────────────────────────────
 
 fn api_loopback_addr(api_listen: &str) -> String {
-    // `runtime.apiListen` is "0.0.0.0:9999" by default; rewrite to
-    // loopback for the local CLI roundtrip so we're not dependent on
-    // the binding being LAN-reachable.
-    let port = api_listen.rsplit(':').next().unwrap_or("9999");
-    format!("http://127.0.0.1:{port}")
+    format!("http://{api_listen}")
 }
 
 fn register_with_daemon(base: &str, cgroup_id: u64, d: &RunDecision) -> Result<()> {
     let body = RegisterReq {
         cgroup_id,
-        connection: d.connection.clone(),
-        dns: d.dns.clone(),
+        policy: d.policy.clone(),
     };
     let url = format!("{base}/api/cli/register");
     let resp = ureq::post(&url)

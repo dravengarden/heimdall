@@ -54,56 +54,108 @@ impl InitFormat {
 
 // ── Embedded templates ──────────────────────────────────────────
 const HEIMDALL_TOML: &str = r#"# heimdall is a proxy wrapper. System traffic is never redirected.
+version = 1
 
-[proxies.default]
+[proxy]
+default_policy = "default"
+
+[proxy.outbounds.default]
 type = "socks5"
-addr = "127.0.0.1:1080"
+server = "127.0.0.1"
+server_port = 1080
+network = ["tcp"]
 
-[run]
-proxy = "default"
-dns = "fake"
+[proxy.policies.default.dns]
+mode = "fake"
+
+[proxy.policies.default.final]
+tcp = { type = "route", outbound = "default" }
+udp = { type = "reject", method = "refused" }
+
+[capture]
+mode = "off"
+
+[decrypt]
+mode = "off"
 
 # Most installations do not need to change daemon settings.
 # [daemon]
-# listen = "127.0.0.1:12345"
-# apiListen = "127.0.0.1:9999"
-# dnsListen = "127.0.0.1:5358"
+# api_listen = "127.0.0.1:9999"
+# dns_port = 5358
 "#;
 
 const HEIMDALL_YAML: &str = r#"# heimdall is a proxy wrapper. System traffic is never redirected.
-proxies:
-  default:
-    type: socks5
-    addr: 127.0.0.1:1080
-run:
-  proxy: default
-  dns: fake
+version: 1
+proxy:
+  default_policy: default
+  outbounds:
+    default:
+      type: socks5
+      server: 127.0.0.1
+      server_port: 1080
+      network: [tcp]
+  policies:
+    default:
+      dns:
+        mode: fake
+      rules: []
+      final:
+        tcp: { type: route, outbound: default }
+        udp: { type: reject, method: refused }
+capture: { mode: "off" }
+decrypt: { mode: "off" }
 "#;
 
 const HEIMDALL_JSON: &str = r#"{
-  "proxies": {
-    "default": {
-      "type": "socks5",
-      "addr": "127.0.0.1:1080"
+  "version": 1,
+  "proxy": {
+    "default_policy": "default",
+    "outbounds": {
+      "default": {
+        "type": "socks5",
+        "server": "127.0.0.1",
+        "server_port": 1080,
+        "network": ["tcp"]
+      }
+    },
+    "policies": {
+      "default": {
+        "dns": { "mode": "fake" },
+        "rules": [],
+        "final": {
+          "tcp": { "type": "route", "outbound": "default" },
+          "udp": { "type": "reject", "method": "refused" }
+        }
+      }
     }
   },
-  "run": {
-    "proxy": "default",
-    "dns": "fake"
-  }
+  "capture": { "mode": "off" },
+  "decrypt": { "mode": "off" }
 }
 "#;
 
 const HEIMDALL_NICKEL: &str = r#"# heimdall is a proxy wrapper. System traffic is never redirected.
 {
-  proxies.default = {
-    type = "socks5",
-    addr = "127.0.0.1:1080",
+  version = 1,
+  proxy = {
+    default_policy = "default",
+    outbounds.default = {
+      type = "socks5",
+      server = "127.0.0.1",
+      server_port = 1080,
+      network = ["tcp"],
+    },
+    policies.default = {
+      dns.mode = "fake",
+      rules = [],
+      final = {
+        tcp = { type = "route", outbound = "default" },
+        udp = { type = "reject", method = "refused" },
+      },
+    },
   },
-  run = {
-    proxy = "default",
-    dns = "fake",
-  },
+  capture.mode = "off",
+  decrypt.mode = "off",
 }
 "#;
 
@@ -134,7 +186,7 @@ pub fn run(args: InitArgs) -> Result<()> {
     println!();
     println!("Next steps:");
     println!(
-        "  1. Edit `{}` and set your SOCKS5 proxy address.",
+        "  1. Edit `{}` and set proxy.outbounds.default.",
         main_target
             .file_name()
             .unwrap_or_default()
@@ -146,4 +198,58 @@ pub fn run(args: InitArgs) -> Result<()> {
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use heimdall_config::HeimdallConfig;
+
+    use super::*;
+
+    static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn every_embedded_template_passes_the_canonical_loader() {
+        for format in [
+            InitFormat::Toml,
+            InitFormat::Yaml,
+            InitFormat::Json,
+            InitFormat::Nickel,
+        ] {
+            let id = NEXT_DIR.fetch_add(1, Ordering::Relaxed);
+            let dir = std::env::temp_dir()
+                .join(format!("heimdall-init-test-{}-{id}", std::process::id()));
+            run(InitArgs {
+                dir: dir.clone(),
+                format,
+                force: false,
+            })
+            .unwrap();
+            let path = dir.join(format!("config.{}", format.extension()));
+            HeimdallConfig::load(&path).unwrap();
+            fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn init_preserves_an_existing_config_without_force() {
+        let id = NEXT_DIR.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "heimdall-init-preserve-test-{}-{id}",
+            std::process::id()
+        ));
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join("config.toml");
+        fs::write(&path, "user-owned\n").unwrap();
+        run(InitArgs {
+            dir: dir.clone(),
+            format: InitFormat::Toml,
+            force: false,
+        })
+        .unwrap();
+        assert_eq!(fs::read_to_string(path).unwrap(), "user-owned\n");
+        fs::remove_dir_all(dir).unwrap();
+    }
 }

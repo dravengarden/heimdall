@@ -29,13 +29,17 @@ systemctl status heimdall
 journalctl -u heimdall -n 100
 ```
 
+The relay must report `127.0.0.1:12345 + [::1]:12345`; fake DNS uses both
+families on `daemon.dns_port`, and the control API uses the configured loopback
+`daemon.api_listen`.
+
 ## Smoke test
 
 ```bash
 heimdall agent | jq .
 heimdall config validate
 heimdall run -- curl -fsS https://example.com
-heimdall run -p corp -- curl -fsS https://internal.example.com
+heimdall run --policy corp -- curl -fsS https://internal.example.com
 ```
 
 The wrapped command's exit status is heimdall's exit status. A daemon or
@@ -43,22 +47,29 @@ registration failure occurs before the command is executed.
 
 ## Agent contract
 
-`heimdall agent [-p NAME] [--dns fake|system]` is the automation entry point.
+`heimdall agent [--policy NAME]` is the automation entry point.
 It is read-only and always prints exactly one JSON value before exiting:
 
 ```json
 {
-  "contract": "heimdall.agent/v1",
+  "contract": "heimdall.agent/v2",
   "version": "0.1.0",
   "ready": true,
   "config": { "path": "...", "format": "toml", "valid": true, "error": null },
   "daemon": { "reachable": true, "control": "127.0.0.1:9999" },
-  "decision": { "proxy": "default", "dns": "fake", "error": null },
-  "proxies": ["default"],
+  "decision": {
+    "policy": "default",
+    "dns": "fake",
+    "tcp_final": "route:default",
+    "udp_final": "reject:refused",
+    "error": null
+  },
+  "policies": ["default"],
+  "outbounds": ["default"],
   "actions": {
     "validate": ["heimdall", "--config", "...", "config", "validate", "--json"],
     "status": ["heimdall", "--config", "...", "status", "--json"],
-    "execute_prefix": ["heimdall", "--config", "...", "run", "--proxy", "default", "--dns", "fake", "--"]
+    "execute_prefix": ["heimdall", "--config", "...", "run", "--policy", "default", "--"]
   },
   "exit_codes": { "ready": 0, "not_ready": 1, "usage": 2 }
 }
@@ -66,19 +77,21 @@ It is read-only and always prints exactly one JSON value before exiting:
 
 Treat argv arrays as arrays; never concatenate or shell-evaluate them. When
 config cannot be loaded, `config.error.code` is a stable category and
-`message` is diagnostic text. The contract may add fields within v1; consumers
+`diagnostics` contains stable code/path/message/hint records. The contract may
+add fields within v2; consumers
 must ignore unknown fields.
 
 ## Common failures
 
-- `unknown proxy`: add it below `[proxies.<name>]` or choose an existing name.
+- `unknown policy`: declare it below `proxy.policies` or choose a name reported
+  by `heimdall agent`.
 - ambiguous config discovery: keep exactly one `config.toml`, `config.yaml`,
   `config.yml`, `config.json`, or `config.ncl` in `/etc/heimdall`, or pass an
   explicit `--config` path.
 - Nickel export failure: install `nickel` when using a manually copied binary;
   the Nix package includes it automatically.
 - daemon registration connection refused: start `heimdall.service` and confirm
-  the `[daemon] apiListen` port matches the client config.
+  `daemon.api_listen` matches the client config.
 - DNS lookup failure in fake mode: verify unprivileged user namespaces are
   enabled and the child received its private resolver mount.
 - cgroup permission error: ensure the user's systemd manager is running; the

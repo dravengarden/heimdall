@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use aya::maps::HashMap as BpfHashMap;
-use heimdall_common::POLICY_DNS_HIJACK;
+use heimdall_common::{POLICY_DNS_HIJACK, POLICY_DNS_SYSTEM, POLICY_UDP_REJECT};
 
 pub type CgroupPolicyMap = BpfHashMap<aya::maps::MapData, u64, u8>;
 
@@ -20,10 +20,22 @@ impl PolicyEngine {
         }
     }
 
-    pub async fn register_external(&self, cgroup_id: u64, dns_hijack: bool) -> Result<()> {
+    pub async fn register_external(
+        &self,
+        cgroup_id: u64,
+        dns_hijack: bool,
+        system_dns: bool,
+        reject_udp: bool,
+    ) -> Result<()> {
         let mut flags = 0;
         if dns_hijack {
             flags |= POLICY_DNS_HIJACK;
+        }
+        if system_dns {
+            flags |= POLICY_DNS_SYSTEM;
+        }
+        if reject_udp {
+            flags |= POLICY_UDP_REJECT;
         }
         self.map
             .lock()

@@ -12,20 +12,18 @@ pub mod agent {
     };
 
     use anyhow::Result;
-    use heimdall_config::{ConfigError, ConfigFormat, DnsStrategy, HeimdallConfig};
+    use heimdall_config::{
+        Action, ConfigDiagnostic, ConfigError, ConfigFormat, DnsMode, HeimdallConfig,
+    };
     use serde::Serialize;
 
-    const CONTRACT_VERSION: &str = "heimdall.agent/v1";
+    const CONTRACT_VERSION: &str = "heimdall.agent/v2";
 
     #[derive(clap::Args, Debug)]
     pub struct AgentArgs {
-        /// Preview a named proxy instead of the configured run.proxy.
+        /// Preview a named policy instead of proxy.default_policy.
         #[arg(short = 'p', long)]
-        proxy: Option<String>,
-
-        /// Preview a DNS strategy instead of the configured run.dns.
-        #[arg(long, value_parser = ["fake", "system"])]
-        dns: Option<String>,
+        policy: Option<String>,
     }
 
     #[derive(Debug, Serialize)]
@@ -36,7 +34,8 @@ pub mod agent {
         config: ConfigReport,
         daemon: DaemonReport,
         decision: Option<DecisionReport>,
-        proxies: Vec<String>,
+        policies: Vec<String>,
+        outbounds: Vec<String>,
         actions: Actions,
         exit_codes: ExitCodes,
     }
@@ -57,8 +56,10 @@ pub mod agent {
 
     #[derive(Debug, Serialize)]
     struct DecisionReport {
-        proxy: String,
+        policy: String,
         dns: String,
+        tcp_final: String,
+        udp_final: String,
         error: Option<MachineError>,
     }
 
@@ -66,6 +67,7 @@ pub mod agent {
     struct MachineError {
         code: &'static str,
         message: String,
+        diagnostics: Vec<ConfigDiagnostic>,
     }
 
     #[derive(Debug, Serialize)]
@@ -124,7 +126,8 @@ pub mod agent {
                     control: None,
                 },
                 decision: None,
-                proxies: Vec::new(),
+                policies: Vec::new(),
+                outbounds: Vec::new(),
                 actions: Actions {
                     validate: validate_argv,
                     status: status_argv,
@@ -146,25 +149,49 @@ pub mod agent {
         config: HeimdallConfig,
         args: AgentArgs,
     ) -> AgentReport {
-        let proxy = args.proxy.unwrap_or_else(|| config.run.proxy.clone());
-        let dns = args
-            .dns
-            .unwrap_or_else(|| dns_name(config.run.dns).to_string());
-        let decision_error = (!config.connections.contains_key(&proxy)).then(|| MachineError {
-            code: "unknown_proxy",
-            message: format!("proxy `{proxy}` is not declared"),
+        let policy = args
+            .policy
+            .unwrap_or_else(|| config.proxy.default_policy.clone());
+        let selected = config.policy(&policy);
+        let known_policies = config
+            .proxy
+            .policies
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let decision_error = selected.is_none().then(|| MachineError {
+            code: "unknown_policy",
+            message: format!("policy `{policy}` is not declared"),
+            diagnostics: vec![ConfigDiagnostic {
+                code: "unknown_policy".into(),
+                path: "$.cli.policy".into(),
+                message: format!("policy `{policy}` is not declared"),
+                hint: format!("Use --policy with one of: {known_policies}."),
+            }],
         });
-        let control = config.runtime.api_listen.clone();
+        let control = config.daemon.api_listen.clone();
         let reachable = tokio::net::TcpStream::connect(loopback_socket(&control))
             .await
             .is_ok();
         let ready = reachable && decision_error.is_none();
         let execute_prefix = decision_error.is_none().then(|| {
-            let mut argv = argv_for(&path, &["run", "--proxy", &proxy, "--dns", &dns]);
+            let mut argv = argv_for(&path, &["run", "--policy", &policy]);
             argv.push("--".into());
             argv
         });
-        let proxies = config.connections.keys().cloned().collect();
+        let policies = config.proxy.policies.keys().cloned().collect();
+        let outbounds = config.proxy.outbounds.keys().cloned().collect();
+        let (dns, tcp_final, udp_final) = selected.map_or_else(
+            || ("unknown".into(), "unknown".into(), "unknown".into()),
+            |selected| {
+                (
+                    dns_name(selected.dns.mode).into(),
+                    action_name(&selected.final_.tcp),
+                    action_name(&selected.final_.udp),
+                )
+            },
+        );
 
         AgentReport {
             contract: CONTRACT_VERSION,
@@ -181,11 +208,14 @@ pub mod agent {
                 control: Some(control),
             },
             decision: Some(DecisionReport {
-                proxy,
+                policy,
                 dns,
+                tcp_final,
+                udp_final,
                 error: decision_error,
             }),
-            proxies,
+            policies,
+            outbounds,
             actions: Actions {
                 validate: argv_for(&path, &["config", "validate", "--json"]),
                 status: argv_for(&path, &["status", "--json"]),
@@ -216,17 +246,27 @@ pub mod agent {
         argv
     }
 
-    const fn dns_name(strategy: DnsStrategy) -> &'static str {
+    const fn dns_name(strategy: DnsMode) -> &'static str {
         match strategy {
-            DnsStrategy::Fake => "fake",
-            DnsStrategy::System => "system",
+            DnsMode::Fake => "fake",
+            DnsMode::System => "system",
+        }
+    }
+
+    fn action_name(action: &Action) -> String {
+        match action {
+            Action::Route { outbound } => format!("route:{outbound}"),
+            Action::Direct => "direct".into(),
+            Action::Reject { method } => format!("reject:{method:?}").to_ascii_lowercase(),
         }
     }
 
     fn config_error(error: ConfigError) -> MachineError {
+        let diagnostics = error.diagnostics();
         MachineError {
             code: error.code(),
             message: error.to_string(),
+            diagnostics,
         }
     }
 

@@ -44,6 +44,7 @@ pub struct OrigDst {
 /// without depending on libc.
 pub const FAMILY_V4: u8 = 4;
 pub const FAMILY_V6: u8 = 6;
+pub const RELAY_PORT: u16 = 12345;
 
 #[cfg(feature = "user")]
 #[allow(
@@ -73,132 +74,14 @@ pub const POLICY_REDIRECT_OFF: u8 = 1 << 0;
 /// host's systemd-resolved / /etc/resolv.conf.
 pub const POLICY_DNS_HIJACK: u8 = 1 << 1;
 
+/// Reject non-DNS UDP for a registered cgroup. The connect hooks cover
+/// connected datagram sockets and the sendmsg hooks cover connectionless UDP.
+/// DNS hijack is evaluated first so fake DNS remains usable.
+pub const POLICY_UDP_REJECT: u8 = 1 << 2;
+
+/// Allow DNS port 53 to use the host resolver. Without this explicit flag,
+/// fail-closed UDP policy would also block `dns.mode = system`.
+pub const POLICY_DNS_SYSTEM: u8 = 1 << 3;
+
 /// Default for cgroups not present in `CGROUP_POLICY`: bypass heimdall.
 pub const DEFAULT_POLICY: u8 = POLICY_REDIRECT_OFF;
-
-/// Returns true if the given IPv4 address (network byte order) should bypass
-/// the proxy entirely (eBPF connect4 won't redirect it).
-///
-/// Bypass policy is **deliberately narrow** so that anything routable through
-/// an upstream proxy (corporate VPN, etc.) actually reaches heimdall:
-///
-/// | CIDR              | Why                                                |
-/// |-------------------|----------------------------------------------------|
-/// | 0.0.0.0           | Invalid, never proxy                               |
-/// | 127.0.0.0/8       | Loopback (relay self, host-local services)         |
-/// | 169.254.0.0/16    | Link-local (cloud metadata, etc.)                  |
-/// | 192.168.0.0/16    | LAN (router, host IP, upstream box)                |
-///
-/// Notably, **the broader RFC-1918 ranges (10/8 + 172.16/12) are NOT
-/// bypassed** — those address spaces are commonly used by corporate VPNs.
-/// Traffic to such IPs goes through heimdall, gets routed via the
-/// chosen connection (e.g. `corp`), and the upstream proxy decides how
-/// to reach them.
-///
-#[must_use]
-pub fn is_default_bypass(ip_be: u32) -> bool {
-    let ip = u32::from_be(ip_be);
-    ip == 0                              // 0.0.0.0
-    || ip >> 24 == 127                   // 127.0.0.0/8     loopback
-    || ip >> 16 == 0xA9FE                // 169.254.0.0/16  link-local
-    || ip >> 16 == 0xC0A8 // 192.168.0.0/16  LAN
-}
-
-/// IPv6 sibling of [`is_default_bypass`]. Bytes are the on-wire IPv6
-/// address (network byte order, 16 bytes). Returns true for ranges
-/// that should NEVER hit the relay so the eBPF connect6 hook lets
-/// them through unmodified.
-///
-/// | CIDR              | Why                                              |
-/// |-------------------|--------------------------------------------------|
-/// | `::/128`          | Unspecified                                      |
-/// | `::1/128`         | Loopback                                         |
-/// | `fe80::/10`       | Link-local                                       |
-/// | `ff00::/8`        | Multicast                                        |
-/// | `::ffff:/96`      | IPv4-mapped IPv6 — bypassed iff the inner IPv4   |
-/// |                   | address itself is bypassed                       |
-///
-/// Notably, **`fc00::/7` (ULA) is NOT bypassed**. heimdall's own
-/// IPv6 fake-IP pool defaults to `fc00:198:19::/96` which sits inside
-/// the ULA range, so blanket-bypassing `fc00::/7` would short-circuit
-/// every fake-IP redirect. Mirrors the v4 narrow-bypass philosophy
-/// (RFC-1918 10/8 + 172.16/12 are NOT bypassed either).
-#[must_use]
-pub fn is_default_bypass6(addr: &[u8; 16]) -> bool {
-    // ::1 (loopback) — all zero except final byte == 1.
-    let all_but_last_zero = addr[..15].iter().all(|&b| b == 0);
-    if all_but_last_zero && (addr[15] == 0 || addr[15] == 1) {
-        return true;
-    }
-    // fe80::/10 — link-local. First 10 bits = 1111 1110 10.
-    if addr[0] == 0xfe && (addr[1] & 0xc0) == 0x80 {
-        return true;
-    }
-    // ff00::/8 — multicast.
-    if addr[0] == 0xff {
-        return true;
-    }
-    // IPv4-mapped IPv6: ::ffff:a.b.c.d. Defer to the v4 bypass check on
-    // the embedded address so the same set of "narrow" ranges applies.
-    let is_v4_mapped = addr[..10].iter().all(|&b| b == 0) && addr[10] == 0xff && addr[11] == 0xff;
-    if is_v4_mapped {
-        let v4_be = u32::from_ne_bytes([addr[12], addr[13], addr[14], addr[15]]);
-        return is_default_bypass(v4_be);
-    }
-    false
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Helper: convert host-order IPv4 octets to a network-byte-order u32
-    /// matching the format the eBPF hook receives.
-    fn be(a: u8, b: u8, c: u8, d: u8) -> u32 {
-        u32::from_ne_bytes([a, b, c, d])
-    }
-
-    #[test]
-    fn bypasses_loopback() {
-        assert!(is_default_bypass(be(127, 0, 0, 1)));
-        assert!(is_default_bypass(be(127, 255, 255, 254)));
-    }
-
-    #[test]
-    fn bypasses_link_local() {
-        assert!(is_default_bypass(be(169, 254, 169, 254)));
-    }
-
-    #[test]
-    fn bypasses_lan_192_168() {
-        assert!(is_default_bypass(be(192, 168, 0, 1))); // router
-        assert!(is_default_bypass(be(192, 168, 0, 10))); // host
-        assert!(is_default_bypass(be(192, 168, 0, 20))); // workstation
-        assert!(is_default_bypass(be(192, 168, 255, 255)));
-    }
-
-    #[test]
-    fn does_not_bypass_rfc1918_10_space() {
-        // The whole point of the narrow bypass list: 10/8 and 172.16/12
-        // must hit heimdall so a routing rule can send them via a
-        // corp-VPN-aware connection.
-        assert!(!is_default_bypass(be(10, 0, 0, 1)));
-        assert!(!is_default_bypass(be(10, 50, 1, 2)));
-        assert!(!is_default_bypass(be(10, 96, 0, 1)));
-        assert!(!is_default_bypass(be(10, 255, 255, 254)));
-    }
-
-    #[test]
-    fn does_not_bypass_172_16_or_other_rfc1918() {
-        // 172.16/12 may also be corporate-VPN territory.
-        assert!(!is_default_bypass(be(172, 16, 0, 1)));
-        assert!(!is_default_bypass(be(172, 31, 255, 254)));
-    }
-
-    #[test]
-    fn does_not_bypass_public() {
-        assert!(!is_default_bypass(be(1, 1, 1, 1)));
-        assert!(!is_default_bypass(be(8, 8, 8, 8)));
-        assert!(!is_default_bypass(be(104, 16, 123, 96)));
-    }
-}

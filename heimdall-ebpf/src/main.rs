@@ -4,7 +4,7 @@
 //!
 //! 1. `connect4` (BPF_CGROUP_INET4_CONNECT)
 //!    Intercepts connect() syscalls from any process in the attached cgroup.
-//!    For non-LAN destinations, rewrites the target to RELAY_IP:PROXY_PORT
+//!    For registered cgroups, rewrites TCP to loopback:RELAY_PORT
 //!    and saves the original (ip, port) in COOKIE_MAP keyed by socket cookie.
 //!
 //! 2. `skb_egress` (BPF_CGROUP_INET_EGRESS)
@@ -30,26 +30,26 @@ use aya_ebpf::{
     programs::{SkBuffContext, SockAddrContext, SockContext},
 };
 use heimdall_common::{
-    DEFAULT_POLICY, FAMILY_V4, FAMILY_V6, OrigDst, POLICY_DNS_HIJACK, POLICY_REDIRECT_OFF,
-    is_default_bypass, is_default_bypass6,
+    DEFAULT_POLICY, FAMILY_V4, FAMILY_V6, OrigDst, POLICY_DNS_HIJACK, POLICY_DNS_SYSTEM,
+    POLICY_REDIRECT_OFF, POLICY_UDP_REJECT, RELAY_PORT,
 };
 
-const PROXY_PORT: u16 = 12345;
 const DNS_PORT: u16 = 53;
+const SOCK_DGRAM: u32 = 2;
 
 // Relay IPv4 address in network byte order, set by userspace at startup.
 #[map]
 static RELAY_ADDR: Array<u32> = Array::with_max_entries(2, 0);
 
-// Relay IPv6 address (16 bytes, network byte order) — set by userspace
-// at startup whenever `runtime.relay_ip6` is configured. Stored as a
+// Relay IPv6 address (16 bytes, network byte order) — set to loopback by
+// userspace at startup. Stored as a
 // 4×u32 array so it's a flat POD for the verifier.
 #[map]
 static RELAY_ADDR6: Array<[u8; 16]> = Array::with_max_entries(1, 0);
 
 // Heimdall fake-IP DNS endpoint, IPv4. Slot 0 = ip in network byte
 // order, slot 1 = port in network byte order (16-bit value stored in
-// u32 lower bits). Populated at startup from runtime.dnsListen.
+// u32 lower bits). Populated at startup from `daemon.dns_port`.
 // Used by connect4 + udp4_sendmsg when the cgroup has POLICY_DNS_HIJACK.
 #[map]
 static DNS_ADDR_V4: Array<u32> = Array::with_max_entries(2, 0);
@@ -178,7 +178,8 @@ fn try_hijack_dns_v6(sa: *mut aya_ebpf::bindings::bpf_sock_addr, policy: u8) -> 
 #[cgroup_sock_addr(connect4)]
 pub fn connect4(ctx: SockAddrContext) -> i32 {
     match try_connect4(ctx) {
-        Ok(()) | Err(()) => 1,
+        Ok(()) => 1,
+        Err(()) => 0,
     }
 }
 
@@ -193,7 +194,7 @@ fn try_connect4(ctx: SockAddrContext) -> Result<(), ()> {
         None => return Ok(()),
     };
 
-    if dst_ip_be == relay_ip_be && u16::from_be(dst_port_be) == PROXY_PORT {
+    if dst_ip_be == relay_ip_be && u16::from_be(dst_port_be) == RELAY_PORT {
         return Ok(());
     }
 
@@ -224,10 +225,17 @@ fn try_connect4(ctx: SockAddrContext) -> Result<(), ()> {
         return Ok(());
     }
 
-    let kernel_bypass = is_default_bypass(dst_ip_be);
+    if (policy & POLICY_DNS_SYSTEM) != 0 && u16::from_be(dst_port_be) == DNS_PORT {
+        return Ok(());
+    }
+
+    if unsafe { (*sa).type_ } == SOCK_DGRAM && (policy & POLICY_UDP_REJECT) != 0 {
+        return Err(());
+    }
+
     let user_bypass = (policy & POLICY_REDIRECT_OFF) != 0;
 
-    if kernel_bypass || user_bypass {
+    if user_bypass {
         return Ok(());
     }
     let mut orig = OrigDst {
@@ -253,7 +261,7 @@ fn try_connect4(ctx: SockAddrContext) -> Result<(), ()> {
 
     unsafe {
         (*sa).user_ip4 = relay_ip_be;
-        (*sa).user_port = u32::from(PROXY_PORT.to_be());
+        (*sa).user_port = u32::from(RELAY_PORT.to_be());
     }
 
     Ok(())
@@ -263,8 +271,7 @@ fn try_connect4(ctx: SockAddrContext) -> Result<(), ()> {
 // connect6 — IPv6 sibling of connect4.
 //
 // Mirror logic: read user_ip6 + user_port from the sock_addr, consult
-// CGROUP_POLICY + is_default_bypass6, then either bypass or rewrite the
-// destination to RELAY_ADDR6 + PROXY_PORT.
+// CGROUP_POLICY, then either bypass or rewrite to RELAY_ADDR6 + RELAY_PORT.
 // COOKIE_MAP entries from connect6 carry family=FAMILY_V6 so userspace
 // + skb_egress can decode the address bytes correctly.
 // ---------------------------------------------------------------------------
@@ -272,7 +279,8 @@ fn try_connect4(ctx: SockAddrContext) -> Result<(), ()> {
 #[cgroup_sock_addr(connect6)]
 pub fn connect6(ctx: SockAddrContext) -> i32 {
     match try_connect6(ctx) {
-        Ok(()) | Err(()) => 1,
+        Ok(()) => 1,
+        Err(()) => 0,
     }
 }
 
@@ -300,7 +308,7 @@ fn try_connect6(ctx: SockAddrContext) -> Result<(), ()> {
     }
 
     // Self-loop check — already going to the relay's v6 address+port.
-    if dst_addr == relay6 && u16::from_be(dst_port_be) == PROXY_PORT {
+    if dst_addr == relay6 && u16::from_be(dst_port_be) == RELAY_PORT {
         return Ok(());
     }
 
@@ -319,10 +327,17 @@ fn try_connect6(ctx: SockAddrContext) -> Result<(), ()> {
         return Ok(());
     }
 
-    let kernel_bypass = is_default_bypass6(&dst_addr);
+    if (policy & POLICY_DNS_SYSTEM) != 0 && u16::from_be(dst_port_be) == DNS_PORT {
+        return Ok(());
+    }
+
+    if unsafe { (*sa).type_ } == SOCK_DGRAM && (policy & POLICY_UDP_REJECT) != 0 {
+        return Err(());
+    }
+
     let user_bypass = (policy & POLICY_REDIRECT_OFF) != 0;
 
-    if kernel_bypass || user_bypass {
+    if user_bypass {
         return Ok(());
     }
 
@@ -353,7 +368,7 @@ fn try_connect6(ctx: SockAddrContext) -> Result<(), ()> {
             words[i] = u32::from_ne_bytes(b);
         }
         (*sa).user_ip6 = words;
-        (*sa).user_port = u32::from(PROXY_PORT.to_be());
+        (*sa).user_port = u32::from(RELAY_PORT.to_be());
     }
 
     Ok(())
@@ -412,8 +427,14 @@ pub fn udp4_sendmsg(ctx: SockAddrContext) -> i32 {
     let sa = ctx.sock_addr;
     let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
     let policy = policy_for(cgroup_id);
-    let _ = try_hijack_dns_v4(sa, policy);
-    1
+    if try_hijack_dns_v4(sa, policy) {
+        return 1;
+    }
+    let dst_port_be = unsafe { (*sa).user_port as u16 };
+    if (policy & POLICY_DNS_SYSTEM) != 0 && u16::from_be(dst_port_be) == DNS_PORT {
+        return 1;
+    }
+    i32::from((policy & POLICY_UDP_REJECT) == 0)
 }
 
 #[cgroup_sock_addr(sendmsg6)]
@@ -421,8 +442,14 @@ pub fn udp6_sendmsg(ctx: SockAddrContext) -> i32 {
     let sa = ctx.sock_addr;
     let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
     let policy = policy_for(cgroup_id);
-    let _ = try_hijack_dns_v6(sa, policy);
-    1
+    if try_hijack_dns_v6(sa, policy) {
+        return 1;
+    }
+    let dst_port_be = unsafe { (*sa).user_port as u16 };
+    if (policy & POLICY_DNS_SYSTEM) != 0 && u16::from_be(dst_port_be) == DNS_PORT {
+        return 1;
+    }
+    i32::from((policy & POLICY_UDP_REJECT) == 0)
 }
 
 // ---------------------------------------------------------------------------

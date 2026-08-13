@@ -17,8 +17,8 @@
 //!       ▼
 //!   heimdall daemon
 //!     1. accept() → src_port → PORT_MAP → (orig_ip, orig_port, cgroup_id)
-//!     2. cgroup_id → proxy name from the active CLI registration
-//!     3. SOCKS5 CONNECT orig_ip:orig_port via that proxy
+//!     2. cgroup_id → policy name from the active CLI registration
+//!     3. evaluate the ordered rules and execute route/direct/reject
 //!
 //! ## Configuration
 //!
@@ -32,7 +32,7 @@ mod policy;
 
 use std::{
     collections::HashMap as StdHashMap,
-    net::{Ipv4Addr, SocketAddr},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     path::PathBuf,
     sync::Arc,
     time::Duration,
@@ -45,8 +45,8 @@ use aya::{
     programs::{CgroupAttachMode, CgroupSkb, CgroupSkbAttachType, CgroupSock, CgroupSockAddr},
 };
 use clap::Parser;
-use heimdall_common::OrigDst;
-use heimdall_config::{Connection, HeimdallConfig, Socks5Auth, Socks5Connection};
+use heimdall_common::{OrigDst, RELAY_PORT};
+use heimdall_config::{Action, HeimdallConfig, Outbound, Socks5Auth, Socks5Outbound};
 use tokio::{
     io::copy_bidirectional,
     net::{TcpListener, TcpStream},
@@ -114,8 +114,7 @@ enum Cmd {
     /// Run the small privileged eBPF relay (normally managed by systemd).
     Daemon(DaemonArgs),
 
-    /// Inspect the resolved config: validate, show its content, or
-    /// print the auto-discovered path.
+    /// Validate, explain a policy decision, show source, or print its path.
     #[command(subcommand)]
     Config(cli::config::ConfigCmd),
 
@@ -126,9 +125,9 @@ enum Cmd {
     Init(cli::init::InitArgs),
 
     /// Wrap a CLI command so its egress goes through a heimdall
-    /// proxy (proxychains-style). Non-root: re-execs itself
+    /// selected policy (proxychains-style). Non-root: re-execs itself
     /// under `systemd-run --user --scope` to land in a writable
-    /// cgroup. Defaults come from the config's `run` section.
+    /// cgroup. The policy defaults to `proxy.default_policy`.
     Run(cli::run::RunArgs),
 
     /// Print help. By default, concise per-command help (same as
@@ -172,6 +171,7 @@ enum Upstream {
     Socks5 {
         addr: String,
         auth: Option<ResolvedAuth>,
+        connect_timeout: Duration,
     },
 }
 
@@ -182,13 +182,18 @@ struct ResolvedAuth {
 }
 
 impl Upstream {
-    fn from_connection(conn: &Connection) -> Result<Self> {
-        match conn {
-            Connection::Socks5(Socks5Connection { addr, auth, .. }) => {
+    fn from_outbound(outbound: &Outbound) -> Result<Self> {
+        match outbound {
+            Outbound::Socks5(Socks5Outbound {
+                auth,
+                connect_timeout,
+                ..
+            }) => {
                 let resolved = auth.as_ref().map(resolve_auth).transpose()?;
                 Ok(Upstream::Socks5 {
-                    addr: addr.clone(),
+                    addr: outbound_address(outbound),
                     auth: resolved,
+                    connect_timeout: parse_timeout(connect_timeout),
                 })
             }
         }
@@ -209,16 +214,36 @@ fn resolve_auth(a: &Socks5Auth) -> Result<ResolvedAuth> {
     })
 }
 
-/// Pre-resolve every connection in the config so the relay path doesn't
+/// Pre-resolve every outbound in the config so the relay path doesn't
 /// re-read password files per connection.
 fn resolve_all(cfg: &HeimdallConfig) -> Result<StdHashMap<String, Arc<Upstream>>> {
-    let mut out = StdHashMap::with_capacity(cfg.connections.len());
-    for (name, conn) in &cfg.connections {
-        let up = Upstream::from_connection(conn)
-            .with_context(|| format!("resolving connection `{name}`"))?;
+    let mut out = StdHashMap::with_capacity(cfg.proxy.outbounds.len());
+    for (name, outbound) in &cfg.proxy.outbounds {
+        let up = Upstream::from_outbound(outbound)
+            .with_context(|| format!("resolving outbound `{name}`"))?;
         out.insert(name.clone(), Arc::new(up));
     }
     Ok(out)
+}
+
+fn outbound_address(outbound: &Outbound) -> String {
+    match outbound {
+        Outbound::Socks5(socks) => socks.address(),
+    }
+}
+
+fn parse_timeout(value: &str) -> Duration {
+    let (raw, multiplier) = value
+        .strip_suffix("ms")
+        .map(|raw| (raw, 1))
+        .or_else(|| value.strip_suffix('s').map(|raw| (raw, 1_000)))
+        .or_else(|| value.strip_suffix('m').map(|raw| (raw, 60_000)))
+        .expect("strict config validation accepted connect_timeout");
+    Duration::from_millis(
+        raw.parse::<u64>()
+            .expect("strict config validation accepted duration digits")
+            * multiplier,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -424,40 +449,36 @@ fn print_command_recursive(cmd: &mut clap::Command, path: &[&str]) {
 
 async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
     // ─── Load config ──────────────────────────────────────────────────────
-    let cfg = HeimdallConfig::load(config_path)
-        .with_context(|| format!("loading config from {}", config_path.display()))?;
+    let cfg = HeimdallConfig::load(config_path).map_err(|error| {
+        anyhow::anyhow!(
+            "invalid config {}\n\n{}",
+            config_path.display(),
+            error.actionable_message()
+        )
+    })?;
     info!(
         path = %config_path.display(),
-        connections = cfg.connections.len(),
+        outbounds = cfg.proxy.outbounds.len(),
         "config loaded"
     );
 
     let upstreams = resolve_all(&cfg)?;
-    info!(connections = upstreams.len(), "all connections resolved");
+    info!(outbounds = upstreams.len(), "all outbounds resolved");
 
     let _ = &args;
 
     // ─── Fake-IP DNS server ──────────────────────────────────────────────
-    let dns = match DnsResolver::new(&cfg.runtime.fake_ip_cidr, &cfg.runtime.fake_ip6_cidr) {
-        Ok(r) => {
-            let r = Arc::new(r);
-            let listen: SocketAddr =
-                cfg.runtime.dns_listen.parse().with_context(|| {
-                    format!("parse runtime.dnsListen `{}`", cfg.runtime.dns_listen)
-                })?;
-            let r_for_task = r.clone();
-            tokio::spawn(async move {
-                if let Err(e) = r_for_task.serve(listen).await {
-                    warn!(error = %e, "DNS server exited");
-                }
-            });
-            Some(r)
+    let dns = Arc::new(
+        DnsResolver::new(&cfg.daemon.fake_ip_cidr, &cfg.daemon.fake_ip6_cidr)
+            .context("initialize fake-IP DNS resolver")?,
+    );
+    let dns_server = dns.clone().bind(cfg.daemon.dns_port).await?;
+    tokio::spawn(async move {
+        if let Err(e) = dns_server.serve().await {
+            warn!(error = %e, "DNS server exited");
         }
-        Err(e) => {
-            warn!(error = %e, "DNS resolver init failed; relay will run in IP-only mode");
-            None
-        }
-    };
+    });
+    let dns = Some(dns);
 
     // Shared between Shared{} (relay reads), AppState (HTTP register
     // endpoints write), and the `heimdall run` flow. Initialised here
@@ -466,17 +487,20 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
     let cli_overrides: CliOverrides = Arc::new(parking_lot::RwLock::new(StdHashMap::new()));
     let policy_engine_slot: PolicyEngineSlot = Arc::new(parking_lot::Mutex::new(None));
     let api_listen: SocketAddr = cfg
-        .runtime
+        .daemon
         .api_listen
         .parse()
-        .with_context(|| format!("parse daemon.apiListen `{}`", cfg.runtime.api_listen))?;
+        .with_context(|| format!("parse daemon.api_listen `{}`", cfg.daemon.api_listen))?;
     let app_state = api::AppState {
-        connections: cfg.connections.clone(),
+        policies: cfg.proxy.policies.clone(),
         cli_overrides: cli_overrides.clone(),
         policy_engine: policy_engine_slot.clone(),
     };
+    let api_listener = TcpListener::bind(api_listen)
+        .await
+        .with_context(|| format!("bind control API on {api_listen}"))?;
     tokio::spawn(async move {
-        if let Err(e) = api::serve(app_state, api_listen).await {
+        if let Err(e) = api::serve(app_state, api_listener).await {
             warn!(error = %e, "control API exited");
         }
     });
@@ -492,20 +516,19 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
     let mut bpf = Ebpf::load(EBPF_BYTES).context("failed to load eBPF object")?;
 
     {
-        let relay_ip_be = u32::from(shared.cfg.runtime.relay_ip).to_be();
+        let relay_ip_be = u32::from(Ipv4Addr::LOCALHOST).to_be();
         let mut relay_map: Array<&mut aya::maps::MapData, u32> =
             Array::try_from(bpf.map_mut("RELAY_ADDR").context("RELAY_ADDR not found")?)?;
         relay_map
             .set(0, relay_ip_be, 0)
             .context("failed to set relay IP in BPF map")?;
-        info!(relay_ip = %shared.cfg.runtime.relay_ip, "relay IP written to BPF map");
+        info!(relay_ip = %Ipv4Addr::LOCALHOST, "relay IP written to BPF map");
     }
 
     // RELAY_ADDR6: 16-byte IPv6 relay address for connect6 to redirect to.
-    // Written even when relay_ip6 is the default `::1` so the program has
-    // *something* — connect6 reads slot 0 and bails if missing.
+    // Always write IPv6 loopback; connect6 reads slot 0 and bails if missing.
     {
-        let relay6_bytes = shared.cfg.runtime.relay_ip6.octets();
+        let relay6_bytes = Ipv6Addr::LOCALHOST.octets();
         let mut relay6_map: Array<&mut aya::maps::MapData, [u8; 16]> = Array::try_from(
             bpf.map_mut("RELAY_ADDR6")
                 .context("RELAY_ADDR6 not found")?,
@@ -513,28 +536,17 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
         relay6_map
             .set(0, relay6_bytes, 0)
             .context("failed to set relay IPv6 in BPF map")?;
-        info!(relay_ip6 = %shared.cfg.runtime.relay_ip6, "relay IPv6 written to BPF map");
+        info!(relay_ip6 = %Ipv6Addr::LOCALHOST, "relay IPv6 written to BPF map");
     }
 
     // DNS_ADDR_V4 / DNS_ADDR_V6 / DNS_PORT_V6: where eBPF should
     // redirect :53 traffic for cgroups marked POLICY_DNS_HIJACK
     // (typically `heimdall run` invocations with dns=fake). The
-    // daemon's own DNS server listens on `runtime.dnsListen`; we
-    // resolve that to a loopback address + port so v4 hijack lands
+    // daemon's DNS server binds both loopback families so v4 hijack lands
     // on 127.0.0.1:5358 and v6 hijack lands on ::1:5358 by default.
     {
-        let dns_listen = &shared.cfg.runtime.dns_listen;
-        let dns_port: u16 = dns_listen
-            .rsplit(':')
-            .next()
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(5358);
+        let dns_port = shared.cfg.daemon.dns_port;
 
-        // v4 — assume the daemon's DNS is reachable at 127.0.0.1:<port>
-        // (loopback to itself). For exotic configs where dnsListen is
-        // an explicit non-loopback IP, we'd want to use that instead;
-        // for now the loopback assumption matches every realistic
-        // deployment.
         let dns_v4_be = u32::from(std::net::Ipv4Addr::LOCALHOST).to_be();
         let dns_port_be = dns_port.to_be() as u32;
         let mut dns_map: Array<&mut aya::maps::MapData, u32> = Array::try_from(
@@ -572,7 +584,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
     // full restart overhead (config reload, BPF load, BPF map writes) and
     // eliminates the TOCTOU race.
     let cgroup = {
-        let cgroup_path = &shared.cfg.runtime.cgroup;
+        let cgroup_path = &shared.cfg.daemon.cgroup;
         let mut attempts = 0u32;
         const MAX_WAIT_SECS: u32 = 60;
         loop {
@@ -599,7 +611,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
     };
 
     // ─── eBPF attach (cgroup_sock_addr connect4 + cgroup_skb egress) ────────
-    // Primary attach at runtime.cgroup (defaults to
+    // Primary attach at daemon.cgroup (defaults to
     // /sys/fs/cgroup/system.slice) covers host services. Secondary at
     // /sys/fs/cgroup/user.slice covers `heimdall run` / interactive
     // user processes.
@@ -622,7 +634,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
         connect4
             .attach(&cgroup, CgroupAttachMode::default())
             .context("failed to attach connect4")?;
-        info!(cgroup = %shared.cfg.runtime.cgroup, "eBPF connect4 attached");
+        info!(cgroup = %shared.cfg.daemon.cgroup, "eBPF connect4 attached");
         if let Some(user_cg) = user_slice_file.as_ref() {
             match connect4.attach(user_cg, CgroupAttachMode::default()) {
                 Ok(_) => info!(cgroup = USER_SLICE, "eBPF connect4 attached (extra)"),
@@ -639,7 +651,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
         connect6
             .attach(&cgroup, CgroupAttachMode::default())
             .context("failed to attach connect6")?;
-        info!(cgroup = %shared.cfg.runtime.cgroup, "eBPF connect6 attached");
+        info!(cgroup = %shared.cfg.daemon.cgroup, "eBPF connect6 attached");
         if let Some(user_cg) = user_slice_file.as_ref() {
             match connect6.attach(user_cg, CgroupAttachMode::default()) {
                 Ok(_) => info!(cgroup = USER_SLICE, "eBPF connect6 attached (extra)"),
@@ -663,7 +675,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
         sock_release
             .attach(&cgroup, CgroupAttachMode::default())
             .context("failed to attach sock_release")?;
-        info!(cgroup = %shared.cfg.runtime.cgroup, "eBPF sock_release attached");
+        info!(cgroup = %shared.cfg.daemon.cgroup, "eBPF sock_release attached");
         if let Some(user_cg) = user_slice_file.as_ref() {
             match sock_release.attach(user_cg, CgroupAttachMode::default()) {
                 Ok(_) => info!(cgroup = USER_SLICE, "eBPF sock_release attached (extra)"),
@@ -685,7 +697,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
             .with_context(|| format!("failed to load {name}"))?;
         prog.attach(&cgroup, CgroupAttachMode::default())
             .with_context(|| format!("failed to attach {name}"))?;
-        info!(cgroup = %shared.cfg.runtime.cgroup, prog = name, "eBPF sendmsg attached");
+        info!(cgroup = %shared.cfg.daemon.cgroup, prog = name, "eBPF sendmsg attached");
         if let Some(user_cg) = user_slice_file.as_ref() {
             match prog.attach(user_cg, CgroupAttachMode::default()) {
                 Ok(_) => info!(
@@ -712,7 +724,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
                 CgroupAttachMode::default(),
             )
             .context("failed to attach skb_egress")?;
-        info!(cgroup = %shared.cfg.runtime.cgroup, "eBPF skb_egress attached");
+        info!(cgroup = %shared.cfg.daemon.cgroup, "eBPF skb_egress attached");
         if let Some(user_cg) = user_slice_file.as_ref() {
             match skb_egress.attach(
                 user_cg,
@@ -749,35 +761,16 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
         info!("orphan-cgroup GC spawned (interval 30s)");
     }
 
-    // ─── Relay listener (dual-stack) ──────────────────────────────────────
-    // Bind a single listener that accepts both IPv4 and IPv6. Linux
-    // doesn't set `IPV6_V6ONLY` by default, so `[::]:N` accepts v4
-    // connections via v4-mapped-v6. We cooperate by:
-    //   - rewriting an explicit `0.0.0.0:N` into `[::]:N` so existing
-    //     configs Just Work
-    //   - leaving any explicit IP (v4 or v6) alone for users who want
-    //     strict binding
-    // This keeps PORT_MAP unambiguous (only one accept loop, one ephemeral
-    // port pool), avoids EADDRINUSE between paired listeners, and
-    // covers connect6 redirects without an extra socket.
-    let listen_for_bind = if shared.cfg.runtime.listen.starts_with("0.0.0.0:") {
-        let port = shared
-            .cfg
-            .runtime
-            .listen
-            .strip_prefix("0.0.0.0:")
-            .unwrap_or("12345");
-        format!("[::]:{port}")
-    } else {
-        shared.cfg.runtime.listen.clone()
-    };
-    let listener = TcpListener::bind(&listen_for_bind).await.with_context(|| {
-        format!(
-            "failed to bind relay listener on {} (config: {})",
-            listen_for_bind, shared.cfg.runtime.listen
-        )
-    })?;
-    info!(listen = %listen_for_bind, configured = %shared.cfg.runtime.listen, "heimdall ready");
+    // ─── Relay listeners (IPv4 + IPv6 loopback) ────────────────────────
+    // Separate sockets avoid exposing the internal relay and do not depend on
+    // the host's IPV6_V6ONLY default.
+    let relay_v4 = TcpListener::bind((Ipv4Addr::LOCALHOST, RELAY_PORT))
+        .await
+        .context("bind IPv4 relay loopback")?;
+    let relay_v6 = TcpListener::bind((Ipv6Addr::LOCALHOST, RELAY_PORT))
+        .await
+        .context("bind IPv6 relay loopback")?;
+    info!(ipv4 = %relay_v4.local_addr()?, ipv6 = %relay_v6.local_addr()?, "heimdall ready");
 
     // ─── systemd notify: READY + WATCHDOG ─────────────────────────────────
     // `READY=1` lets `Type=notify` units depending on heimdall (e.g. a
@@ -815,7 +808,10 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
     }
 
     loop {
-        let (stream, peer) = listener.accept().await?;
+        let (stream, peer) = tokio::select! {
+            accepted = relay_v4.accept() => accepted?,
+            accepted = relay_v6.accept() => accepted?,
+        };
         let map = port_map.clone();
         let shared = shared.clone();
 
@@ -894,12 +890,10 @@ async fn relay(
     } else {
         anyhow::bail!("redirected cgroup {} is not registered", orig.cgroup_id)
     };
-    let conn_name = decision.use_.clone();
-    let upstream = shared
-        .upstreams
-        .get(&conn_name)
-        .with_context(|| format!("resolved connection `{conn_name}` not in registry"))?
-        .clone();
+    let policy = shared
+        .cfg
+        .policy(&decision.policy)
+        .with_context(|| format!("policy `{}` not in registry", decision.policy))?;
 
     let unit_label = format!("cgroup:{}", orig.cgroup_id);
 
@@ -909,16 +903,44 @@ async fn relay(
         Dst::Domain(domain) => domain.clone(),
     };
 
-    // ─── Open the chosen upstream ──────────────────────────────────────────
+    let ip = match &dst {
+        Dst::Ip4(ip) => Some(std::net::IpAddr::V4(*ip)),
+        Dst::Ip6(ip) => Some(std::net::IpAddr::V6(*ip)),
+        Dst::Domain(_) => None,
+    };
+    let domain = match &dst {
+        Dst::Domain(domain) => Some(domain.as_str()),
+        Dst::Ip4(_) | Dst::Ip6(_) => None,
+    };
+    let action = policy.decide_tcp(domain, ip, dst_port);
+
+    // ─── Execute the selected terminal action ─────────────────────────────
     let result: Result<(u64, u64)> = async {
-        match upstream.as_ref() {
-            Upstream::Socks5 { addr, auth } => {
-                let mut up = open_socks5_tunnel(addr, &dst, dst_port, auth.as_ref())
+        match action {
+            Action::Route { outbound } => {
+                let upstream = shared
+                    .upstreams
+                    .get(outbound)
+                    .with_context(|| format!("resolved outbound `{outbound}` not in registry"))?;
+                let Upstream::Socks5 {
+                    addr,
+                    auth,
+                    connect_timeout,
+                } = upstream.as_ref();
+                let mut up = open_socks5_tunnel_with_timeouts(
+                    addr,
+                    &dst,
+                    dst_port,
+                    auth.as_ref(),
+                    *connect_timeout,
+                    SOCKS5_HANDSHAKE_TIMEOUT,
+                )
                     .await
                     .with_context(|| format!("SOCKS5 CONNECT {dst_label}:{dst_port} via {addr}"))?;
                 info!(
                     unit = %unit_label,
-                    connection = %conn_name,
+                    policy = %decision.policy,
+                    outbound = %outbound,
                     dst = %dst_label,
                     dst_port,
                     via = %addr,
@@ -927,6 +949,18 @@ async fn relay(
                 let (u, d) = copy_bidirectional(&mut client, &mut up).await?;
                 Ok((u, d))
             }
+            Action::Direct => {
+                let mut direct = TcpStream::connect((dst_label.as_str(), dst_port))
+                    .await
+                    .with_context(|| format!("direct CONNECT {dst_label}:{dst_port}"))?;
+                info!(unit = %unit_label, policy = %decision.policy, dst = %dst_label, dst_port, "direct connection established");
+                let (u, d) = copy_bidirectional(&mut client, &mut direct).await?;
+                Ok((u, d))
+            }
+            Action::Reject { method } => anyhow::bail!(
+                "policy `{}` rejected {dst_label}:{dst_port} with {method:?}",
+                decision.policy
+            ),
         }
     }
     .await;
@@ -941,25 +975,7 @@ async fn relay(
 const M_NO_AUTH: u8 = 0x00;
 const M_USER_PASS: u8 = 0x02;
 const M_NO_ACCEPTABLE: u8 = 0xFF;
-const SOCKS5_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const SOCKS5_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
-
-async fn open_socks5_tunnel(
-    addr: &str,
-    dst: &Dst,
-    port: u16,
-    auth: Option<&ResolvedAuth>,
-) -> Result<TcpStream> {
-    open_socks5_tunnel_with_timeouts(
-        addr,
-        dst,
-        port,
-        auth,
-        SOCKS5_CONNECT_TIMEOUT,
-        SOCKS5_HANDSHAKE_TIMEOUT,
-    )
-    .await
-}
 
 async fn open_socks5_tunnel_with_timeouts(
     addr: &str,

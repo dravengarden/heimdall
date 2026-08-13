@@ -1,89 +1,93 @@
 # Configuration reference
 
-Heimdall accepts `.toml`, `.yaml`, `.yml`, `.json`, and `.ncl`. The filename
-extension selects the parser. Automatic discovery checks for exactly one
-`/etc/heimdall/config.<format>` file and rejects ambiguity.
-
-## Minimal schema
+Heimdall accepts `.toml`, `.yaml`/`.yml`, `.json`, and `.ncl`. Keep exactly one
+discovered `/etc/heimdall/config.<format>` file. All formats use this model:
 
 ```text
-proxies.<name>
-  type = "socks5"                  required
-  addr = "host:port"               required
-  description                      optional
-  auth.username                    1–255 bytes, optional with auth
-  auth.passwordFile                absolute path; content 1–255 bytes
-
-run
-  proxy = "default"                optional default
-  dns = "fake" | "system"         optional default: fake
-
-daemon                             entirely optional
-  cgroup = "/sys/fs/cgroup/system.slice"
-  listen = "127.0.0.1:12345"
-  relayIp = "127.0.0.1"
-  relayIp6 = "::1"
-  dnsListen = "127.0.0.1:5358"
-  fakeIpCidr = "198.19.0.0/16"
-  fakeIp6Cidr = "fc00:198:19::/96"
-  apiListen = "127.0.0.1:9999"
+version = 1
+proxy.default_policy -> proxy.policies.<name>
+proxy.outbounds.<name> = SOCKS5 TCP endpoint
+proxy.policies.<name>.dns.mode = fake | system
+proxy.policies.<name>.rules[] = ordered match + terminal action
+proxy.policies.<name>.final.tcp = route | direct | reject
+proxy.policies.<name>.final.udp = reject
+capture.mode = off
+decrypt.mode = off
+daemon = optional implementation settings
 ```
 
-Proxy names may contain ASCII letters, digits, `.`, `_`, and `-`. `run.proxy`
-must name a declared proxy. Listener sockets must be valid, nonzero, and
-distinct. Fake-IP CIDRs must be canonical network addresses of the stated IP
-family. The daemon removes one trailing newline from `auth.passwordFile` and
-rejects an empty or over-255-byte result.
+Use `heimdall init --format toml|yaml|json|nickel` for exact syntax. Do not
+translate field names between formats.
 
-## Minimal examples
-
-TOML:
-
-```toml
-[proxies.default]
-type = "socks5"
-addr = "127.0.0.1:1080"
-
-[run]
-proxy = "default"
-dns = "fake"
-```
-
-YAML:
+## Outbound
 
 ```yaml
-proxies:
-  default:
-    type: socks5
-    addr: 127.0.0.1:1080
-run:
-  proxy: default
-  dns: fake
+proxy:
+  outbounds:
+    default:
+      type: socks5
+      server: 127.0.0.1
+      server_port: 1080
+      network: [tcp]
+      connect_timeout: 10s
 ```
 
-JSON:
+Optional auth uses `auth.username` and an absolute `auth.password_file`. Never
+put the password value in config. UDP outbounds are not implemented and are
+rejected by validation.
 
-```json
-{
-  "proxies": {
-    "default": { "type": "socks5", "addr": "127.0.0.1:1080" }
-  },
-  "run": { "proxy": "default", "dns": "fake" }
-}
+## Rule
+
+```yaml
+- name: corp-domains
+  match:
+    network: [tcp]
+    domain_suffix: [internal.example.com]
+    port: [443]
+  action:
+    type: route
+    outbound: corp
 ```
 
-Nickel:
+Matchers: `network`, `domain`, `domain_suffix`, `ip_cidr`, `port`, and
+`port_range` entries with `start` and `end`. The first rule wins. Lists are OR;
+different fields are AND. Do not mix domain and IP matchers in one rule.
 
-```nickel
-{
-  proxies.default = {
-    type = "socks5",
-    addr = "127.0.0.1:1080",
-  },
-  run = { proxy = "default", dns = "fake" },
-}
-```
+Actions:
 
-Generate one with `heimdall init --format toml|yaml|json|nickel`. Existing
-files are preserved unless `--force` is supplied. Nickel evaluation requires
-the `nickel` executable; the Nix package wraps Heimdall with it on `PATH`.
+- `route` requires an existing TCP-capable `outbound`.
+- `direct` explicitly authorizes a native connection from the daemon.
+- `reject` currently requires `method: refused`.
+
+`final.tcp` and `final.udp` are mandatory. UDP must be rejected until the data
+plane implements a real relay.
+
+## DNS invariants
+
+- `fake` preserves hostname identity and permits domain rules. UDP and TCP port
+  53 are redirected to Heimdall.
+- `system` sends port 53 to the host resolver and forbids domain rules because
+  the relay sees only resolved IPs.
+
+## Repair protocol
+
+Run `heimdall config validate --json`. Iterate over every `diagnostics` item:
+
+1. Locate the field using `path`.
+2. Branch on stable `code`, not message text.
+3. Apply `hint` without inventing unsupported values.
+4. Validate again until `valid` is true.
+5. Explain representative domain/IP decisions with `heimdall config explain`.
+6. Run `heimdall agent --policy <name>` before execution.
+
+Use `heimdall config explain --policy NAME --domain HOST --port PORT --json`
+or replace `--domain` with `--ip` to verify first-match rule ordering without
+executing a command.
+
+Never respond to `unsupported_outbound_network` by weakening UDP to direct.
+Never respond to `domain_rule_requires_fake_dns` by keeping a rule that cannot
+match; choose fake DNS or rewrite the policy using IP matchers.
+
+Daemon settings are normally omitted. If needed, only set loopback
+`api_listen`, `dns_port`, cgroup, and fake-IP pools. The relay itself is fixed
+to IPv4/IPv6 loopback port 12345 and cannot be exposed or mismatched by config.
