@@ -6,7 +6,7 @@ license = "MIT"
 publish = false
 
 [dependencies]
-aya-ebpf = "0.1"
+aya-ebpf = "0.2"
 heimdall-common = { version = "0.1.0", path = "../heimdall-common", default-features = false }
 
 [[bin]]
