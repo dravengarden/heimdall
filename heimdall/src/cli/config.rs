@@ -205,7 +205,7 @@ async fn validate(config_path: &Path, args: ValidateArgs) -> Result<()> {
 
     if args.json {
         let out = ValidateJson {
-            contract: "heimdall.config.validate/v1",
+            contract: "heimdall.config.validate/v2",
             valid: ok,
             path: config_path.display().to_string(),
             diagnostics: &diagnostics,

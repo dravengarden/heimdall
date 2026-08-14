@@ -24,44 +24,48 @@ use crate::capture::{self, CaptureManager, FlowMeta};
 const CLIENT_HELLO_TIMEOUT: Duration = Duration::from_secs(3);
 const CLASSIFY_TIMEOUT: Duration = Duration::from_millis(150);
 
-pub struct Mitm {
+pub struct RelayTls {
     ca: Certificate,
     ca_key: KeyPair,
     client_config: Arc<ClientConfig>,
 }
 
-impl Mitm {
+impl RelayTls {
     pub fn load(ca_cert: &Path, ca_key: &Path) -> Result<Self> {
         let key_metadata = fs::symlink_metadata(ca_key)
-            .with_context(|| format!("inspect MITM CA key {}", ca_key.display()))?;
-        anyhow::ensure!(key_metadata.is_file(), "MITM CA key must be a regular file");
+            .with_context(|| format!("inspect relay TLS CA key {}", ca_key.display()))?;
+        anyhow::ensure!(
+            key_metadata.is_file(),
+            "relay TLS CA key must be a regular file"
+        );
         anyhow::ensure!(
             key_metadata.permissions().mode() & 0o077 == 0,
-            "MITM CA key {} must not grant group or other permissions; use mode 0600",
+            "relay TLS CA key {} must not grant group or other permissions; use mode 0600",
             ca_key.display()
         );
         let cert_pem = fs::read_to_string(ca_cert)
-            .with_context(|| format!("read MITM CA certificate {}", ca_cert.display()))?;
+            .with_context(|| format!("read relay TLS CA certificate {}", ca_cert.display()))?;
         let key_pem = fs::read_to_string(ca_key)
-            .with_context(|| format!("read MITM CA key {}", ca_key.display()))?;
-        let ca_key = KeyPair::from_pem(&key_pem).context("parse MITM CA private key PEM")?;
-        let (_, pem) = parse_x509_pem(cert_pem.as_bytes()).context("decode MITM CA PEM")?;
-        let (_, parsed_ca) = parse_x509_certificate(&pem.contents).context("parse MITM CA DER")?;
+            .with_context(|| format!("read relay TLS CA key {}", ca_key.display()))?;
+        let ca_key = KeyPair::from_pem(&key_pem).context("parse relay TLS CA private key PEM")?;
+        let (_, pem) = parse_x509_pem(cert_pem.as_bytes()).context("decode relay TLS CA PEM")?;
+        let (_, parsed_ca) =
+            parse_x509_certificate(&pem.contents).context("parse relay TLS CA DER")?;
         anyhow::ensure!(
             parsed_ca
                 .basic_constraints()
-                .context("read MITM CA basic constraints")?
+                .context("read relay TLS CA basic constraints")?
                 .is_some_and(|constraint| constraint.value.ca),
-            "MITM CA certificate is not authorized to sign certificates"
+            "relay TLS CA certificate is not authorized to sign certificates"
         );
         anyhow::ensure!(
             parsed_ca.public_key().raw == ca_key.public_key_der(),
-            "MITM CA certificate and private key do not match"
+            "relay TLS CA certificate and private key do not match"
         );
         let ca = CertificateParams::from_ca_cert_pem(&cert_pem)
-            .context("parse MITM CA certificate PEM")?
+            .context("parse relay TLS CA certificate PEM")?
             .self_signed(&ca_key)
-            .context("reconstruct MITM CA signer")?;
+            .context("reconstruct relay TLS CA signer")?;
 
         let native = rustls_native_certs::load_native_certs();
         let mut roots = RootCertStore::empty();
@@ -198,12 +202,12 @@ mod tests {
         let client_config = ClientConfig::builder()
             .with_root_certificates(roots)
             .with_no_client_auth();
-        let mitm = Mitm {
+        let relay_tls = RelayTls {
             ca,
             ca_key,
             client_config: Arc::new(client_config.clone()),
         };
-        let server_config = mitm
+        let server_config = relay_tls
             .server_config("example.com", Some(b"h2".to_vec()))
             .unwrap();
         let (client_io, server_io) = tokio::io::duplex(4096);
@@ -263,18 +267,18 @@ mod tests {
             )
             .unwrap();
 
-        let mitm_ca_key = KeyPair::generate().unwrap();
-        let mut mitm_ca_params = CertificateParams::default();
-        mitm_ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-        let mitm_ca = mitm_ca_params.self_signed(&mitm_ca_key).unwrap();
-        let mitm_ca_der = CertificateDer::from(mitm_ca.der().to_vec());
+        let relay_ca_key = KeyPair::generate().unwrap();
+        let mut relay_ca_params = CertificateParams::default();
+        relay_ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let relay_ca = relay_ca_params.self_signed(&relay_ca_key).unwrap();
+        let relay_ca_der = CertificateDer::from(relay_ca.der().to_vec());
         let mut upstream_roots = RootCertStore::empty();
         upstream_roots
             .add(CertificateDer::from(upstream_ca.der().to_vec()))
             .unwrap();
-        let mitm = Mitm {
-            ca: mitm_ca,
-            ca_key: mitm_ca_key,
+        let relay_tls = RelayTls {
+            ca: relay_ca,
+            ca_key: relay_ca_key,
             client_config: Arc::new(
                 ClientConfig::builder()
                     .with_root_certificates(upstream_roots)
@@ -283,7 +287,7 @@ mod tests {
         };
 
         let capture_directory = std::env::temp_dir().join(format!(
-            "heimdall-mitm-test-{}-{}",
+            "heimdall-relay-tls-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -319,27 +323,28 @@ mod tests {
         let relay_task = tokio::spawn(async move {
             let (mut downstream, _) = relay_listener.accept().await.unwrap();
             let mut upstream = TcpStream::connect(upstream_address).await.unwrap();
-            mitm.copy(
-                &mut downstream,
-                &mut upstream,
-                "fixture.test",
-                &capture,
-                FlowMeta {
-                    network: "tcp",
-                    cgroup_id: 42,
-                    policy: "test",
-                    destination: "fixture.test",
-                    destination_port: 443,
-                    action: "direct",
-                    payload: "tls_plaintext",
-                },
-            )
-            .await
-            .unwrap()
+            relay_tls
+                .copy(
+                    &mut downstream,
+                    &mut upstream,
+                    "fixture.test",
+                    &capture,
+                    FlowMeta {
+                        network: "tcp",
+                        cgroup_id: 42,
+                        policy: "test",
+                        destination: "fixture.test",
+                        destination_port: 443,
+                        action: "direct",
+                        payload: "tls_plaintext",
+                    },
+                )
+                .await
+                .unwrap()
         });
 
         let mut client_roots = RootCertStore::empty();
-        client_roots.add(mitm_ca_der).unwrap();
+        client_roots.add(relay_ca_der).unwrap();
         let client = TcpStream::connect(relay_address).await.unwrap();
         let mut tls = TlsConnector::from(Arc::new(
             ClientConfig::builder()

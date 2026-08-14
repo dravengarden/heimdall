@@ -99,17 +99,17 @@ let
     mode = "off"
   '';
   heimdallConfig = pkgs.writeText "heimdall-test-config.toml" heimdallConfigText;
-  transparentConfig = pkgs.writeText "heimdall-test-transparent.toml" (
-    builtins.replaceStrings [ ''mode = "off"'' ] [ ''mode = "transparent"'' ] heimdallConfigText
+  runtimeConfig = pkgs.writeText "heimdall-test-runtime.toml" (
+    builtins.replaceStrings [ ''mode = "off"'' ] [ ''mode = "runtime"'' ] heimdallConfigText
   );
-  mitmConfig = pkgs.writeText "heimdall-test-mitm.toml" (
+  relayConfig = pkgs.writeText "heimdall-test-relay.toml" (
     builtins.replaceStrings
       [ ''mode = "off"'' ]
       [
         ''
-          mode = "mitm"
-          ca_cert = "/run/heimdall-test/mitm/ca.pem"
-          ca_key = "/run/heimdall-test/mitm/ca-key.pem"
+          mode = "relay"
+          ca_cert = "/run/heimdall-test/relay/ca.pem"
+          ca_key = "/run/heimdall-test/relay/ca-key.pem"
         ''
       ]
       heimdallConfigText
@@ -281,8 +281,8 @@ in
     mode = "0755";
   };
   environment.etc."heimdall/config.toml".source = heimdallConfig;
-  environment.etc."heimdall-test/transparent.toml".source = transparentConfig;
-  environment.etc."heimdall-test/mitm.toml".source = mitmConfig;
+  environment.etc."heimdall-test/runtime.toml".source = runtimeConfig;
+  environment.etc."heimdall-test/relay.toml".source = relayConfig;
   environment.etc."heimdall-test/upstream-ca.pem".source = "${tlsFixture}/ca.pem";
 
   assertions = [

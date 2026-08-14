@@ -12,7 +12,7 @@ use serde::Serialize;
 
 #[derive(clap::Subcommand, Debug)]
 pub enum TlsCmd {
-    /// Generate a local CA certificate and protected signing key for MITM mode.
+    /// Generate a local CA certificate and protected signing key for relay mode.
     InitCa(InitCaArgs),
 }
 
@@ -79,11 +79,11 @@ fn init_ca(args: InitCaArgs) -> Result<()> {
         .with_context(|| format!("write CA certificate {}", cert_path.display()))?;
 
     let report = CaReport {
-        contract: "heimdall.tls-ca/v1",
+        contract: "heimdall.tls-ca/v2",
         ca_cert: cert_path.display().to_string(),
         ca_key: key_path.display().to_string(),
         config: ConfigSnippet {
-            mode: "mitm",
+            mode: "relay",
             ca_cert: cert_path.display().to_string(),
             ca_key: key_path.display().to_string(),
         },
@@ -94,7 +94,7 @@ fn init_ca(args: InitCaArgs) -> Result<()> {
         println!("CA certificate: {}", report.ca_cert);
         println!("CA private key: {}", report.ca_key);
         println!(
-            "Trust the certificate in the wrapped client, then configure decrypt.mode = mitm."
+            "Trust the certificate in the wrapped client, then configure decrypt.mode = relay."
         );
     }
     Ok(())

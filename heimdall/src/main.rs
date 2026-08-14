@@ -37,8 +37,8 @@ mod ebpf;
 mod gc;
 mod policy;
 mod state;
-mod tls_mitm;
-mod tls_transparent;
+mod tls_relay;
+mod tls_runtime;
 
 use std::{
     collections::HashMap as StdHashMap,
@@ -352,7 +352,7 @@ enum Cmd {
     #[command(subcommand)]
     Ebpf(cli::ebpf::EbpfCmd),
 
-    /// Generate and inspect TLS trust material used by MITM decryption.
+    /// Generate and inspect TLS trust material used by relay decryption.
     #[command(subcommand)]
     Tls(cli::tls::TlsCmd),
 
@@ -492,7 +492,7 @@ struct Shared {
     cfg: HeimdallConfig,
     upstreams: StdHashMap<String, Arc<Upstream>>,
     capture: Option<capture::CaptureManager>,
-    mitm: Option<Arc<tls_mitm::Mitm>>,
+    relay_tls: Option<Arc<tls_relay::RelayTls>>,
     /// Fake-IP DNS resolver. None when DNS server failed to bind
     /// (relay degrades to plain IP-mode SOCKS5 in that case).
     dns: Option<Arc<DnsResolver>>,
@@ -773,20 +773,21 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
     let capture = capture::CaptureManager::from_config(&cfg.capture)
         .await
         .context("initialize transport capture")?;
-    let mitm = (cfg.decrypt.mode == heimdall_config::DecryptMode::Mitm)
+    let relay_tls = (cfg.decrypt.mode == heimdall_config::DecryptMode::Relay)
         .then(|| {
             let ca_cert = cfg
                 .decrypt
                 .ca_cert
                 .as_deref()
-                .context("strict config accepted MITM without ca_cert")?;
+                .context("strict config accepted relay decrypt without ca_cert")?;
             let ca_key = cfg
                 .decrypt
                 .ca_key
                 .as_deref()
-                .context("strict config accepted MITM without ca_key")?;
+                .context("strict config accepted relay decrypt without ca_key")?;
             Ok::<_, anyhow::Error>(Arc::new(
-                tls_mitm::Mitm::load(ca_cert, ca_key).context("initialize TLS MITM")?,
+                tls_relay::RelayTls::load(ca_cert, ca_key)
+                    .context("initialize relay TLS decryption")?,
             ))
         })
         .transpose()?;
@@ -820,15 +821,15 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
     let udp_sessions: UdpSessions = Arc::new(Mutex::new(StdHashMap::new()));
     let policy_engine_slot: PolicyEngineSlot = Arc::new(parking_lot::Mutex::new(None));
     let daemon_health = Arc::new(parking_lot::RwLock::new(api::HealthReport {
-        contract: "heimdall.daemon.health/v1".into(),
+        contract: "heimdall.daemon.health/v2".into(),
         ready: false,
         decrypt_mode: match cfg.decrypt.mode {
             heimdall_config::DecryptMode::Off => "off",
-            heimdall_config::DecryptMode::Transparent => "transparent",
-            heimdall_config::DecryptMode::Mitm => "mitm",
+            heimdall_config::DecryptMode::Runtime => "runtime",
+            heimdall_config::DecryptMode::Relay => "relay",
         }
         .into(),
-        transparent: None,
+        runtime: None,
     }));
     let api_listen: SocketAddr = cfg
         .daemon
@@ -855,7 +856,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
         cfg,
         upstreams,
         capture,
-        mitm,
+        relay_tls,
         dns,
         cli_overrides: cli_overrides.clone(),
     });
@@ -873,18 +874,18 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
     )?;
     let mut link_transaction = ebpf::LinkTransaction::new();
 
-    if shared.cfg.decrypt.mode == heimdall_config::DecryptMode::Transparent {
+    if shared.cfg.decrypt.mode == heimdall_config::DecryptMode::Runtime {
         let capture = shared
             .capture
             .clone()
-            .context("strict config enabled transparent decrypt without capture")?;
-        let report = tls_transparent::start(&mut bpf, capture)
-            .context("initialize transparent TLS decryption")?;
+            .context("strict config enabled runtime decrypt without capture")?;
+        let report =
+            tls_runtime::start(&mut bpf, capture).context("initialize runtime TLS decryption")?;
         anyhow::ensure!(
             report.attached_images > 0,
-            "transparent TLS found no attachable loaded OpenSSL images; start a representative OpenSSL process before restarting the daemon, or use decrypt.mode = mitm"
+            "runtime TLS found no attachable loaded OpenSSL images; start a representative OpenSSL process before restarting the daemon, or use decrypt.mode = relay"
         );
-        daemon_health.write().transparent = Some(report);
+        daemon_health.write().runtime = Some(report);
     }
 
     {
@@ -1640,16 +1641,16 @@ async fn copy_tcp_transport(
     shared: &Shared,
     mut meta: capture::FlowMeta<'_>,
 ) -> Result<(u64, u64)> {
-    if let Some(mitm) = &shared.mitm
-        && tls_mitm::looks_like_client_hello(client).await?
+    if let Some(relay_tls) = &shared.relay_tls
+        && tls_relay::looks_like_client_hello(client).await?
     {
         let manager = shared
             .capture
             .as_ref()
-            .context("strict config enabled MITM without capture")?;
+            .context("strict config enabled relay decrypt without capture")?;
         meta.payload = "tls_plaintext";
         let fallback_name = meta.destination.to_owned();
-        return mitm
+        return relay_tls
             .copy(client, remote, &fallback_name, manager, meta)
             .await;
     }

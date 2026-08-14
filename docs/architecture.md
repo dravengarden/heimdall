@@ -92,11 +92,11 @@ Capture is a relay/application-boundary facility, not a kernel packet recorder. 
 `heimdall.capture/v1` files preserve ordered open/data/close events and count
 both wire directions under one per-flow byte budget. The root-only output
 directory is permission-checked before eBPF attachment. Storage retention remains an
-operator responsibility. Transparent decryption pairs OpenSSL entry and return
+operator responsibility. Runtime decryption pairs OpenSSL entry and return
 uprobes so it emits only successfully transferred `SSL_read`, `SSL_read_ex`,
 `SSL_write`, and `SSL_write_ex` application bytes through a bounded perf array
 without terminating TLS. Startup requires at least one attachable loaded
-OpenSSL image. MITM
+OpenSSL image. Relay
 decryption classifies ClientHello at the relay, validates upstream TLS, presents
 a Heimdall-CA-signed leaf to the client, and records plaintext after both
 handshakes. The capture `payload` field distinguishes these records from opaque

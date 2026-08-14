@@ -66,9 +66,9 @@ capture_contains() {
 }
 
 as_tester heimdall config validate --json \
-  | jq -e '.contract == "heimdall.config.validate/v1" and .valid'
+  | jq -e '.contract == "heimdall.config.validate/v2" and .valid'
 as_tester heimdall agent \
-  | jq -e '.contract == "heimdall.agent/v3"
+  | jq -e '.contract == "heimdall.agent/v4"
     and .ready
     and .config.capture.mode == "on"
     and .config.capture.directory == "/run/heimdall-test/captures"
@@ -79,12 +79,14 @@ as_tester heimdall agent \
     and .capabilities.capture.udp
     and .capabilities.capture.payload == "mode_dependent"
     and .capabilities.capture.tls_plaintext
-    and .capabilities.decrypt.modes == ["off", "transparent", "mitm"]
-    and .capabilities.decrypt.transparent_apis == ["SSL_read", "SSL_read_ex", "SSL_write", "SSL_write_ex"]
-    and .capabilities.decrypt.transparent_runtime_discovery == "loaded_images_at_daemon_start"
-    and .capabilities.decrypt.transparent_max_bytes_per_event == 256
-    and .capabilities.decrypt.transparent_requires_attached_image
-    and .daemon.health.contract == "heimdall.daemon.health/v1"
+    and .capabilities.decrypt.modes == ["off", "runtime", "relay"]
+    and .capabilities.decrypt.runtime_libraries == ["openssl"]
+    and .capabilities.decrypt.runtime_apis == ["SSL_read", "SSL_read_ex", "SSL_write", "SSL_write_ex"]
+    and .capabilities.decrypt.runtime_discovery == "loaded_images_at_daemon_start"
+    and .capabilities.decrypt.runtime_max_bytes_per_event == 256
+    and .capabilities.decrypt.runtime_requires_attached_image
+    and .capabilities.decrypt.relay_library_independent
+    and .daemon.health.contract == "heimdall.daemon.health/v2"
     and .daemon.health.ready
     and .daemon.health.decrypt_mode == "off"
     and .capabilities.udp.connected
@@ -106,8 +108,8 @@ as_tester heimdall agent \
     and (.capabilities.runtime_acceptance.tcp_fake_dns | index("go-netgo")) != null
     and (.capabilities.runtime_acceptance.udp_ipv4 | index("nodejs")) != null
     and (.capabilities.runtime_acceptance.udp_ipv6 | index("java")) != null
-    and (.capabilities.runtime_acceptance.tls_transparent | index("curl-openssl")) != null
-    and (.capabilities.runtime_acceptance.tls_mitm | index("curl")) != null
+    and (.capabilities.runtime_acceptance.tls_runtime | index("curl-openssl")) != null
+    and (.capabilities.runtime_acceptance.tls_relay | index("curl")) != null
     and (.capabilities.cli_acceptance.tcp_fake_dns | index("git")) != null
     and .capabilities.lifecycle.descendant_cgroup_lifetime
     and .capabilities.lifecycle.exit_code_passthrough
@@ -477,36 +479,36 @@ test "$udp_capture" = true
 test "$truncated_capture" = true
 
 # Exercise both TLS modes through the real cgroup/eBPF relay. The long-lived
-# OpenSSL fixture is loaded before transparent daemon startup, matching the
+# OpenSSL fixture is loaded before runtime daemon startup, matching the
 # discovery boundary reported by `heimdall agent`.
 curl -V | grep -q OpenSSL
 rm -f /run/heimdall-test/captures/*.jsonl
-start_manual_daemon /etc/heimdall-test/transparent.toml \
-  /run/heimdall-test/transparent-daemon.log
-as_tester heimdall --config /etc/heimdall-test/transparent.toml agent \
+start_manual_daemon /etc/heimdall-test/runtime.toml \
+  /run/heimdall-test/runtime-daemon.log
+as_tester heimdall --config /etc/heimdall-test/runtime.toml agent \
   | jq -e '.ready
-    and .daemon.health.decrypt_mode == "transparent"
-    and .daemon.health.transparent.discovered_images > 0
-    and .daemon.health.transparent.attached_images > 0'
-as_tester heimdall --config /etc/heimdall-test/transparent.toml run --policy fake -- \
+    and .daemon.health.decrypt_mode == "runtime"
+    and .daemon.health.runtime.discovered_images > 0
+    and .daemon.health.runtime.attached_images > 0'
+as_tester heimdall --config /etc/heimdall-test/runtime.toml run --policy fake -- \
   curl --cacert /etc/heimdall-test/upstream-ca.pem -fsS --max-time 5 \
     https://fixture.test:18444/ >/dev/null
 for _ in $(seq 1 100); do
-  capture_contains transparent 'GET / HTTP' && break
+  capture_contains runtime 'GET / HTTP' && break
   sleep 0.02
 done
-capture_contains transparent 'GET / HTTP'
+capture_contains runtime 'GET / HTTP'
 stop_manual_daemon
 
 rm -f /run/heimdall-test/captures/*.jsonl
-heimdall tls init-ca --dir /run/heimdall-test/mitm --json \
-  | jq -e '.contract == "heimdall.tls-ca/v1"'
-start_manual_daemon /etc/heimdall-test/mitm.toml \
-  /run/heimdall-test/mitm-daemon.log
-as_tester heimdall --config /etc/heimdall-test/mitm.toml agent \
-  | jq -e '.ready and .daemon.health.decrypt_mode == "mitm"'
-as_tester heimdall --config /etc/heimdall-test/mitm.toml run --policy fake -- \
-  curl --cacert /run/heimdall-test/mitm/ca.pem -fsS --max-time 5 \
+heimdall tls init-ca --dir /run/heimdall-test/relay --json \
+  | jq -e '.contract == "heimdall.tls-ca/v2" and .config.mode == "relay"'
+start_manual_daemon /etc/heimdall-test/relay.toml \
+  /run/heimdall-test/relay-daemon.log
+as_tester heimdall --config /etc/heimdall-test/relay.toml agent \
+  | jq -e '.ready and .daemon.health.decrypt_mode == "relay"'
+as_tester heimdall --config /etc/heimdall-test/relay.toml run --policy fake -- \
+  curl --cacert /run/heimdall-test/relay/ca.pem -fsS --max-time 5 \
     https://fixture.test:18444/ >/dev/null
 capture_contains route:default 'GET / HTTP'
 stop_manual_daemon

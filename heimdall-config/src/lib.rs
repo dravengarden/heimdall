@@ -170,7 +170,18 @@ impl ConfigError {
             .join("\n\n")
     }
 
-    fn hint(&self) -> &'static str {
+    fn hint(&self) -> String {
+        if matches!(
+            self,
+            Self::ParseToml { .. } | Self::ParseYaml { .. } | Self::ParseJson { .. }
+        ) && self.to_string().contains("unknown variant")
+            && ["transparent", "mitm"]
+                .iter()
+                .any(|removed| self.to_string().contains(removed))
+        {
+            return "Replace the removed decrypt mode with `runtime` for TLS-library probes or `relay` for relay TLS termination."
+                .into();
+        }
         match self {
             Self::Read { .. } => "Create the file or pass the intended path with --config.",
             Self::UnsupportedFormat { .. } => {
@@ -187,6 +198,7 @@ impl ConfigError {
                 "Use an absolute readable password_file with restricted permissions."
             }
         }
+        .into()
     }
 }
 
@@ -374,8 +386,8 @@ impl Default for DecryptConfig {
 #[serde(rename_all = "lowercase")]
 pub enum DecryptMode {
     Off,
-    Transparent,
-    Mitm,
+    Runtime,
+    Relay,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1021,7 +1033,7 @@ fn validate_decrypt(
         );
     }
 
-    if decrypt.mode == DecryptMode::Mitm {
+    if decrypt.mode == DecryptMode::Relay {
         for (path, value) in [
             ("$.decrypt.ca_cert", decrypt.ca_cert.as_ref()),
             ("$.decrypt.ca_key", decrypt.ca_key.as_ref()),
@@ -1029,9 +1041,9 @@ fn validate_decrypt(
             let Some(value) = value else {
                 push(
                     errors,
-                    "missing_mitm_ca_path",
+                    "missing_relay_ca_path",
                     path,
-                    "MITM mode requires this path",
+                    "relay mode requires this path",
                     "Set both ca_cert and ca_key to absolute PEM paths.",
                 );
                 continue;
@@ -1039,7 +1051,7 @@ fn validate_decrypt(
             if !value.is_absolute() {
                 push(
                     errors,
-                    "relative_mitm_ca_path",
+                    "relative_relay_ca_path",
                     path,
                     format!("`{}` is not absolute", value.display()),
                     "Use an absolute path to Heimdall-owned PEM material.",
@@ -1049,7 +1061,7 @@ fn validate_decrypt(
         if decrypt.ca_cert.is_some() && decrypt.ca_cert == decrypt.ca_key {
             push(
                 errors,
-                "shared_mitm_ca_path",
+                "shared_relay_ca_path",
                 "$.decrypt.ca_key",
                 "ca_cert and ca_key resolve to the same path",
                 "Use separate PEM files for the public CA certificate and private signing key.",
@@ -1067,7 +1079,7 @@ fn validate_decrypt(
                     path,
                     format!("this field is not valid in {:?} mode", decrypt.mode)
                         .to_ascii_lowercase(),
-                    "Remove the field, or set decrypt.mode to `mitm` and configure both CA paths.",
+                    "Remove the field, or set decrypt.mode to `relay` and configure both CA paths.",
                 );
             }
         }
@@ -1525,7 +1537,7 @@ action = { type = "direct" }
 
     #[test]
     fn accepts_both_tls_decrypt_modes() {
-        let transparent: HeimdallConfig = toml::from_str(
+        let runtime: HeimdallConfig = toml::from_str(
             &valid_toml()
                 .replace(
                     "mode = \"off\"\n\n            [decrypt]",
@@ -1533,31 +1545,51 @@ action = { type = "direct" }
                 )
                 .replace(
                     "[decrypt]\n            mode = \"off\"",
-                    "[decrypt]\n            mode = \"transparent\"",
+                    "[decrypt]\n            mode = \"runtime\"",
                 ),
         )
         .unwrap();
-        transparent.validate().unwrap();
-        assert_eq!(transparent.decrypt.mode, DecryptMode::Transparent);
+        runtime.validate().unwrap();
+        assert_eq!(runtime.decrypt.mode, DecryptMode::Runtime);
 
-        let mitm: HeimdallConfig = toml::from_str(
+        let relay: HeimdallConfig = toml::from_str(
             &valid_toml()
                 .replace("mode = \"off\"\n\n            [decrypt]", "mode = \"on\"\n\n            [decrypt]")
                 .replace(
                     "[decrypt]\n            mode = \"off\"",
-                    "[decrypt]\n            mode = \"mitm\"\n            ca_cert = \"/etc/heimdall/ca.pem\"\n            ca_key = \"/etc/heimdall/ca-key.pem\"",
+                    "[decrypt]\n            mode = \"relay\"\n            ca_cert = \"/etc/heimdall/ca.pem\"\n            ca_key = \"/etc/heimdall/ca-key.pem\"",
                 ),
         )
         .unwrap();
-        mitm.validate().unwrap();
-        assert_eq!(mitm.decrypt.mode, DecryptMode::Mitm);
+        relay.validate().unwrap();
+        assert_eq!(relay.decrypt.mode, DecryptMode::Relay);
+    }
+
+    #[test]
+    fn rejects_removed_decrypt_mode_names_with_repair_values() {
+        for removed in ["transparent", "mitm"] {
+            for (extension, content) in [
+                ("toml", format!("mode = \"{removed}\"")),
+                ("yaml", format!("mode: {removed}")),
+                ("json", format!(r#"{{"mode":"{removed}"}}"#)),
+            ] {
+                let path = temp_config(extension, &content);
+                let error = parse_typed::<DecryptConfig>(&path).unwrap_err();
+                let diagnostic = error.diagnostics().pop().unwrap();
+                assert!(diagnostic.message.contains("runtime"));
+                assert!(diagnostic.message.contains("relay"));
+                assert!(diagnostic.hint.contains("runtime"));
+                assert!(diagnostic.hint.contains("relay"));
+                fs::remove_file(path).unwrap();
+            }
+        }
     }
 
     #[test]
     fn decrypt_diagnostics_are_machine_repairable() {
         let config: HeimdallConfig = toml::from_str(&valid_toml().replace(
             "[decrypt]\n            mode = \"off\"",
-            "[decrypt]\n            mode = \"mitm\"\n            ca_cert = \"ca.pem\"\n            ca_key = \"ca.pem\"",
+            "[decrypt]\n            mode = \"relay\"\n            ca_cert = \"ca.pem\"\n            ca_key = \"ca.pem\"",
         ))
         .unwrap();
         let diagnostics = config.validate().unwrap_err().diagnostics();
@@ -1565,12 +1597,12 @@ action = { type = "direct" }
             item.code == "decrypt_requires_capture" && item.path == "$.capture.mode"
         }));
         assert!(diagnostics.iter().any(|item| {
-            item.code == "relative_mitm_ca_path" && item.path == "$.decrypt.ca_cert"
+            item.code == "relative_relay_ca_path" && item.path == "$.decrypt.ca_cert"
         }));
         assert!(
             diagnostics
                 .iter()
-                .any(|item| item.code == "shared_mitm_ca_path")
+                .any(|item| item.code == "shared_relay_ca_path")
         );
     }
 
@@ -1578,7 +1610,7 @@ action = { type = "direct" }
     fn rejects_mode_specific_decrypt_fields() {
         let config = toml::from_str::<HeimdallConfig>(&valid_toml().replace(
             "[decrypt]\n            mode = \"off\"",
-            "[decrypt]\n            mode = \"transparent\"\n            ca_cert = \"/tmp/ca.pem\"",
+            "[decrypt]\n            mode = \"runtime\"\n            ca_cert = \"/tmp/ca.pem\"",
         ))
         .unwrap();
         let diagnostics = config.validate().unwrap_err().diagnostics();
@@ -1588,15 +1620,15 @@ action = { type = "direct" }
     }
 
     #[test]
-    fn rejects_mitm_without_both_ca_paths() {
+    fn rejects_relay_without_both_ca_paths() {
         let config = toml::from_str::<HeimdallConfig>(&valid_toml().replace(
             "[decrypt]\n            mode = \"off\"",
-            "[decrypt]\n            mode = \"mitm\"\n            ca_cert = \"/tmp/ca.pem\"",
+            "[decrypt]\n            mode = \"relay\"\n            ca_cert = \"/tmp/ca.pem\"",
         ))
         .unwrap();
         let diagnostics = config.validate().unwrap_err().diagnostics();
         assert!(diagnostics.iter().any(|item| {
-            item.code == "missing_mitm_ca_path" && item.path == "$.decrypt.ca_key"
+            item.code == "missing_relay_ca_path" && item.path == "$.decrypt.ca_key"
         }));
     }
 

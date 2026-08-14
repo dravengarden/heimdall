@@ -1,4 +1,4 @@
-//! Transparent TLS plaintext capture through OpenSSL uprobes.
+//! Runtime TLS plaintext capture through OpenSSL uprobes.
 
 use std::{collections::HashSet, fs, os::unix::fs::MetadataExt, path::PathBuf};
 
@@ -77,13 +77,13 @@ pub fn start(bpf: &mut Ebpf, capture: CaptureManager) -> Result<StartReport> {
     tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
             if let Err(error) = record_event(&capture, event).await {
-                warn!(error = %error, "transparent TLS capture write failed");
+                warn!(error = %error, "runtime TLS capture write failed");
             }
         }
     });
     info!(
         discovered = images.len(),
-        attached, "transparent TLS OpenSSL probes attached"
+        attached, "runtime TLS OpenSSL probes attached"
     );
     Ok(StartReport {
         discovered_images: images.len(),
@@ -100,7 +100,7 @@ async fn record_event(capture: &CaptureManager, event: Event) -> Result<()> {
             policy: "registered",
             destination: &destination,
             destination_port: 0,
-            action: "transparent",
+            action: "runtime",
             payload: "tls_plaintext",
         })
         .await?;
@@ -115,14 +115,14 @@ async fn record_event(capture: &CaptureManager, event: Event) -> Result<()> {
 
 async fn read_events(buffer: PerfEventArrayBuffer<MapData>, tx: mpsc::Sender<Event>, cpu: u32) {
     let Ok(mut buffer) = tokio::io::unix::AsyncFd::new(buffer) else {
-        warn!(cpu, "transparent TLS perf reader registration failed");
+        warn!(cpu, "runtime TLS perf reader registration failed");
         return;
     };
     loop {
         let mut ready = match buffer.readable_mut().await {
             Ok(ready) => ready,
             Err(error) => {
-                warn!(cpu, error = %error, "transparent TLS perf reader stopped");
+                warn!(cpu, error = %error, "runtime TLS perf reader stopped");
                 return;
             }
         };
@@ -141,7 +141,7 @@ async fn read_events(buffer: PerfEventArrayBuffer<MapData>, tx: mpsc::Sender<Eve
                 }
             }
             PerfEvent::Lost { count } => {
-                warn!(cpu, lost = count, "transparent TLS events dropped");
+                warn!(cpu, lost = count, "runtime TLS events dropped");
             }
         });
         ready.clear_ready();

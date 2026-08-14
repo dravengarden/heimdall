@@ -978,7 +978,7 @@ fn try_skb_egress(ctx: &SkBuffContext) -> Result<i32, ()> {
     Ok(1)
 }
 
-// Transparent TLS decryption observes OpenSSL buffers without terminating TLS.
+// Runtime TLS decryption observes OpenSSL buffers without terminating TLS.
 // The cgroup policy lookup prevents plaintext from unregistered processes from
 // crossing the userspace boundary.
 #[map]

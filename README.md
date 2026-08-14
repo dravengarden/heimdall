@@ -80,10 +80,10 @@ max_bytes_per_flow = 1048576
 ```
 
 With `decrypt.mode = "off"`, capture stores opaque application transport bytes
-and HTTPS remains ciphertext. Set decrypt to `transparent` for CA-free OpenSSL
-uprobes, or `mitm` for language-independent relay TLS termination after clients
+and HTTPS remains ciphertext. Set decrypt to `runtime` for CA-free OpenSSL
+uprobes, or `relay` for language-independent relay TLS termination after clients
 trust a Heimdall CA. `heimdall agent` verifies that the running daemon uses the
-selected mode; transparent readiness also reports how many loaded OpenSSL
+selected mode; runtime readiness also reports how many loaded OpenSSL
 images were discovered and attached. Each flow file is mode `0600` below a
 mode `0700` directory and follows the `heimdall.capture/v1` contract. See
 [docs/config.md](docs/config.md) for its
@@ -112,8 +112,8 @@ dual-stack TCP behavior used by Java and similar runtimes.
 See [docs/config.md](docs/config.md) for the complete schema.
 
 The disposable real-eBPF acceptance VM covers static Go `netgo`, Java,
-Node.js, Rust, Python, C, curl, and Git. It also verifies transparent OpenSSL
-and relay MITM plaintext capture against a real TLS server, command exit and
+Node.js, Rust, Python, C, curl, and Git. It also verifies OpenSSL runtime
+capture and relay TLS termination against a real TLS server, command exit and
 signal status, descendant lifetime, unavailable-daemon behavior, and
 unreachable-upstream failure. It also restarts the daemon around an active
 fake-DNS command and verifies that policy and hostname mappings recover.

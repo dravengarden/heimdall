@@ -161,31 +161,31 @@ TLS decryption has two opt-in modes:
 ```toml
 # Observe supported application TLS APIs without terminating TLS.
 [decrypt]
-mode = "transparent"
+mode = "runtime"
 ```
 
 ```toml
 # Terminate and rebuild TLS at the relay, independent of client language.
 [decrypt]
-mode = "mitm"
+mode = "relay"
 ca_cert = "/var/lib/heimdall/tls/ca.pem"
 ca_key = "/var/lib/heimdall/tls/ca-key.pem"
 ```
 
 Both modes require `capture.mode = "on"`; otherwise validation returns
-`decrypt_requires_capture`. `transparent` currently attaches paired OpenSSL
+`decrypt_requires_capture`. `runtime` currently attaches paired OpenSSL
 `SSL_read`, `SSL_read_ex`, `SSL_write`, and `SSL_write_ex` entry/return uprobes
 and records only bytes reported as successfully transferred. It requires no
 trust change and remains compatible with certificate pinning and mTLS, but
 does not claim coverage for Go, rustls, BoringSSL, JVM, or stripped/static TLS
 implementations. Each API event is bounded to the byte count reported by
-`agent.capabilities.decrypt.transparent_max_bytes_per_event`. Probe discovery
+`agent.capabilities.decrypt.runtime_max_bytes_per_event`. Probe discovery
 covers `libssl` images already mapped when the daemon starts; startup fails if
 none can be attached, and the daemon must be restarted after introducing a
 different OpenSSL image. Verify the running mode and attachment counts under
 `agent.daemon.health`, not only the selected config.
 
-`mitm` detects TLS ClientHello records at the relay, verifies the upstream
+`relay` detects TLS ClientHello records at the relay, verifies the upstream
 certificate with the native trust store, mirrors the negotiated ALPN, signs a
 per-host leaf certificate, and captures the resulting plaintext. Non-TLS TCP
 passes through unchanged. Generate the CA with
@@ -239,14 +239,14 @@ heimdall config validate --json
 Success:
 
 ```json
-{"contract":"heimdall.config.validate/v1","valid":true,"path":"/etc/heimdall/config.toml","diagnostics":[]}
+{"contract":"heimdall.config.validate/v2","valid":true,"path":"/etc/heimdall/config.toml","diagnostics":[]}
 ```
 
 Semantic failures are returned together with stable codes and repair hints:
 
 ```json
 {
-  "contract": "heimdall.config.validate/v1",
+  "contract": "heimdall.config.validate/v2",
   "valid": false,
   "path": "/etc/heimdall/config.toml",
   "diagnostics": [

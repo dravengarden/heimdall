@@ -80,7 +80,7 @@ It is read-only and always prints exactly one JSON value before exiting:
 
 ```json
 {
-  "contract": "heimdall.agent/v3",
+  "contract": "heimdall.agent/v4",
   "version": "0.1.0",
   "ready": true,
   "config": {
@@ -95,7 +95,7 @@ It is read-only and always prints exactly one JSON value before exiting:
     "reachable": true,
     "control": "127.0.0.1:9999",
     "health": {
-      "contract": "heimdall.daemon.health/v1",
+      "contract": "heimdall.daemon.health/v2",
       "ready": true,
       "decrypt_mode": "off"
     },
@@ -111,17 +111,17 @@ It is read-only and always prints exactly one JSON value before exiting:
       "tls_plaintext": true
     },
     "decrypt": {
-      "modes": ["off", "transparent", "mitm"],
-      "transparent_runtimes": ["openssl"],
-      "transparent_apis": ["SSL_read", "SSL_read_ex", "SSL_write", "SSL_write_ex"],
-      "transparent_runtime_discovery": "loaded_images_at_daemon_start",
-      "transparent_max_bytes_per_event": 256,
-      "transparent_requires_attached_image": true,
-      "transparent_requires_ca_trust": false,
-      "transparent_supports_pinning_and_mtls": true,
-      "mitm_runtime_independent": true,
-      "mitm_requires_ca_trust": true,
-      "mitm_supports_pinning_and_mtls": false,
+      "modes": ["off", "runtime", "relay"],
+      "runtime_libraries": ["openssl"],
+      "runtime_apis": ["SSL_read", "SSL_read_ex", "SSL_write", "SSL_write_ex"],
+      "runtime_discovery": "loaded_images_at_daemon_start",
+      "runtime_max_bytes_per_event": 256,
+      "runtime_requires_attached_image": true,
+      "runtime_requires_ca_trust": false,
+      "runtime_supports_pinning_and_mtls": true,
+      "relay_library_independent": true,
+      "relay_requires_ca_trust": true,
+      "relay_supports_pinning_and_mtls": false,
       "upstream_certificate_verification": true,
       "non_tls_passthrough": true
     },
@@ -148,8 +148,8 @@ It is read-only and always prints exactly one JSON value before exiting:
       "tcp_fake_dns": ["curl", "go-netgo", "java", "nodejs", "rust"],
       "udp_ipv4": ["c", "go-netgo", "java", "nodejs", "python", "rust"],
       "udp_ipv6": ["go-netgo", "java", "nodejs", "python", "rust"],
-      "tls_transparent": ["curl-openssl"],
-      "tls_mitm": ["curl"]
+      "tls_runtime": ["curl-openssl"],
+      "tls_relay": ["curl"]
     },
     "cli_acceptance": { "tcp_fake_dns": ["git"] },
     "lifecycle": {
@@ -190,7 +190,7 @@ It is read-only and always prints exactly one JSON value before exiting:
 Treat argv arrays as arrays; never concatenate or shell-evaluate them. When
 config cannot be loaded, `config.error.code` is a stable category and
 `diagnostics` contains stable code/path/message/hint records. The contract may
-add fields within v3; consumers
+add fields within v4; consumers
 must ignore unknown fields.
 
 Before enabling capture, agents must inspect `capabilities.capture`,
@@ -199,13 +199,13 @@ capability says plaintext is available, not that every file is plaintext.
 Inspect each open record: `opaque_transport` is relay-observed transport;
 `tls_plaintext` is decrypted content.
 
-Transparent mode requires no trust change and currently covers only OpenSSL
+Runtime mode requires no trust change and currently covers only OpenSSL
 images loaded when the daemon starts and the four APIs reported by
-`transparent_apis`. The daemon refuses readiness when no image can be attached;
-require a positive `daemon.health.transparent.attached_images` count. Restart
+`runtime_apis`. The daemon refuses readiness when no image can be attached;
+require a positive `daemon.health.runtime.attached_images` count. Restart
 the daemon after introducing a different `libssl` image. Each event is bounded
-by `transparent_max_bytes_per_event`.
-MITM mode is language-independent but requires clients to trust the generated
+by `runtime_max_bytes_per_event`.
+Relay mode is language-independent but requires clients to trust the generated
 CA and is incompatible with pinning and client-certificate mTLS. Generate its
 material only with explicit trust authority:
 
@@ -247,8 +247,8 @@ matrix is:
 | Fake-DNS TCP | curl, static Go `netgo`, Java, Node.js, Rust |
 | IPv4 UDP | C, static Go `netgo`, Java, Node.js, Python, Rust |
 | IPv6 UDP | static Go `netgo`, Java, Node.js, Python, Rust |
-| Transparent TLS plaintext | curl with OpenSSL |
-| MITM TLS plaintext | curl |
+| Runtime TLS plaintext | curl with OpenSSL |
+| Relay TLS plaintext | curl |
 
 `capabilities.cli_acceptance` records end-to-end evidence for concrete CLI
 protocols; Git is tested with `git ls-remote` over fake-DNS TCP. Agents must

@@ -14,9 +14,9 @@ proxy.policies.<name>.final.udp = route | direct | reject
 capture.mode = off | on
 capture.directory = absolute path (default /var/lib/heimdall/captures)
 capture.max_bytes_per_flow = 1..67108864 (default 1048576)
-decrypt.mode = off | transparent | mitm
-decrypt.ca_cert = absolute PEM path (mitm only)
-decrypt.ca_key = absolute protected PEM path (mitm only)
+decrypt.mode = off | runtime | relay
+decrypt.ca_cert = absolute PEM path (relay only)
+decrypt.ca_key = absolute protected PEM path (relay only)
 daemon = optional implementation settings
 ```
 
@@ -85,20 +85,20 @@ probe the actual command when its runtime is absent from that path's array.
 
 Enable capture only when the user intends to retain traffic. It writes one
 root-only JSONL using `heimdall.capture/v1`. The byte limit is shared across
-both directions. With decrypt off, payload is opaque transport. Transparent
-mode is CA-free but currently covers only the runtimes listed by
-`agent.capabilities.decrypt.transparent_runtimes`. MITM is runtime-independent
+both directions. With decrypt off, payload is opaque transport. Runtime
+mode is CA-free but currently covers only the TLS libraries listed by
+`agent.capabilities.decrypt.runtime_libraries`. Relay mode is TLS-library-independent
 but requires client trust and does not support pinning or client-certificate
-mTLS. `transparent_runtime_discovery` reports when OpenSSL images are scanned;
+mTLS. `runtime_discovery` reports when OpenSSL images are scanned;
 restart the daemon when a new image appears. Require a ready matching
-`agent.daemon.health` and a positive `transparent.attached_images` count.
-`transparent_apis` and `transparent_max_bytes_per_event` define the exact
+`agent.daemon.health` and a positive `runtime.attached_images` count.
+`runtime_apis` and `runtime_max_bytes_per_event` define the exact
 probe boundary. Both decrypt modes require capture on.
 
 Validate the absolute directory and bounded limit, then inspect the normalized
 values at `agent.config.capture`/`agent.config.decrypt` and capability boundary
 at `agent.capabilities.capture`/`agent.capabilities.decrypt`. Use
-`heimdall tls init-ca --json` only after explicit MITM trust authority. Never
+`heimdall tls init-ca --json` only after explicit relay trust authority. Never
 weaken file permissions or expose `ca_key`. Heimdall does not rotate or upload
 captures; retention is an operator decision.
 

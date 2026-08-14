@@ -6,23 +6,23 @@ All notable changes to heimdall are documented here.
 
 ### Added
 
-- Add strict `transparent` and `mitm` TLS decrypt modes. Transparent mode
-  observes registered OpenSSL clients without changing trust; MITM mode
+- Add strict `runtime` and `relay` TLS decrypt modes. Runtime mode
+  observes registered OpenSSL clients without changing trust; relay mode
   verifies upstream TLS, mirrors ALPN, issues per-host leaves from an explicit
   protected CA, preserves non-TLS passthrough, and captures plaintext.
-- Add `heimdall tls init-ca --json` plus `heimdall.agent/v3` decrypt
+- Add `heimdall tls init-ca --json` plus `heimdall.agent/v4` decrypt
   capabilities and repair argv for agent-driven setup.
-- Add `heimdall.daemon.health/v1` to the loopback health endpoint and embed it
-  in the agent report, including the active decrypt mode and transparent probe
+- Add `heimdall.daemon.health/v2` to the loopback health endpoint and embed it
+  in the agent report, including the active decrypt mode and runtime probe
   attachment counts.
 
 ### Fixed
 
 - Capture only the bytes that successful OpenSSL read/write calls actually
-  transferred, including the `SSL_read_ex` and `SSL_write_ex` APIs. Transparent
+  transferred, including the `SSL_read_ex` and `SSL_write_ex` APIs. Runtime
   startup now fails when no loaded OpenSSL image can be attached instead of
   claiming readiness without plaintext coverage.
-- Exercise both transparent OpenSSL capture and relay MITM capture against a
+- Exercise both OpenSSL runtime capture and relay TLS termination against a
   real trusted TLS server in the disposable eBPF acceptance VM.
 - Version pinned map layouts, replace cgroup programs as one rollback-capable
   transaction, and add a machine-readable eBPF cleanup command that refuses
@@ -62,6 +62,10 @@ All notable changes to heimdall are documented here.
 
 ### Changed
 
+- Rename decrypt modes by execution boundary: `transparent` becomes `runtime`
+  and `mitm` becomes `relay`. The breaking machine-readable names are published
+  through `heimdall.agent/v4`, `heimdall.daemon.health/v2`,
+  `heimdall.config.validate/v2`, and `heimdall.tls-ca/v2`.
 - Added opt-in, bounded TCP and UDP relay capture as root-only
   `heimdall.capture/v1` JSONL files. Capture covers direct and SOCKS5 actions,
   records its payload boundary explicitly, fails affected flows on write errors, and exposes its

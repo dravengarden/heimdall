@@ -21,7 +21,7 @@ pub mod agent {
     };
     use serde::Serialize;
 
-    const CONTRACT_VERSION: &str = "heimdall.agent/v3";
+    const CONTRACT_VERSION: &str = "heimdall.agent/v4";
 
     #[derive(clap::Args, Debug)]
     pub struct AgentArgs {
@@ -101,16 +101,16 @@ pub mod agent {
     #[derive(Debug, Serialize)]
     struct DecryptCapabilities {
         modes: &'static [&'static str],
-        transparent_runtimes: &'static [&'static str],
-        transparent_apis: &'static [&'static str],
-        transparent_runtime_discovery: &'static str,
-        transparent_max_bytes_per_event: usize,
-        transparent_requires_attached_image: bool,
-        transparent_requires_ca_trust: bool,
-        transparent_supports_pinning_and_mtls: bool,
-        mitm_runtime_independent: bool,
-        mitm_requires_ca_trust: bool,
-        mitm_supports_pinning_and_mtls: bool,
+        runtime_libraries: &'static [&'static str],
+        runtime_apis: &'static [&'static str],
+        runtime_discovery: &'static str,
+        runtime_max_bytes_per_event: usize,
+        runtime_requires_attached_image: bool,
+        runtime_requires_ca_trust: bool,
+        runtime_supports_pinning_and_mtls: bool,
+        relay_library_independent: bool,
+        relay_requires_ca_trust: bool,
+        relay_supports_pinning_and_mtls: bool,
         upstream_certificate_verification: bool,
         non_tls_passthrough: bool,
     }
@@ -120,8 +120,8 @@ pub mod agent {
         tcp_fake_dns: &'static [&'static str],
         udp_ipv4: &'static [&'static str],
         udp_ipv6: &'static [&'static str],
-        tls_transparent: &'static [&'static str],
-        tls_mitm: &'static [&'static str],
+        tls_runtime: &'static [&'static str],
+        tls_relay: &'static [&'static str],
     }
 
     #[derive(Debug, Serialize)]
@@ -352,7 +352,7 @@ pub mod agent {
                 validate: argv_for(&path, &["config", "validate", "--json"]),
                 status: argv_for(&path, &["status", "--json"]),
                 execute_prefix,
-                tls_ca_init: mitm_ca_init_argv(&config.decrypt),
+                tls_ca_init: relay_ca_init_argv(&config.decrypt),
             },
             exit_codes: exit_codes(),
         }
@@ -390,14 +390,22 @@ pub mod agent {
     ) -> Option<MachineError> {
         let expected_mode = match decrypt.mode {
             heimdall_config::DecryptMode::Off => "off",
-            heimdall_config::DecryptMode::Transparent => "transparent",
-            heimdall_config::DecryptMode::Mitm => "mitm",
+            heimdall_config::DecryptMode::Runtime => "runtime",
+            heimdall_config::DecryptMode::Relay => "relay",
         };
         let (code, message, hint) = match health {
             None => (
                 "daemon_unreachable",
                 "the loopback daemon health endpoint is unreachable".into(),
                 "Start the daemon with this validated config, then rerun `heimdall agent`.".into(),
+            ),
+            Some(report) if report.contract != "heimdall.daemon.health/v2" => (
+                "daemon_contract_mismatch",
+                format!(
+                    "the daemon exposes {}, but this CLI requires heimdall.daemon.health/v2",
+                    report.contract
+                ),
+                "Restart the daemon with the same Heimdall release as this CLI.".into(),
             ),
             Some(report) if report.decrypt_mode != expected_mode => (
                 "daemon_config_mismatch",
@@ -469,14 +477,14 @@ pub mod agent {
                 ca_key: None,
                 ca_material_ready: true,
             },
-            heimdall_config::DecryptMode::Transparent => DecryptConfigReport {
-                mode: "transparent",
+            heimdall_config::DecryptMode::Runtime => DecryptConfigReport {
+                mode: "runtime",
                 ca_cert: None,
                 ca_key: None,
                 ca_material_ready: true,
             },
-            heimdall_config::DecryptMode::Mitm => DecryptConfigReport {
-                mode: "mitm",
+            heimdall_config::DecryptMode::Relay => DecryptConfigReport {
+                mode: "relay",
                 ca_cert: config
                     .ca_cert
                     .as_ref()
@@ -491,8 +499,8 @@ pub mod agent {
         }
     }
 
-    fn mitm_ca_init_argv(config: &DecryptConfig) -> Option<Vec<String>> {
-        if config.mode != heimdall_config::DecryptMode::Mitm {
+    fn relay_ca_init_argv(config: &DecryptConfig) -> Option<Vec<String>> {
+        if config.mode != heimdall_config::DecryptMode::Relay {
             return None;
         }
         let ca_cert = config.ca_cert.as_ref()?;
@@ -532,17 +540,17 @@ pub mod agent {
                 tls_plaintext: true,
             },
             decrypt: DecryptCapabilities {
-                modes: &["off", "transparent", "mitm"],
-                transparent_runtimes: &["openssl"],
-                transparent_apis: &["SSL_read", "SSL_read_ex", "SSL_write", "SSL_write_ex"],
-                transparent_runtime_discovery: "loaded_images_at_daemon_start",
-                transparent_max_bytes_per_event: heimdall_common::TAP_DATA_LEN,
-                transparent_requires_attached_image: true,
-                transparent_requires_ca_trust: false,
-                transparent_supports_pinning_and_mtls: true,
-                mitm_runtime_independent: true,
-                mitm_requires_ca_trust: true,
-                mitm_supports_pinning_and_mtls: false,
+                modes: &["off", "runtime", "relay"],
+                runtime_libraries: &["openssl"],
+                runtime_apis: &["SSL_read", "SSL_read_ex", "SSL_write", "SSL_write_ex"],
+                runtime_discovery: "loaded_images_at_daemon_start",
+                runtime_max_bytes_per_event: heimdall_common::TAP_DATA_LEN,
+                runtime_requires_attached_image: true,
+                runtime_requires_ca_trust: false,
+                runtime_supports_pinning_and_mtls: true,
+                relay_library_independent: true,
+                relay_requires_ca_trust: true,
+                relay_supports_pinning_and_mtls: false,
                 upstream_certificate_verification: true,
                 non_tls_passthrough: true,
             },
@@ -569,8 +577,8 @@ pub mod agent {
                 tcp_fake_dns: &["curl", "go-netgo", "java", "nodejs", "rust"],
                 udp_ipv4: &["c", "go-netgo", "java", "nodejs", "python", "rust"],
                 udp_ipv6: &["go-netgo", "java", "nodejs", "python", "rust"],
-                tls_transparent: &["curl-openssl"],
-                tls_mitm: &["curl"],
+                tls_runtime: &["curl-openssl"],
+                tls_relay: &["curl"],
             },
             cli_acceptance: CliAcceptance {
                 tcp_fake_dns: &["git"],
@@ -638,8 +646,8 @@ pub mod agent {
             assert!(runtimes.tcp_fake_dns.contains(&"go-netgo"));
             assert!(runtimes.udp_ipv4.contains(&"nodejs"));
             assert!(runtimes.udp_ipv6.contains(&"java"));
-            assert!(runtimes.tls_transparent.contains(&"curl-openssl"));
-            assert!(runtimes.tls_mitm.contains(&"curl"));
+            assert!(runtimes.tls_runtime.contains(&"curl-openssl"));
+            assert!(runtimes.tls_relay.contains(&"curl"));
             assert!(capabilities.cli_acceptance.tcp_fake_dns.contains(&"git"));
         }
 
@@ -652,33 +660,33 @@ pub mod agent {
             assert!(capture.udp);
             assert_eq!(capture.payload, "mode_dependent");
             assert!(capture.tls_plaintext);
-            assert_eq!(capabilities().decrypt.modes, ["off", "transparent", "mitm"]);
+            assert_eq!(capabilities().decrypt.modes, ["off", "runtime", "relay"]);
             assert_eq!(
-                capabilities().decrypt.transparent_runtime_discovery,
+                capabilities().decrypt.runtime_discovery,
                 "loaded_images_at_daemon_start"
             );
             assert_eq!(
-                capabilities().decrypt.transparent_apis,
+                capabilities().decrypt.runtime_apis,
                 ["SSL_read", "SSL_read_ex", "SSL_write", "SSL_write_ex"]
             );
             assert_eq!(
-                capabilities().decrypt.transparent_max_bytes_per_event,
+                capabilities().decrypt.runtime_max_bytes_per_event,
                 heimdall_common::TAP_DATA_LEN
             );
-            assert!(capabilities().decrypt.transparent_requires_attached_image);
+            assert!(capabilities().decrypt.runtime_requires_attached_image);
         }
 
         #[test]
         fn daemon_health_reports_actionable_mode_mismatch() {
             let decrypt = DecryptConfig {
-                mode: heimdall_config::DecryptMode::Transparent,
+                mode: heimdall_config::DecryptMode::Runtime,
                 ..DecryptConfig::default()
             };
             let health = crate::api::HealthReport {
-                contract: "heimdall.daemon.health/v1".into(),
+                contract: "heimdall.daemon.health/v2".into(),
                 ready: true,
                 decrypt_mode: "off".into(),
-                transparent: None,
+                runtime: None,
             };
 
             let error = daemon_error(&decrypt, Some(&health)).unwrap();
@@ -687,12 +695,25 @@ pub mod agent {
         }
 
         #[test]
-        fn daemon_health_requires_completed_initialization() {
+        fn daemon_health_rejects_an_old_contract() {
             let health = crate::api::HealthReport {
                 contract: "heimdall.daemon.health/v1".into(),
+                ready: true,
+                decrypt_mode: "off".into(),
+                runtime: None,
+            };
+
+            let error = daemon_error(&DecryptConfig::default(), Some(&health)).unwrap();
+            assert_eq!(error.code, "daemon_contract_mismatch");
+        }
+
+        #[test]
+        fn daemon_health_requires_completed_initialization() {
+            let health = crate::api::HealthReport {
+                contract: "heimdall.daemon.health/v2".into(),
                 ready: false,
                 decrypt_mode: "off".into(),
-                transparent: None,
+                runtime: None,
             };
 
             let error = daemon_error(&DecryptConfig::default(), Some(&health)).unwrap();

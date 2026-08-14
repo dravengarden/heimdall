@@ -35,7 +35,7 @@ pub struct HealthReport {
     pub ready: bool,
     pub decrypt_mode: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub transparent: Option<crate::tls_transparent::StartReport>,
+    pub runtime: Option<crate::tls_runtime::StartReport>,
 }
 
 pub fn router(state: AppState) -> Router {

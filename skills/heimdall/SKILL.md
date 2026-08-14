@@ -16,15 +16,16 @@ Run:
 heimdall agent
 ```
 
-Parse the single `heimdall.agent/v3` JSON object. Exit 0 means ready, exit 1
+Parse the single `heimdall.agent/v4` JSON object. Exit 0 means ready, exit 1
 means the document explains why, and exit 2 is invalid CLI usage. Read stable
 error `code` values before messages. Execute `actions` as argv arrays; never
 join or evaluate them as shell text.
 
-Require `daemon.health.contract` to be `heimdall.daemon.health/v1`,
+Require `daemon.health.contract` to be `heimdall.daemon.health/v2`,
 `daemon.health.ready` to be true, and `daemon.health.decrypt_mode` to match
-`config.decrypt.mode`. Treat `daemon_unreachable`, `daemon_not_ready`, and
-`daemon_config_mismatch` as hard stops before executing a wrapped command.
+`config.decrypt.mode`. Treat `daemon_unreachable`, `daemon_contract_mismatch`,
+`daemon_not_ready`, and `daemon_config_mismatch` as hard stops before executing
+a wrapped command.
 
 Use `heimdall help -v` only when deeper command discovery is needed.
 
@@ -33,17 +34,17 @@ If capture is requested, inspect `config.capture`, `config.decrypt`,
 and a suitable byte limit before either decrypt mode. Read each capture open
 record's `payload`; only `tls_plaintext` is decrypted.
 
-Choose `transparent` only when `transparent_runtimes` contains the client's TLS
-implementation and account for `transparent_runtime_discovery`; a newly
+Choose `runtime` only when `runtime_libraries` contains the client's TLS
+implementation and account for `runtime_discovery`; a newly
 introduced OpenSSL image requires a daemon restart before wrapping the command.
-Also require `daemon.health.transparent.attached_images` to be greater than
-zero and use `transparent_apis` plus `transparent_max_bytes_per_event` as the
+Also require `daemon.health.runtime.attached_images` to be greater than
+zero and use `runtime_apis` plus `runtime_max_bytes_per_event` as the
 capture boundary. It changes no trust and supports pinning/mTLS, but absence
-from the runtime or API arrays means no plaintext guarantee. Choose `mitm` for runtime-independent
-capture only with explicit authority to install local trust. If
+from the library or API arrays means no plaintext guarantee. Choose `relay`
+for TLS-library-independent capture only with explicit authority to install local trust. If
 `ca_material_ready` is false, execute `actions.tls_ca_init` as an argv array,
 then trust its public `ca_cert`; never expose or copy `ca_key`. Do not select
-MITM for certificate-pinned or client-certificate mTLS traffic.
+relay mode for certificate-pinned or client-certificate mTLS traffic.
 
 ## Validate and repair configuration
 
@@ -125,8 +126,8 @@ not a per-run override. Keep the wrapped command after `--`. Read
 - Do not start the privileged daemon when the user asked only for config review.
 - For runtime failures, collect `heimdall agent`, `heimdall status --json`, and
   recent `heimdall.service` logs before changing state.
-- Do not claim transparent runtime coverage beyond
-  `capabilities.decrypt.transparent_runtimes` and `transparent_apis`.
+- Do not claim runtime TLS coverage beyond
+  `capabilities.decrypt.runtime_libraries` and `runtime_apis`.
 - Do not enable capture without explicit retention intent; its root-only files
   can contain credentials and other application data. Heimdall does not rotate
   them.

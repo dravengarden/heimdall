@@ -14,7 +14,7 @@ operational guidance.
 ## Reading order
 
 - [`README.md`](../README.md) — Project overview and quick start
-- [`architecture.md`](architecture.md) — CLI, transactional eBPF lifecycle, DNS, fail-closed UDP correlation, capture, and verified transparent/MITM TLS boundaries
+- [`architecture.md`](architecture.md) — CLI, transactional eBPF lifecycle, DNS, fail-closed UDP correlation, capture, and verified runtime/relay TLS boundaries
 - [`runbook.md`](runbook.md) — Runbook
 
 ## Documents

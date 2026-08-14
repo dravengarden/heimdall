@@ -35,8 +35,8 @@ pub async fn run(config_path: &Path, args: StatusArgs) -> Result<()> {
     let daemon_reachable = daemon_health.is_some();
     let configured_decrypt_mode = match cfg.decrypt.mode {
         heimdall_config::DecryptMode::Off => "off",
-        heimdall_config::DecryptMode::Transparent => "transparent",
-        heimdall_config::DecryptMode::Mitm => "mitm",
+        heimdall_config::DecryptMode::Runtime => "runtime",
+        heimdall_config::DecryptMode::Relay => "relay",
     };
     let daemon_ready = daemon_health.as_ref().map(|health| health.ready);
     let daemon_decrypt_mode = daemon_health
