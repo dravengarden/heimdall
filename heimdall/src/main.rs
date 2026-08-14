@@ -27,7 +27,7 @@
 //!
 //! ## Configuration
 //!
-//! Driven by one `/etc/heimdall/config.{toml,yaml,json,ncl}` file.
+//! Driven by one `/etc/heimdall/config.{toml,yaml,json}` file.
 
 mod api;
 mod capture;
@@ -819,6 +819,17 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
     let cli_overrides: CliOverrides = Arc::new(parking_lot::RwLock::new(StdHashMap::new()));
     let udp_sessions: UdpSessions = Arc::new(Mutex::new(StdHashMap::new()));
     let policy_engine_slot: PolicyEngineSlot = Arc::new(parking_lot::Mutex::new(None));
+    let daemon_health = Arc::new(parking_lot::RwLock::new(api::HealthReport {
+        contract: "heimdall.daemon.health/v1".into(),
+        ready: false,
+        decrypt_mode: match cfg.decrypt.mode {
+            heimdall_config::DecryptMode::Off => "off",
+            heimdall_config::DecryptMode::Transparent => "transparent",
+            heimdall_config::DecryptMode::Mitm => "mitm",
+        }
+        .into(),
+        transparent: None,
+    }));
     let api_listen: SocketAddr = cfg
         .daemon
         .api_listen
@@ -829,6 +840,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
         cli_overrides: cli_overrides.clone(),
         policy_engine: policy_engine_slot.clone(),
         udp_sessions: udp_sessions.clone(),
+        health: daemon_health.clone(),
     };
     let api_listener = TcpListener::bind(api_listen)
         .await
@@ -866,8 +878,13 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
             .capture
             .clone()
             .context("strict config enabled transparent decrypt without capture")?;
-        tls_transparent::start(&mut bpf, capture)
+        let report = tls_transparent::start(&mut bpf, capture)
             .context("initialize transparent TLS decryption")?;
+        anyhow::ensure!(
+            report.attached_images > 0,
+            "transparent TLS found no attachable loaded OpenSSL images; start a representative OpenSSL process before restarting the daemon, or use decrypt.mode = mitm"
+        );
+        daemon_health.write().transparent = Some(report);
     }
 
     {
@@ -1347,6 +1364,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
             .context("bind IPv6 UDP relay loopback")?,
     );
     link_transaction.commit();
+    daemon_health.write().ready = true;
     info!("persistent eBPF link generation committed");
     info!(ipv4 = %relay_v4.local_addr()?, ipv6 = %relay_v6.local_addr()?, "heimdall ready");
 

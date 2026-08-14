@@ -59,9 +59,10 @@ orchestrator-shaped metadata.
 7. Application bytes, including TLS records, pass through unchanged. When
    capture is enabled, the relay writes its observed TCP stream chunks or UDP
    datagrams to one bounded JSONL file per flow before forwarding them. SOCKS5
-   handshakes and UDP framing are excluded. TLS remains ciphertext. Heimdall
-   never uses SNI to reinterpret an IP destination: fake DNS produces a SOCKS5
-   domain request, while system DNS preserves the resolved IP address.
+   handshakes and UDP framing are excluded. TLS remains ciphertext unless one
+   of the two explicit decrypt modes is enabled. Heimdall never uses SNI to
+   reinterpret an IP destination: fake DNS produces a SOCKS5 domain request,
+   while system DNS preserves the resolved IP address.
 8. After the immediate child exits, the parent keeps the policy registered
    until `cgroup.events` reports that every inherited descendant has exited.
    It then deregisters the cgroup and returns the immediate child's exit status.
@@ -91,8 +92,11 @@ Capture is a relay/application-boundary facility, not a kernel packet recorder. 
 `heimdall.capture/v1` files preserve ordered open/data/close events and count
 both wire directions under one per-flow byte budget. The root-only output
 directory is permission-checked before eBPF attachment. Storage retention remains an
-operator responsibility. Transparent decryption emits supported OpenSSL
-application buffers through a bounded perf array without terminating TLS. MITM
+operator responsibility. Transparent decryption pairs OpenSSL entry and return
+uprobes so it emits only successfully transferred `SSL_read`, `SSL_read_ex`,
+`SSL_write`, and `SSL_write_ex` application bytes through a bounded perf array
+without terminating TLS. Startup requires at least one attachable loaded
+OpenSSL image. MITM
 decryption classifies ClientHello at the relay, validates upstream TLS, presents
 a Heimdall-CA-signed leaf to the client, and records plaintext after both
 handshakes. The capture `payload` field distinguishes these records from opaque
@@ -122,7 +126,6 @@ cgroup deregisters, orphan GC runs, or the session remains idle for 60 seconds.
 - host-wide routing rules for services
 - workload labels, annotations, or admission hooks
 - a Web UI or public HTTP API as a primary interface
-- TLS plaintext collection as part of the proxy wrapper contract
 
 Heimdall's policy language is deliberately limited to destination identity,
 protocol, and port for one command cgroup. Complex upstream routing can still

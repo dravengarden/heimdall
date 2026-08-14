@@ -986,72 +986,153 @@ static TAP_EVENTS: PerfEventArray<TapEvent> = PerfEventArray::new(0);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct ReadEntry {
+struct TlsIoEntry {
     buf: u64,
+    out_len: u64,
 }
 
 #[map]
-static SSL_READ_STATE: HashMap<u64, ReadEntry> = HashMap::with_max_entries(8192, 0);
+static SSL_WRITE_STATE: HashMap<u64, TlsIoEntry> = HashMap::with_max_entries(8192, 0);
 
 #[uprobe]
-pub fn ssl_write(ctx: ProbeContext) -> u32 {
-    if let (Some(buf), Some(num)) = (ctx.arg::<*const u8>(1), ctx.arg::<i32>(2))
-        && num > 0
+pub fn ssl_write_enter(ctx: ProbeContext) -> u32 {
+    if let Some(buf) = ctx.arg::<*const u8>(1)
         && !buf.is_null()
     {
-        emit_tap(&ctx, TapDir::Send, num as u32, buf);
+        let pid_tgid = bpf_get_current_pid_tgid();
+        let _ = SSL_WRITE_STATE.insert(
+            &pid_tgid,
+            &TlsIoEntry {
+                buf: buf as u64,
+                out_len: 0,
+            },
+            0,
+        );
     }
     0
 }
+
+#[uretprobe]
+pub fn ssl_write_exit(ctx: RetProbeContext) -> u32 {
+    emit_standard_tls_return(&ctx, &SSL_WRITE_STATE, TapDir::Send)
+}
+
+#[map]
+static SSL_WRITE_EX_STATE: HashMap<u64, TlsIoEntry> = HashMap::with_max_entries(8192, 0);
+
+#[uprobe]
+pub fn ssl_write_ex_enter(ctx: ProbeContext) -> u32 {
+    remember_ex_io(&ctx, &SSL_WRITE_EX_STATE)
+}
+
+#[uretprobe]
+pub fn ssl_write_ex_exit(ctx: RetProbeContext) -> u32 {
+    emit_ex_tls_return(&ctx, &SSL_WRITE_EX_STATE, TapDir::Send)
+}
+
+#[map]
+static SSL_READ_STATE: HashMap<u64, TlsIoEntry> = HashMap::with_max_entries(8192, 0);
 
 #[uprobe]
 pub fn ssl_read_enter(ctx: ProbeContext) -> u32 {
     if let Some(buf) = ctx.arg::<*const u8>(1) {
         let pid_tgid = bpf_get_current_pid_tgid();
-        let _ = SSL_READ_STATE.insert(&pid_tgid, &ReadEntry { buf: buf as u64 }, 0);
+        let _ = SSL_READ_STATE.insert(
+            &pid_tgid,
+            &TlsIoEntry {
+                buf: buf as u64,
+                out_len: 0,
+            },
+            0,
+        );
     }
     0
 }
 
 #[uretprobe]
 pub fn ssl_read_exit(ctx: RetProbeContext) -> u32 {
-    let pid_tgid = bpf_get_current_pid_tgid();
-    let Some(entry) = (unsafe { SSL_READ_STATE.get(&pid_tgid) }).copied() else {
-        return 0;
-    };
-    let _ = SSL_READ_STATE.remove(&pid_tgid);
-    if let Some(ret) = ctx.ret::<i32>()
-        && ret > 0
+    emit_standard_tls_return(&ctx, &SSL_READ_STATE, TapDir::Recv)
+}
+
+#[map]
+static SSL_READ_EX_STATE: HashMap<u64, TlsIoEntry> = HashMap::with_max_entries(8192, 0);
+
+#[uprobe]
+pub fn ssl_read_ex_enter(ctx: ProbeContext) -> u32 {
+    remember_ex_io(&ctx, &SSL_READ_EX_STATE)
+}
+
+#[uretprobe]
+pub fn ssl_read_ex_exit(ctx: RetProbeContext) -> u32 {
+    emit_ex_tls_return(&ctx, &SSL_READ_EX_STATE, TapDir::Recv)
+}
+
+#[inline(always)]
+fn remember_ex_io(ctx: &ProbeContext, state: &HashMap<u64, TlsIoEntry>) -> u32 {
+    if let (Some(buf), Some(out_len)) = (ctx.arg::<*const u8>(1), ctx.arg::<*const u64>(3))
+        && !buf.is_null()
+        && !out_len.is_null()
     {
-        emit_tap_ret(&ctx, TapDir::Recv, ret as u32, entry.buf as *const u8);
+        let pid_tgid = bpf_get_current_pid_tgid();
+        let _ = state.insert(
+            &pid_tgid,
+            &TlsIoEntry {
+                buf: buf as u64,
+                out_len: out_len as u64,
+            },
+            0,
+        );
     }
     0
 }
 
 #[inline(always)]
-fn emit_tap(ctx: &ProbeContext, dir: TapDir, total: u32, buf: *const u8) {
-    let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
-    if policy_for(cgroup_id) == DEFAULT_POLICY {
-        return;
-    }
-    let mut event: TapEvent = unsafe { core::mem::zeroed() };
-    event.tgid_pid = bpf_get_current_pid_tgid();
-    event.cgroup_id = cgroup_id;
-    event.dir = dir as u32;
-    event.total_len = total;
-    event.captured_len = if total > TAP_DATA_LEN as u32 {
-        TAP_DATA_LEN as u32
-    } else {
-        total
+fn emit_standard_tls_return(
+    ctx: &RetProbeContext,
+    state: &HashMap<u64, TlsIoEntry>,
+    dir: TapDir,
+) -> u32 {
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let Some(entry) = (unsafe { state.get(&pid_tgid) }).copied() else {
+        return 0;
     };
-    unsafe {
-        let _ = bpf_probe_read_user(
-            event.data.as_mut_ptr() as *mut _,
-            event.captured_len,
-            buf as *const _,
-        );
+    let _ = state.remove(&pid_tgid);
+    if let Some(ret) = ctx.ret::<i32>()
+        && ret > 0
+    {
+        emit_tap_ret(ctx, dir, ret as u32, entry.buf as *const u8);
     }
-    TAP_EVENTS.output(ctx, &event, 0);
+    0
+}
+
+#[inline(always)]
+fn emit_ex_tls_return(ctx: &RetProbeContext, state: &HashMap<u64, TlsIoEntry>, dir: TapDir) -> u32 {
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let Some(entry) = (unsafe { state.get(&pid_tgid) }).copied() else {
+        return 0;
+    };
+    let _ = state.remove(&pid_tgid);
+    if ctx.ret::<i32>() != Some(1) {
+        return 0;
+    }
+    let mut total = 0u64;
+    let read = unsafe {
+        bpf_probe_read_user(
+            (&mut total as *mut u64).cast(),
+            core::mem::size_of::<u64>() as u32,
+            (entry.out_len as *const u64).cast(),
+        )
+    };
+    if read != 0 || total == 0 {
+        return 0;
+    }
+    let total = if total > u32::MAX as u64 {
+        u32::MAX
+    } else {
+        total as u32
+    };
+    emit_tap_ret(ctx, dir, total, entry.buf as *const u8);
+    0
 }
 
 #[inline(always)]

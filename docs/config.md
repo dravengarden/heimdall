@@ -173,12 +173,17 @@ ca_key = "/var/lib/heimdall/tls/ca-key.pem"
 ```
 
 Both modes require `capture.mode = "on"`; otherwise validation returns
-`decrypt_requires_capture`. `transparent` currently attaches OpenSSL
-`SSL_read`/`SSL_write` uprobes. It requires no trust change and remains
-compatible with certificate pinning and mTLS, but does not claim coverage for
-Go, rustls, BoringSSL, JVM, or stripped/static TLS implementations. Probe
-discovery covers `libssl` images already mapped when the daemon starts; restart
-the daemon after installing or introducing a different OpenSSL image.
+`decrypt_requires_capture`. `transparent` currently attaches paired OpenSSL
+`SSL_read`, `SSL_read_ex`, `SSL_write`, and `SSL_write_ex` entry/return uprobes
+and records only bytes reported as successfully transferred. It requires no
+trust change and remains compatible with certificate pinning and mTLS, but
+does not claim coverage for Go, rustls, BoringSSL, JVM, or stripped/static TLS
+implementations. Each API event is bounded to the byte count reported by
+`agent.capabilities.decrypt.transparent_max_bytes_per_event`. Probe discovery
+covers `libssl` images already mapped when the daemon starts; startup fails if
+none can be attached, and the daemon must be restarted after introducing a
+different OpenSSL image. Verify the running mode and attachment counts under
+`agent.daemon.health`, not only the selected config.
 
 `mitm` detects TLS ClientHello records at the relay, verifies the upstream
 certificate with the native trust store, mirrors the negotiated ALPN, signs a

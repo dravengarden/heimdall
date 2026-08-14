@@ -74,6 +74,8 @@ pub mod agent {
     struct DaemonReport {
         reachable: Option<bool>,
         control: Option<String>,
+        health: Option<crate::api::HealthReport>,
+        error: Option<MachineError>,
     }
 
     #[derive(Debug, Serialize)]
@@ -100,7 +102,10 @@ pub mod agent {
     struct DecryptCapabilities {
         modes: &'static [&'static str],
         transparent_runtimes: &'static [&'static str],
+        transparent_apis: &'static [&'static str],
         transparent_runtime_discovery: &'static str,
+        transparent_max_bytes_per_event: usize,
+        transparent_requires_attached_image: bool,
         transparent_requires_ca_trust: bool,
         transparent_supports_pinning_and_mtls: bool,
         mitm_runtime_independent: bool,
@@ -115,6 +120,8 @@ pub mod agent {
         tcp_fake_dns: &'static [&'static str],
         udp_ipv4: &'static [&'static str],
         udp_ipv6: &'static [&'static str],
+        tls_transparent: &'static [&'static str],
+        tls_mitm: &'static [&'static str],
     }
 
     #[derive(Debug, Serialize)]
@@ -233,6 +240,8 @@ pub mod agent {
                 daemon: DaemonReport {
                     reachable: None,
                     control: None,
+                    health: None,
+                    error: None,
                 },
                 capabilities: capabilities(),
                 decision: None,
@@ -282,10 +291,10 @@ pub mod agent {
             }],
         });
         let control = config.daemon.api_listen.clone();
-        let reachable = tokio::net::TcpStream::connect(loopback_socket(&control))
-            .await
-            .is_ok();
-        let ready = reachable && decision_error.is_none();
+        let health = fetch_daemon_health(&control).await;
+        let reachable = health.is_some();
+        let daemon_error = daemon_error(&config.decrypt, health.as_ref());
+        let ready = daemon_error.is_none() && decision_error.is_none();
         let execute_prefix = decision_error.is_none().then(|| {
             let mut argv = argv_for(&path, &["run", "--policy", &policy]);
             argv.push("--".into());
@@ -326,6 +335,8 @@ pub mod agent {
             daemon: DaemonReport {
                 reachable: Some(reachable),
                 control: Some(control),
+                health,
+                error: daemon_error,
             },
             capabilities: capabilities(),
             decision: Some(DecisionReport {
@@ -356,6 +367,64 @@ pub mod agent {
             IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::LOCALHOST),
         };
         SocketAddr::new(ip, configured.port())
+    }
+
+    pub(crate) async fn fetch_daemon_health(control: &str) -> Option<crate::api::HealthReport> {
+        let url = format!("http://{}/api/health", loopback_socket(control));
+        tokio::task::spawn_blocking(move || {
+            ureq::get(&url)
+                .timeout(std::time::Duration::from_millis(500))
+                .call()
+                .ok()?
+                .into_json()
+                .ok()
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
+    fn daemon_error(
+        decrypt: &DecryptConfig,
+        health: Option<&crate::api::HealthReport>,
+    ) -> Option<MachineError> {
+        let expected_mode = match decrypt.mode {
+            heimdall_config::DecryptMode::Off => "off",
+            heimdall_config::DecryptMode::Transparent => "transparent",
+            heimdall_config::DecryptMode::Mitm => "mitm",
+        };
+        let (code, message, hint) = match health {
+            None => (
+                "daemon_unreachable",
+                "the loopback daemon health endpoint is unreachable".into(),
+                "Start the daemon with this validated config, then rerun `heimdall agent`.".into(),
+            ),
+            Some(report) if report.decrypt_mode != expected_mode => (
+                "daemon_config_mismatch",
+                format!(
+                    "the daemon uses decrypt.mode = {}, but this config selects {expected_mode}",
+                    report.decrypt_mode
+                ),
+                "Restart the daemon with the same --config path reported by this document.".into(),
+            ),
+            Some(report) if !report.ready => (
+                "daemon_not_ready",
+                "the daemon is reachable but has not completed eBPF and relay initialization"
+                    .into(),
+                "Inspect daemon logs, correct the reported initialization error, and retry.".into(),
+            ),
+            Some(_) => return None,
+        };
+        Some(MachineError {
+            code,
+            message: message.clone(),
+            diagnostics: vec![ConfigDiagnostic {
+                code: code.into(),
+                path: "$.daemon".into(),
+                message,
+                hint,
+            }],
+        })
     }
 
     fn argv_for(path: &Path, suffix: &[&str]) -> Vec<String> {
@@ -465,7 +534,10 @@ pub mod agent {
             decrypt: DecryptCapabilities {
                 modes: &["off", "transparent", "mitm"],
                 transparent_runtimes: &["openssl"],
+                transparent_apis: &["SSL_read", "SSL_read_ex", "SSL_write", "SSL_write_ex"],
                 transparent_runtime_discovery: "loaded_images_at_daemon_start",
+                transparent_max_bytes_per_event: heimdall_common::TAP_DATA_LEN,
+                transparent_requires_attached_image: true,
                 transparent_requires_ca_trust: false,
                 transparent_supports_pinning_and_mtls: true,
                 mitm_runtime_independent: true,
@@ -497,6 +569,8 @@ pub mod agent {
                 tcp_fake_dns: &["curl", "go-netgo", "java", "nodejs", "rust"],
                 udp_ipv4: &["c", "go-netgo", "java", "nodejs", "python", "rust"],
                 udp_ipv6: &["go-netgo", "java", "nodejs", "python", "rust"],
+                tls_transparent: &["curl-openssl"],
+                tls_mitm: &["curl"],
             },
             cli_acceptance: CliAcceptance {
                 tcp_fake_dns: &["git"],
@@ -564,6 +638,8 @@ pub mod agent {
             assert!(runtimes.tcp_fake_dns.contains(&"go-netgo"));
             assert!(runtimes.udp_ipv4.contains(&"nodejs"));
             assert!(runtimes.udp_ipv6.contains(&"java"));
+            assert!(runtimes.tls_transparent.contains(&"curl-openssl"));
+            assert!(runtimes.tls_mitm.contains(&"curl"));
             assert!(capabilities.cli_acceptance.tcp_fake_dns.contains(&"git"));
         }
 
@@ -580,6 +656,50 @@ pub mod agent {
             assert_eq!(
                 capabilities().decrypt.transparent_runtime_discovery,
                 "loaded_images_at_daemon_start"
+            );
+            assert_eq!(
+                capabilities().decrypt.transparent_apis,
+                ["SSL_read", "SSL_read_ex", "SSL_write", "SSL_write_ex"]
+            );
+            assert_eq!(
+                capabilities().decrypt.transparent_max_bytes_per_event,
+                heimdall_common::TAP_DATA_LEN
+            );
+            assert!(capabilities().decrypt.transparent_requires_attached_image);
+        }
+
+        #[test]
+        fn daemon_health_reports_actionable_mode_mismatch() {
+            let decrypt = DecryptConfig {
+                mode: heimdall_config::DecryptMode::Transparent,
+                ..DecryptConfig::default()
+            };
+            let health = crate::api::HealthReport {
+                contract: "heimdall.daemon.health/v1".into(),
+                ready: true,
+                decrypt_mode: "off".into(),
+                transparent: None,
+            };
+
+            let error = daemon_error(&decrypt, Some(&health)).unwrap();
+            assert_eq!(error.code, "daemon_config_mismatch");
+            assert_eq!(error.diagnostics[0].path, "$.daemon");
+        }
+
+        #[test]
+        fn daemon_health_requires_completed_initialization() {
+            let health = crate::api::HealthReport {
+                contract: "heimdall.daemon.health/v1".into(),
+                ready: false,
+                decrypt_mode: "off".into(),
+                transparent: None,
+            };
+
+            let error = daemon_error(&DecryptConfig::default(), Some(&health)).unwrap();
+            assert_eq!(error.code, "daemon_not_ready");
+            assert_eq!(
+                daemon_error(&DecryptConfig::default(), None).unwrap().code,
+                "daemon_unreachable"
             );
         }
 

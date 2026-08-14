@@ -26,6 +26,16 @@ pub struct AppState {
     pub cli_overrides: CliOverrides,
     pub policy_engine: PolicyEngineSlot,
     pub udp_sessions: UdpSessions,
+    pub health: Arc<parking_lot::RwLock<HealthReport>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct HealthReport {
+    pub contract: String,
+    pub ready: bool,
+    pub decrypt_mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transparent: Option<crate::tls_transparent::StartReport>,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -44,8 +54,8 @@ pub async fn serve(state: AppState, listener: tokio::net::TcpListener) -> Result
         .context("serve control API")
 }
 
-async fn health() -> &'static str {
-    "ok"
+async fn health(State(state): State<AppState>) -> Json<HealthReport> {
+    Json(state.health.read().clone())
 }
 
 #[derive(Debug, Deserialize)]

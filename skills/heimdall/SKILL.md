@@ -21,6 +21,11 @@ means the document explains why, and exit 2 is invalid CLI usage. Read stable
 error `code` values before messages. Execute `actions` as argv arrays; never
 join or evaluate them as shell text.
 
+Require `daemon.health.contract` to be `heimdall.daemon.health/v1`,
+`daemon.health.ready` to be true, and `daemon.health.decrypt_mode` to match
+`config.decrypt.mode`. Treat `daemon_unreachable`, `daemon_not_ready`, and
+`daemon_config_mismatch` as hard stops before executing a wrapped command.
+
 Use `heimdall help -v` only when deeper command discovery is needed.
 
 If capture is requested, inspect `config.capture`, `config.decrypt`,
@@ -31,8 +36,10 @@ record's `payload`; only `tls_plaintext` is decrypted.
 Choose `transparent` only when `transparent_runtimes` contains the client's TLS
 implementation and account for `transparent_runtime_discovery`; a newly
 introduced OpenSSL image requires a daemon restart before wrapping the command.
-It changes no trust and supports pinning/mTLS, but absence from that array means
-no plaintext guarantee. Choose `mitm` for runtime-independent
+Also require `daemon.health.transparent.attached_images` to be greater than
+zero and use `transparent_apis` plus `transparent_max_bytes_per_event` as the
+capture boundary. It changes no trust and supports pinning/mTLS, but absence
+from the runtime or API arrays means no plaintext guarantee. Choose `mitm` for runtime-independent
 capture only with explicit authority to install local trust. If
 `ca_material_ready` is false, execute `actions.tls_ca_init` as an argv array,
 then trust its public `ca_cert`; never expose or copy `ca_key`. Do not select
@@ -119,7 +126,7 @@ not a per-run override. Keep the wrapped command after `--`. Read
 - For runtime failures, collect `heimdall agent`, `heimdall status --json`, and
   recent `heimdall.service` logs before changing state.
 - Do not claim transparent runtime coverage beyond
-  `capabilities.decrypt.transparent_runtimes`.
+  `capabilities.decrypt.transparent_runtimes` and `transparent_apis`.
 - Do not enable capture without explicit retention intent; its root-only files
   can contain credentials and other application data. Heimdall does not rotate
   them.

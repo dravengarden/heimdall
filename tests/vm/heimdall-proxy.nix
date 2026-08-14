@@ -7,7 +7,29 @@
 }:
 let
   testPython = pkgs.python3.withPackages (pythonPackages: [ pythonPackages.aioquic ]);
-  heimdallConfig = pkgs.writeText "heimdall-test-config.toml" ''
+  tlsFixture =
+    pkgs.runCommand "heimdall-test-tls-fixture" { nativeBuildInputs = [ pkgs.openssl ]; }
+      ''
+        mkdir -p $out
+        openssl req -x509 -newkey rsa:2048 -nodes \
+          -keyout $out/ca-key.pem -out $out/ca.pem \
+          -subj /CN=Heimdall-Test-Upstream-CA -days 2 \
+          -addext basicConstraints=critical,CA:TRUE \
+          -addext keyUsage=critical,keyCertSign,cRLSign
+        openssl req -newkey rsa:2048 -nodes \
+          -keyout $out/server-key.pem -out $out/server.csr \
+          -subj /CN=fixture.test
+        printf '%s\n' \
+          'basicConstraints=critical,CA:FALSE' \
+          'keyUsage=critical,digitalSignature,keyEncipherment' \
+          'extendedKeyUsage=serverAuth' \
+          'subjectAltName=DNS:fixture.test' > $out/server.ext
+        openssl x509 -req -in $out/server.csr \
+          -CA $out/ca.pem -CAkey $out/ca-key.pem -CAcreateserial \
+          -out $out/server.pem -days 2 -extfile $out/server.ext
+        rm $out/server.csr $out/server.ext $out/ca-key.pem $out/ca.srl
+      '';
+  heimdallConfigText = ''
     version = 1
 
     [proxy]
@@ -76,6 +98,22 @@ let
     [decrypt]
     mode = "off"
   '';
+  heimdallConfig = pkgs.writeText "heimdall-test-config.toml" heimdallConfigText;
+  transparentConfig = pkgs.writeText "heimdall-test-transparent.toml" (
+    builtins.replaceStrings [ ''mode = "off"'' ] [ ''mode = "transparent"'' ] heimdallConfigText
+  );
+  mitmConfig = pkgs.writeText "heimdall-test-mitm.toml" (
+    builtins.replaceStrings
+      [ ''mode = "off"'' ]
+      [
+        ''
+          mode = "mitm"
+          ca_cert = "/run/heimdall-test/mitm/ca.pem"
+          ca_key = "/run/heimdall-test/mitm/ca-key.pem"
+        ''
+      ]
+      heimdallConfigText
+  );
 in
 {
   networking.hostName = "heimdall-test";
@@ -86,6 +124,7 @@ in
     }
   ];
   security.unprivilegedUsernsClone = true;
+  security.pki.certificateFiles = [ "${tlsFixture}/ca.pem" ];
 
   users.users.tester = {
     isNormalUser = true;
@@ -144,6 +183,15 @@ in
     };
   };
 
+  systemd.services.heimdall-test-tls = {
+    wantedBy = [ "multi-user.target" ];
+    before = [ "heimdall.service" ];
+    serviceConfig = {
+      ExecStart = "${pkgs.openssl}/bin/openssl s_server -quiet -www -accept 127.0.0.1:18444 -cert ${tlsFixture}/server.pem -key ${tlsFixture}/server-key.pem";
+      Restart = "on-failure";
+    };
+  };
+
   systemd.services.heimdall-test-git = {
     wantedBy = [ "multi-user.target" ];
     serviceConfig = {
@@ -190,6 +238,7 @@ in
       "heimdall-test-http.service"
       "heimdall-test-udp.service"
       "heimdall-test-http3.service"
+      "heimdall-test-tls.service"
       "heimdall-test-git.service"
       "user@1000.service"
     ];
@@ -198,6 +247,7 @@ in
       "heimdall-test-http.service"
       "heimdall-test-udp.service"
       "heimdall-test-http3.service"
+      "heimdall-test-tls.service"
       "heimdall-test-git.service"
     ];
     serviceConfig = {
@@ -231,6 +281,9 @@ in
     mode = "0755";
   };
   environment.etc."heimdall/config.toml".source = heimdallConfig;
+  environment.etc."heimdall-test/transparent.toml".source = transparentConfig;
+  environment.etc."heimdall-test/mitm.toml".source = mitmConfig;
+  environment.etc."heimdall-test/upstream-ca.pem".source = "${tlsFixture}/ca.pem";
 
   assertions = [
     {

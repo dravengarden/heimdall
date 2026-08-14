@@ -26,8 +26,23 @@ struct Event {
     payload: Vec<u8>,
 }
 
-pub fn start(bpf: &mut Ebpf, capture: CaptureManager) -> Result<usize> {
-    for program in ["ssl_write", "ssl_read_enter", "ssl_read_exit"] {
+#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize)]
+pub struct StartReport {
+    pub discovered_images: usize,
+    pub attached_images: usize,
+}
+
+pub fn start(bpf: &mut Ebpf, capture: CaptureManager) -> Result<StartReport> {
+    for program in [
+        "ssl_write_enter",
+        "ssl_write_exit",
+        "ssl_write_ex_enter",
+        "ssl_write_ex_exit",
+        "ssl_read_enter",
+        "ssl_read_exit",
+        "ssl_read_ex_enter",
+        "ssl_read_ex_exit",
+    ] {
         let probe: &mut UProbe = bpf
             .program_mut(program)
             .with_context(|| format!("{program} eBPF program not found"))?
@@ -66,8 +81,14 @@ pub fn start(bpf: &mut Ebpf, capture: CaptureManager) -> Result<usize> {
             }
         }
     });
-    info!(attached, "transparent TLS OpenSSL probes attached");
-    Ok(attached)
+    info!(
+        discovered = images.len(),
+        attached, "transparent TLS OpenSSL probes attached"
+    );
+    Ok(StartReport {
+        discovered_images: images.len(),
+        attached_images: attached,
+    })
 }
 
 async fn record_event(capture: &CaptureManager, event: Event) -> Result<()> {
@@ -159,11 +180,38 @@ fn decode(bytes: &[u8]) -> Option<Event> {
 }
 
 fn attach(bpf: &mut Ebpf, target: &PathBuf) -> Result<()> {
-    for (program, symbol, ret) in [
-        ("ssl_write", "SSL_write", false),
-        ("ssl_read_enter", "SSL_read", false),
-        ("ssl_read_exit", "SSL_read", true),
+    attach_pair(
+        bpf,
+        target,
+        "SSL_write",
+        "ssl_write_enter",
+        "ssl_write_exit",
+    )?;
+    attach_pair(bpf, target, "SSL_read", "ssl_read_enter", "ssl_read_exit")?;
+    for (symbol, entry, exit) in [
+        ("SSL_write_ex", "ssl_write_ex_enter", "ssl_write_ex_exit"),
+        ("SSL_read_ex", "ssl_read_ex_enter", "ssl_read_ex_exit"),
     ] {
+        if let Err(error) = attach_pair(bpf, target, symbol, entry, exit) {
+            warn!(
+                image = %target.display(),
+                symbol,
+                error = %error,
+                "optional OpenSSL API is unavailable"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn attach_pair(
+    bpf: &mut Ebpf,
+    target: &PathBuf,
+    symbol: &str,
+    entry: &str,
+    exit: &str,
+) -> Result<()> {
+    for (program, ret) in [(entry, false), (exit, true)] {
         let probe: &mut UProbe = bpf
             .program_mut(program)
             .with_context(|| format!("{program} eBPF program not found"))?

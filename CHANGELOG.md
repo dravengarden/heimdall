@@ -12,9 +12,18 @@ All notable changes to heimdall are documented here.
   protected CA, preserves non-TLS passthrough, and captures plaintext.
 - Add `heimdall tls init-ca --json` plus `heimdall.agent/v3` decrypt
   capabilities and repair argv for agent-driven setup.
+- Add `heimdall.daemon.health/v1` to the loopback health endpoint and embed it
+  in the agent report, including the active decrypt mode and transparent probe
+  attachment counts.
 
 ### Fixed
 
+- Capture only the bytes that successful OpenSSL read/write calls actually
+  transferred, including the `SSL_read_ex` and `SSL_write_ex` APIs. Transparent
+  startup now fails when no loaded OpenSSL image can be attached instead of
+  claiming readiness without plaintext coverage.
+- Exercise both transparent OpenSSL capture and relay MITM capture against a
+  real trusted TLS server in the disposable eBPF acceptance VM.
 - Version pinned map layouts, replace cgroup programs as one rollback-capable
   transaction, and add a machine-readable eBPF cleanup command that refuses
   daemon or active-workload races.

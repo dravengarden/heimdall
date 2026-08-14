@@ -88,9 +88,19 @@ It is read-only and always prints exactly one JSON value before exiting:
     "format": "toml",
     "valid": true,
     "capture": { "mode": "off", "directory": "/var/lib/heimdall/captures", "max_bytes_per_flow": 1048576 },
+    "decrypt": { "mode": "off", "ca_cert": null, "ca_key": null, "ca_material_ready": true },
     "error": null
   },
-  "daemon": { "reachable": true, "control": "127.0.0.1:9999" },
+  "daemon": {
+    "reachable": true,
+    "control": "127.0.0.1:9999",
+    "health": {
+      "contract": "heimdall.daemon.health/v1",
+      "ready": true,
+      "decrypt_mode": "off"
+    },
+    "error": null
+  },
   "capabilities": {
     "capture": {
       "contract": "heimdall.capture/v1",
@@ -99,6 +109,21 @@ It is read-only and always prints exactly one JSON value before exiting:
       "udp": true,
       "payload": "mode_dependent",
       "tls_plaintext": true
+    },
+    "decrypt": {
+      "modes": ["off", "transparent", "mitm"],
+      "transparent_runtimes": ["openssl"],
+      "transparent_apis": ["SSL_read", "SSL_read_ex", "SSL_write", "SSL_write_ex"],
+      "transparent_runtime_discovery": "loaded_images_at_daemon_start",
+      "transparent_max_bytes_per_event": 256,
+      "transparent_requires_attached_image": true,
+      "transparent_requires_ca_trust": false,
+      "transparent_supports_pinning_and_mtls": true,
+      "mitm_runtime_independent": true,
+      "mitm_requires_ca_trust": true,
+      "mitm_supports_pinning_and_mtls": false,
+      "upstream_certificate_verification": true,
+      "non_tls_passthrough": true
     },
     "udp": {
       "connected": true,
@@ -122,7 +147,9 @@ It is read-only and always prints exactly one JSON value before exiting:
     "runtime_acceptance": {
       "tcp_fake_dns": ["curl", "go-netgo", "java", "nodejs", "rust"],
       "udp_ipv4": ["c", "go-netgo", "java", "nodejs", "python", "rust"],
-      "udp_ipv6": ["go-netgo", "java", "nodejs", "python", "rust"]
+      "udp_ipv6": ["go-netgo", "java", "nodejs", "python", "rust"],
+      "tls_transparent": ["curl-openssl"],
+      "tls_mitm": ["curl"]
     },
     "cli_acceptance": { "tcp_fake_dns": ["git"] },
     "lifecycle": {
@@ -153,7 +180,8 @@ It is read-only and always prints exactly one JSON value before exiting:
   "actions": {
     "validate": ["heimdall", "--config", "...", "config", "validate", "--json"],
     "status": ["heimdall", "--config", "...", "status", "--json"],
-    "execute_prefix": ["heimdall", "--config", "...", "run", "--policy", "default", "--"]
+    "execute_prefix": ["heimdall", "--config", "...", "run", "--policy", "default", "--"],
+    "tls_ca_init": null
   },
   "exit_codes": { "ready": 0, "not_ready": 1, "usage": 2 }
 }
@@ -172,8 +200,11 @@ Inspect each open record: `opaque_transport` is relay-observed transport;
 `tls_plaintext` is decrypted content.
 
 Transparent mode requires no trust change and currently covers only OpenSSL
-images loaded when the daemon starts. Restart the daemon after introducing a
-different `libssl` image.
+images loaded when the daemon starts and the four APIs reported by
+`transparent_apis`. The daemon refuses readiness when no image can be attached;
+require a positive `daemon.health.transparent.attached_images` count. Restart
+the daemon after introducing a different `libssl` image. Each event is bounded
+by `transparent_max_bytes_per_event`.
 MITM mode is language-independent but requires clients to trust the generated
 CA and is incompatible with pinning and client-certificate mTLS. Generate its
 material only with explicit trust authority:
@@ -216,6 +247,8 @@ matrix is:
 | Fake-DNS TCP | curl, static Go `netgo`, Java, Node.js, Rust |
 | IPv4 UDP | C, static Go `netgo`, Java, Node.js, Python, Rust |
 | IPv6 UDP | static Go `netgo`, Java, Node.js, Python, Rust |
+| Transparent TLS plaintext | curl with OpenSSL |
+| MITM TLS plaintext | curl |
 
 `capabilities.cli_acceptance` records end-to-end evidence for concrete CLI
 protocols; Git is tested with `git ls-remote` over fake-DNS TCP. Agents must
