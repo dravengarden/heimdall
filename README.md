@@ -1,47 +1,138 @@
-# heimdall
+<p align="center">
+  <img src="docs/assets/heimdall-hero.svg" alt="Heimdall — command-scoped egress proxy for CLI tools and AI agents" width="100%">
+</p>
 
-Proxychains-style, command-scoped SOCKS5 proxying for AI agents and CLI tools,
-powered by cgroup eBPF.
+<h1 align="center">Heimdall</h1>
 
-Run one command through a named egress policy without modifying it:
+<p align="center">
+  A command-scoped transparent egress proxy for CLI tools and AI agents.
+</p>
 
-```bash
-heimdall run -- curl https://example.com
-heimdall run --policy corp -- ssh internal.example.com
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-2563eb.svg" alt="Apache 2.0 license"></a>
+  <img src="https://img.shields.io/badge/backend-Rust-dea584.svg" alt="Rust backend">
+  <img src="https://img.shields.io/badge/kernel-eBPF-7c3aed.svg" alt="eBPF kernel hooks">
+  <img src="https://img.shields.io/badge/platform-Linux-111827.svg" alt="Linux platform">
+  <a href="ROADMAP.md"><img src="https://img.shields.io/badge/status-alpha-f59e0b.svg" alt="Alpha status and roadmap"></a>
+</p>
+
+Heimdall runs one command, and its entire descendant process tree, through a
+named SOCKS5 egress policy. It is designed for terminal workflows where a
+single command needs controlled routing without changing shell-wide proxy
+environment variables or using `LD_PRELOAD`.
+
+> [!WARNING]
+> Heimdall is pre-1.0 software. The command wrapper is usable today, but
+> machine-readable contracts and TLS capabilities may evolve. Read the
+> [roadmap](ROADMAP.md) before building product or automation dependencies on
+> an unreleased surface.
+
+## Why Heimdall?
+
+- **One command, one scope** — only `heimdall run` and its descendants are
+  redirected; unrelated processes keep their normal network path.
+- **Kernel-level coverage** — cgroup eBPF hooks cover dynamic and static
+  binaries without interposing a language-specific socket library.
+- **Explicit policy** — named outbounds, ordered TCP/UDP rules, fake-DNS
+  hostname preservation, direct egress, and fail-closed rejects share one
+  strict schema.
+- **Three deliberate data boundaries** — proxying, bounded opaque capture, and
+  TLS decryption are independent opt-in decisions.
+- **Agent-friendly operations** — `heimdall agent` is a read-only, versioned
+  JSON preflight with stable error codes and shell-safe argv actions.
+
+## Current status
+
+The shipped core is real and tested; the alpha label reflects the breadth of
+Linux kernels, runtimes, TLS libraries, and deployment environments that still
+need compatibility hardening.
+
+| Area | Status | Current boundary |
+| --- | --- | --- |
+| Command-scoped TCP and UDP proxying | Available | IPv4/IPv6, SOCKS5 and direct egress, fake DNS, ordered policies |
+| Strict configuration and agent contract | Available | TOML, YAML, JSON; `heimdall.agent/v4` with repairable diagnostics |
+| Opaque flow capture | Available | Explicit bounded JSONL capture; root-only files with `heimdall.capture/v1` |
+| Runtime TLS decryption | Available with alpha limits | OpenSSL probes at process runtime; no CA injection |
+| Relay TLS decryption | Available with alpha limits | Local CA plus per-host leaves; client trust and protocol compatibility are required |
+| Runtime and kernel compatibility | In development | Expanding the tested matrix and documenting unsupported edge cases |
+| Capture analysis and release packaging | Planned | Better inspection workflows and reproducible distribution artifacts |
+
+See [ROADMAP.md](ROADMAP.md) for the source of truth, status definitions, and
+the explicit non-goals.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    C[heimdall run] --> G[transient cgroup v2]
+    D[heimdall daemon] --> E[cgroup eBPF hooks]
+    G --> E
+    E --> P[policy + fake DNS]
+    P --> R[local relay]
+    R --> S[SOCKS5 or direct outbound]
+    R --> X[optional capture]
+    R --> T[optional runtime or relay TLS boundary]
 ```
 
-For an AI agent, start with one side-effect-free preflight:
+The daemon owns the relay, fake-IP DNS, loopback control endpoint, eBPF maps,
+and stale cgroup cleanup. The CLI creates a transient scope, registers its
+policy, executes the command, and waits for the complete descendant tree before
+cleaning up. Processes outside that scope are left alone.
+
+Unlike `proxychains4`, Heimdall does not use `LD_PRELOAD`. The privileged
+daemon attaches cgroup eBPF hooks, so static binaries and mixed-language
+process trees share the same interception boundary. See
+[docs/architecture.md](docs/architecture.md) for data flow and failure
+semantics.
+
+## Quick start
+
+### Requirements
+
+- Linux 5.10 or newer
+- cgroup v2 and a running systemd user manager
+- Nix with flakes enabled for the pinned development toolchain
+- A reachable SOCKS5 server
+- `CAP_BPF`, `CAP_NET_ADMIN`, `CAP_SYS_ADMIN`, and `CAP_DAC_OVERRIDE` for the
+  daemon
+
+Build eBPF before userspace because the object is embedded into the daemon:
 
 ```bash
-heimdall agent
+git clone https://github.com/dravengarden/heimdall.git
+cd heimdall
+
+nix develop .#ebpf -c bash -c \
+  'cd heimdall-ebpf && cargo-nightly build --locked --release'
+nix develop -c cargo build --workspace --locked --release
 ```
 
-It emits one versioned JSON document with config validity, stable error codes,
-daemon reachability, the resolved policy, declared policies/outbounds, and
-the exact next commands as argv arrays. Exit `0` means ready, `1` means not
-ready, and clap reserves `2` for invalid CLI usage.
+Create the strict starter configuration and start the daemon:
 
-Heimdall is deliberately a Linux CLI tool, not an orchestrator or a
-host-wide policy engine. Processes that were not started by `heimdall run`
-are left alone.
+```bash
+sudo ./target/release/heimdall init
+sudo ./target/release/heimdall daemon
+```
 
-Unlike `proxychains4`, heimdall does not use `LD_PRELOAD`. A small privileged
-daemon attaches cgroup eBPF hooks; the unprivileged CLI places only the
-wrapped command and all of its descendants in a transient cgroup. The policy
-remains registered until that entire process tree exits. This also covers
-static binaries and lets DNS names be resolved by the upstream proxy.
+Run a command through the default policy:
 
-> **Status: alpha.** Linux 5.10+, cgroup v2, and systemd user scopes are
-> currently required.
+```bash
+./target/release/heimdall run -- curl https://example.com
+./target/release/heimdall run --policy corp -- ssh internal.example.com
+```
+
+In production, install [`deploy/heimdall.service`](deploy/heimdall.service)
+and run the CLI as an ordinary user. The daemon's control endpoint is bound to
+loopback and is intentionally not an authenticated network API.
 
 ## Configuration
 
-Keep exactly one configuration file under `/etc/heimdall`: `config.toml`,
-`config.yaml`/`config.yml`, or `config.json`. The extension selects
-the parser; every syntax uses the same strict schema. Multiple discovered files,
-unknown or duplicate fields, wrong types, bad references, unsupported protocol
-capabilities, contradictory rules, malformed addresses, and invalid CIDRs are
-rejected with stable paths and repair hints.
+Keep exactly one configuration file under `/etc/heimdall`:
+`config.toml`, `config.yaml`/`config.yml`, or `config.json`. The extension
+selects the parser; all syntaxes enter the same strict schema. Unknown or
+duplicate fields, wrong types, bad references, contradictory rules, malformed
+addresses, invalid CIDRs, and multiple discovered files are rejected with
+stable paths and repair hints.
 
 ```toml
 version = 1
@@ -69,8 +160,16 @@ mode = "off"
 mode = "off"
 ```
 
-To retain the relay-observed TCP and UDP byte streams for later analysis,
-enable bounded JSONL capture explicitly:
+The three decryption modes are intentionally separate:
+
+- `off` keeps TLS opaque.
+- `runtime` observes supported OpenSSL calls inside the client process without
+  changing certificate trust.
+- `relay` terminates and re-issues TLS at the local relay; clients must trust
+  the explicit Heimdall CA created by `heimdall tls init-ca`.
+
+Enable bounded capture separately when the relay-observed bytes are needed for
+analysis:
 
 ```toml
 [capture]
@@ -79,66 +178,27 @@ directory = "/var/lib/heimdall/captures"
 max_bytes_per_flow = 1048576
 ```
 
-With `decrypt.mode = "off"`, capture stores opaque application transport bytes
-and HTTPS remains ciphertext. Set decrypt to `runtime` for CA-free OpenSSL
-uprobes, or `relay` for language-independent relay TLS termination after clients
-trust a Heimdall CA. `heimdall agent` verifies that the running daemon uses the
-selected mode; runtime readiness also reports how many loaded OpenSSL
-images were discovered and attached. Each flow file is mode `0600` below a
-mode `0700` directory and follows the `heimdall.capture/v1` contract. See
-[docs/config.md](docs/config.md) for its
-limits and security boundary.
+See [docs/config.md](docs/config.md) for limits, validation codes, credentials,
+capture boundaries, and TLS security implications.
 
-Optional authentication keeps the password out of the config:
+## Agent workflow
 
-```toml
-[proxy.outbounds.default.auth]
-username = "alice"
-password_file = "/etc/heimdall/secrets/default-password"
-```
-
-Policies contain ordered TCP/UDP rules with `route`, `direct`, or `reject`
-actions and mandatory final actions for both protocols. Fake DNS preserves
-hostnames for domain rules; system DNS exposes resolved IPs. Connected UDP can
-use SOCKS5 UDP ASSOCIATE or direct egress. IPv4 `sendto`/`sendmsg` is correlated
-per socket and destination, including sockets that share one source port;
-IPv6 supports one peer per connectionless socket. Connected sockets reuse one
-bidirectional upstream association and can receive multiple responses. Common
-dual-stack sockets targeting IPv4 are supported, and single-path HTTP/3 over
-both IPv4 and native IPv6 has a dedicated QUIC acceptance gate. Ambiguous IPv6
-multi-target sends and explicit shared-source-port binds fail synchronously.
-IPv4-mapped `connect6` calls are normalized before fake-IP lookup, covering
-dual-stack TCP behavior used by Java and similar runtimes.
-See [docs/config.md](docs/config.md) for the complete schema.
-
-The disposable real-eBPF acceptance VM covers static Go `netgo`, Java,
-Node.js, Rust, Python, C, curl, and Git. It also verifies OpenSSL runtime
-capture and relay TLS termination against a real TLS server, command exit and
-signal status, descendant lifetime, unavailable-daemon behavior, and
-unreachable-upstream failure. It also restarts the daemon around an active
-fake-DNS command and verifies that policy and hostname mappings recover.
-`heimdall agent` reports this evidence under
-`capabilities.runtime_acceptance`, `capabilities.cli_acceptance`, and
-`capabilities.lifecycle`; agents should inspect it instead of inferring
-support from a language or command name alone.
-
-## Getting started
+Start automation with one side-effect-free preflight:
 
 ```bash
-# eBPF must be built before userspace because it is embedded in the binary.
-nix develop .#ebpf -c bash -c \
-  'cd heimdall-ebpf && cargo-nightly build --locked --release'
-nix develop -c cargo build --workspace --locked --release
-
-sudo ./target/release/heimdall init
-# Or: init --format yaml|json
-sudo ./target/release/heimdall daemon
-
-./target/release/heimdall run -- curl https://example.com
+heimdall agent
 ```
 
-In production, install [`deploy/heimdall.service`](deploy/heimdall.service)
-and run the CLI as an ordinary user.
+It emits one `heimdall.agent/v4` JSON document containing config validity,
+daemon reachability, selected policy, declared outbounds, capability evidence,
+stable repair codes, and exact next commands as argv arrays. Exit `0` means
+ready, `1` means not ready, and `2` remains clap usage failure.
+
+Agents should inspect `capabilities.runtime_acceptance`,
+`capabilities.cli_acceptance`, and `capabilities.lifecycle` instead of
+inferring support from a language or command name. `heimdall agent` never
+writes configuration, starts the daemon, registers a cgroup, or executes a
+workload.
 
 ## Command surface
 
@@ -148,36 +208,57 @@ heimdall agent [--policy NAME]
 heimdall daemon
 heimdall status [--json]
 heimdall config validate|explain|show|path
+heimdall tls init-ca [--json]
 heimdall ebpf cleanup [--json]
 heimdall init [--dir PATH] [--format toml|yaml|json] [--force]
 ```
 
-The daemon owns only the relay, fake-IP DNS, local control endpoint, eBPF
-maps, and stale CLI-cgroup cleanup. See [docs/architecture.md](docs/architecture.md)
-for the boundary and [docs/runbook.md](docs/runbook.md) for operations.
+Use `heimdall help -v` for the complete agent-oriented surface. See
+[skills/heimdall/](skills/heimdall/) for the bundled workflow skill.
 
-`heimdall agent` never writes configuration, starts the daemon, registers a
-cgroup, or runs a command. Consumers should execute the returned
-`actions.execute_prefix` array followed by their own command arguments, without
-joining it into a shell string. Check `capabilities.lifecycle` before relying
-on failure semantics. Active policy registrations and fake-DNS mappings recover
-after a daemon restart. Pinned eBPF links and maps keep registered traffic
-intercepted and fail closed while the relay is unavailable. Seamless continuity
-is still false because relay sessions and existing connections are not
-preserved. Upgrading from a release without pinned links requires one ordinary
-restart before enforcement continuity is available on later restarts.
-Pinned state carries a strict schema version, and a failed multi-link program
-upgrade rolls every already-replaced link back before the daemon exits.
-`heimdall ebpf cleanup --json` is the explicit removal path; it refuses to run
-while the daemon or any wrapped workload is active.
+## Verified coverage
 
-## Requirements
+The disposable real-eBPF acceptance VM covers static Go `netgo`, Java,
+Node.js, Rust, Python, C, curl, and Git. It also exercises connected and
+connectionless IPv4/IPv6 UDP, HTTP/3/QUIC, descendant lifetime, command exit
+and signal status, daemon recovery, unavailable-daemon failure, and
+unreachable-upstream fail-closed behavior.
 
-- Linux 5.10 or newer
-- cgroup v2
-- a running systemd user manager
-- `CAP_BPF`, `CAP_NET_ADMIN`, `CAP_SYS_ADMIN`, and `CAP_DAC_OVERRIDE` for
-  the daemon
-- a SOCKS5 server
+OpenSSL runtime capture and relay TLS termination are tested against a real TLS
+server. These results prove the checked-in acceptance paths; they do not claim
+that every language TLS implementation or every kernel release is supported.
+The current compatibility work is tracked in the
+[roadmap](ROADMAP.md).
 
-Licensed under Apache-2.0.
+## Development
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a change. Enter the
+pinned development environment before running project commands:
+
+```bash
+nix develop
+```
+
+Common gates:
+
+```bash
+just fmt
+just test
+just verify
+just test-vm
+```
+
+The project has no hosted CI workflow by design; `just verify` and the
+real-eBPF VM are the repository-owned quality gates. Do not infer release
+readiness from a badge or from a userspace-only build.
+
+## Security and operations
+
+Heimdall loads privileged eBPF programs and forwards application payloads.
+Read [SECURITY.md](SECURITY.md) before exposing or operating the daemon, and
+[docs/runbook.md](docs/runbook.md) for build order, health contracts, safe
+cleanup, TLS CA setup, and failure recovery.
+
+## License
+
+Licensed under [Apache-2.0](LICENSE).

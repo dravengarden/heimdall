@@ -1,96 +1,57 @@
 name: Bug report
-description: Heimdall isn't doing what its docs say it should
-labels: ["bug"]
+description: Report a reproducible problem in the command wrapper, daemon, or eBPF path.
+title: "[bug] "
+labels:
+  - bug
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting a bug. **Security issues:** don't file
-        them here — see [SECURITY.md](../../SECURITY.md) for private
-        disclosure.
-
+        Please search existing issues first. Do not include credentials, private hostnames, internal addresses, or unredacted config secrets. Security vulnerabilities belong in the private process described by [SECURITY.md](../../SECURITY.md).
   - type: textarea
-    id: what-happened
+    id: summary
     attributes:
-      label: What happened?
-      description: |
-        One-paragraph summary. What did you run, what did you expect,
-        what did you see instead?
-      placeholder: |
-        Ran `heimdall run -p corp -- curl https://internal/`. Expected
-        the request to route via the corp connection. Saw `Could not
-        resolve host` instead. Direct `dig @127.0.0.1 -p 5358` works.
+      label: Summary
+      description: What happened, and what did you expect instead?
+      placeholder: A short description of the observed behavior and expected behavior.
     validations:
       required: true
-
   - type: textarea
     id: reproduction
     attributes:
-      label: Reproduction steps
-      description: Minimal steps a maintainer can copy-paste.
-      placeholder: |
-        1. `heimdall init --format nickel`
-        2. Edit `/etc/heimdall/heimdall.ncl` to add connection X
-        3. `sudo systemctl restart heimdall`
-        4. `heimdall run -- curl https://Y`
+      label: Minimal reproduction
+      description: Include the smallest command and sanitized configuration that reproduces the issue.
+      render: shell
     validations:
       required: true
-
+  - type: input
+    id: version
+    attributes:
+      label: Heimdall version or commit
+      placeholder: heimdall --version
+    validations:
+      required: true
   - type: input
     id: kernel
     attributes:
-      label: Kernel version
-      description: "`uname -r`"
-      placeholder: "6.12.5"
+      label: Kernel and distribution
+      placeholder: uname -r; distribution and release
     validations:
       required: true
-
-  - type: input
-    id: distro
-    attributes:
-      label: Distribution
-      placeholder: "NixOS 25.05 / Ubuntu 24.04 / …"
-
-  - type: input
-    id: heimdall-version
-    attributes:
-      label: heimdall version / commit
-      description: "`heimdall --version` or `git rev-parse HEAD` if running from source"
-
   - type: textarea
-    id: status
+    id: diagnostics
     attributes:
-      label: "`heimdall status` output"
-      render: text
-      description: |
-        Paste the full output. If the daemon is down, say so.
-
-  - type: textarea
-    id: journal
-    attributes:
-      label: Journal entries
-      render: text
-      description: |
-        `journalctl -u heimdall --since "5 min ago"` covering the
-        failure. Trim to relevant lines, but include attach + ready
-        + the failure itself.
-
-  - type: textarea
-    id: flow
-    attributes:
-      label: Flow log row (if applicable)
+      label: Diagnostics
+      description: Paste sanitized output from heimdall agent, heimdall status --json, or relevant journal entries.
       render: json
-      description: |
-        For routing / connection bugs:
-        `curl http://127.0.0.1:9999/api/flows?limit=20` and paste the
-        relevant entry.
-
+    validations:
+      required: false
   - type: checkboxes
-    id: scope
+    id: checks
     attributes:
-      label: Confirmation
+      label: Checks
       options:
-        - label: I'm not reporting a security vulnerability (those go via SECURITY.md)
+        - label: I removed credentials, private hostnames, internal addresses, and other sensitive data.
           required: true
-        - label: I've checked the issue isn't already filed
+        - label: I searched existing issues and did not find a duplicate.
           required: true

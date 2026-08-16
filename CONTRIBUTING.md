@@ -10,6 +10,8 @@ target on accepted ideas is fast.
 - **File an issue first** for anything bigger than a typo or
   one-line bugfix. We'd rather discuss the design than have you
   rewrite a chunk twice.
+- Read [ROADMAP.md](ROADMAP.md) to see whether the proposal belongs to an
+  active development track, a planned area, or an explicit non-goal.
 - Skim [docs/architecture.md](docs/architecture.md) to know which
   control loop your change lands in.
 - For changes touching `heimdall-config/src/lib.rs`, update the four embedded
@@ -64,16 +66,20 @@ file (`gc:`, `dns:`, `policy:`, `docs:`, `ebpf:`).
 ## PR checklist
 
 - [ ] `nix develop -c just verify` passes
+- [ ] `nix develop -c just test-vm` passes for proxy, lifecycle, or TLS changes
 - [ ] eBPF rebuild not skipped if the BPF source changed
 - [ ] Schema changes propagated to all init formats, docs, and the Heimdall skill
 - [ ] User-visible behaviour change documented in `CHANGELOG.md`
       under the `## [Unreleased]` heading
+- [ ] README or `ROADMAP.md` status updated when the public capability boundary changes
 - [ ] No new private info / hostnames / paths committed (run
-      `git diff origin/master --stat | grep -v '^ '`)
+      `git diff origin/main --stat | grep -v '^ '`)
 
 ## Reporting bugs
 
-Use the GitHub issue template. Include:
+Use the GitHub issue template when available. Security vulnerabilities belong
+in the private process described by [SECURITY.md](SECURITY.md), not in a
+public issue. Include:
 - Kernel version (`uname -r`)
 - `heimdall status` output (config path + connection / rule counts)
 - Relevant journal entries (`journalctl -u heimdall --since "5min ago"`)

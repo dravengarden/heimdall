@@ -1,60 +1,26 @@
-<!--
-Heimdall PR template. Filled-in PRs get reviewed faster than blank
-ones. Delete sections that don't apply.
--->
-
 ## Summary
 
-<!-- One-paragraph description of what changes and why. -->
+<!-- Explain the user-visible change and why it belongs in Heimdall. -->
 
-## Linked issue
+## Scope
 
-<!-- Fixes #N / Refs #N. If no issue, explain why this is small enough
-     to skip the design conversation. -->
+- [ ] Runtime code
+- [ ] eBPF code
+- [ ] Configuration or machine-readable contract
+- [ ] Documentation or skill
+- [ ] Tests / acceptance coverage
 
-## Type of change
+## Evidence
 
-- [ ] Bug fix (non-breaking)
-- [ ] New feature (non-breaking)
-- [ ] Breaking change (config schema, on-wire shape, BPF map layout, …)
-- [ ] Documentation only
+<!-- Include the repository-owned commands and the relevant output. -->
 
-## Test plan
+- [ ] `nix develop -c just verify`
+- [ ] `nix develop -c just test-vm` (when proxy, lifecycle, or TLS behavior changed)
 
-<!-- What did you run? Include deterministic local checks and any manual
-     verification of the changed behavior. -->
+## Contract and documentation review
 
-- [ ] `cargo test` (workspace)
-- [ ] `cargo +nightly build -Zbuild-std=core --target bpfel-unknown-none --release` (if BPF source changed)
-- [ ] Manual smoke test described above
-
-## Schema / config changes
-
-<!-- If your change touches `heimdall-config/src/lib.rs`, the schema is
-     mirrored in TWO other places that must stay in sync:
-     - `heimdall/src/cli/init_templates/lib.ncl` (Nickel contracts)
-     - `heimdall/src/cli/init_templates/README.md` (AI-readable reference)
-     Tick the boxes when both are updated. Skip if your change isn't
-     schema-touching. -->
-
-- [ ] `lib.ncl` updated
-- [ ] `init_templates/README.md` updated
-- [ ] N/A — no schema changes
-
-## CHANGELOG
-
-- [ ] Added an entry under `## [Unreleased]` in `CHANGELOG.md`
-- [ ] N/A — no user-visible behaviour change
-
-## Privacy / security
-
-- [ ] No new private hostnames, IPs, paths, or org/employer-specific
-      identifiers in code or comments. See `AGENTS.md` ("No private
-      info in code") for the rule and recommended placeholders.
-- [ ] Doesn't open a network listener on a public address by default
-- [ ] Doesn't grant new ambient capabilities
-
-<!--
-Reviewer note: this template hasn't been linted; if you spot anything
-that should be enforced rather than asked-for, say so.
--->
+- [ ] User-visible changes are recorded in `CHANGELOG.md`.
+- [ ] README or `ROADMAP.md` status is updated when the public boundary changed.
+- [ ] Config changes are synchronized across TOML, YAML, JSON, docs, and skills.
+- [ ] Agent or health contract changes have an intentional version decision.
+- [ ] No credentials, private hostnames, internal addresses, or environment-specific paths are included.

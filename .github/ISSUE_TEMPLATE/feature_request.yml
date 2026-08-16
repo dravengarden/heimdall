@@ -1,43 +1,43 @@
 name: Feature request
-description: A new capability heimdall should grow
-labels: ["enhancement"]
+description: Propose a focused improvement that fits Heimdall's command-scoped proxy boundary.
+title: "[feature] "
+labels:
+  - enhancement
 body:
   - type: markdown
     attributes:
       value: |
-        Heimdall is small and we'd rather discuss design than have you
-        rewrite a chunk twice. File the request first, send the PR
-        second.
-
+        Check [ROADMAP.md](https://github.com/dravengarden/heimdall/blob/main/ROADMAP.md) first. Heimdall intentionally does not target Kubernetes, host-wide proxying, Nickel, or universal TLS decryption.
   - type: textarea
     id: problem
     attributes:
-      label: What's the problem?
-      description: |
-        Describe the use case — what are you trying to do, and what
-        in heimdall today doesn't let you?
+      label: Problem
+      description: What user or agent workflow is blocked today?
+      placeholder: Describe the concrete command, runtime, or operational boundary.
     validations:
       required: true
-
   - type: textarea
-    id: proposed
+    id: proposal
     attributes:
-      label: Proposed solution
-      description: |
-        What should change? Skip implementation details if you don't
-        have them; the use case is what matters first.
-
+      label: Proposal
+      description: What behavior or contract would solve the problem?
+      placeholder: Describe the smallest useful change and its expected CLI/config surface.
+    validations:
+      required: true
   - type: textarea
-    id: alternatives
+    id: acceptance
     attributes:
-      label: Alternatives considered
-      description: |
-        Workarounds you've tried, related projects, or features in
-        adjacent tooling.
-
-  - type: textarea
-    id: scope
+      label: Acceptance criteria
+      description: How could this be tested and reported through the CLI or agent contract?
+      placeholder: List observable success and failure cases.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
     attributes:
-      label: Out of scope
-      description: |
-        Anything you specifically *don't* want this to do?
+      label: Checks
+      options:
+        - label: This proposal fits the command-scoped Linux proxy boundary.
+          required: true
+        - label: I searched existing issues and the roadmap.
+          required: true

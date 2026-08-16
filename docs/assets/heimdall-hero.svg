@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 440" role="img" aria-labelledby="title desc">
+  <title id="title">Heimdall</title>
+  <desc id="desc">Command-scoped egress proxy for CLI tools and AI agents, powered by eBPF.</desc>
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#07111f"/>
+      <stop offset="0.55" stop-color="#0b1d33"/>
+      <stop offset="1" stop-color="#13233d"/>
+    </linearGradient>
+    <linearGradient id="aurora" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#3dd6c6" stop-opacity="0"/>
+      <stop offset="0.32" stop-color="#3dd6c6" stop-opacity="0.78"/>
+      <stop offset="0.7" stop-color="#7c6cf2" stop-opacity="0.72"/>
+      <stop offset="1" stop-color="#7c6cf2" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="shield" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8cf5de"/>
+      <stop offset="1" stop-color="#6c5ce7"/>
+    </linearGradient>
+    <pattern id="grid" width="44" height="44" patternUnits="userSpaceOnUse">
+      <path d="M44 0H0V44" fill="none" stroke="#a6c4e8" stroke-opacity="0.08"/>
+    </pattern>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="12" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1600" height="440" rx="28" fill="url(#sky)"/>
+  <rect width="1600" height="440" rx="28" fill="url(#grid)"/>
+
+  <path d="M-40 300C190 178 350 374 594 238S1015 106 1262 232 1515 274 1650 166"
+        fill="none" stroke="url(#aurora)" stroke-width="34" stroke-linecap="round" opacity="0.32" filter="url(#glow)"/>
+  <path d="M-40 300C190 178 350 374 594 238S1015 106 1262 232 1515 274 1650 166"
+        fill="none" stroke="url(#aurora)" stroke-width="2" stroke-linecap="round"/>
+
+  <g fill="#b9d7ff" opacity="0.72">
+    <circle cx="128" cy="88" r="2"/><circle cx="276" cy="168" r="1.5"/>
+    <circle cx="468" cy="72" r="2"/><circle cx="1010" cy="76" r="1.5"/>
+    <circle cx="1260" cy="112" r="2"/><circle cx="1450" cy="76" r="1.5"/>
+  </g>
+
+  <g transform="translate(1160 78)" filter="url(#glow)">
+    <path d="M140 0 258 42v103c0 94-57 154-118 183-61-29-118-89-118-183V42z"
+          fill="#0c1b31" stroke="url(#shield)" stroke-width="6"/>
+    <path d="M140 48v174M58 104h164M82 170h116" stroke="#8cf5de" stroke-opacity="0.75" stroke-width="4"/>
+    <circle cx="140" cy="140" r="25" fill="#8cf5de" fill-opacity="0.18" stroke="#8cf5de" stroke-width="4"/>
+    <circle cx="140" cy="140" r="7" fill="#8cf5de"/>
+  </g>
+
+  <g font-family="Inter, ui-sans-serif, system-ui, -apple-system, sans-serif">
+    <text x="112" y="170" fill="#8cf5de" font-size="20" font-weight="700" letter-spacing="5">LINUX EGRESS</text>
+    <text x="108" y="246" fill="#f4f8ff" font-size="76" font-weight="800" letter-spacing="2">HEIMDALL</text>
+    <text x="114" y="294" fill="#bed0e8" font-size="24">Command-scoped proxying for CLI tools and AI agents</text>
+    <text x="114" y="344" fill="#8fa9c7" font-size="18">cgroup eBPF  ·  SOCKS5  ·  strict config  ·  agent-readable contracts</text>
+  </g>
+
+  <path d="M112 382h410" stroke="#8cf5de" stroke-width="3" stroke-linecap="round" opacity="0.7"/>
+  <circle cx="542" cy="382" r="5" fill="#8cf5de"/>
+</svg>
