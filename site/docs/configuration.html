@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#071126">
+    <meta name="description" content="Heimdall configuration reference for strict TOML, YAML, and JSON routing policies.">
+    <link rel="icon" href="../assets/favicon.png" type="image/png">
+    <link rel="apple-touch-icon" href="../assets/apple-touch-icon.png">
+    <link rel="stylesheet" href="../styles.css">
+    <title>Configuration — Heimdall docs</title>
+  </head>
+  <body class="docs-page" data-page="configuration">
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <header class="site-header"><div class="container nav-shell">
+      <a class="brand" href="../index.html"><img class="brand-mark" src="../assets/heimdall-logo.png" alt=""><span class="brand-copy"><span class="brand-name">Heimdall</span><span class="brand-tagline">command-scoped egress</span></span></a>
+      <button class="menu-toggle" type="button" data-menu-toggle aria-expanded="false" aria-controls="site-nav" aria-label="Open navigation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke-linecap="round" /></svg></button>
+      <nav class="nav-links" id="site-nav" data-site-nav aria-label="Primary navigation"><a href="architecture.html" data-page="architecture">Architecture</a><a href="configuration.html" data-page="configuration">Configuration</a><a href="commands.html" data-page="commands">Commands</a><a href="runbook.html" data-page="runbook">Runbook</a><a href="roadmap.html" data-page="roadmap">Roadmap</a><a class="nav-github" href="https://github.com/dravengarden/heimdall">GitHub <span aria-hidden="true">↗</span></a></nav>
+    </div></header>
+
+    <main id="main-content" class="container docs-shell">
+      <aside class="docs-sidebar" aria-label="Documentation navigation"><div class="sidebar-label">Documentation</div><nav class="sidebar-nav"><a href="architecture.html" data-page="architecture">Architecture</a><a href="configuration.html" data-page="configuration">Configuration</a><a href="commands.html" data-page="commands">Command workflows</a><a href="runbook.html" data-page="runbook">Runbook</a><a href="roadmap.html" data-page="roadmap">Roadmap</a></nav><div class="sidebar-meta"><strong>Source document</strong><a href="https://github.com/dravengarden/heimdall/blob/main/docs/config.md">docs/config.md ↗</a></div></aside>
+      <article class="doc-content">
+        <details class="mobile-toc"><summary>In this section</summary><nav><a href="architecture.html">Architecture</a><a href="configuration.html">Configuration</a><a href="commands.html">Command workflows</a><a href="runbook.html">Runbook</a><a href="roadmap.html">Roadmap</a></nav></details>
+        <span class="doc-kicker">Policy / strict schema</span>
+        <h1>Configuration</h1>
+        <p class="doc-lead">TOML, YAML, and JSON enter the same strict schema. Heimdall rejects ambiguity before a command starts: unknown fields, duplicate objects, invalid references, unsupported capabilities, and contradictory DNS choices.</p>
+
+        <h2 id="file">One file, one source of truth</h2>
+        <p>Heimdall reads exactly one <code>/etc/heimdall/config.&lt;format&gt;</code> file. The extension selects the parser; it does not select a different product model.</p>
+        <div class="callout warning"><strong>Do not put passwords in config.</strong> Use an absolute <code>password_file</code> with daemon-only permissions. The daemon removes one trailing newline and enforces the SOCKS5 length limit.</div>
+
+        <h2 id="minimal">Minimal configuration</h2>
+        <div class="code-card"><div class="code-card-head"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>config.toml</span><button class="copy-button" type="button" data-copy="#minimal-config">Copy</button></div><pre id="minimal-config"><code>version = 1&#10;&#10;[proxy]&#10;default_policy = "default"&#10;&#10;[proxy.outbounds.default]&#10;type = "socks5"&#10;server = "127.0.0.1"&#10;server_port = 1080&#10;network = ["tcp"]&#10;&#10;[proxy.policies.default.dns]&#10;mode = "fake"&#10;&#10;[proxy.policies.default.final]&#10;tcp = { type = "route", outbound = "default" }&#10;udp = { type = "reject", method = "refused" }&#10;&#10;[capture]&#10;mode = "off"&#10;&#10;[decrypt]&#10;mode = "off"</code></pre></div>
+
+        <h2 id="outbounds">Outbounds</h2>
+        <p>The data plane supports SOCKS5 TCP CONNECT and UDP ASSOCIATE. Declare the network capability explicitly; a route action is rejected when its protocol is not declared by the selected outbound.</p>
+        <pre><code>[proxy.outbounds.corp]&#10;type = "socks5"&#10;server = "127.0.0.1"&#10;server_port = 1081&#10;network = ["tcp", "udp"]&#10;connect_timeout = "10s"&#10;&#10;[proxy.outbounds.corp.auth]&#10;username = "alice"&#10;password_file = "/etc/heimdall/secrets/corp-password"</code></pre>
+
+        <h2 id="rules">Ordered rules</h2>
+        <p>Rules are evaluated in declaration order. The first matching rule wins. Fields inside one list are OR; different fields are AND.</p>
+        <pre><code>[[proxy.policies.default.rules]]&#10;name = "corp-domains"&#10;action = { type = "route", outbound = "corp" }&#10;&#10;[proxy.policies.default.rules.match]&#10;network = ["tcp", "udp"]&#10;domain_suffix = ["internal.example.com"]&#10;port = [443]&#10;&#10;[[proxy.policies.default.rules]]&#10;name = "deny-smtp"&#10;action = { type = "reject", method = "refused" }&#10;&#10;[proxy.policies.default.rules.match]&#10;network = ["tcp"]&#10;port = [25]&#10;&#10;[proxy.policies.default.final]&#10;tcp = { type = "route", outbound = "default" }&#10;udp = { type = "reject", method = "refused" }</code></pre>
+        <p>There is no implicit first outbound and no fallback to direct egress. <code>direct</code> is an explicit authorization, and <code>reject</code> fails the connection or datagram.</p>
+
+        <h2 id="dns">DNS modes</h2>
+        <table><thead><tr><th>Mode</th><th>Behavior</th><th>Policy identity</th></tr></thead><tbody><tr><td><code>fake</code></td><td>Redirects DNS to Heimdall and preserves the hostname through the relay.</td><td>Domain rules allowed.</td></tr><tr><td><code>system</code></td><td>Allows the host resolver to answer; the relay sees resolved IPs.</td><td>Use IP, port, or protocol rules.</td></tr></tbody></table>
+        <p>Use <code>heimdall config explain --network udp ... --json</code> to inspect a UDP decision. TCP is the compatibility default.</p>
+
+        <h2 id="capture">Capture and decrypt</h2>
+        <p>Proxying decides where traffic goes. Capture decides whether bytes are retained. Decrypt decides what those retained bytes represent. These are separate opt-in choices.</p>
+        <pre><code>[capture]&#10;mode = "on"&#10;directory = "/var/lib/heimdall/captures"&#10;max_bytes_per_flow = 1048576&#10;&#10;[decrypt]&#10;mode = "runtime" # off | runtime | relay</code></pre>
+        <ul><li><code>runtime</code> observes supported OpenSSL APIs without changing client trust.</li><li><code>relay</code> terminates and rebuilds TLS at the relay; clients must trust the explicit Heimdall CA.</li><li>Both modes require capture to be enabled and report actual coverage through <code>heimdall agent</code>.</li></ul>
+
+        <div class="doc-page-footer"><a href="architecture.html">← Architecture</a><a href="commands.html">Command workflows →</a></div>
+      </article>
+    </main>
+    <footer class="site-footer"><div class="container footer-inner"><a class="footer-brand" href="../index.html"><img src="../assets/heimdall-logo.png" alt="">Heimdall</a><span class="footer-copy">Strict config. Explicit boundaries.</span><nav class="footer-links" aria-label="Footer navigation"><a href="https://github.com/dravengarden/heimdall">GitHub</a><a href="https://github.com/dravengarden/heimdall/blob/main/SECURITY.md">Security</a></nav></div></footer>
+    <script src="../app.js" defer></script>
+  </body>
+</html>

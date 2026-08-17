@@ -5,7 +5,7 @@
 <h1 align="center">Heimdall</h1>
 
 <p align="center">
-  A command-scoped transparent egress proxy for CLI tools and AI agents.
+  A command-scoped TCP/UDP proxy with transparent TLS inspection for CLI tools and AI agents.
 </p>
 
 <p align="center">
@@ -50,6 +50,7 @@ need compatibility hardening.
 | Area | Status | Current boundary |
 | --- | --- | --- |
 | Command-scoped TCP and UDP proxying | Available | IPv4/IPv6, SOCKS5 and direct egress, fake DNS, ordered policies |
+| macOS support | Planned | Wrapper fallback and Network Extension backend are roadmap items; not currently available |
 | Strict configuration and agent contract | Available | TOML, YAML, JSON; `heimdall.agent/v4` with repairable diagnostics |
 | Opaque flow capture | Available | Explicit bounded JSONL capture; root-only files with `heimdall.capture/v1` |
 | Runtime TLS decryption | Available with alpha limits | OpenSSL probes at process runtime; no CA injection |

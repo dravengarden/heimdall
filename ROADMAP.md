@@ -32,6 +32,9 @@ acceptance path are documented and tested.
 - A real-eBPF NixOS acceptance VM covering dual-stack TCP/UDP, QUIC, common
   CLI/runtime clients, lifecycle behavior, and both TLS paths.
 
+The current available implementation is Linux-only. macOS support is planned
+below and is not part of the available contract yet.
+
 ## In development
 
 These are the active engineering tracks. They deliberately improve the core
@@ -99,12 +102,33 @@ from file names or process names.
 - Add safe config inspection and migration guidance for future pre-1.0 schema
   changes; do not silently accept removed fields or mode names.
 
+### macOS backend and fallback
+
+- Add a macOS wrapper backend for `heimdall run` using native proxy settings or
+  a bounded `proxychains-ng` fallback. Report its reduced capabilities
+  explicitly: best-effort command scope, TCP-only fallback behavior, and no
+  runtime TLS inspection.
+- Add a signed macOS companion app/system extension backed by
+  `NETransparentProxyProvider` for transparent TCP and UDP flow handling.
+  Evaluate `NEAppProxyProvider` for per-app or managed deployments rather than
+  treating it as a direct cgroup equivalent.
+- Define policy handoff, lifecycle, concurrent sessions, DNS, fail-closed
+  behavior, and relay self-protection between the CLI and the macOS provider.
+- Preserve shared policy, relay, and TLS semantics across platforms without
+  claiming Linux cgroup-equivalent command scope until process attribution and
+  acceptance coverage are proven.
+
+Acceptance target: macOS wrapper and transparent-provider paths have separate
+capability contracts and acceptance coverage for TCP, UDP, QUIC, DNS, process
+scope, relay recovery, and TLS boundaries.
+
 ## Deferred product boundaries
 
 The following are intentionally not on the current roadmap:
 
 - Kubernetes, cluster orchestration, or a host-wide policy controller.
-- A replacement VPN, desktop traffic dashboard, or always-on system proxy.
+- A replacement VPN, desktop traffic dashboard, or host-wide always-on system
+  proxy.
 - A workload policy language layered on top of the small proxy schema.
 - Nickel configuration or a fourth first-class configuration syntax.
 - Claims of universal TLS decryption across every language, TLS library, or

@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#071126">
+    <meta name="description" content="Heimdall documentation: run one command through an explicit TCP/UDP proxy and understand transparent TLS inspection, policy, DNS, and relay boundaries.">
+    <link rel="icon" href="assets/favicon.png" type="image/png">
+    <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+    <link rel="stylesheet" href="styles.css">
+    <title>Heimdall docs — command-scoped egress</title>
+  </head>
+  <body class="landing-page" data-page="home">
+    <a class="skip-link" href="#main-content">Skip to content</a>
+
+    <header class="site-header">
+      <div class="container nav-shell">
+        <a class="brand" href="index.html">
+          <img class="brand-mark" src="assets/heimdall-logo.png" alt="">
+          <span class="brand-copy">
+            <span class="brand-name">Heimdall</span>
+            <span class="brand-tagline">documentation</span>
+          </span>
+        </a>
+
+        <button class="menu-toggle" type="button" data-menu-toggle aria-expanded="false" aria-controls="site-nav" aria-label="Open navigation">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path d="M4 7h16M4 12h16M4 17h16" stroke-linecap="round" />
+          </svg>
+        </button>
+
+        <nav class="nav-links" id="site-nav" data-site-nav aria-label="Primary navigation">
+          <a href="docs/commands.html" data-page="commands">Use Heimdall</a>
+          <a href="docs/architecture.html" data-page="architecture">Architecture</a>
+          <a href="docs/configuration.html" data-page="configuration">Configuration</a>
+          <a href="docs/runbook.html" data-page="runbook">Runbook</a>
+          <a href="docs/roadmap.html" data-page="roadmap">Roadmap</a>
+          <a class="nav-github" href="https://github.com/dravengarden/heimdall">GitHub <span aria-hidden="true">↗</span></a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main-content">
+      <section class="hero hero-docs">
+        <div class="container hero-grid">
+          <div class="hero-content">
+            <div class="hero-identity">
+              <img src="assets/heimdall-logo.png" alt="Heimdall guardian mark">
+              <span>Heimdall documentation</span>
+            </div>
+            <h1>Command-scoped egress, <em>explained.</em></h1>
+            <p class="hero-lead">
+              Run one CLI command through an explicit TCP/UDP proxy. Read how
+              command scope, transparent TLS inspection, policy, DNS, and
+              relay boundaries fit together.
+            </p>
+            <div class="hero-actions">
+              <a class="button button-primary" href="docs/commands.html">Start with usage <span aria-hidden="true">→</span></a>
+              <a class="button button-quiet" href="docs/architecture.html">Read architecture <span aria-hidden="true">→</span></a>
+            </div>
+            <p class="hero-note"><span class="dot" aria-hidden="true"></span><strong>Alpha documentation.</strong> Check the support boundaries before production use.</p>
+          </div>
+
+          <div class="hero-quickstart">
+            <div class="quickstart-heading"><span>01 / quick start</span><strong>Three commands to the first run</strong></div>
+            <div class="code-card">
+              <div class="code-card-head"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>terminal</span><button class="copy-button" type="button" data-copy="#quickstart-command">Copy</button></div>
+              <pre id="quickstart-command"><code><span class="code-comment"># create the config skeleton</span>
+heimdall init
+
+<span class="code-comment"># validate before starting a workload</span>
+heimdall config validate
+
+<span class="code-comment"># scope one command</span>
+heimdall run -- curl https://example.com</code></pre>
+            </div>
+            <p class="quickstart-foot">The rest of the machine stays outside this command's cgroup scope.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="section docs-index-section" id="start-here">
+        <div class="container">
+          <div class="section-heading">
+            <div>
+              <span class="section-kicker">Documentation map</span>
+              <h2>Read only what you need, in the useful order.</h2>
+            </div>
+            <p>Start with a command. Then inspect the policy and the kernel path that makes the scope hold.</p>
+          </div>
+
+          <div class="docs-grid">
+            <a class="doc-card" href="docs/commands.html">
+              <span class="card-index">01 / USE</span>
+              <h3>Command workflows</h3>
+              <p>Run, inspect, explain, validate, and automate with stable argv contracts.</p>
+              <span class="card-arrow">Run a command <span aria-hidden="true">→</span></span>
+            </a>
+            <a class="doc-card" href="docs/configuration.html">
+              <span class="card-index">02 / CONFIGURE</span>
+              <h3>Configuration</h3>
+              <p>Build one strict TOML, YAML, or JSON policy with explicit routes and rejects.</p>
+              <span class="card-arrow">Shape a policy <span aria-hidden="true">→</span></span>
+            </a>
+            <a class="doc-card" href="docs/architecture.html">
+              <span class="card-index">03 / UNDERSTAND</span>
+              <h3>Architecture</h3>
+              <p>Trace the command, cgroup, eBPF, DNS, relay, and outbound handoff.</p>
+              <span class="card-arrow">Trace the path <span aria-hidden="true">→</span></span>
+            </a>
+            <a class="doc-card" href="docs/runbook.html">
+              <span class="card-index">04 / OPERATE</span>
+              <h3>Runbook</h3>
+              <p>Build eBPF first, install safely, smoke test, and diagnose failures.</p>
+              <span class="card-arrow">Operate the boundary <span aria-hidden="true">→</span></span>
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <section class="section section-tint usage-section">
+        <div class="container">
+          <div class="section-heading">
+            <div>
+              <span class="section-kicker">The shortest useful path</span>
+              <h2>Validate. Run. Inspect.</h2>
+            </div>
+            <p>Heimdall is intentionally narrow. The normal workflow is a small loop that keeps policy decisions visible.</p>
+          </div>
+
+          <div class="usage-grid">
+            <article class="usage-step">
+              <div class="usage-step-top"><span>01</span><strong>Validate</strong></div>
+              <p>Reject schema and capability mistakes before the workload starts.</p>
+              <code>heimdall config validate</code>
+            </article>
+            <article class="usage-step">
+              <div class="usage-step-top"><span>02</span><strong>Run</strong></div>
+              <p>Register one transient cgroup and forward the child exit status.</p>
+              <code>heimdall run -- your-command</code>
+            </article>
+            <article class="usage-step">
+              <div class="usage-step-top"><span>03</span><strong>Inspect</strong></div>
+              <p>Use read-only evidence when an agent or operator needs the reason.</p>
+              <code>heimdall agent --json</code>
+            </article>
+          </div>
+
+          <div class="usage-boundary">
+            <strong>Scope is the contract.</strong>
+            <span>Unregistered processes bypass the eBPF redirect. Registered traffic follows the selected policy and does not silently fall back to direct egress.</span>
+            <a href="docs/commands.html">See the command surface <span aria-hidden="true">→</span></a>
+          </div>
+        </div>
+      </section>
+
+      <section class="section architecture-section" id="architecture-preview">
+        <div class="container">
+          <div class="section-heading">
+            <div>
+              <span class="section-kicker">Technical architecture</span>
+              <h2>Follow the handoff from process to outbound.</h2>
+            </div>
+            <p>The relay recovers the original destination, evaluates ordered policy, and routes, connects directly, or rejects it.</p>
+          </div>
+
+          <div class="architecture-panel">
+            <div class="architecture-panel-head"><strong>heimdall / control + data plane</strong><span>fail closed while unavailable</span></div>
+            <div class="architecture-flow">
+              <div class="architecture-node active"><small>01 / CLI</small><strong>command scope</strong><span>One transient cgroup.</span></div>
+              <div class="architecture-arrow" aria-hidden="true">→</div>
+              <div class="architecture-node active"><small>02 / KERNEL</small><strong>cgroup eBPF</strong><span>Redirects registered traffic.</span></div>
+              <div class="architecture-arrow" aria-hidden="true">→</div>
+              <div class="architecture-node active"><small>03 / RELAY</small><strong>relay + policy</strong><span>Recovers destination.</span></div>
+              <div class="architecture-arrow" aria-hidden="true">→</div>
+              <div class="architecture-node"><small>04 / OUTBOUND</small><strong>route / direct / reject</strong><span>First matching action.</span></div>
+            </div>
+            <p class="architecture-foot">Read the full architecture reference for lifecycle, data boundaries, and non-goals.</p>
+          </div>
+          <div class="architecture-link"><a class="button button-primary" href="docs/architecture.html">Open architecture reference <span aria-hidden="true">→</span></a></div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="container footer-inner">
+        <a class="footer-brand" href="index.html"><img src="assets/heimdall-logo.png" alt="">Heimdall</a>
+        <span class="footer-copy">Command-scoped egress for Linux. Apache-2.0.</span>
+        <nav class="footer-links" aria-label="Footer navigation">
+          <a href="docs/architecture.html">Docs</a>
+          <a href="https://github.com/dravengarden/heimdall">GitHub</a>
+          <a href="https://github.com/dravengarden/heimdall/blob/main/SECURITY.md">Security</a>
+        </nav>
+      </div>
+    </footer>
+    <script src="app.js" defer></script>
+  </body>
+</html>

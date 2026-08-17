@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#071126">
+    <meta name="description" content="Heimdall runbook for building, installing, smoke testing, and diagnosing the eBPF proxy.">
+    <link rel="icon" href="../assets/favicon.png" type="image/png">
+    <link rel="apple-touch-icon" href="../assets/apple-touch-icon.png">
+    <link rel="stylesheet" href="../styles.css">
+    <title>Runbook — Heimdall docs</title>
+  </head>
+  <body class="docs-page" data-page="runbook">
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <header class="site-header"><div class="container nav-shell">
+      <a class="brand" href="../index.html"><img class="brand-mark" src="../assets/heimdall-logo.png" alt=""><span class="brand-copy"><span class="brand-name">Heimdall</span><span class="brand-tagline">command-scoped egress</span></span></a>
+      <button class="menu-toggle" type="button" data-menu-toggle aria-expanded="false" aria-controls="site-nav" aria-label="Open navigation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke-linecap="round" /></svg></button>
+      <nav class="nav-links" id="site-nav" data-site-nav aria-label="Primary navigation"><a href="architecture.html" data-page="architecture">Architecture</a><a href="configuration.html" data-page="configuration">Configuration</a><a href="commands.html" data-page="commands">Commands</a><a href="runbook.html" data-page="runbook">Runbook</a><a href="roadmap.html" data-page="roadmap">Roadmap</a><a class="nav-github" href="https://github.com/dravengarden/heimdall">GitHub <span aria-hidden="true">↗</span></a></nav>
+    </div></header>
+
+    <main id="main-content" class="container docs-shell">
+      <aside class="docs-sidebar" aria-label="Documentation navigation"><div class="sidebar-label">Documentation</div><nav class="sidebar-nav"><a href="architecture.html" data-page="architecture">Architecture</a><a href="configuration.html" data-page="configuration">Configuration</a><a href="commands.html" data-page="commands">Command workflows</a><a href="runbook.html" data-page="runbook">Runbook</a><a href="roadmap.html" data-page="roadmap">Roadmap</a></nav><div class="sidebar-meta"><strong>Source document</strong><a href="https://github.com/dravengarden/heimdall/blob/main/docs/runbook.md">docs/runbook.md ↗</a></div></aside>
+      <article class="doc-content">
+        <details class="mobile-toc"><summary>In this section</summary><nav><a href="architecture.html">Architecture</a><a href="configuration.html">Configuration</a><a href="commands.html">Command workflows</a><a href="runbook.html">Runbook</a><a href="roadmap.html">Roadmap</a></nav></details>
+        <span class="doc-kicker">Operations / evidence first</span>
+        <h1>Runbook</h1>
+        <p class="doc-lead">Build the eBPF object before userspace, install the daemon with its privilege boundary intact, and verify the running contract rather than trusting a successful compile.</p>
+
+        <h2 id="build">Build</h2>
+        <p>The daemon embeds the eBPF ELF, so eBPF must be built first. Enter the pinned development environment before running project commands.</p>
+        <pre><code>nix develop .#ebpf -c bash -c \
+  'cd heimdall-ebpf && cargo-nightly build --locked --release'
+nix develop -c just verify</code></pre>
+        <p>Run the disposable real-eBPF VM when changing cgroups, DNS, relay correlation, routing, or kernel programs:</p>
+        <pre><code>nix develop -c just test-vm</code></pre>
+
+        <h2 id="install">Install</h2>
+        <pre><code>sudo install -Dm755 target/release/heimdall /usr/local/bin/heimdall
+sudo /usr/local/bin/heimdall init
+sudo install -Dm644 deploy/heimdall.service \
+  /etc/systemd/system/heimdall.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now heimdall</code></pre>
+        <p>The daemon should bind only loopback listeners. Confirm the relay reports both loopback families and inspect the service state:</p>
+        <pre><code>heimdall status
+systemctl status heimdall
+journalctl -u heimdall -n 100</code></pre>
+
+        <h2 id="smoke">Smoke test</h2>
+        <pre><code>heimdall agent | jq .
+heimdall config validate
+heimdall run -- curl -fsS https://example.com</code></pre>
+        <div class="callout"><strong>Exit status is part of the contract.</strong>The wrapped command's exit status is Heimdall's exit status. A daemon or registration failure happens before the command is executed.</div>
+
+        <h2 id="acceptance">Acceptance coverage</h2>
+        <p>The VM exercises real eBPF attachment, fake and system DNS, SOCKS5 IPv4/IPv6/domain requests, connected and connectionless UDP, QUIC, descendant lifetime, signal propagation, daemon recovery, fail-closed upstream errors, and TLS capture paths.</p>
+        <table><thead><tr><th>Evidence</th><th>What it proves</th></tr></thead><tbody><tr><td><code>just verify</code></td><td>Build, format, lint, dependency, unit, and userspace gates.</td></tr><tr><td><code>just test-vm</code></td><td>Real kernel data path and compatibility matrix.</td></tr><tr><td><code>heimdall agent</code></td><td>Running config, daemon readiness, capabilities, and repair actions.</td></tr><tr><td><code>heimdall status</code></td><td>Operational daemon and relay state.</td></tr></tbody></table>
+
+        <h2 id="diagnose">Diagnose failures</h2>
+        <ol><li>Run <code>heimdall agent</code> and preserve its JSON even when it exits 1.</li><li>Follow its <code>actions.validate</code> or <code>actions.status</code> argv array.</li><li>If the daemon is unavailable, inspect recent service logs.</li><li>Preview the destination with <code>heimdall config explain --json</code>.</li><li>Reproduce with a small command such as <code>curl</code>, preserving the same policy.</li></ol>
+        <pre><code>journalctl -u heimdall --since "10 min ago" --no-pager</code></pre>
+        <p>Do not equate config validity with connectivity. A real acceptance check must exercise the selected policy through <code>heimdall run</code>.</p>
+
+        <h2 id="cleanup">Persistent eBPF cleanup</h2>
+        <p>Only for an explicitly requested uninstall or schema repair:</p>
+        <pre><code>sudo systemctl stop heimdall
+sudo heimdall ebpf cleanup --json</code></pre>
+        <div class="callout warning"><strong>Never unlink pins manually.</strong> Cleanup refuses to remove state while the daemon or active workloads still own it.</div>
+
+        <div class="doc-page-footer"><a href="commands.html">← Command workflows</a><a href="roadmap.html">Roadmap →</a></div>
+      </article>
+    </main>
+    <footer class="site-footer"><div class="container footer-inner"><a class="footer-brand" href="../index.html"><img src="../assets/heimdall-logo.png" alt="">Heimdall</a><span class="footer-copy">Build, activate, verify.</span><nav class="footer-links" aria-label="Footer navigation"><a href="https://github.com/dravengarden/heimdall">GitHub</a><a href="https://github.com/dravengarden/heimdall/blob/main/SECURITY.md">Security</a></nav></div></footer>
+    <script src="../app.js" defer></script>
+  </body>
+</html>
