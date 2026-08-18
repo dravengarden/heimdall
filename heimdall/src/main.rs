@@ -57,7 +57,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use aya::{
-    EbpfLoader,
+    Ebpf, EbpfLoader,
     maps::{Array, HashMap},
     programs::{
         CgroupAttachMode, CgroupSkb, CgroupSkbAttachType, CgroupSock, CgroupSockAddr, links::FdLink,
@@ -184,6 +184,16 @@ struct SessionRuntime {
     relay: RelayRuntime,
     dns: Arc<DnsResolver>,
     dns_task: tokio::task::JoinHandle<()>,
+    kernel: Option<KernelRuntime>,
+}
+
+struct KernelRuntime {
+    port_map: PortMap,
+    udp_port_map: UdpPortMap,
+    udp_token_map: UdpTokenMap,
+    udp_cookie_map: UdpCookieMap,
+    _policy_engine: Arc<policy::PolicyEngine>,
+    _links: ebpf::LinkSet,
 }
 
 impl SessionRuntime {
@@ -210,7 +220,23 @@ impl SessionRuntime {
             relay,
             dns,
             dns_task,
+            kernel: None,
         })
+    }
+
+    fn install_kernel(&mut self, kernel: KernelRuntime) -> Result<()> {
+        anyhow::ensure!(
+            self.kernel.is_none(),
+            "session kernel runtime was already installed"
+        );
+        self.kernel = Some(kernel);
+        Ok(())
+    }
+
+    fn kernel(&self) -> Result<&KernelRuntime> {
+        self.kernel
+            .as_ref()
+            .context("session kernel runtime is not installed")
     }
 
     fn relay_port(&self) -> u16 {
@@ -224,21 +250,14 @@ impl SessionRuntime {
         ))
     }
 
-    async fn serve(
-        &self,
-        port_map: PortMap,
-        udp_port_map: UdpPortMap,
-        udp_token_map: UdpTokenMap,
-        udp_cookie_map: UdpCookieMap,
-        udp_sessions: UdpSessions,
-        shared: Arc<Shared>,
-    ) -> Result<()> {
+    async fn serve(&self, udp_sessions: UdpSessions, shared: Arc<Shared>) -> Result<()> {
+        let kernel = self.kernel()?;
         self.relay
             .serve(
-                port_map,
-                udp_port_map,
-                udp_token_map,
-                udp_cookie_map,
+                kernel.port_map.clone(),
+                kernel.udp_port_map.clone(),
+                kernel.udp_token_map.clone(),
+                kernel.udp_cookie_map.clone(),
                 udp_sessions,
                 shared,
             )
@@ -938,6 +957,155 @@ async fn restore_cli_registrations(
     Ok(restored)
 }
 
+struct CgroupAttachTarget<'a> {
+    key: &'a str,
+    path: &'a str,
+    file: &'a std::fs::File,
+    required: bool,
+}
+
+fn attach_cgroup_programs(
+    bpf: &mut Ebpf,
+    transaction: &mut ebpf::LinkTransaction,
+    targets: &[CgroupAttachTarget<'_>],
+) -> Result<()> {
+    for name in [
+        "connect4",
+        "connect6",
+        "getpeername4",
+        "getpeername6",
+        "udp4_sendmsg",
+        "udp6_sendmsg",
+        "udp6_bind",
+        "udp4_recvmsg",
+        "udp6_recvmsg",
+    ] {
+        let program: &mut CgroupSockAddr = bpf
+            .program_mut(name)
+            .with_context(|| format!("{name} eBPF program not found"))?
+            .try_into()?;
+        program
+            .load()
+            .with_context(|| format!("failed to load {name}"))?;
+        for target in targets {
+            let link_name = format!("{name}-{}", target.key);
+            if !transaction.update_link(&link_name, program.fd()?.as_fd())? {
+                match program.attach(target.file, CgroupAttachMode::Single) {
+                    Ok(link_id) => {
+                        let link: FdLink = program.take_link(link_id)?.try_into()?;
+                        transaction.install_link(&link_name, link)?;
+                    }
+                    Err(error) if !target.required => {
+                        warn!(%error, cgroup = target.path, prog = name, "optional eBPF cgroup attach failed");
+                        continue;
+                    }
+                    Err(error) => {
+                        return Err(error).with_context(|| {
+                            format!("attach {name} to required cgroup {}", target.path)
+                        });
+                    }
+                }
+            }
+            info!(
+                cgroup = target.path,
+                prog = name,
+                "eBPF cgroup program attached"
+            );
+        }
+    }
+
+    let name = "sock_release";
+    let program: &mut CgroupSock = bpf
+        .program_mut(name)
+        .context("sock_release eBPF program not found")?
+        .try_into()?;
+    program.load().context("failed to load sock_release")?;
+    for target in targets {
+        let link_name = format!("{name}-{}", target.key);
+        if !transaction.update_link(&link_name, program.fd()?.as_fd())? {
+            match program.attach(target.file, CgroupAttachMode::Single) {
+                Ok(link_id) => {
+                    let link: FdLink = program.take_link(link_id)?.try_into()?;
+                    transaction.install_link(&link_name, link)?;
+                }
+                Err(error) if !target.required => {
+                    warn!(%error, cgroup = target.path, prog = name, "optional eBPF cgroup attach failed");
+                    continue;
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("attach {name} to required cgroup {}", target.path)
+                    });
+                }
+            }
+        }
+        info!(
+            cgroup = target.path,
+            prog = name,
+            "eBPF cgroup program attached"
+        );
+    }
+
+    let name = "skb_egress";
+    let program: &mut CgroupSkb = bpf
+        .program_mut(name)
+        .context("skb_egress eBPF program not found")?
+        .try_into()?;
+    program.load().context("failed to load skb_egress")?;
+    for target in targets {
+        let link_name = format!("{name}-{}", target.key);
+        if !transaction.update_link(&link_name, program.fd()?.as_fd())? {
+            match program.attach(
+                target.file,
+                CgroupSkbAttachType::Egress,
+                CgroupAttachMode::Single,
+            ) {
+                Ok(link_id) => {
+                    let link: FdLink = program.take_link(link_id)?.try_into()?;
+                    transaction.install_link(&link_name, link)?;
+                }
+                Err(error) if !target.required => {
+                    warn!(%error, cgroup = target.path, prog = name, "optional eBPF cgroup attach failed");
+                    continue;
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("attach {name} to required cgroup {}", target.path)
+                    });
+                }
+            }
+        }
+        info!(
+            cgroup = target.path,
+            prog = name,
+            "eBPF cgroup program attached"
+        );
+    }
+
+    Ok(())
+}
+
+fn load_kernel_object(lifetime: ebpf::LinkLifetime) -> Result<Ebpf> {
+    let mut loader = EbpfLoader::new();
+    if lifetime == ebpf::LinkLifetime::Persistent {
+        ebpf::prepare_pin_dirs()?;
+        ebpf::validate_state_schema()?;
+        loader.default_map_pin_directory(ebpf::MAPS);
+    }
+
+    let mut bpf = loader.load(EBPF_BYTES).with_context(|| match lifetime {
+        ebpf::LinkLifetime::Persistent => {
+            "load eBPF object with persistent maps; if a map layout changed, stop heimdall, wait for wrapped commands to exit, then run `heimdall ebpf cleanup --json`"
+        }
+        ebpf::LinkLifetime::Process => "load eBPF object with process-owned maps",
+    })?;
+    ebpf::write_state_schema(
+        bpf.map_mut("STATE_SCHEMA")
+            .context("STATE_SCHEMA not found")?,
+    )?;
+    Ok(bpf)
+}
+
 async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
     // ─── Load config ──────────────────────────────────────────────────────
     let cfg = HeimdallConfig::load(config_path).map_err(|error| {
@@ -983,7 +1151,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
 
     // Bind command-scoped data-plane resources before eBPF attachment. They
     // still run under the daemon today, but already share one drop boundary.
-    let session_runtime = SessionRuntime::bind(&cfg).await?;
+    let mut session_runtime = SessionRuntime::bind(&cfg).await?;
 
     // Shared between Shared{} (relay reads), AppState (HTTP register
     // endpoints write), and the `heimdall run` flow. Initialised here
@@ -1041,17 +1209,9 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
     });
 
     // ─── Load eBPF object and attach programs ─────────────────────────────
-    ebpf::prepare_pin_dirs()?;
-    ebpf::validate_state_schema()?;
-    let mut bpf = EbpfLoader::new()
-        .default_map_pin_directory(ebpf::MAPS)
-        .load(EBPF_BYTES)
-        .context("load eBPF object with persistent maps; if a map layout changed, stop heimdall, wait for wrapped commands to exit, then run `heimdall ebpf cleanup --json`")?;
-    ebpf::write_state_schema(
-        bpf.map_mut("STATE_SCHEMA")
-            .context("STATE_SCHEMA not found")?,
-    )?;
-    let mut link_transaction = ebpf::LinkTransaction::new(ebpf::LinkLifetime::Persistent);
+    let kernel_lifetime = ebpf::LinkLifetime::Persistent;
+    let mut bpf = load_kernel_object(kernel_lifetime)?;
+    let mut link_transaction = ebpf::LinkTransaction::new(kernel_lifetime);
 
     if shared.cfg.decrypt.mode == heimdall_config::DecryptMode::Runtime {
         let capture = shared
@@ -1173,331 +1333,30 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
         }
     };
 
-    // ─── eBPF attach (cgroup_sock_addr connect4 + cgroup_skb egress) ────────
-    // Primary attach at daemon.cgroup (defaults to
-    // /sys/fs/cgroup/system.slice) covers host services. Secondary at
-    // /sys/fs/cgroup/user.slice covers `heimdall run` / interactive
-    // user processes.
-    //
-    // A single root-cgroup attach (/sys/fs/cgroup) would cover both in
-    // one shot, but historically appeared to attach yet never fire
-    // connect4 in cgroup v2 hierarchical mode. The dual-attach approach
-    // is the verified-working path; keep it.
+    // A single root-cgroup attach historically appeared to succeed but did not
+    // fire in cgroup v2 hierarchical mode. Keep the verified system/user pair
+    // as data; a foreground run can instead provide exactly one required
+    // transient target to the same attach function.
     const USER_SLICE: &str = "/sys/fs/cgroup/user.slice";
     let user_slice_file = std::path::Path::new(USER_SLICE)
         .exists()
         .then(|| std::fs::File::open(USER_SLICE).ok())
         .flatten();
-    {
-        let connect4: &mut CgroupSockAddr = bpf
-            .program_mut("connect4")
-            .context("connect4 eBPF program not found")?
-            .try_into()?;
-        connect4.load().context("failed to load connect4")?;
-        if !link_transaction.update_link("connect4-system", connect4.fd()?.as_fd())? {
-            let link_id = connect4
-                .attach(&cgroup, CgroupAttachMode::Single)
-                .context("failed to attach connect4")?;
-            let link: FdLink = connect4.take_link(link_id)?.try_into()?;
-            link_transaction.install_link("connect4-system", link)?;
-        }
-        info!(cgroup = %shared.cfg.daemon.cgroup, "eBPF connect4 attached");
-        if let Some(user_cg) = user_slice_file.as_ref() {
-            if link_transaction.update_link("connect4-user", connect4.fd()?.as_fd())? {
-                info!(cgroup = USER_SLICE, "eBPF connect4 attached (extra)");
-            } else {
-                match connect4.attach(user_cg, CgroupAttachMode::Single) {
-                    Ok(link_id) => {
-                        let link: FdLink = connect4.take_link(link_id)?.try_into()?;
-                        link_transaction.install_link("connect4-user", link)?;
-                        info!(cgroup = USER_SLICE, "eBPF connect4 attached (extra)");
-                    }
-                    Err(e) => {
-                        warn!(error = %e, cgroup = USER_SLICE, "extra connect4 attach failed")
-                    }
-                }
-            }
-        }
+    let mut attach_targets = vec![CgroupAttachTarget {
+        key: "system",
+        path: &shared.cfg.daemon.cgroup,
+        file: &cgroup,
+        required: true,
+    }];
+    if let Some(user_cgroup) = user_slice_file.as_ref() {
+        attach_targets.push(CgroupAttachTarget {
+            key: "user",
+            path: USER_SLICE,
+            file: user_cgroup,
+            required: false,
+        });
     }
-    {
-        let connect6: &mut CgroupSockAddr = bpf
-            .program_mut("connect6")
-            .context("connect6 eBPF program not found")?
-            .try_into()?;
-        connect6.load().context("failed to load connect6")?;
-        if !link_transaction.update_link("connect6-system", connect6.fd()?.as_fd())? {
-            let link_id = connect6
-                .attach(&cgroup, CgroupAttachMode::Single)
-                .context("failed to attach connect6")?;
-            let link: FdLink = connect6.take_link(link_id)?.try_into()?;
-            link_transaction.install_link("connect6-system", link)?;
-        }
-        info!(cgroup = %shared.cfg.daemon.cgroup, "eBPF connect6 attached");
-        if let Some(user_cg) = user_slice_file.as_ref() {
-            if link_transaction.update_link("connect6-user", connect6.fd()?.as_fd())? {
-                info!(cgroup = USER_SLICE, "eBPF connect6 attached (extra)");
-            } else {
-                match connect6.attach(user_cg, CgroupAttachMode::Single) {
-                    Ok(link_id) => {
-                        let link: FdLink = connect6.take_link(link_id)?.try_into()?;
-                        link_transaction.install_link("connect6-user", link)?;
-                        info!(cgroup = USER_SLICE, "eBPF connect6 attached (extra)");
-                    }
-                    Err(e) => {
-                        warn!(error = %e, cgroup = USER_SLICE, "extra connect6 attach failed")
-                    }
-                }
-            }
-        }
-    }
-    for name in ["getpeername4", "getpeername6"] {
-        let prog: &mut CgroupSockAddr = bpf
-            .program_mut(name)
-            .with_context(|| format!("{name} eBPF program not found"))?
-            .try_into()?;
-        prog.load()
-            .with_context(|| format!("failed to load {name}"))?;
-        let system_link = format!("{name}-system");
-        if !link_transaction.update_link(&system_link, prog.fd()?.as_fd())? {
-            let link_id = prog
-                .attach(&cgroup, CgroupAttachMode::Single)
-                .with_context(|| format!("failed to attach {name}"))?;
-            let link: FdLink = prog.take_link(link_id)?.try_into()?;
-            link_transaction.install_link(&system_link, link)?;
-        }
-        info!(cgroup = %shared.cfg.daemon.cgroup, prog = name, "eBPF peer identity hook attached");
-        if let Some(user_cg) = user_slice_file.as_ref() {
-            let user_link = format!("{name}-user");
-            if link_transaction.update_link(&user_link, prog.fd()?.as_fd())? {
-                info!(
-                    cgroup = USER_SLICE,
-                    prog = name,
-                    "eBPF peer identity hook attached (extra)"
-                );
-            } else {
-                match prog.attach(user_cg, CgroupAttachMode::Single) {
-                    Ok(link_id) => {
-                        let link: FdLink = prog.take_link(link_id)?.try_into()?;
-                        link_transaction.install_link(&user_link, link)?;
-                        info!(
-                            cgroup = USER_SLICE,
-                            prog = name,
-                            "eBPF peer identity hook attached (extra)"
-                        );
-                    }
-                    Err(e) => {
-                        warn!(error = %e, cgroup = USER_SLICE, prog = name, "extra peer identity hook attach failed")
-                    }
-                }
-            }
-        }
-    }
-    // sock_release: reap COOKIE_MAP entries when the kernel destroys a
-    // socket, regardless of whether it ever sent a packet. Without this,
-    // sockets that connect() but never egress (glibc src-addr probes,
-    // failed routing, abort-before-send) leak cookies forever — past
-    // incident filled the map at 65536 in a few hours and silently broke
-    // every new redirect on the host. See the matching comment on the
-    // sock_release program in heimdall-ebpf for the kernel-hook details.
-    {
-        let sock_release: &mut CgroupSock = bpf
-            .program_mut("sock_release")
-            .context("sock_release eBPF program not found")?
-            .try_into()?;
-        sock_release.load().context("failed to load sock_release")?;
-        if !link_transaction.update_link("sock_release-system", sock_release.fd()?.as_fd())? {
-            let link_id = sock_release
-                .attach(&cgroup, CgroupAttachMode::Single)
-                .context("failed to attach sock_release")?;
-            let link: FdLink = sock_release.take_link(link_id)?.try_into()?;
-            link_transaction.install_link("sock_release-system", link)?;
-        }
-        info!(cgroup = %shared.cfg.daemon.cgroup, "eBPF sock_release attached");
-        if let Some(user_cg) = user_slice_file.as_ref() {
-            if link_transaction.update_link("sock_release-user", sock_release.fd()?.as_fd())? {
-                info!(cgroup = USER_SLICE, "eBPF sock_release attached (extra)");
-            } else {
-                match sock_release.attach(user_cg, CgroupAttachMode::Single) {
-                    Ok(link_id) => {
-                        let link: FdLink = sock_release.take_link(link_id)?.try_into()?;
-                        link_transaction.install_link("sock_release-user", link)?;
-                        info!(cgroup = USER_SLICE, "eBPF sock_release attached (extra)");
-                    }
-                    Err(e) => {
-                        warn!(error = %e, cgroup = USER_SLICE, "extra sock_release attach failed")
-                    }
-                }
-            }
-        }
-    }
-    // udp{4,6}_sendmsg catches connectionless UDP (including pure-Go DNS).
-    // IPv4 uses reversible destination tokens. IPv6 uses a single-peer
-    // family-and-port fallback, including mapped IPv4 used by QUIC clients.
-    // connect4/connect6 own the connected path.
-    for name in ["udp4_sendmsg", "udp6_sendmsg"] {
-        let prog: &mut CgroupSockAddr = bpf
-            .program_mut(name)
-            .with_context(|| format!("{name} eBPF program not found"))?
-            .try_into()?;
-        prog.load()
-            .with_context(|| format!("failed to load {name}"))?;
-        let system_link = format!("{name}-system");
-        if !link_transaction.update_link(&system_link, prog.fd()?.as_fd())? {
-            let link_id = prog
-                .attach(&cgroup, CgroupAttachMode::Single)
-                .with_context(|| format!("failed to attach {name}"))?;
-            let link: FdLink = prog.take_link(link_id)?.try_into()?;
-            link_transaction.install_link(&system_link, link)?;
-        }
-        info!(cgroup = %shared.cfg.daemon.cgroup, prog = name, "eBPF sendmsg attached");
-        if let Some(user_cg) = user_slice_file.as_ref() {
-            let user_link = format!("{name}-user");
-            if link_transaction.update_link(&user_link, prog.fd()?.as_fd())? {
-                info!(
-                    cgroup = USER_SLICE,
-                    prog = name,
-                    "eBPF sendmsg attached (extra)"
-                );
-            } else {
-                match prog.attach(user_cg, CgroupAttachMode::Single) {
-                    Ok(link_id) => {
-                        let link: FdLink = prog.take_link(link_id)?.try_into()?;
-                        link_transaction.install_link(&user_link, link)?;
-                        info!(
-                            cgroup = USER_SLICE,
-                            prog = name,
-                            "eBPF sendmsg attached (extra)"
-                        );
-                    }
-                    Err(e) => {
-                        warn!(error = %e, cgroup = USER_SLICE, prog = name, "extra sendmsg attach failed")
-                    }
-                }
-            }
-        }
-    }
-    {
-        let name = "udp6_bind";
-        let prog: &mut CgroupSockAddr = bpf
-            .program_mut(name)
-            .with_context(|| format!("{name} eBPF program not found"))?
-            .try_into()?;
-        prog.load()
-            .with_context(|| format!("failed to load {name}"))?;
-        if !link_transaction.update_link("udp6_bind-system", prog.fd()?.as_fd())? {
-            let link_id = prog
-                .attach(&cgroup, CgroupAttachMode::Single)
-                .with_context(|| format!("failed to attach {name}"))?;
-            let link: FdLink = prog.take_link(link_id)?.try_into()?;
-            link_transaction.install_link("udp6_bind-system", link)?;
-        }
-        info!(cgroup = %shared.cfg.daemon.cgroup, prog = name, "eBPF bind guard attached");
-        if let Some(user_cg) = user_slice_file.as_ref() {
-            if link_transaction.update_link("udp6_bind-user", prog.fd()?.as_fd())? {
-                info!(
-                    cgroup = USER_SLICE,
-                    prog = name,
-                    "eBPF bind guard attached (extra)"
-                );
-            } else {
-                match prog.attach(user_cg, CgroupAttachMode::Single) {
-                    Ok(link_id) => {
-                        let link: FdLink = prog.take_link(link_id)?.try_into()?;
-                        link_transaction.install_link("udp6_bind-user", link)?;
-                        info!(
-                            cgroup = USER_SLICE,
-                            prog = name,
-                            "eBPF bind guard attached (extra)"
-                        );
-                    }
-                    Err(e) => {
-                        warn!(error = %e, cgroup = USER_SLICE, prog = name, "extra bind guard attach failed")
-                    }
-                }
-            }
-        }
-    }
-    for name in ["udp4_recvmsg", "udp6_recvmsg"] {
-        let prog: &mut CgroupSockAddr = bpf
-            .program_mut(name)
-            .with_context(|| format!("{name} eBPF program not found"))?
-            .try_into()?;
-        prog.load()
-            .with_context(|| format!("failed to load {name}"))?;
-        let system_link = format!("{name}-system");
-        if !link_transaction.update_link(&system_link, prog.fd()?.as_fd())? {
-            let link_id = prog
-                .attach(&cgroup, CgroupAttachMode::Single)
-                .with_context(|| format!("failed to attach {name}"))?;
-            let link: FdLink = prog.take_link(link_id)?.try_into()?;
-            link_transaction.install_link(&system_link, link)?;
-        }
-        info!(cgroup = %shared.cfg.daemon.cgroup, prog = name, "eBPF recvmsg attached");
-        if let Some(user_cg) = user_slice_file.as_ref() {
-            let user_link = format!("{name}-user");
-            if link_transaction.update_link(&user_link, prog.fd()?.as_fd())? {
-                info!(
-                    cgroup = USER_SLICE,
-                    prog = name,
-                    "eBPF recvmsg attached (extra)"
-                );
-            } else {
-                match prog.attach(user_cg, CgroupAttachMode::Single) {
-                    Ok(link_id) => {
-                        let link: FdLink = prog.take_link(link_id)?.try_into()?;
-                        link_transaction.install_link(&user_link, link)?;
-                        info!(
-                            cgroup = USER_SLICE,
-                            prog = name,
-                            "eBPF recvmsg attached (extra)"
-                        );
-                    }
-                    Err(e) => {
-                        warn!(error = %e, cgroup = USER_SLICE, prog = name, "extra recvmsg attach failed")
-                    }
-                }
-            }
-        }
-    }
-    {
-        let skb_egress: &mut CgroupSkb = bpf
-            .program_mut("skb_egress")
-            .context("skb_egress eBPF program not found")?
-            .try_into()?;
-        skb_egress.load().context("failed to load skb_egress")?;
-        if !link_transaction.update_link("skb_egress-system", skb_egress.fd()?.as_fd())? {
-            let link_id = skb_egress
-                .attach(
-                    &cgroup,
-                    CgroupSkbAttachType::Egress,
-                    CgroupAttachMode::Single,
-                )
-                .context("failed to attach skb_egress")?;
-            let link: FdLink = skb_egress.take_link(link_id)?.try_into()?;
-            link_transaction.install_link("skb_egress-system", link)?;
-        }
-        info!(cgroup = %shared.cfg.daemon.cgroup, "eBPF skb_egress attached");
-        if let Some(user_cg) = user_slice_file.as_ref() {
-            if link_transaction.update_link("skb_egress-user", skb_egress.fd()?.as_fd())? {
-                info!(cgroup = USER_SLICE, "eBPF skb_egress attached (extra)");
-            } else {
-                match skb_egress.attach(
-                    user_cg,
-                    CgroupSkbAttachType::Egress,
-                    CgroupAttachMode::Single,
-                ) {
-                    Ok(link_id) => {
-                        let link: FdLink = skb_egress.take_link(link_id)?.try_into()?;
-                        link_transaction.install_link("skb_egress-user", link)?;
-                        info!(cgroup = USER_SLICE, "eBPF skb_egress attached (extra)");
-                    }
-                    Err(e) => {
-                        warn!(error = %e, cgroup = USER_SLICE, "extra skb_egress attach failed")
-                    }
-                }
-            }
-        }
-    }
+    attach_cgroup_programs(&mut bpf, &mut link_transaction, &attach_targets)?;
     let port_map: PortMap = Arc::new(RwLock::new(HashMap::try_from(
         bpf.take_map("PORT_MAP").context("PORT_MAP not found")?,
     )?));
@@ -1515,32 +1374,35 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
     )?));
 
     // ─── CLI-owned cgroup policy registry ───────────────────────────────
-    {
-        let policy_map = HashMap::try_from(
-            bpf.take_map("CGROUP_POLICY")
-                .context("CGROUP_POLICY not found")?,
-        )?;
-        let engine = std::sync::Arc::new(policy::PolicyEngine::new(policy_map));
-        let restored = restore_cli_registrations(&shared, &cli_overrides, &engine).await?;
-        // Hand a clone to the HTTP API so /api/cli/register endpoints
-        // can write the policy byte alongside its userspace proxy choice.
-        *policy_engine_slot.lock() = Some(engine.clone());
-        info!(restored, "CLI policy registry started");
+    let policy_map = HashMap::try_from(
+        bpf.take_map("CGROUP_POLICY")
+            .context("CGROUP_POLICY not found")?,
+    )?;
+    let policy_engine = Arc::new(policy::PolicyEngine::new(policy_map));
+    let restored = restore_cli_registrations(&shared, &cli_overrides, &policy_engine).await?;
+    // Hand a clone to the HTTP API so /api/cli/register endpoints can write
+    // the policy byte alongside its userspace proxy choice.
+    *policy_engine_slot.lock() = Some(policy_engine.clone());
+    info!(restored, "CLI policy registry started");
 
-        // GC orphan `heimdall run` cgroups: when the wrapping CLI is
-        // killed before it can deregister + rmdir, the transient
-        // cgroup + BPF policy entry leak. Periodic walker reaps any
-        // empty `heimdall-cli-*` cgroups under user.slice.
-        gc::spawn(
-            cli_overrides.clone(),
-            policy_engine_slot.clone(),
-            udp_sessions.clone(),
-            event_clients.clone(),
-        );
-        info!("orphan-cgroup GC spawned (interval 30s)");
-    }
+    // GC orphan `heimdall run` cgroups: when the wrapping CLI is killed before
+    // it can deregister + rmdir, the transient cgroup + BPF policy entry leak.
+    gc::spawn(
+        cli_overrides.clone(),
+        policy_engine_slot.clone(),
+        udp_sessions.clone(),
+        event_clients.clone(),
+    );
+    info!("orphan-cgroup GC spawned (interval 30s)");
 
-    let _links = link_transaction.commit();
+    session_runtime.install_kernel(KernelRuntime {
+        port_map,
+        udp_port_map,
+        udp_token_map,
+        udp_cookie_map,
+        _policy_engine: policy_engine,
+        _links: link_transaction.commit(),
+    })?;
     daemon_health.write().ready = true;
     info!("persistent eBPF link generation committed");
     let (relay_v4, relay_v6) = session_runtime.relay_addresses()?;
@@ -1581,16 +1443,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
         debug!("systemd WATCHDOG_USEC unset; no heartbeat");
     }
 
-    session_runtime
-        .serve(
-            port_map,
-            udp_port_map,
-            udp_token_map,
-            udp_cookie_map,
-            udp_sessions,
-            shared,
-        )
-        .await
+    session_runtime.serve(udp_sessions, shared).await
 }
 
 fn spawn_tcp_relay(stream: TcpStream, peer: SocketAddr, map: PortMap, shared: Arc<Shared>) {

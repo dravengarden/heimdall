@@ -125,14 +125,17 @@ under Heimdall's own delegated subtree, but never removes a populated cgroup.
 This removes daemon-restart continuity. That is intentional: one invocation is
 the lifecycle boundary. There is no upgrade or restart in the middle of a run.
 
-The current compatibility daemon now groups its TCP/UDP relay listeners and
-fake-DNS task under one `SessionRuntime` drop boundary. This is only a resource
-ownership extraction: `heimdall run` does not own that runtime yet, and the
-global eBPF state and control API still require the daemon.
+The current compatibility daemon now groups its TCP/UDP relay listeners,
+fake-DNS task, correlation maps, policy engine, and link set under one
+`SessionRuntime` drop boundary. Attach setup accepts an explicit target list,
+so the compatibility daemon supplies its system/user pair while a foreground
+run can supply one required transient cgroup.
 
 The link transaction also supports a process-owned mode that retains attached
-link FDs without creating bpffs pins. The compatibility daemon continues to use
-the persistent mode until attach setup is moved behind the per-run boundary.
+link FDs without creating bpffs pins. Object loading in that mode also creates
+fresh unpinned maps instead of reusing `/sys/fs/bpf/heimdall/maps`. The
+compatibility daemon continues to select persistent mode; the setup-worker FD
+handoff and `heimdall run` orchestration are still pending.
 
 ## Process and signal lifecycle
 
