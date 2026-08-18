@@ -98,8 +98,6 @@ pub struct LinkSet {
 }
 
 impl LinkSet {
-    // The setup worker consumes this once its privileged re-exec is wired.
-    #[allow(dead_code)]
     pub fn duplicate_fds(&self) -> Result<Vec<OwnedFd>> {
         self._links
             .iter()

@@ -146,6 +146,14 @@ worker re-exec is still pending. Parent-side reconstruction of the four typed
 Aya maps is implemented, and a process-owned link set can duplicate stable link
 FDs by kernel ID for transfer before the worker exits.
 
+The hidden setup worker is now wired and VM-verified. It authenticates the Unix
+socket peer against the sudo caller when available, confines non-root callers
+to their own user slice, rejects non-canonical paths and cgroup inode
+mismatches, initializes fresh maps, attaches only the requested cgroup, sends
+the fixed FD bundle, and exits. It receives the socket on standard input, so no
+extra inherited descriptor or long-lived privileged listener is required.
+`heimdall run` does not invoke it yet.
+
 ## Process and signal lifecycle
 
 The session owner MUST:

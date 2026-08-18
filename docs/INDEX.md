@@ -32,6 +32,6 @@ stable contracts, planning, design material, and operational guidance.
 
 ### Design documents
 
-- [`design/daemonless-runtime.md`](design/daemonless-runtime.md) — Accepted replacement for the persistent daemon; target-driven process ownership and the strict setup FD protocol are implemented, while worker re-exec remains in development
+- [`design/daemonless-runtime.md`](design/daemonless-runtime.md) — Accepted replacement for the persistent daemon; the short-lived setup worker and process-owned FD handoff are implemented, while `heimdall run` integration remains in development
 - [`design/agent-event-log.md`](design/agent-event-log.md) — Agent-first event storage and CLI contract; lifecycle and TCP/UDP metadata are implemented in Phase 1
 - [`../skills/heimdall/references/events.md`](../skills/heimdall/references/events.md) — Agent-facing schema map and safe parsing rules

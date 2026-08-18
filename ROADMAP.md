@@ -53,7 +53,10 @@ is target-driven, and process mode creates fresh unpinned maps plus FD-owned
 links. The strict `heimdall.setup/v1` Unix-socket protocol now validates one
 cgroup request and transfers a fixed, close-on-exec map/link FD manifest.
 Parent-side typed map reconstruction and link-FD duplication are implemented.
-Worker re-exec and transient authorization are still pending.
+The hidden setup worker is implemented and VM-verified: it validates the socket
+peer and cgroup identity, attaches one target, transfers all map/link FDs, and
+exits. `heimdall run` invocation and transient authorization UX are still
+pending.
 
 - Move relay, DNS, TLS, capture, and process-tree ownership into a foreground
   session created by `heimdall run`.

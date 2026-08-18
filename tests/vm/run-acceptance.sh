@@ -7,6 +7,8 @@ systemctl is-active --quiet heimdall-test-http.service
 systemctl is-active --quiet heimdall-test-udp.service
 systemctl is-active --quiet heimdall-test-http3.service
 systemctl is-active --quiet heimdall-test-git.service
+
+python3 /etc/heimdall-test/setup_worker_client.py "$(command -v heimdall)"
 systemctl start user@1000.service
 
 as_tester() {

@@ -78,6 +78,26 @@ impl SetupRequest {
         );
         Ok(())
     }
+
+    pub(crate) fn cgroup_path(&self) -> &std::path::Path {
+        &self.cgroup_path
+    }
+
+    pub(crate) const fn cgroup_id(&self) -> u64 {
+        self.cgroup_id
+    }
+
+    pub(crate) const fn relay_port(&self) -> u16 {
+        self.relay_port
+    }
+
+    pub(crate) const fn dns_port(&self) -> u16 {
+        self.dns_port
+    }
+
+    pub(crate) const fn policy_flags(&self) -> u8 {
+        self.policy_flags
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

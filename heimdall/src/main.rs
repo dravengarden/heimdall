@@ -51,6 +51,7 @@ use std::{
     io::{IoSlice, IoSliceMut},
     net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     os::fd::{AsFd, AsRawFd, OwnedFd},
+    os::unix::fs::MetadataExt,
     path::PathBuf,
     sync::{
         Arc,
@@ -562,6 +563,10 @@ enum Cmd {
     /// Run the small privileged eBPF relay (normally managed by systemd).
     Daemon(DaemonArgs),
 
+    /// Internal privileged half of one foreground run.
+    #[command(name = "__setup-worker", hide = true)]
+    SetupWorker,
+
     /// Validate, explain a policy decision, show source, or print its path.
     #[command(subcommand)]
     Config(cli::config::ConfigCmd),
@@ -805,6 +810,7 @@ async fn main() -> Result<()> {
             let config_path = resolve_config_path(cli.config.as_deref())?;
             daemon_run(&config_path, args).await
         }
+        Cmd::SetupWorker => setup_worker_entry(),
         Cmd::Config(sub) => {
             let config_path = resolve_config_path(cli.config.as_deref())?;
             cli::config::run(&config_path, sub).await
@@ -1189,6 +1195,112 @@ fn configure_kernel_maps(bpf: &mut Ebpf, relay_port: u16, dns_port: u16) -> Resu
         "kernel relay and DNS targets configured"
     );
     Ok(())
+}
+
+fn setup_worker_entry() -> Result<()> {
+    let socket_fd = rustix::io::dup(std::io::stdin()).context("duplicate setup socket stdin")?;
+    let mut socket = std::os::unix::net::UnixStream::from(socket_fd);
+    if let Err(error) = setup_worker_run(&mut socket) {
+        let _ = setup::send_error(&mut socket, "setup_failed", &error.to_string());
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn setup_worker_run(socket: &mut std::os::unix::net::UnixStream) -> Result<()> {
+    anyhow::ensure!(
+        rustix::process::geteuid().is_root(),
+        "setup worker must run as root"
+    );
+    let peer = nix::sys::socket::getsockopt(socket, nix::sys::socket::sockopt::PeerCredentials)
+        .context("read setup socket peer credentials")?;
+    if let Ok(sudo_uid) = std::env::var("SUDO_UID") {
+        let sudo_uid = sudo_uid.parse::<u32>().context("parse SUDO_UID")?;
+        anyhow::ensure!(
+            peer.uid() == sudo_uid,
+            "setup socket peer does not match the sudo caller"
+        );
+    }
+
+    let request = setup::receive_request(socket)?;
+    let canonical =
+        std::fs::canonicalize(request.cgroup_path()).context("canonicalize setup cgroup path")?;
+    anyhow::ensure!(
+        canonical == request.cgroup_path(),
+        "setup cgroup path must already be canonical"
+    );
+    anyhow::ensure!(
+        canonical != std::path::Path::new("/sys/fs/cgroup"),
+        "setup worker cannot attach to the cgroup root"
+    );
+    if peer.uid() != 0 {
+        let user_root = PathBuf::from(format!(
+            "/sys/fs/cgroup/user.slice/user-{}.slice",
+            peer.uid()
+        ));
+        anyhow::ensure!(
+            canonical.starts_with(&user_root),
+            "setup cgroup is outside the caller's user slice"
+        );
+    }
+    let cgroup = std::fs::File::open(&canonical).context("open setup cgroup")?;
+    anyhow::ensure!(
+        cgroup.metadata()?.ino() == request.cgroup_id(),
+        "setup cgroup ID does not match its inode"
+    );
+
+    let mut bpf = load_kernel_object(ebpf::LinkLifetime::Process)?;
+    configure_kernel_maps(&mut bpf, request.relay_port(), request.dns_port())?;
+    let mut policy_map: HashMap<aya::maps::MapData, u64, u8> = HashMap::try_from(
+        bpf.take_map("CGROUP_POLICY")
+            .context("CGROUP_POLICY not found")?,
+    )?;
+    policy_map
+        .insert(request.cgroup_id(), request.policy_flags(), 0)
+        .context("write foreground cgroup policy")?;
+
+    let mut transaction = ebpf::LinkTransaction::new(ebpf::LinkLifetime::Process);
+    attach_cgroup_programs(
+        &mut bpf,
+        &mut transaction,
+        &[CgroupAttachTarget {
+            key: "run",
+            path: canonical
+                .to_str()
+                .context("setup cgroup path is not UTF-8")?,
+            file: &cgroup,
+            required: true,
+        }],
+    )?;
+    let links = transaction.commit();
+    let link_fds = links.duplicate_fds()?;
+    anyhow::ensure!(
+        link_fds.len() == setup::FD_MANIFEST.len() - 4,
+        "setup worker attached an unexpected number of links"
+    );
+
+    let maps = [
+        take_setup_hash_map(&mut bpf, "PORT_MAP")?,
+        take_setup_hash_map(&mut bpf, "UDP_PORT_MAP")?,
+        take_setup_hash_map(&mut bpf, "UDP_TOKEN_MAP")?,
+        take_setup_hash_map(&mut bpf, "UDP_COOKIE_MAP")?,
+    ];
+    let transferred: Vec<_> = maps
+        .iter()
+        .map(|map| map.fd().as_fd())
+        .chain(link_fds.iter().map(AsFd::as_fd))
+        .collect();
+    setup::send_ready(socket, &transferred)
+}
+
+fn take_setup_hash_map(bpf: &mut Ebpf, name: &str) -> Result<aya::maps::MapData> {
+    match bpf
+        .take_map(name)
+        .with_context(|| format!("{name} not found"))?
+    {
+        aya::maps::Map::HashMap(map) | aya::maps::Map::LruHashMap(map) => Ok(map),
+        _ => anyhow::bail!("{name} has an unexpected map type"),
+    }
 }
 
 async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {

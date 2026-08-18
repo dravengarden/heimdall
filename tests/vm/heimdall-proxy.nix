@@ -258,6 +258,7 @@ in
 
   environment.etc."heimdall-test/dual_stack_client.py".source = ./dual_stack_client.py;
   environment.etc."heimdall-test/udp_client.py".source = ./udp_client.py;
+  environment.etc."heimdall-test/setup_worker_client.py".source = ./setup_worker_client.py;
   environment.etc."heimdall-test/udp_session_client.py".source = ./udp_session_client.py;
   environment.etc."heimdall-test/udp_port_reuse_client.py".source = ./udp_port_reuse_client.py;
   environment.etc."heimdall-test/udp_connectionless_client.py".source =
