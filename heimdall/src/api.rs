@@ -1,6 +1,6 @@
 //! Loopback-only control API used by `heimdall run`.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use axum::{
@@ -27,6 +27,7 @@ pub struct AppState {
     pub policy_engine: PolicyEngineSlot,
     pub udp_sessions: UdpSessions,
     pub health: Arc<parking_lot::RwLock<HealthReport>>,
+    pub event_clients: crate::EventClients,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -62,12 +63,15 @@ async fn health(State(state): State<AppState>) -> Json<HealthReport> {
 pub struct CliRegisterReq {
     pub cgroup_id: u64,
     pub policy: String,
+    pub run_id: uuid::Uuid,
+    pub event_socket: std::path::PathBuf,
 }
 
 #[derive(Debug, Serialize)]
 pub struct CliOverrideEntry {
     pub cgroup_id: u64,
     pub policy: String,
+    pub run_id: uuid::Uuid,
 }
 
 async fn register_cli(
@@ -80,11 +84,27 @@ async fn register_cli(
             format!("unknown policy `{}`", request.policy),
         )
     })?;
+    let expected_socket = crate::event_log::event_socket_filename(request.run_id);
+    if request
+        .event_socket
+        .file_name()
+        .and_then(|value| value.to_str())
+        != Some(expected_socket.as_str())
+    {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            "event socket filename does not match run_id".into(),
+        ));
+    }
+    let event_client =
+        crate::event_log::EventClient::connect(request.event_socket.clone()).map_err(internal)?;
     let reject_udp = policy.rejects_all_udp();
     let engine = engine(&state)?;
     state::persist_registration(&Registration {
         cgroup_id: request.cgroup_id,
         policy: request.policy.clone(),
+        run_id: request.run_id,
+        event_socket: request.event_socket,
     })
     .map_err(internal)?;
     if let Err(error) = engine
@@ -105,10 +125,15 @@ async fn register_cli(
             policy: request.policy.clone(),
         },
     );
+    state
+        .event_clients
+        .write()
+        .insert(request.cgroup_id, event_client);
     info!(cgroup_id = request.cgroup_id, policy = %request.policy, "CLI cgroup registered");
     Ok(Json(CliOverrideEntry {
         cgroup_id: request.cgroup_id,
         policy: request.policy,
+        run_id: request.run_id,
     }))
 }
 
@@ -122,12 +147,26 @@ async fn deregister_cli(
     Query(params): Query<DeregisterParams>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     state.cli_overrides.write().remove(&params.cgroup_id);
+    let event_client = state.event_clients.write().remove(&params.cgroup_id);
     close_udp_sessions_for_cgroup(&state.udp_sessions, params.cgroup_id).await;
+    let events_drained = if let Some(event_client) = event_client {
+        tokio::task::spawn_blocking(move || event_client.wait_for_flows(Duration::from_secs(5)))
+            .await
+            .map_err(|error| internal(error.into()))?
+    } else {
+        true
+    };
     engine(&state)?
         .deregister_external(params.cgroup_id)
         .await
         .map_err(internal)?;
     state::remove_registration(params.cgroup_id).map_err(internal)?;
+    if !events_drained {
+        return Err(ApiError(
+            StatusCode::GATEWAY_TIMEOUT,
+            "timed out draining run flow events".into(),
+        ));
+    }
     info!(cgroup_id = params.cgroup_id, "CLI cgroup deregistered");
     Ok(Json(serde_json::json!({"ok": true})))
 }

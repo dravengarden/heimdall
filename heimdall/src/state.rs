@@ -61,6 +61,8 @@ impl Drop for DaemonLock {
 pub struct Registration {
     pub cgroup_id: u64,
     pub policy: String,
+    pub run_id: uuid::Uuid,
+    pub event_socket: PathBuf,
 }
 
 pub fn prepare_runtime_dir() -> Result<()> {
@@ -170,6 +172,8 @@ mod tests {
         let registration = Registration {
             cgroup_id: 42,
             policy: "default".into(),
+            run_id: uuid::Uuid::now_v7(),
+            event_socket: "/tmp/heimdall-test.events.sock".into(),
         };
         persist_registration_at(&dir, &registration).unwrap();
         let registration_mode = fs::metadata(registration_path(&dir, 42))
@@ -191,7 +195,10 @@ mod tests {
         fs::create_dir_all(&registrations).unwrap();
         fs::write(
             registrations.join("7.json"),
-            br#"{"cgroup_id":8,"policy":"default"}"#,
+            format!(
+                r#"{{"cgroup_id":8,"policy":"default","run_id":"{}","event_socket":"/tmp/heimdall-test.events.sock"}}"#,
+                uuid::Uuid::now_v7()
+            ),
         )
         .unwrap();
         assert!(load_registrations_at(&dir).is_err());

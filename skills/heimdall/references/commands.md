@@ -1,5 +1,9 @@
 # Command workflows
 
+The daemonless and `heimdall logs` contracts are documented in
+[events.md](events.md). Phase 1 logs cover run lifecycle and TCP/UDP metadata while
+the existing daemon and payload-capture path remain operational.
+
 ## Inspect without mutation
 
 ```bash

@@ -6,6 +6,13 @@ All notable changes to heimdall are documented here.
 
 ### Added
 
+- Add Phase 1 of the agent-first event store: every `heimdall run` writes a
+  user-owned `heimdall.run/v1` manifest and ordered `heimdall.event/v1` JSONL
+  lifecycle/TCP/UDP metadata, with bundled schemas, writer-owned rotation, digest
+  verification, retention preview/apply, and `logs` discovery/query/tail
+  commands. Payload capture remains on the existing explicit
+  `heimdall.capture/v1` boundary.
+
 - Add strict `runtime` and `relay` TLS decrypt modes. Runtime mode
   observes registered OpenSSL clients without changing trust; relay mode
   verifies upstream TLS, mirrors ALPN, issues per-host leaves from an explicit

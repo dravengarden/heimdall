@@ -84,6 +84,8 @@ struct RunDecision {
 struct RegisterReq {
     cgroup_id: u64,
     policy: String,
+    run_id: uuid::Uuid,
+    event_socket: PathBuf,
 }
 
 /// Response shape — mirrors api::CliOverrideEntry.
@@ -92,6 +94,7 @@ struct RegisterReq {
 struct RegisterResp {
     cgroup_id: u64,
     policy: String,
+    run_id: uuid::Uuid,
 }
 
 pub fn run(config_path: &Path, args: RunArgs) -> Result<()> {
@@ -117,15 +120,65 @@ pub fn run(config_path: &Path, args: RunArgs) -> Result<()> {
         return reexec_via_systemd_run(&args);
     }
 
+    let event_log = crate::event_log::RunLog::create(&args.command, &decision.policy, "daemon")?;
+    let rotation_server = crate::event_log::RotationServer::start(event_log.clone())?;
+    let outcome = run_registered(
+        &cfg,
+        &decision,
+        &args,
+        &event_log,
+        rotation_server.event_socket_path(),
+    );
+    match outcome {
+        Ok((exit_code, descendants_cleaned)) => {
+            event_log.finish(exit_code, descendants_cleaned)?;
+            drop(rotation_server);
+            std::process::exit(exit_code);
+        }
+        Err(error) => {
+            let _ = event_log.fail("run_failed", "heimdall run failed before completion");
+            drop(rotation_server);
+            Err(error)
+        }
+    }
+}
+
+fn run_registered(
+    cfg: &HeimdallConfig,
+    decision: &RunDecision,
+    args: &RunArgs,
+    event_log: &crate::event_log::RunLog,
+    event_socket: &Path,
+) -> Result<(i32, bool)> {
     let api_addr = api_loopback_addr(&cfg.daemon.api_listen);
     let cgroup_path = create_sibling_cgroup()?;
-    let cgroup_id = read_cgroup_id(&cgroup_path)?;
+    let cgroup_id = read_cgroup_id(&cgroup_path).inspect_err(|_| {
+        let _ = fs::remove_dir(&cgroup_path);
+    })?;
 
     // Register before fork so the child inherits the policy.
-    register_with_daemon(&api_addr, cgroup_id, &decision).inspect_err(|_| {
+    register_with_daemon(
+        &api_addr,
+        cgroup_id,
+        decision,
+        event_log.run_id()?,
+        event_socket,
+    )
+    .inspect_err(|_| {
         // Best-effort cleanup before bailing.
         let _ = fs::remove_dir(&cgroup_path);
     })?;
+    let boundaries = match cfg.decrypt.mode {
+        heimdall_config::DecryptMode::Off => vec!["transport"],
+        heimdall_config::DecryptMode::Runtime => {
+            vec!["transport", "tls_plaintext.runtime"]
+        }
+        heimdall_config::DecryptMode::Relay => vec!["transport", "tls_plaintext.relay"],
+    };
+    if let Err(error) = event_log.ready(&api_addr, &boundaries) {
+        cleanup_before_exec(&api_addr, cgroup_id, &cgroup_path, args.keep_cgroup);
+        return Err(error);
+    }
 
     // For dns=fake we need to short-circuit nss-resolve / systemd-resolved
     // so the child's getaddrinfo actually issues UDP to the resolver
@@ -133,12 +186,19 @@ pub fn run(config_path: &Path, args: RunArgs) -> Result<()> {
     // over /etc/nsswitch.conf + /etc/resolv.conf inside the child's
     // private mount namespace. Cleaned up by the parent after waitpid.
     let dns_shim = if decision.dns == "fake" {
-        Some(prepare_dns_shim(cgroup_id)?)
+        match prepare_dns_shim(cgroup_id) {
+            Ok(shim) => Some(shim),
+            Err(error) => {
+                cleanup_before_exec(&api_addr, cgroup_id, &cgroup_path, args.keep_cgroup);
+                return Err(error);
+            }
+        }
     } else {
         None
     };
 
-    let exit_code = fork_into_cgroup_and_exec(&cgroup_path, &args.command, dns_shim.as_ref());
+    let exit_code =
+        fork_into_cgroup_and_exec(&cgroup_path, &args.command, dns_shim.as_ref(), event_log);
 
     // A shell or CLI can leave background descendants after its immediate
     // process exits. Deregistering here would turn those still-running
@@ -147,7 +207,8 @@ pub fn run(config_path: &Path, args: RunArgs) -> Result<()> {
     let cgroup_empty = wait_for_cgroup_empty(&cgroup_path).inspect_err(|e| {
         warn!(error = %e, path = %cgroup_path.display(), "cannot prove command cgroup is empty; retaining registration for daemon GC");
     });
-    if cgroup_empty.is_ok() {
+    let descendants_cleaned = cgroup_empty.is_ok();
+    if descendants_cleaned {
         if let Err(e) = deregister_with_daemon(&api_addr, cgroup_id) {
             warn!(error = %e, "deregister failed; daemon will GC eventually");
         }
@@ -164,7 +225,16 @@ pub fn run(config_path: &Path, args: RunArgs) -> Result<()> {
         let _ = fs::remove_file(&shim.resolv);
     }
 
-    std::process::exit(exit_code);
+    Ok((exit_code, descendants_cleaned))
+}
+
+fn cleanup_before_exec(base: &str, cgroup_id: u64, cgroup_path: &Path, keep_cgroup: bool) {
+    if let Err(error) = deregister_with_daemon(base, cgroup_id) {
+        warn!(%error, "cannot deregister failed pre-exec run; daemon GC will retry");
+    }
+    if !keep_cgroup && let Err(error) = fs::remove_dir(cgroup_path) {
+        warn!(%error, path = %cgroup_path.display(), "cannot remove failed pre-exec cgroup");
+    }
 }
 
 /// Files generated by `prepare_dns_shim` and bind-mounted into the
@@ -373,10 +443,18 @@ fn api_loopback_addr(api_listen: &str) -> String {
     format!("http://{api_listen}")
 }
 
-fn register_with_daemon(base: &str, cgroup_id: u64, d: &RunDecision) -> Result<()> {
+fn register_with_daemon(
+    base: &str,
+    cgroup_id: u64,
+    d: &RunDecision,
+    run_id: uuid::Uuid,
+    event_socket: &Path,
+) -> Result<()> {
     let body = RegisterReq {
         cgroup_id,
         policy: d.policy.clone(),
+        run_id,
+        event_socket: event_socket.to_path_buf(),
     };
     let url = format!("{base}/api/cli/register");
     let resp = ureq::post(&url)
@@ -409,6 +487,7 @@ fn fork_into_cgroup_and_exec(
     cgroup_path: &Path,
     cmd: &[String],
     dns_shim: Option<&DnsShim>,
+    event_log: &crate::event_log::RunLog,
 ) -> i32 {
     match unsafe { fork() } {
         Ok(ForkResult::Child) => {
@@ -481,7 +560,20 @@ fn fork_into_cgroup_and_exec(
             eprintln!("heimdall run: execvp({}) failed", cmd[0]);
             std::process::exit(127);
         }
-        Ok(ForkResult::Parent { child }) => wait_for_child(child),
+        Ok(ForkResult::Parent { child }) => {
+            if let Err(error) = event_log.emit(
+                "run.exec",
+                Some(child.as_raw().try_into().unwrap_or(u32::MAX)),
+                serde_json::json!({
+                    "child_pid": child.as_raw(),
+                    "executable": cmd[0],
+                    "argv_count": cmd.len()
+                }),
+            ) {
+                warn!(%error, "cannot record run.exec event");
+            }
+            wait_for_child(child)
+        }
         Err(e) => {
             eprintln!("heimdall run: fork failed: {e}");
             127

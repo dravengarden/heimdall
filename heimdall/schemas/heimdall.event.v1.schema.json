@@ -1,0 +1,341 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ravengarden.github.io/heimdall/schemas/heimdall.event.v1.schema.json",
+  "title": "Heimdall event",
+  "type": "object",
+  "required": ["schema", "run_id", "seq", "ts", "monotonic_ns", "kind", "data"],
+  "properties": {
+    "schema": { "const": "heimdall.event/v1" },
+    "run_id": { "$ref": "#/$defs/uuid_v7" },
+    "seq": { "$ref": "#/$defs/uint" },
+    "ts": { "type": "string", "format": "date-time" },
+    "monotonic_ns": { "$ref": "#/$defs/uint_zero" },
+    "kind": { "type": "string" },
+    "flow_id": { "$ref": "#/$defs/uuid_v7" },
+    "pid": { "$ref": "#/$defs/uint_zero" },
+    "data": { "type": "object" }
+  },
+  "additionalProperties": false,
+  "oneOf": [
+    { "$ref": "#/$defs/run_open" },
+    { "$ref": "#/$defs/run_ready" },
+    { "$ref": "#/$defs/run_exec" },
+    { "$ref": "#/$defs/run_warning" },
+    { "$ref": "#/$defs/run_error" },
+    { "$ref": "#/$defs/run_close" },
+    { "$ref": "#/$defs/dns_query" },
+    { "$ref": "#/$defs/dns_answer" },
+    { "$ref": "#/$defs/policy_decision" },
+    { "$ref": "#/$defs/flow_open" },
+    { "$ref": "#/$defs/flow_data" },
+    { "$ref": "#/$defs/flow_close" },
+    { "$ref": "#/$defs/tls_client_hello" },
+    { "$ref": "#/$defs/tls_handshake" },
+    { "$ref": "#/$defs/tls_error" },
+    { "$ref": "#/$defs/http_request" },
+    { "$ref": "#/$defs/http_response" }
+  ],
+  "$defs": {
+    "uint": { "type": "integer", "minimum": 1 },
+    "uint_zero": { "type": "integer", "minimum": 0 },
+    "uuid_v7": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "kind": {
+      "type": "object",
+      "required": ["kind", "data"],
+      "properties": {},
+      "additionalProperties": true
+    },
+    "destination": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["host", "port"],
+          "properties": { "host": { "type": "string" }, "port": { "type": "integer", "minimum": 1, "maximum": 65535 } },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["ip", "port"],
+          "properties": { "ip": { "type": "string" }, "port": { "type": "integer", "minimum": 1, "maximum": 65535 } },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "action": {
+      "oneOf": [
+        { "type": "object", "required": ["type"], "properties": { "type": { "enum": ["direct", "reject"] } }, "additionalProperties": false },
+        { "type": "object", "required": ["type", "outbound"], "properties": { "type": { "const": "route" }, "outbound": { "type": "string" } }, "additionalProperties": false }
+      ]
+    },
+    "error_base": {
+      "type": "object",
+      "required": ["code", "message", "phase", "context"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string" },
+        "phase": { "type": "string" },
+        "context": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "run_open": {
+      "properties": {
+        "kind": { "const": "run.open" },
+        "data": {
+          "type": "object",
+          "required": ["policy", "backend", "capture", "schemas"],
+          "properties": {
+            "policy": { "type": "string" },
+            "backend": { "type": "string" },
+            "capture": {
+              "type": "object",
+              "required": ["profile", "legacy_payload_capture"],
+              "properties": { "profile": { "enum": ["off", "metadata", "payload"] }, "legacy_payload_capture": { "type": "boolean" } },
+              "additionalProperties": false
+            },
+            "schemas": {
+              "type": "object",
+              "required": ["event", "run"],
+              "properties": { "event": { "const": "heimdall.event/v1" }, "run": { "const": "heimdall.run/v1" } },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "run_ready": {
+      "properties": {
+        "kind": { "const": "run.ready" },
+        "data": {
+          "type": "object",
+          "required": ["listeners", "boundaries"],
+          "properties": {
+            "listeners": {
+              "type": "object",
+              "required": ["daemon_control"],
+              "properties": { "daemon_control": { "type": "string" } },
+              "additionalProperties": false
+            },
+            "boundaries": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "run_exec": {
+      "properties": {
+        "kind": { "const": "run.exec" },
+        "data": {
+          "type": "object",
+          "required": ["child_pid", "executable", "argv_count"],
+          "properties": { "child_pid": { "$ref": "#/$defs/uint" }, "executable": { "type": "string" }, "argv_count": { "$ref": "#/$defs/uint" } },
+          "additionalProperties": false
+        }
+      }
+    },
+    "run_warning": {
+      "properties": {
+        "kind": { "const": "run.warning" },
+        "data": { "$ref": "#/$defs/error_base" }
+      }
+    },
+    "run_error": {
+      "properties": {
+        "kind": { "const": "run.error" },
+        "data": {
+          "type": "object",
+          "required": ["code", "message", "phase", "retryable", "context"],
+          "properties": { "code": { "type": "string" }, "message": { "type": "string" }, "phase": { "type": "string" }, "retryable": { "type": "boolean" }, "context": { "type": "object" } },
+          "additionalProperties": false
+        }
+      }
+    },
+    "run_close": {
+      "properties": {
+        "kind": { "const": "run.close" },
+        "data": {
+          "type": "object",
+          "required": ["exit_code", "signal", "descendants_cleaned", "complete"],
+          "properties": { "exit_code": { "type": ["integer", "null"] }, "signal": { "type": ["integer", "null"] }, "descendants_cleaned": { "type": "boolean" }, "complete": { "type": "boolean" } },
+          "additionalProperties": false
+        }
+      }
+    },
+    "dns_query": {
+      "properties": {
+        "kind": { "const": "dns.query" },
+        "data": {
+          "type": "object",
+          "required": ["transport", "name", "query_type", "policy"],
+          "properties": { "transport": { "enum": ["udp", "tcp"] }, "name": { "type": "string" }, "query_type": { "type": "string" }, "policy": { "type": "string" } },
+          "additionalProperties": false
+        }
+      }
+    },
+    "dns_answer": {
+      "properties": {
+        "kind": { "const": "dns.answer" },
+        "data": {
+          "type": "object",
+          "required": ["rcode", "answers", "boundary", "latency_us"],
+          "properties": { "rcode": { "type": "string" }, "answers": { "type": "array", "items": { "type": "object" } }, "boundary": { "enum": ["fake", "system"] }, "latency_us": { "$ref": "#/$defs/uint_zero" } },
+          "additionalProperties": false
+        }
+      }
+    },
+    "policy_decision": {
+      "properties": {
+        "kind": { "const": "policy.decision" },
+        "data": {
+          "type": "object",
+          "required": ["network", "destination", "rule", "action"],
+          "properties": { "network": { "enum": ["tcp", "udp"] }, "destination": { "$ref": "#/$defs/destination" }, "rule": { "type": "object" }, "action": { "$ref": "#/$defs/action" } },
+          "additionalProperties": false
+        }
+      }
+    },
+    "flow_kind": { "required": ["flow_id"] },
+    "flow_open": {
+      "required": ["flow_id"],
+      "properties": {
+        "kind": { "const": "flow.open" },
+        "data": {
+          "type": "object",
+          "required": ["network", "source", "destination", "action", "policy", "boundary"],
+          "properties": {
+            "network": { "enum": ["tcp", "udp"] },
+            "source": { "type": "object", "required": ["cgroup_id"], "properties": { "cgroup_id": { "$ref": "#/$defs/uint_zero" } }, "additionalProperties": false },
+            "destination": { "$ref": "#/$defs/destination" },
+            "action": { "$ref": "#/$defs/action" },
+            "policy": { "type": "string" },
+            "boundary": { "$ref": "#/$defs/boundary" }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "boundary": { "enum": ["transport", "tls_plaintext.runtime", "tls_plaintext.relay"] },
+    "blob": {
+      "type": "object",
+      "required": ["algorithm", "digest", "path", "bytes", "media_type"],
+      "properties": {
+        "algorithm": { "const": "sha256" },
+        "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "path": { "type": "string", "pattern": "^blobs/sha256/[0-9a-f]{2}/[0-9a-f]{2}/[0-9a-f]{64}$" },
+        "bytes": { "$ref": "#/$defs/uint_zero" },
+        "media_type": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "flow_data": {
+      "required": ["flow_id"],
+      "properties": {
+        "kind": { "const": "flow.data" },
+        "data": {
+          "type": "object",
+          "required": ["direction", "boundary", "original_bytes", "stored_bytes", "truncated", "blob"],
+          "properties": {
+            "direction": { "enum": ["client_to_remote", "remote_to_client"] },
+            "boundary": { "$ref": "#/$defs/boundary" },
+            "original_bytes": { "$ref": "#/$defs/uint_zero" },
+            "stored_bytes": { "$ref": "#/$defs/uint_zero" },
+            "truncated": { "type": "boolean" },
+            "blob": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/blob" }] }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "flow_close": {
+      "required": ["flow_id"],
+      "properties": {
+        "kind": { "const": "flow.close" },
+        "data": {
+          "type": "object",
+          "required": ["network", "status", "error_code", "client_to_remote_bytes", "remote_to_client_bytes", "duration_us"],
+          "properties": { "network": { "enum": ["tcp", "udp"] }, "status": { "type": "string" }, "error_code": { "type": ["string", "null"] }, "client_to_remote_bytes": { "$ref": "#/$defs/uint_zero" }, "remote_to_client_bytes": { "$ref": "#/$defs/uint_zero" }, "duration_us": { "$ref": "#/$defs/uint_zero" } },
+          "additionalProperties": false
+        }
+      }
+    },
+    "tls_client_hello": {
+      "required": ["flow_id"],
+      "properties": {
+        "kind": { "const": "tls.client_hello" },
+        "data": {
+          "type": "object",
+          "required": ["sni", "alpn_offered", "min_version", "max_version", "parser_status"],
+          "properties": { "sni": { "type": ["string", "null"] }, "alpn_offered": { "type": "array", "items": { "type": "string" } }, "min_version": { "type": ["string", "null"] }, "max_version": { "type": ["string", "null"] }, "parser_status": { "type": "string" } },
+          "additionalProperties": false
+        }
+      }
+    },
+    "tls_handshake": {
+      "required": ["flow_id"],
+      "properties": {
+        "kind": { "const": "tls.handshake" },
+        "data": {
+          "type": "object",
+          "required": ["mode", "version", "cipher", "alpn", "peer_identity", "trust", "latency_us"],
+          "properties": { "mode": { "enum": ["runtime", "relay"] }, "version": { "type": "string" }, "cipher": { "type": "string" }, "alpn": { "type": ["string", "null"] }, "peer_identity": { "type": "object" }, "trust": { "type": "object" }, "latency_us": { "$ref": "#/$defs/uint_zero" } },
+          "additionalProperties": false
+        }
+      }
+    },
+    "tls_error": {
+      "required": ["flow_id"],
+      "properties": {
+        "kind": { "const": "tls.error" },
+        "data": {
+          "type": "object",
+          "required": ["mode", "code", "message", "phase", "retryable", "peer_identity"],
+          "properties": { "mode": { "enum": ["runtime", "relay"] }, "code": { "type": "string" }, "message": { "type": "string" }, "phase": { "type": "string" }, "retryable": { "type": "boolean" }, "peer_identity": { "type": ["object", "null"] } },
+          "additionalProperties": false
+        }
+      }
+    },
+    "parser": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": { "name": { "type": "string" }, "version": { "type": "string" } },
+      "additionalProperties": false
+    },
+    "headers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "value"],
+        "properties": { "name": { "type": "string" }, "value": { "type": "string" } },
+        "additionalProperties": false
+      }
+    },
+    "http_request": {
+      "required": ["flow_id"],
+      "properties": {
+        "kind": { "const": "http.request" },
+        "data": {
+          "type": "object",
+          "required": ["parser", "source_seq", "method", "scheme", "authority", "path", "headers", "body"],
+          "properties": { "parser": { "$ref": "#/$defs/parser" }, "source_seq": { "type": "array", "items": { "$ref": "#/$defs/uint" } }, "method": { "type": "string" }, "scheme": { "type": ["string", "null"] }, "authority": { "type": ["string", "null"] }, "path": { "type": "string" }, "headers": { "$ref": "#/$defs/headers" }, "body": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/blob" }] } },
+          "additionalProperties": false
+        }
+      }
+    },
+    "http_response": {
+      "required": ["flow_id"],
+      "properties": {
+        "kind": { "const": "http.response" },
+        "data": {
+          "type": "object",
+          "required": ["parser", "source_seq", "status", "headers", "body"],
+          "properties": { "parser": { "$ref": "#/$defs/parser" }, "source_seq": { "type": "array", "items": { "$ref": "#/$defs/uint" } }, "status": { "type": "integer", "minimum": 100, "maximum": 999 }, "headers": { "$ref": "#/$defs/headers" }, "body": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/blob" }] } },
+          "additionalProperties": false
+        }
+      }
+    }
+  }
+}

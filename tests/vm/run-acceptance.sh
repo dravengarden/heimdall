@@ -79,6 +79,13 @@ as_tester heimdall agent \
     and .capabilities.capture.udp
     and .capabilities.capture.payload == "mode_dependent"
     and .capabilities.capture.tls_plaintext
+    and .capabilities.logs.event_contract == "heimdall.event/v1"
+    and .capabilities.logs.run_contract == "heimdall.run/v1"
+    and .capabilities.logs.format == "jsonl"
+    and .capabilities.logs.lifecycle_events
+    and .capabilities.logs.flow_events == "tcp+udp_metadata"
+    and .capabilities.logs.writer_owned_rotation
+    and (.capabilities.logs.content_addressed_blobs | not)
     and .capabilities.decrypt.modes == ["off", "runtime", "relay"]
     and .capabilities.decrypt.runtime_libraries == ["openssl"]
     and .capabilities.decrypt.runtime_apis == ["SSL_read", "SSL_read_ex", "SSL_write", "SSL_write_ex"]
@@ -113,6 +120,9 @@ as_tester heimdall agent \
     and (.capabilities.cli_acceptance.tcp_fake_dns | index("git")) != null
     and .capabilities.lifecycle.descendant_cgroup_lifetime
     and .capabilities.lifecycle.exit_code_passthrough
+    and .actions.logs_schema_event == ["heimdall", "logs", "schema", "--event", "v1"]
+    and .actions.logs_schema_run == ["heimdall", "logs", "schema", "--run", "v1"]
+    and .actions.logs_list == ["heimdall", "logs", "list", "--json"]
     and .capabilities.lifecycle.signal_exit_code == "128+signal"
     and .capabilities.lifecycle.upstream_unreachable_fail_closed
     and .capabilities.lifecycle.daemon_unreachable_prevents_exec
@@ -157,6 +167,13 @@ for runtime in go-netgo java nodejs rust; do
   test "$(as_tester heimdall run --policy udp -- \
     /etc/heimdall-test/runtime-wrapper "$runtime" udp6)" = "$runtime-udp6-ok"
 done
+udp_run_id="$(as_tester heimdall logs list --json | jq -er '.runs[0].run_id')"
+as_tester heimdall logs query --run "$udp_run_id" --kind flow.open --jsonl \
+  | jq -e 'select(.kind == "flow.open" and .data.network == "udp")' >/dev/null
+as_tester heimdall logs query --run "$udp_run_id" --kind flow.close --jsonl \
+  | jq -e 'select(.kind == "flow.close" and .data.network == "udp" and .data.status == "complete")' >/dev/null
+as_tester heimdall logs verify --run "$udp_run_id" --json \
+  | jq -e '.contract == "heimdall.logs.verify/v1" and .valid' >/dev/null
 test "$(grep -c '"atyp": 3, "host": "fixture.test", "port": 18080' \
   /run/heimdall-test/socks.log)" -eq 4
 test "$(grep -c '"udp": true, "atyp": 1, "host": "127.0.0.1", "port": 18082' \
@@ -169,6 +186,46 @@ test "$(as_tester heimdall run --policy fake -- \
   curl -4fsS --max-time 5 http://fixture.test:18080/)" = "fixture-v4"
 grep -q '"atyp": 3, "host": "fixture.test", "port": 18080' \
   /run/heimdall-test/socks.log
+
+tcp_run_id="$(as_tester heimdall logs list --json | jq -er '.runs[0].run_id')"
+tcp_run_dir="$(as_tester heimdall logs path --run "$tcp_run_id" --json | jq -er '.run_dir')"
+test "$(stat -c '%a' "$tcp_run_dir")" = 700
+test "$(stat -c '%a' "$tcp_run_dir/run.json")" = 600
+if find "$tcp_run_dir" -maxdepth 1 -name 'events-*.jsonl' -printf '%m\n' \
+  | grep -qv '^600$'; then
+  echo "event segment permissions are not 0600" >&2
+  exit 1
+fi
+as_tester heimdall logs query --run "$tcp_run_id" --jsonl \
+  | jq -s -e '
+    (map(.seq) == [1, 2, 3, 4, 5, 6])
+    and any(.[]; .kind == "flow.open" and .data.network == "tcp")
+    and any(.[]; .kind == "flow.close" and .data.network == "tcp" and .data.status == "complete")
+    and .[-1].kind == "run.close"
+  ' >/dev/null
+as_tester heimdall logs verify --run "$tcp_run_id" --json \
+  | jq -e '.valid and .state == "closed" and .events == 6' >/dev/null
+as_tester heimdall logs schema --event v1 \
+  | jq -e '."$schema" == "https://json-schema.org/draft/2020-12/schema" and (.oneOf | length) == 17' >/dev/null
+as_tester heimdall logs schema --run v1 \
+  | jq -e '."$schema" == "https://json-schema.org/draft/2020-12/schema"' >/dev/null
+
+as_tester heimdall run --policy direct -- sleep 1 &
+rotation_process=$!
+rotation_run_id=""
+for _ in $(seq 1 100); do
+  rotation_run_id="$(as_tester heimdall logs list --json \
+    | jq -r '.runs[] | select(.state == "running" and .policy == "direct") | .run_id' \
+    | head -n1)"
+  test -n "$rotation_run_id" && break
+  sleep 0.02
+done
+test -n "$rotation_run_id"
+as_tester heimdall logs rotate --run "$rotation_run_id" --json \
+  | jq -e '.contract == "heimdall.logs.control/v1" and .ok' >/dev/null
+wait "$rotation_process"
+as_tester heimdall logs verify --run "$rotation_run_id" --json \
+  | jq -e '.valid and .state == "closed" and .segments == 2' >/dev/null
 
 : > /run/heimdall-test/socks.log
 test -z "$(as_tester heimdall run --policy fake -- \

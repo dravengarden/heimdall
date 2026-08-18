@@ -34,6 +34,7 @@ mod capture;
 mod cli;
 mod dns;
 mod ebpf;
+mod event_log;
 mod gc;
 mod policy;
 mod state;
@@ -356,6 +357,10 @@ enum Cmd {
     #[command(subcommand)]
     Tls(cli::tls::TlsCmd),
 
+    /// Inspect, follow, rotate, verify, or prune per-run event logs.
+    #[command(subcommand)]
+    Logs(cli::logs::LogsCmd),
+
     /// Show the selected config and local daemon health.
     Status(StatusArgs),
 
@@ -505,6 +510,7 @@ struct Shared {
     /// HTTP register endpoints write here in lockstep with the
     /// PolicyEngine BPF map update.
     cli_overrides: CliOverrides,
+    event_clients: EventClients,
 }
 
 pub(crate) async fn close_udp_sessions_for_cgroup(sessions: &UdpSessions, cgroup_id: u64) {
@@ -517,6 +523,7 @@ pub(crate) async fn close_udp_sessions_for_cgroup(sessions: &UdpSessions, cgroup
 /// Shared (cgroup_id → Decision) override map for `heimdall run`
 /// CLI processes. See `Shared.cli_overrides` for semantics.
 pub type CliOverrides = Arc<parking_lot::RwLock<StdHashMap<u64, heimdall_config::Decision>>>;
+pub type EventClients = Arc<parking_lot::RwLock<StdHashMap<u64, crate::event_log::EventClient>>>;
 
 /// Late-bound policy engine slot. Constructed after eBPF attach
 /// succeeds; the HTTP API holds an Arc clone of this slot so register
@@ -593,6 +600,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Tls(sub) => cli::tls::run(sub),
+        Cmd::Logs(sub) => cli::logs::run(sub),
         Cmd::Status(args) => {
             let config_path = resolve_config_path(cli.config.as_deref())?;
             cli::status::run(&config_path, args).await
@@ -745,6 +753,12 @@ async fn restore_cli_registrations(
                 policy: registration.policy,
             },
         );
+        if let Ok(client) = event_log::EventClient::connect(registration.event_socket) {
+            shared
+                .event_clients
+                .write()
+                .insert(registration.cgroup_id, client);
+        }
         restored += 1;
     }
 
@@ -818,6 +832,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
     // so AppState gets a clone before it's spawned. See type aliases
     // above for semantics.
     let cli_overrides: CliOverrides = Arc::new(parking_lot::RwLock::new(StdHashMap::new()));
+    let event_clients: EventClients = Arc::new(parking_lot::RwLock::new(StdHashMap::new()));
     let udp_sessions: UdpSessions = Arc::new(Mutex::new(StdHashMap::new()));
     let policy_engine_slot: PolicyEngineSlot = Arc::new(parking_lot::Mutex::new(None));
     let daemon_health = Arc::new(parking_lot::RwLock::new(api::HealthReport {
@@ -842,6 +857,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
         policy_engine: policy_engine_slot.clone(),
         udp_sessions: udp_sessions.clone(),
         health: daemon_health.clone(),
+        event_clients: event_clients.clone(),
     };
     let api_listener = TcpListener::bind(api_listen)
         .await
@@ -859,6 +875,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
         relay_tls,
         dns,
         cli_overrides: cli_overrides.clone(),
+        event_clients: event_clients.clone(),
     });
 
     // ─── Load eBPF object and attach programs ─────────────────────────────
@@ -1345,6 +1362,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
             cli_overrides.clone(),
             policy_engine_slot.clone(),
             udp_sessions.clone(),
+            event_clients.clone(),
         );
         info!("orphan-cgroup GC spawned (interval 30s)");
     }
@@ -1641,23 +1659,98 @@ async fn copy_tcp_transport(
     shared: &Shared,
     mut meta: capture::FlowMeta<'_>,
 ) -> Result<(u64, u64)> {
-    if let Some(relay_tls) = &shared.relay_tls
+    let relay_tls = if let Some(relay_tls) = &shared.relay_tls
         && tls_relay::looks_like_client_hello(client).await?
     {
+        Some(relay_tls)
+    } else {
+        None
+    };
+    if relay_tls.is_some() {
+        meta.payload = "tls_plaintext";
+    }
+
+    // Start tracking while the registration map is read-locked. Deregistration
+    // removes the map entry under the write lock, then waits for every guard
+    // created here to emit its closing event before the run writer exits.
+    let event_client = shared
+        .event_clients
+        .read()
+        .get(&meta.cgroup_id)
+        .map(event_log::EventClient::start_flow);
+    let flow_id = uuid::Uuid::now_v7();
+    let flow_started = std::time::Instant::now();
+    if let Some(events) = &event_client {
+        let destination = meta.destination.parse::<std::net::IpAddr>().map_or_else(
+            |_| serde_json::json!({"host": meta.destination, "port": meta.destination_port}),
+            |ip| serde_json::json!({"ip": ip, "port": meta.destination_port}),
+        );
+        let action = meta.action.strip_prefix("route:").map_or_else(
+            || serde_json::json!({"type": meta.action}),
+            |outbound| serde_json::json!({"type": "route", "outbound": outbound}),
+        );
+        events.emit(
+            "flow.open",
+            flow_id,
+            serde_json::json!({
+                "network": "tcp",
+                "source": {"cgroup_id": meta.cgroup_id},
+                "destination": destination,
+                "action": action,
+                "policy": meta.policy,
+                "boundary": if meta.payload == "tls_plaintext" {
+                    "tls_plaintext.relay"
+                } else {
+                    "transport"
+                }
+            }),
+        )?;
+    }
+
+    let result = if let Some(relay_tls) = relay_tls {
         let manager = shared
             .capture
             .as_ref()
             .context("strict config enabled relay decrypt without capture")?;
-        meta.payload = "tls_plaintext";
         let fallback_name = meta.destination.to_owned();
-        return relay_tls
+        relay_tls
             .copy(client, remote, &fallback_name, manager, meta)
-            .await;
+            .await
+    } else {
+        match &shared.capture {
+            Some(manager) => match manager.open(meta).await {
+                Ok(capture) => capture::copy_tcp(client, remote, capture).await,
+                Err(error) => Err(error),
+            },
+            None => copy_bidirectional(client, remote).await.map_err(Into::into),
+        }
+    };
+
+    if let Some(events) = event_client {
+        let (client_to_remote_bytes, remote_to_client_bytes, status, error_code) = match &result {
+            Ok((up, down)) => (*up, *down, "complete", None),
+            Err(_) => (0, 0, "error", Some("relay_failed")),
+        };
+        let close_result = events.emit(
+            "flow.close",
+            flow_id,
+            serde_json::json!({
+                "network": "tcp",
+                "status": status,
+                "error_code": error_code,
+                "client_to_remote_bytes": client_to_remote_bytes,
+                "remote_to_client_bytes": remote_to_client_bytes,
+                "duration_us": u64::try_from(flow_started.elapsed().as_micros())
+                    .unwrap_or(u64::MAX)
+            }),
+        );
+        if result.is_ok() {
+            close_result?;
+        } else if let Err(error) = close_result {
+            warn!(%error, %flow_id, "cannot record failed TCP flow close");
+        }
     }
-    match &shared.capture {
-        Some(manager) => capture::copy_tcp(client, remote, manager.open(meta).await?).await,
-        None => copy_bidirectional(client, remote).await.map_err(Into::into),
-    }
+    result
 }
 
 enum UdpSessionAction {
@@ -1886,37 +1979,125 @@ async fn open_udp_capture(
     spec: &UdpSessionSpec,
     shared: &Shared,
     action: &str,
-) -> Result<Option<capture::CaptureFlow>> {
-    let Some(manager) = &shared.capture else {
+) -> Result<Option<UdpObservation>> {
+    let event_client = shared
+        .event_clients
+        .read()
+        .get(&spec.cgroup_id)
+        .map(event_log::EventClient::start_flow);
+    if shared.capture.is_none() && event_client.is_none() {
         return Ok(None);
-    };
+    }
     let destination = match &spec.dst {
         Dst::Ip4(ip) => ip.to_string(),
         Dst::Ip6(ip) => ip.to_string(),
         Dst::Domain(domain) => domain.clone(),
     };
-    manager
-        .open(capture::FlowMeta {
-            network: "udp",
-            cgroup_id: spec.cgroup_id,
-            policy: &spec.policy,
-            destination: &destination,
-            destination_port: spec.dst_port,
-            action,
-            payload: "opaque_transport",
-        })
-        .await
-        .map(Some)
+    let legacy = if let Some(manager) = &shared.capture {
+        Some(
+            manager
+                .open(capture::FlowMeta {
+                    network: "udp",
+                    cgroup_id: spec.cgroup_id,
+                    policy: &spec.policy,
+                    destination: &destination,
+                    destination_port: spec.dst_port,
+                    action,
+                    payload: "opaque_transport",
+                })
+                .await?,
+        )
+    } else {
+        None
+    };
+    let flow_id = uuid::Uuid::now_v7();
+    if let Some(events) = &event_client {
+        let destination = destination.parse::<std::net::IpAddr>().map_or_else(
+            |_| serde_json::json!({"host": destination, "port": spec.dst_port}),
+            |ip| serde_json::json!({"ip": ip, "port": spec.dst_port}),
+        );
+        let action = action.strip_prefix("route:").map_or_else(
+            || serde_json::json!({"type": action}),
+            |outbound| serde_json::json!({"type": "route", "outbound": outbound}),
+        );
+        events.emit(
+            "flow.open",
+            flow_id,
+            serde_json::json!({
+                "network": "udp",
+                "source": {"cgroup_id": spec.cgroup_id},
+                "destination": destination,
+                "action": action,
+                "policy": spec.policy,
+                "boundary": "transport"
+            }),
+        )?;
+    }
+    Ok(Some(UdpObservation {
+        legacy,
+        events: event_client,
+        flow_id,
+        started: std::time::Instant::now(),
+        client_to_remote_bytes: AtomicU64::new(0),
+        remote_to_client_bytes: AtomicU64::new(0),
+    }))
 }
 
-async fn close_udp_capture(
-    capture: Option<capture::CaptureFlow>,
-    result: &Result<()>,
-) -> Result<()> {
+struct UdpObservation {
+    legacy: Option<capture::CaptureFlow>,
+    events: Option<event_log::FlowEventClient>,
+    flow_id: uuid::Uuid,
+    started: std::time::Instant,
+    client_to_remote_bytes: AtomicU64,
+    remote_to_client_bytes: AtomicU64,
+}
+
+impl UdpObservation {
+    async fn data(&self, direction: capture::Direction, payload: &[u8]) -> Result<()> {
+        match direction {
+            capture::Direction::ClientToRemote => &self.client_to_remote_bytes,
+            capture::Direction::RemoteToClient => &self.remote_to_client_bytes,
+        }
+        .fetch_add(payload.len() as u64, Ordering::Relaxed);
+        if let Some(legacy) = &self.legacy {
+            legacy.data(direction, payload).await?;
+        }
+        Ok(())
+    }
+
+    async fn close(self, result: &Result<()>) -> Result<()> {
+        let legacy_result = if let Some(legacy) = self.legacy {
+            legacy
+                .close(if result.is_ok() { "complete" } else { "error" })
+                .await
+        } else {
+            Ok(())
+        };
+        let event_result = if let Some(events) = self.events {
+            events.emit(
+                "flow.close",
+                self.flow_id,
+                serde_json::json!({
+                    "network": "udp",
+                    "status": if result.is_ok() { "complete" } else { "error" },
+                    "error_code": if result.is_ok() { None } else { Some("relay_failed") },
+                    "client_to_remote_bytes": self.client_to_remote_bytes.load(Ordering::Relaxed),
+                    "remote_to_client_bytes": self.remote_to_client_bytes.load(Ordering::Relaxed),
+                    "duration_us": u64::try_from(self.started.elapsed().as_micros())
+                        .unwrap_or(u64::MAX)
+                }),
+            )
+        } else {
+            Ok(())
+        };
+        legacy_result?;
+        event_result
+    }
+}
+
+async fn close_udp_capture(capture: Option<UdpObservation>, result: &Result<()>) -> Result<()> {
     if let Some(capture) = capture {
-        capture
-            .close(if result.is_ok() { "complete" } else { "error" })
-            .await?;
+        capture.close(result).await?;
     }
     Ok(())
 }
@@ -1959,7 +2140,7 @@ async fn run_direct_udp_session(
     runtime: &UdpSessionRuntime,
     mut rx: mpsc::Receiver<UdpRequest>,
     socket: UdpSocket,
-    capture: Option<&capture::CaptureFlow>,
+    capture: Option<&UdpObservation>,
 ) -> Result<()> {
     let idle = tokio::time::sleep(UDP_SESSION_IDLE_TIMEOUT);
     tokio::pin!(idle);
@@ -2008,7 +2189,7 @@ async fn run_socks5_udp_session(
     mut rx: mpsc::Receiver<UdpRequest>,
     mut control: TcpStream,
     socket: UdpSocket,
-    capture: Option<&capture::CaptureFlow>,
+    capture: Option<&UdpObservation>,
 ) -> Result<()> {
     let idle = tokio::time::sleep(UDP_SESSION_IDLE_TIMEOUT);
     tokio::pin!(idle);

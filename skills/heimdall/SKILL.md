@@ -29,6 +29,12 @@ a wrapped command.
 
 Use `heimdall help -v` only when deeper command discovery is needed.
 
+The daemonless redesign and agent-first JSONL contracts are documented in
+[references/events.md](references/events.md). Phase 1 `heimdall logs` commands
+are available for run lifecycle and TCP/UDP metadata. Inspect
+`capabilities.logs.flow_events` before expecting UDP, payload, TLS, or derived
+HTTP records; continue using current capture files for unsupported evidence.
+
 If capture is requested, inspect `config.capture`, `config.decrypt`,
 `capabilities.capture`, and `capabilities.decrypt`. Require capture `mode: on`
 and a suitable byte limit before either decrypt mode. Read each capture open

@@ -57,6 +57,7 @@ need compatibility hardening.
 | macOS support | Planned | Wrapper fallback and Network Extension backend are roadmap items; not currently available |
 | Strict configuration and agent contract | Available | TOML, YAML, JSON; `heimdall.agent/v4` with repairable diagnostics |
 | Opaque flow capture | Available | Explicit bounded JSONL capture; root-only files with `heimdall.capture/v1` |
+| Agent event logs | Available, Phase 1 | Per-run lifecycle and TCP/UDP metadata in `heimdall.event/v1`; payload remains in legacy capture |
 | Runtime TLS decryption | Available with alpha limits | OpenSSL probes at process runtime; no CA injection |
 | Relay TLS decryption | Available with alpha limits | Local CA plus per-host leaves; client trust and protocol compatibility are required |
 | Runtime and kernel compatibility | In development | Expanding the tested matrix and documenting unsupported edge cases |
@@ -124,6 +125,14 @@ Run a command through the default policy:
 ```bash
 ./target/release/heimdall run -- curl https://example.com
 ./target/release/heimdall run --policy corp -- ssh internal.example.com
+```
+
+Inspect the resulting run without a Web UI:
+
+```bash
+./target/release/heimdall logs list --json
+./target/release/heimdall logs query --run RUN_ID --kind flow.close --jsonl
+./target/release/heimdall logs verify --run RUN_ID --json
 ```
 
 In production, install [`deploy/heimdall.service`](deploy/heimdall.service)
@@ -215,6 +224,7 @@ heimdall status [--json]
 heimdall config validate|explain|show|path
 heimdall tls init-ca [--json]
 heimdall ebpf cleanup [--json]
+heimdall logs schema|list|path|query|tail|rotate|verify|prune
 heimdall init [--dir PATH] [--format toml|yaml|json] [--force]
 ```
 

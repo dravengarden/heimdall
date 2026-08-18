@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ravengarden.github.io/heimdall/schemas/heimdall.run.v1.schema.json",
+  "title": "Heimdall run manifest",
+  "type": "object",
+  "required": [
+    "schema", "run_id", "state", "started_at", "closed_at", "command",
+    "policy", "backend", "capture", "segments", "blobs", "result"
+  ],
+  "properties": {
+    "schema": { "const": "heimdall.run/v1" },
+    "run_id": { "$ref": "#/$defs/uuid_v7" },
+    "state": { "enum": ["starting", "running", "closing", "closed", "failed"] },
+    "started_at": { "type": "string", "format": "date-time" },
+    "closed_at": { "type": ["string", "null"], "format": "date-time" },
+    "command": {
+      "type": "object",
+      "required": ["executable", "argv_count", "argv"],
+      "properties": {
+        "executable": { "type": "string" },
+        "argv_count": { "type": "integer", "minimum": 1 },
+        "argv": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "array", "items": { "type": "string" } }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "policy": { "type": "string" },
+    "backend": { "type": "string" },
+    "capture": {
+      "type": "object",
+      "required": ["profile", "event_schema", "legacy_payload_capture"],
+      "properties": {
+        "profile": { "enum": ["off", "metadata", "payload"] },
+        "event_schema": { "const": "heimdall.event/v1" },
+        "legacy_payload_capture": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "segments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["file", "first_seq", "last_seq", "bytes", "sha256", "final"],
+        "properties": {
+          "file": { "type": "string", "pattern": "^events-[0-9]{6}\\.jsonl$" },
+          "first_seq": { "type": "integer", "minimum": 1 },
+          "last_seq": { "type": "integer", "minimum": 1 },
+          "bytes": { "type": "integer", "minimum": 1 },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "final": { "type": "boolean" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "blobs": {
+      "type": "object",
+      "required": ["count", "bytes"],
+      "properties": {
+        "count": { "type": "integer", "minimum": 0 },
+        "bytes": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "result": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["exit_code", "signal", "error_code", "complete"],
+          "properties": {
+            "exit_code": { "type": ["integer", "null"] },
+            "signal": { "type": ["integer", "null"] },
+            "error_code": { "type": ["string", "null"] },
+            "complete": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "uuid_v7": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    }
+  }
+}

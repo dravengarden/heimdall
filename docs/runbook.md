@@ -73,6 +73,30 @@ heimdall run --policy corp -- curl -fsS https://internal.example.com
 The wrapped command's exit status is heimdall's exit status. A daemon or
 registration failure occurs before the command is executed.
 
+## Event logs
+
+Every successful `heimdall run` initialization creates a user-owned run below
+`$XDG_STATE_HOME/heimdall/runs` (default `~/.local/state/heimdall/runs`). Phase
+1 records lifecycle and TCP/UDP flow metadata; payload bytes remain in the
+explicit root-only `heimdall.capture/v1` directory.
+
+```bash
+heimdall logs schema --event v1
+heimdall logs list --json
+heimdall logs query --run RUN_ID --kind flow.close --jsonl
+heimdall logs tail --run RUN_ID --follow --jsonl
+heimdall logs rotate --run RUN_ID --json
+heimdall logs verify --run RUN_ID --json
+```
+
+Rotation never deletes data. Preview retention first; deletion requires
+`--apply`:
+
+```bash
+heimdall logs prune --older-than 30d --keep-last 20 --json
+heimdall logs prune --older-than 30d --keep-last 20 --apply --json
+```
+
 ## Agent contract
 
 `heimdall agent [--policy NAME]` is the automation entry point.
@@ -109,6 +133,15 @@ It is read-only and always prints exactly one JSON value before exiting:
       "udp": true,
       "payload": "mode_dependent",
       "tls_plaintext": true
+    },
+    "logs": {
+      "event_contract": "heimdall.event/v1",
+      "run_contract": "heimdall.run/v1",
+      "format": "jsonl",
+      "lifecycle_events": true,
+      "flow_events": "tcp+udp_metadata",
+      "writer_owned_rotation": true,
+      "content_addressed_blobs": false
     },
     "decrypt": {
       "modes": ["off", "runtime", "relay"],
@@ -181,7 +214,10 @@ It is read-only and always prints exactly one JSON value before exiting:
     "validate": ["heimdall", "--config", "...", "config", "validate", "--json"],
     "status": ["heimdall", "--config", "...", "status", "--json"],
     "execute_prefix": ["heimdall", "--config", "...", "run", "--policy", "default", "--"],
-    "tls_ca_init": null
+    "tls_ca_init": null,
+    "logs_schema_event": ["heimdall", "logs", "schema", "--event", "v1"],
+    "logs_schema_run": ["heimdall", "logs", "schema", "--run", "v1"],
+    "logs_list": ["heimdall", "logs", "list", "--json"]
   },
   "exit_codes": { "ready": 0, "not_ready": 1, "usage": 2 }
 }

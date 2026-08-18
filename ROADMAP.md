@@ -24,6 +24,9 @@ acceptance path are documented and tested.
   diagnostic codes, JSON paths, and repair hints.
 - `heimdall agent` as a read-only `heimdall.agent/v4` preflight with argv-safe
   actions and capability evidence.
+- Phase 1 per-run `heimdall.event/v1` lifecycle and TCP/UDP flow metadata,
+  offline schemas, writer-owned rotation, integrity verification, and the
+  agent-first `heimdall logs` CLI.
 - Bounded root-only opaque capture under the `heimdall.capture/v1` contract.
 - OpenSSL runtime TLS probes and relay TLS termination under explicit
   `runtime` and `relay` modes.
@@ -40,7 +43,44 @@ below and is not part of the available contract yet.
 These are the active engineering tracks. They deliberately improve the core
 proxy and its evidence before adding a larger control plane.
 
-### 1. Proxy compatibility and diagnostics
+### 1. Daemonless command lifecycle
+
+- Move relay, DNS, TLS, capture, and process-tree ownership into a foreground
+  session created by `heimdall run`.
+- Replace fixed relay ports, global registrations, and persistent bpffs pins
+  with per-run ports, cgroups, maps, links, and a private control socket.
+- Acquire Linux interception privilege through a narrow per-run setup worker;
+  never grant the whole CLI persistent capabilities.
+- Require zero Heimdall processes, listeners, cgroups, links, maps, and sockets
+  after the wrapped process tree exits.
+- Keep any persistent acceleration mode explicit and opt-in; never start it
+  automatically.
+
+Acceptance target: one installed binary runs proxy-only or TLS-inspected
+commands without enabling a Heimdall service, supports independent concurrent
+runs, preserves exit/signal semantics, and leaves no runtime residue after
+normal exit or crashes. See
+[docs/design/daemonless-runtime.md](docs/design/daemonless-runtime.md).
+
+### 2. Agent-first event store
+
+- Extend the available per-run `heimdall.event/v1` JSONL segments and
+  `heimdall.run/v1` manifest beyond lifecycle and TCP/UDP metadata.
+- Store large or binary payloads as content-addressed blobs instead of inline
+  base64, with metadata-only capture as the default.
+- Extend the available offline schemas and `logs` commands with payload-aware
+  filters and age-based rotation.
+- Keep the available rotation writer-owned and loss-aware; do not support
+  external `copytruncate` against active logs.
+- Publish exhaustive schema and Linux-tool recipes in the bundled Heimdall
+  skill.
+
+Acceptance target: an agent can discover paths and schemas without guessing,
+follow a run across rotation, select flows with `jq`, verify blobs and segment
+integrity, and distinguish opaque transport from actual TLS plaintext. See
+[docs/design/agent-event-log.md](docs/design/agent-event-log.md).
+
+### 3. Proxy compatibility and diagnostics
 
 - Expand the runtime matrix across kernel versions, libc behaviors, socket API
   variants, and process-tree edge cases.
@@ -53,7 +93,7 @@ Acceptance target: every supported path has a documented family/protocol
 boundary, deterministic failure semantics, and a VM or focused regression
 test.
 
-### 2. TLS boundary hardening
+### 4. TLS boundary hardening
 
 - Expand runtime capture beyond the currently supported OpenSSL probe surface
   only when the library boundary can be made explicit and safe.
@@ -66,7 +106,7 @@ Acceptance target: runtime and relay modes report their actual coverage and
 never claim plaintext visibility when the selected boundary was not attached or
 trusted.
 
-### 3. Capture analysis workflow
+### 5. Capture analysis workflow
 
 - Make bounded capture easier to inspect without changing its explicit payload
   boundary or root-only ownership.
@@ -84,14 +124,16 @@ from file names or process names.
 ### Packaging and distribution
 
 - Publish reproducible Linux artifacts with an installation path that keeps
-  daemon privileges and user CLI ownership separate.
-- Document upgrade and rollback boundaries for the eBPF object, pinned maps,
-  and machine-readable contracts.
+  transient setup privilege and user-owned session/log state separate.
+- Document upgrade and rollback boundaries for the embedded eBPF object,
+  daemonless runtime, and machine-readable contracts.
 
 ### Performance and observability
 
 - Establish repeatable throughput, latency, memory, and event-loss baselines
   for TCP, UDP, capture, and TLS modes.
+- Measure daemonless cold start, per-run authorization, teardown, and 1/10/50
+  concurrent runs before considering an opt-in acceleration service.
 - Expose enough low-cardinality health data for operators to distinguish policy,
   relay, DNS, eBPF, and TLS-boundary failures.
 
@@ -133,6 +175,10 @@ The following are intentionally not on the current roadmap:
 - Nickel configuration or a fourth first-class configuration syntax.
 - Claims of universal TLS decryption across every language, TLS library, or
   certificate-pinning implementation.
+
+A read-only, explicitly started viewer for completed or live event files is
+planned after the event schema stabilizes. It is not a daemon, MITM owner,
+policy editor, or requirement for any CLI feature.
 
 These boundaries keep Heimdall focused on a reliable command wrapper and leave
 application-specific inspection to explicit tools and trust decisions.

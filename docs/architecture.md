@@ -1,5 +1,13 @@
 # Architecture
 
+> **Current alpha architecture.** The implementation described below still
+> uses a privileged persistent daemon. The accepted replacement is a
+> foreground, per-run session owner with no daemon requirement; see
+> [Daemonless runtime design](design/daemonless-runtime.md) and
+> [Agent-first event log design](design/agent-event-log.md). The daemonless
+> runtime is not yet implemented; Phase 1 of the event-log design is available
+> in the current binary.
+
 Heimdall has one product path: wrap a command and proxy that command's
 outbound connections.
 
@@ -130,3 +138,7 @@ cgroup deregisters, orphan GC runs, or the session remains idle for 60 seconds.
 Heimdall's policy language is deliberately limited to destination identity,
 protocol, and port for one command cgroup. Complex upstream routing can still
 live in the selected SOCKS5 service.
+
+An optional read-only log viewer is compatible with these non-goals. It is not
+a policy controller, interception owner, daemon prerequisite, or source of
+truth.

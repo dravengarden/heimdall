@@ -4,6 +4,7 @@
 //! small loopback registration API.
 
 pub mod ebpf;
+pub mod logs;
 pub mod tls;
 
 pub mod agent {
@@ -81,6 +82,7 @@ pub mod agent {
     #[derive(Debug, Serialize)]
     struct Capabilities {
         capture: CaptureCapabilities,
+        logs: LogsCapabilities,
         decrypt: DecryptCapabilities,
         udp: UdpCapabilities,
         runtime_acceptance: RuntimeAcceptance,
@@ -96,6 +98,17 @@ pub mod agent {
         udp: bool,
         payload: &'static str,
         tls_plaintext: bool,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct LogsCapabilities {
+        event_contract: &'static str,
+        run_contract: &'static str,
+        format: &'static str,
+        lifecycle_events: bool,
+        flow_events: &'static str,
+        writer_owned_rotation: bool,
+        content_addressed_blobs: bool,
     }
 
     #[derive(Debug, Serialize)]
@@ -189,6 +202,9 @@ pub mod agent {
         status: Vec<String>,
         execute_prefix: Option<Vec<String>>,
         tls_ca_init: Option<Vec<String>>,
+        logs_schema_event: Vec<String>,
+        logs_schema_run: Vec<String>,
+        logs_list: Vec<String>,
     }
 
     #[derive(Debug, Serialize)]
@@ -252,6 +268,26 @@ pub mod agent {
                     status: status_argv,
                     execute_prefix: None,
                     tls_ca_init: None,
+                    logs_schema_event: vec![
+                        "heimdall".into(),
+                        "logs".into(),
+                        "schema".into(),
+                        "--event".into(),
+                        "v1".into(),
+                    ],
+                    logs_schema_run: vec![
+                        "heimdall".into(),
+                        "logs".into(),
+                        "schema".into(),
+                        "--run".into(),
+                        "v1".into(),
+                    ],
+                    logs_list: vec![
+                        "heimdall".into(),
+                        "logs".into(),
+                        "list".into(),
+                        "--json".into(),
+                    ],
                 },
                 exit_codes: exit_codes(),
             },
@@ -353,6 +389,26 @@ pub mod agent {
                 status: argv_for(&path, &["status", "--json"]),
                 execute_prefix,
                 tls_ca_init: relay_ca_init_argv(&config.decrypt),
+                logs_schema_event: vec![
+                    "heimdall".into(),
+                    "logs".into(),
+                    "schema".into(),
+                    "--event".into(),
+                    "v1".into(),
+                ],
+                logs_schema_run: vec![
+                    "heimdall".into(),
+                    "logs".into(),
+                    "schema".into(),
+                    "--run".into(),
+                    "v1".into(),
+                ],
+                logs_list: vec![
+                    "heimdall".into(),
+                    "logs".into(),
+                    "list".into(),
+                    "--json".into(),
+                ],
             },
             exit_codes: exit_codes(),
         }
@@ -539,6 +595,15 @@ pub mod agent {
                 payload: "mode_dependent",
                 tls_plaintext: true,
             },
+            logs: LogsCapabilities {
+                event_contract: crate::event_log::EVENT_CONTRACT,
+                run_contract: crate::event_log::RUN_CONTRACT,
+                format: "jsonl",
+                lifecycle_events: true,
+                flow_events: "tcp+udp_metadata",
+                writer_owned_rotation: true,
+                content_addressed_blobs: false,
+            },
             decrypt: DecryptCapabilities {
                 modes: &["off", "runtime", "relay"],
                 runtime_libraries: &["openssl"],
@@ -674,6 +739,18 @@ pub mod agent {
                 heimdall_common::TAP_DATA_LEN
             );
             assert!(capabilities().decrypt.runtime_requires_attached_image);
+        }
+
+        #[test]
+        fn logs_capabilities_expose_agent_contracts() {
+            let logs = capabilities().logs;
+            assert_eq!(logs.event_contract, "heimdall.event/v1");
+            assert_eq!(logs.run_contract, "heimdall.run/v1");
+            assert_eq!(logs.format, "jsonl");
+            assert!(logs.lifecycle_events);
+            assert_eq!(logs.flow_events, "tcp+udp_metadata");
+            assert!(logs.writer_owned_rotation);
+            assert!(!logs.content_addressed_blobs);
         }
 
         #[test]
