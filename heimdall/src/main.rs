@@ -37,6 +37,10 @@ mod ebpf;
 mod event_log;
 mod gc;
 mod policy;
+// The protocol is landed before the privileged re-exec is wired so its
+// framing and FD contract can be reviewed independently.
+#[allow(dead_code)]
+mod setup;
 mod state;
 mod tls_relay;
 mod tls_runtime;

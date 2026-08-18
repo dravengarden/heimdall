@@ -134,8 +134,15 @@ run can supply one required transient cgroup.
 The link transaction also supports a process-owned mode that retains attached
 link FDs without creating bpffs pins. Object loading in that mode also creates
 fresh unpinned maps instead of reusing `/sys/fs/bpf/heimdall/maps`. The
-compatibility daemon continues to select persistent mode; the setup-worker FD
-handoff and `heimdall run` orchestration are still pending.
+compatibility daemon continues to select persistent mode.
+
+The setup-worker transport now has a strict `heimdall.setup/v1` contract. It
+uses length-delimited JSON for one validated cgroup, relay/DNS ports, and the
+known kernel policy bits, followed by one fixed-order `SCM_RIGHTS` bundle of
+four correlation maps and eleven cgroup links. Received descriptors are
+close-on-exec. Unknown fields, unknown policy bits, path traversal, manifest
+changes, missing descriptors, and ancillary truncation fail closed. Wiring the
+worker re-exec and reconstructing the parent-side Aya maps are still pending.
 
 ## Process and signal lifecycle
 

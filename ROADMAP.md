@@ -50,7 +50,9 @@ binds one kernel-assigned IPv4/IPv6 TCP/UDP relay port and writes it into eBPF.
 Relay listeners and fake DNS now share one explicit session drop boundary;
 correlation maps, the policy engine, and links are owned there too. Attach setup
 is target-driven, and process mode creates fresh unpinned maps plus FD-owned
-links. Moving this runtime into `heimdall run` and transient authorization are
+links. The strict `heimdall.setup/v1` Unix-socket protocol now validates one
+cgroup request and transfers a fixed, close-on-exec map/link FD manifest.
+Worker re-exec, parent-side map reconstruction, and transient authorization are
 still pending.
 
 - Move relay, DNS, TLS, capture, and process-tree ownership into a foreground
