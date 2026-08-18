@@ -1051,7 +1051,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
         bpf.map_mut("STATE_SCHEMA")
             .context("STATE_SCHEMA not found")?,
     )?;
-    let mut link_transaction = ebpf::LinkTransaction::new();
+    let mut link_transaction = ebpf::LinkTransaction::new(ebpf::LinkLifetime::Persistent);
 
     if shared.cfg.decrypt.mode == heimdall_config::DecryptMode::Runtime {
         let capture = shared
@@ -1199,7 +1199,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
                 .attach(&cgroup, CgroupAttachMode::Single)
                 .context("failed to attach connect4")?;
             let link: FdLink = connect4.take_link(link_id)?.try_into()?;
-            link_transaction.pin_link("connect4-system", link)?;
+            link_transaction.install_link("connect4-system", link)?;
         }
         info!(cgroup = %shared.cfg.daemon.cgroup, "eBPF connect4 attached");
         if let Some(user_cg) = user_slice_file.as_ref() {
@@ -1209,7 +1209,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
                 match connect4.attach(user_cg, CgroupAttachMode::Single) {
                     Ok(link_id) => {
                         let link: FdLink = connect4.take_link(link_id)?.try_into()?;
-                        link_transaction.pin_link("connect4-user", link)?;
+                        link_transaction.install_link("connect4-user", link)?;
                         info!(cgroup = USER_SLICE, "eBPF connect4 attached (extra)");
                     }
                     Err(e) => {
@@ -1230,7 +1230,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
                 .attach(&cgroup, CgroupAttachMode::Single)
                 .context("failed to attach connect6")?;
             let link: FdLink = connect6.take_link(link_id)?.try_into()?;
-            link_transaction.pin_link("connect6-system", link)?;
+            link_transaction.install_link("connect6-system", link)?;
         }
         info!(cgroup = %shared.cfg.daemon.cgroup, "eBPF connect6 attached");
         if let Some(user_cg) = user_slice_file.as_ref() {
@@ -1240,7 +1240,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
                 match connect6.attach(user_cg, CgroupAttachMode::Single) {
                     Ok(link_id) => {
                         let link: FdLink = connect6.take_link(link_id)?.try_into()?;
-                        link_transaction.pin_link("connect6-user", link)?;
+                        link_transaction.install_link("connect6-user", link)?;
                         info!(cgroup = USER_SLICE, "eBPF connect6 attached (extra)");
                     }
                     Err(e) => {
@@ -1263,7 +1263,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
                 .attach(&cgroup, CgroupAttachMode::Single)
                 .with_context(|| format!("failed to attach {name}"))?;
             let link: FdLink = prog.take_link(link_id)?.try_into()?;
-            link_transaction.pin_link(&system_link, link)?;
+            link_transaction.install_link(&system_link, link)?;
         }
         info!(cgroup = %shared.cfg.daemon.cgroup, prog = name, "eBPF peer identity hook attached");
         if let Some(user_cg) = user_slice_file.as_ref() {
@@ -1278,7 +1278,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
                 match prog.attach(user_cg, CgroupAttachMode::Single) {
                     Ok(link_id) => {
                         let link: FdLink = prog.take_link(link_id)?.try_into()?;
-                        link_transaction.pin_link(&user_link, link)?;
+                        link_transaction.install_link(&user_link, link)?;
                         info!(
                             cgroup = USER_SLICE,
                             prog = name,
@@ -1310,7 +1310,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
                 .attach(&cgroup, CgroupAttachMode::Single)
                 .context("failed to attach sock_release")?;
             let link: FdLink = sock_release.take_link(link_id)?.try_into()?;
-            link_transaction.pin_link("sock_release-system", link)?;
+            link_transaction.install_link("sock_release-system", link)?;
         }
         info!(cgroup = %shared.cfg.daemon.cgroup, "eBPF sock_release attached");
         if let Some(user_cg) = user_slice_file.as_ref() {
@@ -1320,7 +1320,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
                 match sock_release.attach(user_cg, CgroupAttachMode::Single) {
                     Ok(link_id) => {
                         let link: FdLink = sock_release.take_link(link_id)?.try_into()?;
-                        link_transaction.pin_link("sock_release-user", link)?;
+                        link_transaction.install_link("sock_release-user", link)?;
                         info!(cgroup = USER_SLICE, "eBPF sock_release attached (extra)");
                     }
                     Err(e) => {
@@ -1347,7 +1347,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
                 .attach(&cgroup, CgroupAttachMode::Single)
                 .with_context(|| format!("failed to attach {name}"))?;
             let link: FdLink = prog.take_link(link_id)?.try_into()?;
-            link_transaction.pin_link(&system_link, link)?;
+            link_transaction.install_link(&system_link, link)?;
         }
         info!(cgroup = %shared.cfg.daemon.cgroup, prog = name, "eBPF sendmsg attached");
         if let Some(user_cg) = user_slice_file.as_ref() {
@@ -1362,7 +1362,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
                 match prog.attach(user_cg, CgroupAttachMode::Single) {
                     Ok(link_id) => {
                         let link: FdLink = prog.take_link(link_id)?.try_into()?;
-                        link_transaction.pin_link(&user_link, link)?;
+                        link_transaction.install_link(&user_link, link)?;
                         info!(
                             cgroup = USER_SLICE,
                             prog = name,
@@ -1389,7 +1389,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
                 .attach(&cgroup, CgroupAttachMode::Single)
                 .with_context(|| format!("failed to attach {name}"))?;
             let link: FdLink = prog.take_link(link_id)?.try_into()?;
-            link_transaction.pin_link("udp6_bind-system", link)?;
+            link_transaction.install_link("udp6_bind-system", link)?;
         }
         info!(cgroup = %shared.cfg.daemon.cgroup, prog = name, "eBPF bind guard attached");
         if let Some(user_cg) = user_slice_file.as_ref() {
@@ -1403,7 +1403,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
                 match prog.attach(user_cg, CgroupAttachMode::Single) {
                     Ok(link_id) => {
                         let link: FdLink = prog.take_link(link_id)?.try_into()?;
-                        link_transaction.pin_link("udp6_bind-user", link)?;
+                        link_transaction.install_link("udp6_bind-user", link)?;
                         info!(
                             cgroup = USER_SLICE,
                             prog = name,
@@ -1430,7 +1430,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
                 .attach(&cgroup, CgroupAttachMode::Single)
                 .with_context(|| format!("failed to attach {name}"))?;
             let link: FdLink = prog.take_link(link_id)?.try_into()?;
-            link_transaction.pin_link(&system_link, link)?;
+            link_transaction.install_link(&system_link, link)?;
         }
         info!(cgroup = %shared.cfg.daemon.cgroup, prog = name, "eBPF recvmsg attached");
         if let Some(user_cg) = user_slice_file.as_ref() {
@@ -1445,7 +1445,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
                 match prog.attach(user_cg, CgroupAttachMode::Single) {
                     Ok(link_id) => {
                         let link: FdLink = prog.take_link(link_id)?.try_into()?;
-                        link_transaction.pin_link(&user_link, link)?;
+                        link_transaction.install_link(&user_link, link)?;
                         info!(
                             cgroup = USER_SLICE,
                             prog = name,
@@ -1474,7 +1474,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
                 )
                 .context("failed to attach skb_egress")?;
             let link: FdLink = skb_egress.take_link(link_id)?.try_into()?;
-            link_transaction.pin_link("skb_egress-system", link)?;
+            link_transaction.install_link("skb_egress-system", link)?;
         }
         info!(cgroup = %shared.cfg.daemon.cgroup, "eBPF skb_egress attached");
         if let Some(user_cg) = user_slice_file.as_ref() {
@@ -1488,7 +1488,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
                 ) {
                     Ok(link_id) => {
                         let link: FdLink = skb_egress.take_link(link_id)?.try_into()?;
-                        link_transaction.pin_link("skb_egress-user", link)?;
+                        link_transaction.install_link("skb_egress-user", link)?;
                         info!(cgroup = USER_SLICE, "eBPF skb_egress attached (extra)");
                     }
                     Err(e) => {
@@ -1540,7 +1540,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
         info!("orphan-cgroup GC spawned (interval 30s)");
     }
 
-    link_transaction.commit();
+    let _links = link_transaction.commit();
     daemon_health.write().ready = true;
     info!("persistent eBPF link generation committed");
     let (relay_v4, relay_v6) = session_runtime.relay_addresses()?;

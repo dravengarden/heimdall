@@ -48,7 +48,8 @@ proxy and its evidence before adding a larger control plane.
 The fixed relay-port prerequisite has been removed: the current runtime now
 binds one kernel-assigned IPv4/IPv6 TCP/UDP relay port and writes it into eBPF.
 Relay listeners and fake DNS now share one explicit session drop boundary;
-moving that owner into `heimdall run`, map ownership, and transient
+the link transaction can also retain process-owned link FDs without pins.
+Moving those owners into `heimdall run`, map ownership, and transient
 authorization are still pending.
 
 - Move relay, DNS, TLS, capture, and process-tree ownership into a foreground

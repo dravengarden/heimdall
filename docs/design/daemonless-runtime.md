@@ -130,6 +130,10 @@ fake-DNS task under one `SessionRuntime` drop boundary. This is only a resource
 ownership extraction: `heimdall run` does not own that runtime yet, and the
 global eBPF state and control API still require the daemon.
 
+The link transaction also supports a process-owned mode that retains attached
+link FDs without creating bpffs pins. The compatibility daemon continues to use
+the persistent mode until attach setup is moved behind the per-run boundary.
+
 ## Process and signal lifecycle
 
 The session owner MUST:

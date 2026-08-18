@@ -85,24 +85,49 @@ struct ReplacedLink {
     new_program: OwnedFd,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LinkLifetime {
+    Persistent,
+    Process,
+}
+
+/// Keeps process-owned eBPF links attached until the foreground session drops.
+pub struct LinkSet {
+    _links: Vec<FdLink>,
+}
+
+impl LinkSet {
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self._links.len()
+    }
+}
+
 /// Rolls a partially installed program generation back unless committed.
 pub struct LinkTransaction {
+    lifetime: LinkLifetime,
     replaced: Vec<ReplacedLink>,
     created: Vec<PathBuf>,
+    owned: Vec<FdLink>,
     committed: bool,
 }
 
 impl LinkTransaction {
-    pub const fn new() -> Self {
+    pub const fn new(lifetime: LinkLifetime) -> Self {
         Self {
+            lifetime,
             replaced: Vec::new(),
             created: Vec::new(),
+            owned: Vec::new(),
             committed: false,
         }
     }
 
     /// CAS-replaces a pinned link while retaining both generations for rollback.
     pub fn update_link(&mut self, name: &str, program: BorrowedFd<'_>) -> Result<bool> {
+        if self.lifetime == LinkLifetime::Process {
+            return Ok(false);
+        }
         let path = link_path(name)?;
         let Some(link) = open_pinned(&path)? else {
             return Ok(false);
@@ -120,16 +145,24 @@ impl LinkTransaction {
         Ok(true)
     }
 
-    pub fn pin_link(&mut self, name: &str, link: FdLink) -> Result<()> {
+    pub fn install_link(&mut self, name: &str, link: FdLink) -> Result<()> {
         let path = link_path(name)?;
-        link.pin(&path)
-            .with_context(|| format!("pin initial eBPF link {}", path.display()))?;
-        self.created.push(path);
+        match self.lifetime {
+            LinkLifetime::Persistent => {
+                link.pin(&path)
+                    .with_context(|| format!("pin initial eBPF link {}", path.display()))?;
+                self.created.push(path);
+            }
+            LinkLifetime::Process => self.owned.push(link),
+        }
         Ok(())
     }
 
-    pub fn commit(mut self) {
+    pub fn commit(mut self) -> LinkSet {
         self.committed = true;
+        LinkSet {
+            _links: std::mem::take(&mut self.owned),
+        }
     }
 
     fn rollback(&mut self) {
@@ -318,7 +351,7 @@ fn bpf_call<T>(command: libc::c_uint, attr: &T) -> std::io::Result<libc::c_long>
 
 #[cfg(test)]
 mod tests {
-    use super::link_path;
+    use super::{LinkLifetime, LinkTransaction, link_path};
 
     #[test]
     fn link_pin_names_cannot_escape_the_private_directory() {
@@ -326,5 +359,11 @@ mod tests {
         assert!(link_path("../connect4").is_err());
         assert!(link_path("connect4/system").is_err());
         assert!(link_path("").is_err());
+    }
+
+    #[test]
+    fn process_link_transaction_commits_an_fd_owned_set() {
+        let links = LinkTransaction::new(LinkLifetime::Process).commit();
+        assert_eq!(links.len(), 0);
     }
 }
