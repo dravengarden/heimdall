@@ -196,8 +196,14 @@ struct KernelRuntime {
     udp_port_map: UdpPortMap,
     udp_token_map: UdpTokenMap,
     udp_cookie_map: UdpCookieMap,
-    _policy_engine: Arc<policy::PolicyEngine>,
-    _links: ebpf::LinkSet,
+    _policy_engine: Option<Arc<policy::PolicyEngine>>,
+    _links: KernelLinks,
+}
+
+#[allow(dead_code)]
+enum KernelLinks {
+    Aya { _links: ebpf::LinkSet },
+    Raw { _fds: Vec<OwnedFd> },
 }
 
 impl SessionRuntime {
@@ -241,6 +247,21 @@ impl SessionRuntime {
         self.kernel
             .as_ref()
             .context("session kernel runtime is not installed")
+    }
+
+    #[allow(dead_code)]
+    fn install_setup_bundle(&mut self, bundle: setup::SetupBundle) -> Result<()> {
+        let runtime = bundle.into_runtime_fds()?;
+        self.install_kernel(KernelRuntime {
+            port_map: Arc::new(RwLock::new(runtime.port_map)),
+            udp_port_map: Arc::new(RwLock::new(runtime.udp_port_map)),
+            udp_token_map: Arc::new(RwLock::new(runtime.udp_token_map)),
+            udp_cookie_map: Arc::new(RwLock::new(runtime.udp_cookie_map)),
+            _policy_engine: None,
+            _links: KernelLinks::Raw {
+                _fds: runtime.links,
+            },
+        })
     }
 
     fn relay_port(&self) -> u16 {
@@ -1404,8 +1425,10 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
         udp_port_map,
         udp_token_map,
         udp_cookie_map,
-        _policy_engine: policy_engine,
-        _links: link_transaction.commit(),
+        _policy_engine: Some(policy_engine),
+        _links: KernelLinks::Aya {
+            _links: link_transaction.commit(),
+        },
     })?;
     daemon_health.write().ready = true;
     info!("persistent eBPF link generation committed");

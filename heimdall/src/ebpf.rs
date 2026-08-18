@@ -27,6 +27,7 @@ const BPF_MAP_LOOKUP_ELEM: libc::c_uint = 1;
 const BPF_PROG_GET_FD_BY_ID: libc::c_uint = 13;
 const BPF_OBJ_GET_INFO_BY_FD: libc::c_uint = 15;
 const BPF_LINK_UPDATE: libc::c_uint = 29;
+const BPF_LINK_GET_FD_BY_ID: libc::c_uint = 30;
 const BPF_F_REPLACE: u32 = 1 << 2;
 
 #[repr(C)]
@@ -97,10 +98,38 @@ pub struct LinkSet {
 }
 
 impl LinkSet {
+    // The setup worker consumes this once its privileged re-exec is wired.
+    #[allow(dead_code)]
+    pub fn duplicate_fds(&self) -> Result<Vec<OwnedFd>> {
+        self._links
+            .iter()
+            .map(|link| {
+                let id = link.info().context("query process-owned eBPF link")?.id();
+                link_by_id(id)
+            })
+            .collect()
+    }
+
     #[cfg(test)]
     fn len(&self) -> usize {
         self._links.len()
     }
+}
+
+#[allow(
+    unsafe_code,
+    reason = "BPF_LINK_GET_FD_BY_ID returns a new owned raw descriptor"
+)]
+fn link_by_id(id: u32) -> Result<OwnedFd> {
+    let attr = IdAttr {
+        id,
+        next_id: 0,
+        open_flags: 0,
+        token_fd: 0,
+    };
+    let fd = bpf_call(BPF_LINK_GET_FD_BY_ID, &attr).context("open eBPF link by ID")?;
+    // SAFETY: BPF_LINK_GET_FD_BY_ID returned a new owned descriptor.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd as i32) })
 }
 
 /// Rolls a partially installed program generation back unless committed.

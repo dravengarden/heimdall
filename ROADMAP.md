@@ -52,8 +52,8 @@ correlation maps, the policy engine, and links are owned there too. Attach setup
 is target-driven, and process mode creates fresh unpinned maps plus FD-owned
 links. The strict `heimdall.setup/v1` Unix-socket protocol now validates one
 cgroup request and transfers a fixed, close-on-exec map/link FD manifest.
-Worker re-exec, parent-side map reconstruction, and transient authorization are
-still pending.
+Parent-side typed map reconstruction and link-FD duplication are implemented.
+Worker re-exec and transient authorization are still pending.
 
 - Move relay, DNS, TLS, capture, and process-tree ownership into a foreground
   session created by `heimdall run`.

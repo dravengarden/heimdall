@@ -8,6 +8,8 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use aya::maps::{HashMap, Map, MapData};
+use heimdall_common::OrigDst;
 use heimdall_common::{
     POLICY_DNS_HIJACK, POLICY_DNS_SYSTEM, POLICY_REDIRECT_OFF, POLICY_UDP_REJECT,
 };
@@ -132,6 +134,45 @@ enum SetupReply {
 
 pub(crate) struct SetupBundle {
     pub(crate) fds: Vec<(SetupFd, OwnedFd)>,
+}
+
+pub(crate) struct RuntimeFds {
+    pub(crate) port_map: HashMap<MapData, u32, OrigDst>,
+    pub(crate) udp_port_map: HashMap<MapData, u32, OrigDst>,
+    pub(crate) udp_token_map: HashMap<MapData, u32, OrigDst>,
+    pub(crate) udp_cookie_map: HashMap<MapData, u64, OrigDst>,
+    pub(crate) links: Vec<OwnedFd>,
+}
+
+impl SetupBundle {
+    pub(crate) fn into_runtime_fds(self) -> Result<RuntimeFds> {
+        let mut fds = self.fds.into_iter();
+        let port_map = take_map(&mut fds, SetupFd::PortMap)?;
+        let udp_port_map = take_map(&mut fds, SetupFd::UdpPortMap)?;
+        let udp_token_map = take_map(&mut fds, SetupFd::UdpTokenMap)?;
+        let udp_cookie_map = take_map(&mut fds, SetupFd::UdpCookieMap)?;
+        let links = fds.map(|(_, fd)| fd).collect();
+        Ok(RuntimeFds {
+            port_map: HashMap::try_from(Map::from_map_data(MapData::from_fd(port_map)?)?)?,
+            udp_port_map: HashMap::try_from(Map::from_map_data(MapData::from_fd(udp_port_map)?)?)?,
+            udp_token_map: HashMap::try_from(Map::from_map_data(MapData::from_fd(
+                udp_token_map,
+            )?)?)?,
+            udp_cookie_map: HashMap::try_from(Map::from_map_data(MapData::from_fd(
+                udp_cookie_map,
+            )?)?)?,
+            links,
+        })
+    }
+}
+
+fn take_map(
+    fds: &mut impl Iterator<Item = (SetupFd, OwnedFd)>,
+    expected: SetupFd,
+) -> Result<OwnedFd> {
+    let (kind, fd) = fds.next().context("setup bundle is missing a map FD")?;
+    anyhow::ensure!(kind == expected, "setup map FD order changed");
+    Ok(fd)
 }
 
 pub(crate) fn send_request(stream: &mut UnixStream, request: &SetupRequest) -> Result<()> {

@@ -142,7 +142,9 @@ known kernel policy bits, followed by one fixed-order `SCM_RIGHTS` bundle of
 four correlation maps and eleven cgroup links. Received descriptors are
 close-on-exec. Unknown fields, unknown policy bits, path traversal, manifest
 changes, missing descriptors, and ancillary truncation fail closed. Wiring the
-worker re-exec and reconstructing the parent-side Aya maps are still pending.
+worker re-exec is still pending. Parent-side reconstruction of the four typed
+Aya maps is implemented, and a process-owned link set can duplicate stable link
+FDs by kernel ID for transfer before the worker exits.
 
 ## Process and signal lifecycle
 
