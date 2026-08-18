@@ -1,6 +1,6 @@
 # Daemonless runtime design
 
-Status: accepted direction, not yet implemented.
+Status: accepted direction, implementation in progress.
 
 ## Decision
 
@@ -124,6 +124,11 @@ under Heimdall's own delegated subtree, but never removes a populated cgroup.
 
 This removes daemon-restart continuity. That is intentional: one invocation is
 the lifecycle boundary. There is no upgrade or restart in the middle of a run.
+
+The current compatibility daemon now groups its TCP/UDP relay listeners and
+fake-DNS task under one `SessionRuntime` drop boundary. This is only a resource
+ownership extraction: `heimdall run` does not own that runtime yet, and the
+global eBPF state and control API still require the daemon.
 
 ## Process and signal lifecycle
 

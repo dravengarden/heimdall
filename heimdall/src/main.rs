@@ -172,6 +172,182 @@ struct UdpRelaySocket {
     fd: AsyncFd<OwnedFd>,
 }
 
+struct RelayRuntime {
+    tcp_v4: TcpListener,
+    tcp_v6: TcpListener,
+    udp_v4: Arc<UdpRelaySocket>,
+    udp_v6: Arc<UdpSocket>,
+    port: u16,
+}
+
+struct SessionRuntime {
+    relay: RelayRuntime,
+    dns: Arc<DnsResolver>,
+    dns_task: tokio::task::JoinHandle<()>,
+}
+
+impl SessionRuntime {
+    async fn bind(cfg: &HeimdallConfig) -> Result<Self> {
+        let relay = RelayRuntime::bind().await?;
+        let dns = Arc::new(
+            DnsResolver::with_state(
+                &cfg.daemon.fake_ip_cidr,
+                &cfg.daemon.fake_ip6_cidr,
+                std::path::Path::new(state::RUNTIME_DIR)
+                    .join("fake-dns.json")
+                    .as_path(),
+            )
+            .context("initialize fake-IP DNS resolver")?,
+        );
+        let dns_server = dns.clone().bind(cfg.daemon.dns_port).await?;
+        let dns_task = tokio::spawn(async move {
+            if let Err(error) = dns_server.serve().await {
+                warn!(%error, "DNS server exited");
+            }
+        });
+
+        Ok(Self {
+            relay,
+            dns,
+            dns_task,
+        })
+    }
+
+    fn relay_port(&self) -> u16 {
+        self.relay.port()
+    }
+
+    fn relay_addresses(&self) -> Result<(SocketAddr, SocketAddr)> {
+        Ok((
+            self.relay.tcp_v4.local_addr()?,
+            self.relay.tcp_v6.local_addr()?,
+        ))
+    }
+
+    async fn serve(
+        &self,
+        port_map: PortMap,
+        udp_port_map: UdpPortMap,
+        udp_token_map: UdpTokenMap,
+        udp_cookie_map: UdpCookieMap,
+        udp_sessions: UdpSessions,
+        shared: Arc<Shared>,
+    ) -> Result<()> {
+        self.relay
+            .serve(
+                port_map,
+                udp_port_map,
+                udp_token_map,
+                udp_cookie_map,
+                udp_sessions,
+                shared,
+            )
+            .await
+    }
+}
+
+impl Drop for SessionRuntime {
+    fn drop(&mut self) {
+        // Why: a session is the lifetime boundary. Explicit cancellation keeps
+        // this owner safe to move from the daemon into `heimdall run` without
+        // leaving a detached DNS task behind after listeners are dropped.
+        self.dns_task.abort();
+    }
+}
+
+impl RelayRuntime {
+    async fn bind() -> Result<Self> {
+        // Why: all four listeners must be live before eBPF can redirect a
+        // packet. Keeping them under one owner makes that readiness barrier
+        // explicit and gives a foreground run session one value to drop.
+        let tcp_v4 = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .context("bind IPv4 relay loopback")?;
+        let port = tcp_v4.local_addr()?.port();
+        let tcp_v6 = TcpListener::bind((Ipv6Addr::LOCALHOST, port))
+            .await
+            .context("bind IPv6 relay loopback")?;
+        let udp_v4 = Arc::new(UdpRelaySocket::bind(port)?);
+        let udp_v6 = Arc::new(
+            UdpSocket::bind((Ipv6Addr::LOCALHOST, port))
+                .await
+                .context("bind IPv6 UDP relay loopback")?,
+        );
+
+        Ok(Self {
+            tcp_v4,
+            tcp_v6,
+            udp_v4,
+            udp_v6,
+            port,
+        })
+    }
+
+    fn port(&self) -> u16 {
+        self.port
+    }
+
+    async fn serve(
+        &self,
+        port_map: PortMap,
+        udp_port_map: UdpPortMap,
+        udp_token_map: UdpTokenMap,
+        udp_cookie_map: UdpCookieMap,
+        udp_sessions: UdpSessions,
+        shared: Arc<Shared>,
+    ) -> Result<()> {
+        let mut udp_buf = vec![0u8; 65_535];
+        let mut udp6_buf = vec![0u8; 65_535];
+        let udp4_context = UdpRelayContext {
+            relay: UdpResponseRelay::Token(self.udp_v4.clone()),
+            ports: udp_port_map.clone(),
+            tokens: udp_token_map.clone(),
+            cookies: udp_cookie_map.clone(),
+            sessions: udp_sessions.clone(),
+            shared: shared.clone(),
+        };
+        let udp6_context = UdpRelayContext {
+            relay: UdpResponseRelay::Ipv6(self.udp_v6.clone()),
+            ports: udp_port_map,
+            tokens: udp_token_map,
+            cookies: udp_cookie_map,
+            sessions: udp_sessions,
+            shared: shared.clone(),
+        };
+
+        loop {
+            tokio::select! {
+                accepted = self.tcp_v4.accept() => {
+                    let (stream, peer) = accepted?;
+                    spawn_tcp_relay(stream, peer, port_map.clone(), shared.clone());
+                }
+                accepted = self.tcp_v6.accept() => {
+                    let (stream, peer) = accepted?;
+                    spawn_tcp_relay(stream, peer, port_map.clone(), shared.clone());
+                }
+                received = self.udp_v4.recv(&mut udp_buf) => {
+                    let (len, peer, token) = received?;
+                    spawn_udp_relay(
+                        udp_buf[..len].to_vec(),
+                        peer,
+                        UdpCorrelation::Token(token),
+                        udp4_context.clone(),
+                    );
+                }
+                received = self.udp_v6.recv_from(&mut udp6_buf) => {
+                    let (len, peer) = received?;
+                    spawn_udp_relay(
+                        udp6_buf[..len].to_vec(),
+                        peer,
+                        UdpCorrelation::Port(relay_key_for_peer(peer)),
+                        udp6_context.clone(),
+                    );
+                }
+            }
+        }
+    }
+}
+
 impl UdpRelaySocket {
     fn bind(port: u16) -> Result<Self> {
         let fd = socket(
@@ -805,24 +981,9 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
 
     let _ = &args;
 
-    // ─── Fake-IP DNS server ──────────────────────────────────────────────
-    let dns = Arc::new(
-        DnsResolver::with_state(
-            &cfg.daemon.fake_ip_cidr,
-            &cfg.daemon.fake_ip6_cidr,
-            std::path::Path::new(state::RUNTIME_DIR)
-                .join("fake-dns.json")
-                .as_path(),
-        )
-        .context("initialize fake-IP DNS resolver")?,
-    );
-    let dns_server = dns.clone().bind(cfg.daemon.dns_port).await?;
-    tokio::spawn(async move {
-        if let Err(e) = dns_server.serve().await {
-            warn!(error = %e, "DNS server exited");
-        }
-    });
-    let dns = Some(dns);
+    // Bind command-scoped data-plane resources before eBPF attachment. They
+    // still run under the daemon today, but already share one drop boundary.
+    let session_runtime = SessionRuntime::bind(&cfg).await?;
 
     // Shared between Shared{} (relay reads), AppState (HTTP register
     // endpoints write), and the `heimdall run` flow. Initialised here
@@ -861,22 +1022,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
         .await
         .with_context(|| format!("bind control API on {api_listen}"))?;
 
-    // Bind the complete relay endpoint before loading or attaching eBPF. The
-    // IPv4 TCP listener asks the kernel for an unused port; every sibling
-    // listener and the map below then use that same per-runtime value.
-    let relay_v4 = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .await
-        .context("bind IPv4 relay loopback")?;
-    let relay_port = relay_v4.local_addr()?.port();
-    let relay_v6 = TcpListener::bind((Ipv6Addr::LOCALHOST, relay_port))
-        .await
-        .context("bind IPv6 relay loopback")?;
-    let udp_relay = Arc::new(UdpRelaySocket::bind(relay_port)?);
-    let udp_v6 = Arc::new(
-        UdpSocket::bind((Ipv6Addr::LOCALHOST, relay_port))
-            .await
-            .context("bind IPv6 UDP relay loopback")?,
-    );
+    let relay_port = session_runtime.relay_port();
     daemon_health.write().relay_port = relay_port;
     tokio::spawn(async move {
         if let Err(e) = api::serve(app_state, api_listener).await {
@@ -889,7 +1035,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
         upstreams,
         capture,
         relay_tls,
-        dns,
+        dns: Some(session_runtime.dns.clone()),
         cli_overrides: cli_overrides.clone(),
         event_clients: event_clients.clone(),
     });
@@ -1397,7 +1543,8 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
     link_transaction.commit();
     daemon_health.write().ready = true;
     info!("persistent eBPF link generation committed");
-    info!(ipv4 = %relay_v4.local_addr()?, ipv6 = %relay_v6.local_addr()?, "heimdall ready");
+    let (relay_v4, relay_v6) = session_runtime.relay_addresses()?;
+    info!(ipv4 = %relay_v4, ipv6 = %relay_v6, "heimdall ready");
 
     // ─── systemd notify: READY + WATCHDOG ─────────────────────────────────
     // `READY=1` lets `Type=notify` units depending on heimdall (e.g. a
@@ -1434,51 +1581,16 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
         debug!("systemd WATCHDOG_USEC unset; no heartbeat");
     }
 
-    let mut udp_buf = vec![0u8; 65_535];
-    let mut udp6_buf = vec![0u8; 65_535];
-    let udp4_context = UdpRelayContext {
-        relay: UdpResponseRelay::Token(udp_relay.clone()),
-        ports: udp_port_map.clone(),
-        tokens: udp_token_map.clone(),
-        cookies: udp_cookie_map.clone(),
-        sessions: udp_sessions.clone(),
-        shared: shared.clone(),
-    };
-    let udp6_context = UdpRelayContext {
-        relay: UdpResponseRelay::Ipv6(udp_v6.clone()),
-        ports: udp_port_map,
-        tokens: udp_token_map,
-        cookies: udp_cookie_map,
-        sessions: udp_sessions,
-        shared: shared.clone(),
-    };
-    loop {
-        tokio::select! {
-            accepted = relay_v4.accept() => {
-                let (stream, peer) = accepted?;
-                spawn_tcp_relay(stream, peer, port_map.clone(), shared.clone());
-            }
-            accepted = relay_v6.accept() => {
-                let (stream, peer) = accepted?;
-                spawn_tcp_relay(stream, peer, port_map.clone(), shared.clone());
-            }
-            received = udp_relay.recv(&mut udp_buf) => {
-                let (len, peer, token) = received?;
-                spawn_udp_relay(
-                    udp_buf[..len].to_vec(), peer, UdpCorrelation::Token(token), udp4_context.clone()
-                );
-            }
-            received = udp_v6.recv_from(&mut udp6_buf) => {
-                let (len, peer) = received?;
-                spawn_udp_relay(
-                    udp6_buf[..len].to_vec(),
-                    peer,
-                    UdpCorrelation::Port(relay_key_for_peer(peer)),
-                    udp6_context.clone(),
-                );
-            }
-        }
-    }
+    session_runtime
+        .serve(
+            port_map,
+            udp_port_map,
+            udp_token_map,
+            udp_cookie_map,
+            udp_sessions,
+            shared,
+        )
+        .await
 }
 
 fn spawn_tcp_relay(stream: TcpStream, peer: SocketAddr, map: PortMap, shared: Arc<Shared>) {
