@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Heimdall Bifröst mark</title>
+  <desc id="desc">A guarded navy arch framing a spectrum path that crosses through it.</desc>
+
+  <path
+    d="M49 228V111a79 79 0 0 1 158 0v117"
+    fill="none"
+    stroke="#132A62"
+    stroke-width="26"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <g fill="none" stroke-width="12" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M20 236c44-27 58-52 58-78 0-20 13-33 34-42" stroke="#7148D9" />
+    <path d="M43 236c40-29 52-53 52-78 0-19 12-32 22-42" stroke="#3476E8" />
+    <path d="M66 236c34-29 45-53 45-78 0-18 9-31 15-42" stroke="#18B9D1" />
+    <path d="M89 236c28-28 37-52 37-78 0-18 3-30 3-42" stroke="#20B779" />
+    <path d="M112 236c22-28 29-52 29-78 0-18-3-30-3-42" stroke="#E6B52A" />
+    <path d="M135 236c16-28 22-52 22-78 0-18-9-31-15-42" stroke="#EE7D31" />
+    <path d="M158 236c10-29 15-53 15-78 0-19-12-32-22-42" stroke="#E54B64" />
+  </g>
+</svg>

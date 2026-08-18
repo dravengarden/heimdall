@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/heimdall-hero.svg" alt="Heimdall — command-scoped egress proxy for CLI tools and AI agents" width="100%">
+  <img src="docs/assets/heimdall-hero.svg" alt="Heimdall — a guarded Bifröst crossing for command-scoped CLI egress" width="100%">
 </p>
 
 <h1 align="center">Heimdall</h1>
@@ -9,17 +9,21 @@
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-2563eb.svg" alt="Apache 2.0 license"></a>
-  <img src="https://img.shields.io/badge/backend-Rust-dea584.svg" alt="Rust backend">
-  <img src="https://img.shields.io/badge/kernel-eBPF-7c3aed.svg" alt="eBPF kernel hooks">
-  <img src="https://img.shields.io/badge/platform-Linux-111827.svg" alt="Linux platform">
-  <a href="ROADMAP.md"><img src="https://img.shields.io/badge/status-alpha-f59e0b.svg" alt="Alpha status and roadmap"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-132A62.svg" alt="Apache 2.0 license"></a>
+  <img src="https://img.shields.io/badge/backend-Rust-132A62.svg" alt="Rust backend">
+  <img src="https://img.shields.io/badge/kernel-eBPF-3476E8.svg" alt="eBPF kernel hooks">
+  <img src="https://img.shields.io/badge/platform-Linux-20B779.svg" alt="Linux platform">
+  <a href="ROADMAP.md"><img src="https://img.shields.io/badge/status-alpha-E6B52A.svg" alt="Alpha status and roadmap"></a>
 </p>
 
 Heimdall runs one command, and its entire descendant process tree, through a
 named SOCKS5 egress policy. It is designed for terminal workflows where a
 single command needs controlled routing without changing shell-wide proxy
 environment variables or using `LD_PRELOAD`.
+
+The mark uses Bifröst as a boundary metaphor: the navy arch is the guarded
+crossing, and the spectrum path is the route selected by policy. It describes
+the product's scope and visibility; Heimdall is not a general-purpose VPN.
 
 > [!WARNING]
 > Heimdall is pre-1.0 software. The command wrapper is usable today, but

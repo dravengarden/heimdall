@@ -1,25 +1,27 @@
 :root {
   color-scheme: light;
-  --ink-950: #050b19;
-  --ink-900: #071126;
-  --ink-850: #0a1730;
-  --ink-800: #0d1d3b;
-  --ink-700: #182c53;
-  --paper: #f6f8fc;
-  --panel: #ffffff;
-  --panel-tint: #eef3fb;
-  --line: #dbe4f1;
-  --text: #10203a;
-  --muted: #617089;
-  --faint: #8a98ad;
-  --cyan: #22cfc1;
-  --cyan-soft: #a3f2e7;
-  --violet: #6557e8;
-  --blue: #2a4fb1;
-  --amber: #ffb21b;
-  --coral: #ff6d57;
-  --shadow: 0 24px 60px rgba(13, 29, 59, 0.12);
-  --shadow-soft: 0 12px 30px rgba(13, 29, 59, 0.08);
+  --ink-950: #081536;
+  --ink-900: #132a62;
+  --ink-850: #1b3977;
+  --ink-800: #24488a;
+  --ink-700: #36568d;
+  --paper: #f7f4ed;
+  --panel: #fffdf8;
+  --panel-tint: #eef2f5;
+  --line: #d9dedc;
+  --text: #18263f;
+  --muted: #5c697a;
+  --faint: #89939f;
+  --cyan: #18b9d1;
+  --cyan-soft: #b6edf0;
+  --violet: #7148d9;
+  --blue: #2453b6;
+  --amber: #e6b52a;
+  --coral: #e54b64;
+  --green: #20b779;
+  --orange: #ee7d31;
+  --shadow: 0 24px 60px rgba(19, 42, 98, 0.12);
+  --shadow-soft: 0 12px 30px rgba(19, 42, 98, 0.08);
   --radius-lg: 28px;
   --radius-md: 18px;
   --radius-sm: 12px;
@@ -98,8 +100,8 @@ button {
   position: sticky;
   z-index: 30;
   top: 0;
-  border-bottom: 1px solid rgba(173, 207, 244, 0.14);
-  background: rgba(7, 17, 38, 0.94);
+  border-bottom: 1px solid rgba(214, 235, 246, 0.16);
+  background: rgba(19, 42, 98, 0.96);
   color: #eef5ff;
   backdrop-filter: blur(18px);
 }
@@ -209,9 +211,7 @@ button {
 .hero::before {
   position: absolute;
   inset: 0;
-  background:
-    radial-gradient(circle at 79% 20%, rgba(101, 87, 232, 0.24), transparent 28%),
-    radial-gradient(circle at 37% 84%, rgba(34, 207, 193, 0.14), transparent 28%);
+  background: var(--ink-900);
   content: "";
   pointer-events: none;
 }
@@ -224,7 +224,7 @@ button {
   background-size: 44px 44px;
   mask-image: linear-gradient(to bottom, black, transparent 88%);
   content: "";
-  opacity: 0.44;
+  opacity: 0.24;
   pointer-events: none;
 }
 
@@ -694,7 +694,7 @@ button {
 }
 
 .architecture-section {
-  background: var(--ink-900);
+  background: var(--ink-950);
   color: #edf5ff;
 }
 
@@ -754,7 +754,7 @@ button {
 
 .architecture-node.active {
   border-color: rgba(34, 207, 193, 0.55);
-  background: linear-gradient(160deg, rgba(34, 207, 193, 0.14), rgba(101, 87, 232, 0.12));
+  background: rgba(24, 185, 209, 0.12);
 }
 
 .architecture-node small {
@@ -1258,7 +1258,9 @@ code {
   width: 90px;
   height: 90px;
   border-radius: 22px;
-  background: var(--ink-900);
+  padding: 6px;
+  border: 1px solid var(--line);
+  background: var(--paper);
 }
 
 .doc-mark-card strong {
@@ -1804,7 +1806,7 @@ code {
 
 .docs-page .architecture-node.active {
   border-color: #64d8d0;
-  background: linear-gradient(160deg, #e5faf7, #eef0ff);
+  background: #e8f5f3;
 }
 
 .docs-page .architecture-node small {
@@ -1889,5 +1891,135 @@ code {
 
   .architecture-link {
     text-align: left;
+  }
+}
+
+/* Bifröst mark: a flat, guarded crossing that stays legible at every size. */
+.hero-docs::before {
+  background: var(--ink-900);
+}
+
+.hero-docs::after {
+  display: block;
+  inset: auto 0 0;
+  height: 4px;
+  background: linear-gradient(
+    90deg,
+    var(--violet) 0 14%,
+    var(--blue) 14% 28%,
+    var(--cyan) 28% 42%,
+    var(--green) 42% 56%,
+    var(--amber) 56% 70%,
+    var(--orange) 70% 84%,
+    var(--coral) 84% 100%
+  );
+  mask-image: none;
+  opacity: 1;
+}
+
+.hero-mark-card {
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 22px;
+  padding: 14px;
+  border: 1px solid rgba(214, 235, 246, 0.18);
+  border-radius: 20px;
+  background: rgba(8, 21, 54, 0.52);
+}
+
+.hero-mark-frame {
+  width: 104px;
+  height: 104px;
+  padding: 8px;
+  border: 1px solid rgba(214, 235, 246, 0.55);
+  border-radius: 16px;
+  background: var(--paper);
+}
+
+.hero-mark-frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.hero-mark-kicker {
+  display: block;
+  color: var(--cyan-soft);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.hero-mark-card strong {
+  display: block;
+  margin-top: 8px;
+  color: #f3f7ff;
+  font-size: 1.02rem;
+  line-height: 1.25;
+}
+
+.hero-mark-card p {
+  margin: 7px 0 0;
+  color: #9fb5d3;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.architecture-section {
+  border-top: 4px solid transparent;
+  border-image: linear-gradient(
+      90deg,
+      var(--violet),
+      var(--blue),
+      var(--cyan),
+      var(--green),
+      var(--amber),
+      var(--orange),
+      var(--coral)
+    )
+    1;
+}
+
+.architecture-node.active {
+  border-color: rgba(24, 185, 209, 0.64);
+  background: rgba(24, 185, 209, 0.12);
+}
+
+.docs-page .architecture-node.active {
+  border-color: #56c9c1;
+  background: #e8f5f3;
+}
+
+.architecture-node small {
+  color: #a9c0db;
+}
+
+.docs-page .architecture-node small {
+  color: #587298;
+}
+
+@media (max-width: 620px) {
+  .hero-mark-card {
+    grid-template-columns: 82px minmax(0, 1fr);
+    gap: 12px;
+    padding: 11px;
+  }
+
+  .hero-mark-frame {
+    width: 82px;
+    height: 82px;
+    padding: 6px;
+  }
+
+  .hero-mark-card strong {
+    font-size: 0.9rem;
+  }
+
+  .hero-mark-card p {
+    font-size: 0.72rem;
   }
 }

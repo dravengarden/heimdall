@@ -3,9 +3,9 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#071126">
+    <meta name="theme-color" content="#132A62">
     <meta name="description" content="Heimdall documentation: run one command through an explicit TCP/UDP proxy and understand transparent TLS inspection, policy, DNS, and relay boundaries.">
-    <link rel="icon" href="assets/favicon.png" type="image/png">
+    <link rel="icon" href="assets/heimdall-mark.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
     <link rel="stylesheet" href="styles.css">
     <title>Heimdall docs — command-scoped egress</title>
@@ -16,10 +16,10 @@
     <header class="site-header">
       <div class="container nav-shell">
         <a class="brand" href="index.html">
-          <img class="brand-mark" src="assets/heimdall-logo.png" alt="">
+          <img class="brand-mark" src="assets/heimdall-mark.svg" alt="">
           <span class="brand-copy">
             <span class="brand-name">Heimdall</span>
-            <span class="brand-tagline">documentation</span>
+            <span class="brand-tagline">docs / guarded path</span>
           </span>
         </a>
 
@@ -45,7 +45,7 @@
         <div class="container hero-grid">
           <div class="hero-content">
             <div class="hero-identity">
-              <img src="assets/heimdall-logo.png" alt="Heimdall guardian mark">
+              <img src="assets/heimdall-mark.svg" alt="Heimdall Bifröst mark">
               <span>Heimdall documentation</span>
             </div>
             <h1>Command-scoped egress, <em>explained.</em></h1>
@@ -62,6 +62,14 @@
           </div>
 
           <div class="hero-quickstart">
+            <div class="hero-mark-card">
+              <div class="hero-mark-frame"><img src="assets/heimdall-mark.svg" alt=""></div>
+              <div>
+                <span class="hero-mark-kicker">Bifröst / guarded crossing</span>
+                <strong>One scoped command. One visible boundary.</strong>
+                <p>The arch is the boundary; the spectrum path is the route under policy.</p>
+              </div>
+            </div>
             <div class="quickstart-heading"><span>01 / quick start</span><strong>Three commands to the first run</strong></div>
             <div class="code-card">
               <div class="code-card-head"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>terminal</span><button class="copy-button" type="button" data-copy="#quickstart-command">Copy</button></div>
@@ -165,7 +173,7 @@ heimdall run -- curl https://example.com</code></pre>
           </div>
 
           <div class="architecture-panel">
-            <div class="architecture-panel-head"><strong>heimdall / control + data plane</strong><span>fail closed while unavailable</span></div>
+            <div class="architecture-panel-head"><strong>heimdall / Bifröst control + data plane</strong><span>fail closed while unavailable</span></div>
             <div class="architecture-flow">
               <div class="architecture-node active"><small>01 / CLI</small><strong>command scope</strong><span>One transient cgroup.</span></div>
               <div class="architecture-arrow" aria-hidden="true">→</div>
@@ -184,7 +192,7 @@ heimdall run -- curl https://example.com</code></pre>
 
     <footer class="site-footer">
       <div class="container footer-inner">
-        <a class="footer-brand" href="index.html"><img src="assets/heimdall-logo.png" alt="">Heimdall</a>
+        <a class="footer-brand" href="index.html"><img src="assets/heimdall-mark.svg" alt="">Heimdall</a>
         <span class="footer-copy">Command-scoped egress for Linux. Apache-2.0.</span>
         <nav class="footer-links" aria-label="Footer navigation">
           <a href="docs/architecture.html">Docs</a>
