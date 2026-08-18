@@ -22,8 +22,9 @@ error `code` values before messages. Execute `actions` as argv arrays; never
 join or evaluate them as shell text.
 
 Require `daemon.health.contract` to be `heimdall.daemon.health/v2`,
-`daemon.health.ready` to be true, and `daemon.health.decrypt_mode` to match
-`config.decrypt.mode`. Treat `daemon_unreachable`, `daemon_contract_mismatch`,
+`daemon.health.ready` to be true, `daemon.health.relay_port` to be positive,
+and `daemon.health.decrypt_mode` to match `config.decrypt.mode`. Treat
+`daemon_unreachable`, `daemon_contract_mismatch`,
 `daemon_not_ready`, and `daemon_config_mismatch` as hard stops before executing
 a wrapped command.
 

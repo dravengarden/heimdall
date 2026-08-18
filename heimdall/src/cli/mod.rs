@@ -471,7 +471,7 @@ pub mod agent {
                 ),
                 "Restart the daemon with the same --config path reported by this document.".into(),
             ),
-            Some(report) if !report.ready => (
+            Some(report) if !report.ready || report.relay_port == 0 => (
                 "daemon_not_ready",
                 "the daemon is reachable but has not completed eBPF and relay initialization"
                     .into(),
@@ -762,6 +762,7 @@ pub mod agent {
             let health = crate::api::HealthReport {
                 contract: "heimdall.daemon.health/v2".into(),
                 ready: true,
+                relay_port: 12345,
                 decrypt_mode: "off".into(),
                 runtime: None,
             };
@@ -776,6 +777,7 @@ pub mod agent {
             let health = crate::api::HealthReport {
                 contract: "heimdall.daemon.health/v1".into(),
                 ready: true,
+                relay_port: 12345,
                 decrypt_mode: "off".into(),
                 runtime: None,
             };
@@ -789,6 +791,7 @@ pub mod agent {
             let health = crate::api::HealthReport {
                 contract: "heimdall.daemon.health/v2".into(),
                 ready: false,
+                relay_port: 0,
                 decrypt_mode: "off".into(),
                 runtime: None,
             };

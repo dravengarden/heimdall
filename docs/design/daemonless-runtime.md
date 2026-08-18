@@ -107,8 +107,9 @@ backend.
 
 ## Per-run kernel state
 
-The current fixed relay port and `/sys/fs/bpf/heimdall` global pins are not
-compatible with isolated daemonless runs. The new backend uses:
+The fixed relay-port prerequisite has been removed from the current runtime;
+global `/sys/fs/bpf/heimdall` pins and shared listeners are still incompatible
+with isolated daemonless runs. The new backend uses:
 
 - kernel-assigned loopback TCP, UDP, and DNS ports;
 - one transient cgroup per run;
@@ -234,8 +235,9 @@ contract; `heimdall run` must never auto-enable it.
 
 ### Phase 4: remove the old daemon contract
 
-- Remove `heimdall daemon`, its service unit, fixed relay ports, persistent
-  journal, global bpffs state, daemon health contract, and orphan-GC logic.
+- Remove `heimdall daemon`, its service unit, the shared relay endpoint,
+  persistent journal, global bpffs state, daemon health contract, and
+  orphan-GC logic.
 - Bump `heimdall agent` to a new contract version in the same change.
 - Update installation and upgrade instructions to remove the old service.
 

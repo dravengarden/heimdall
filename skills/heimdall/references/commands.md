@@ -20,8 +20,8 @@ heimdall status --json
 error categories, and next actions represented as argv arrays. Exit 0 means
 ready, 1 means not ready, and 2 means CLI usage error. It never mutates state.
 Require its embedded `heimdall.daemon.health/v2` document to be ready and to
-match the configured decrypt mode; runtime capture additionally requires a
-positive attached-image count.
+publish a positive `relay_port`, and require it to match the configured decrypt
+mode; runtime capture additionally requires a positive attached-image count.
 Read `config.capture` and `config.decrypt` for normalized modes and limits;
 read both capture and decrypt capabilities before consuming a file. Branch on
 the open record's `payload`: `opaque_transport` is not decrypted, while

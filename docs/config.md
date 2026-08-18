@@ -217,9 +217,10 @@ filename.
 
 ## Daemon settings
 
-Most installations can omit this section. The internal relay is intentionally
-fixed to IPv4 and IPv6 loopback port 12345 so configuration cannot drift from
-the eBPF redirect target.
+Most installations can omit this section. The internal relay asks the kernel
+for an unused port at startup, binds the same value on its IPv4/IPv6 TCP/UDP
+loopback listeners, and writes that value into the eBPF redirect map. It is not
+user-configurable.
 
 ```toml
 [daemon]

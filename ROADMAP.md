@@ -45,15 +45,20 @@ proxy and its evidence before adding a larger control plane.
 
 ### 1. Daemonless command lifecycle
 
+The fixed relay-port prerequisite has been removed: the current runtime now
+binds one kernel-assigned IPv4/IPv6 TCP/UDP relay port and writes it into eBPF.
+Per-run listener/map ownership and transient authorization are still pending.
+
 - Move relay, DNS, TLS, capture, and process-tree ownership into a foreground
   session created by `heimdall run`.
-- Replace fixed relay ports, global registrations, and persistent bpffs pins
-  with per-run ports, cgroups, maps, links, and a private control socket.
+- Replace the shared relay endpoint, global registrations, and persistent bpffs
+  pins with per-run ports, cgroups, maps, links, and a private control socket.
 - Acquire Linux interception privilege through a narrow per-run setup worker;
   never grant the whole CLI persistent capabilities.
 - Require zero Heimdall processes, listeners, cgroups, links, maps, and sockets
   after the wrapped process tree exits.
 - Keep any persistent acceleration mode explicit and opt-in; never start it
+  implicitly.
   automatically.
 
 Acceptance target: one installed binary runs proxy-only or TLS-inspected

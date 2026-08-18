@@ -61,7 +61,6 @@ pub struct UdpFlowKey {
 /// without depending on libc.
 pub const FAMILY_V4: u8 = 4;
 pub const FAMILY_V6: u8 = 6;
-pub const RELAY_PORT: u16 = 12345;
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug)]

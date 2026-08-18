@@ -118,16 +118,17 @@ remember to ask for more if needed.
   changing existing field semantics requires a new contract version.
 - `heimdall init` preserves `config.<ext>` unless `--force`. Don't change this:
   losing live config to a doc refresh has bitten the user already.
-- The internal relay binds fixed IPv4 and IPv6 loopback sockets on port 12345;
-  it is deliberately not configurable or exposed on a wildcard address.
+- The internal relay uses one kernel-assigned port shared by its IPv4/IPv6
+  TCP/UDP loopback listeners. The active port is published by daemon health
+  and written to the eBPF map; it is not user-configurable.
 - Registered cgroups have no implicit destination bypass except relay
   self-protection and policy-selected system DNS. Express private-network
   exceptions as ordered `direct` rules; fake-IP ranges must remain eligible
   for relay redirection.
-- v2raya (or any other transparent-host-proxy) on the same node will
-  TPROXY-trap heimdall's relay traffic unless you whitelist
-  `dst=relay_ip:12345` in the host's iptables/ip6tables. Document
-  this in the deploy notes for any environment that runs both.
+- v2raya (or any other transparent-host-proxy) on the same node can
+  TPROXY-trap Heimdall's loopback relay traffic. Document a loopback
+  self-traffic exclusion in deploy notes for any environment that runs both;
+  do not hard-code a relay port because Heimdall allocates it at runtime.
 
 ## When the agent doesn't know what to do
 

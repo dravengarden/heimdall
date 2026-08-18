@@ -579,7 +579,6 @@ dependencies = [
 name = "heimdall-config"
 version = "0.1.0"
 dependencies = [
- "heimdall-common",
  "serde",
  "serde_json",
  "serde_yaml_ng",

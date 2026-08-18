@@ -95,6 +95,7 @@ as_tester heimdall agent \
     and .capabilities.decrypt.relay_library_independent
     and .daemon.health.contract == "heimdall.daemon.health/v2"
     and .daemon.health.ready
+    and .daemon.health.relay_port > 0
     and .daemon.health.decrypt_mode == "off"
     and .capabilities.udp.connected
     and .capabilities.udp.association_reuse
@@ -137,6 +138,7 @@ as_tester heimdall agent \
 as_tester heimdall status --json \
   | jq -e '.daemon_reachable
     and .daemon_ready
+    and (.relay_listen | test("^127\\.0\\.0\\.1:[0-9]+ \\+ \\[::1\\]:[0-9]+$"))
     and .daemon_decrypt_mode == "off"
     and .daemon_config_matches'
 

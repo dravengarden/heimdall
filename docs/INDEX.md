@@ -15,7 +15,7 @@ stable contracts, planning, design material, and operational guidance.
 
 - [`README.md`](../README.md) — Project overview and quick start
 - [`ROADMAP.md`](../ROADMAP.md) — Public status, active development tracks, planned macOS support, and non-goals
-- [`architecture.md`](architecture.md) — CLI, transactional eBPF lifecycle, DNS, fail-closed UDP correlation, capture, and verified runtime/relay TLS boundaries
+- [`architecture.md`](architecture.md) — CLI, transactional eBPF lifecycle, map-selected relay endpoint, DNS, fail-closed UDP correlation, capture, and verified runtime/relay TLS boundaries
 - [`design/daemonless-runtime.md`](design/daemonless-runtime.md) — Accepted foreground per-run architecture, privilege boundary, lifecycle, optional UI, migration, and acceptance criteria
 - [`design/agent-event-log.md`](design/agent-event-log.md) — Phase 1 JSONL/run schemas and CLI plus planned blobs and daemonless ownership
 - [`runbook.md`](runbook.md) — Runbook
@@ -32,6 +32,6 @@ stable contracts, planning, design material, and operational guidance.
 
 ### Design documents
 
-- [`design/daemonless-runtime.md`](design/daemonless-runtime.md) — Accepted replacement for the persistent daemon; not yet implemented
+- [`design/daemonless-runtime.md`](design/daemonless-runtime.md) — Accepted replacement for the persistent daemon; dynamic relay-port groundwork is implemented, while per-run ownership remains in development
 - [`design/agent-event-log.md`](design/agent-event-log.md) — Agent-first event storage and CLI contract; lifecycle and TCP/UDP metadata are implemented in Phase 1
 - [`../skills/heimdall/references/events.md`](../skills/heimdall/references/events.md) — Agent-facing schema map and safe parsing rules

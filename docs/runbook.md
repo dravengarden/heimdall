@@ -57,9 +57,9 @@ systemctl status heimdall
 journalctl -u heimdall -n 100
 ```
 
-The relay must report `127.0.0.1:12345 + [::1]:12345`; fake DNS uses both
-families on `daemon.dns_port`, and the control API uses the configured loopback
-`daemon.api_listen`.
+The relay must report matching kernel-assigned IPv4/IPv6 ports; fake DNS uses
+both families on `daemon.dns_port`, and the control API uses the configured
+loopback `daemon.api_listen`.
 
 ## Smoke test
 
@@ -121,6 +121,7 @@ It is read-only and always prints exactly one JSON value before exiting:
     "health": {
       "contract": "heimdall.daemon.health/v2",
       "ready": true,
+      "relay_port": 42137,
       "decrypt_mode": "off"
     },
     "error": null

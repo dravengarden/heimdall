@@ -36,10 +36,11 @@ maintains a local cgroup-to-policy registry, runs the TCP/UDP relay and fake-IP
 DNS, and reaps abandoned CLI cgroups. Its default eBPF policy is always bypass, so
 an unregistered process cannot be redirected accidentally.
 
-The internal relay binds fixed IPv4 and IPv6 loopback sockets on port 12345;
-fake DNS binds both loopback families over UDP and TCP before readiness. These
-data-plane endpoints cannot be exposed or made inconsistent with eBPF by
-configuration.
+The internal relay binds IPv4 and IPv6 TCP/UDP loopback sockets on one
+kernel-assigned port and publishes that port through daemon health and the
+eBPF redirect map. Fake DNS binds both loopback families over UDP and TCP
+before readiness. These data-plane endpoints cannot be exposed or made
+inconsistent with eBPF by configuration.
 
 The configuration contains named outbounds and command-selected policies with
 ordered destination rules. It has no workload selector language or

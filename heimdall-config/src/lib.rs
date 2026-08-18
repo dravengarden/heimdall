@@ -1107,24 +1107,15 @@ fn validate_runtime(errors: &mut Vec<ConfigDiagnostic>, runtime: &Runtime) {
                 "Use 127.0.0.1:9999 or [::1]:9999.",
             );
         }
-        if api.port() == runtime.dns_port || api.port() == heimdall_common::RELAY_PORT {
+        if api.port() == runtime.dns_port {
             push(
                 errors,
                 "duplicate_daemon_port",
                 "$.daemon.api_listen",
                 "the control API port conflicts with an internal listener",
-                "Use a port distinct from daemon.dns_port and 12345.",
+                "Use a port distinct from daemon.dns_port.",
             );
         }
-    }
-    if runtime.dns_port == heimdall_common::RELAY_PORT {
-        push(
-            errors,
-            "duplicate_daemon_port",
-            "$.daemon.dns_port",
-            "DNS cannot use the internal relay port 12345",
-            "Use an unused local port such as 5358.",
-        );
     }
     let cgroup = Path::new(&runtime.cgroup);
     if !cgroup.is_absolute() || !cgroup.starts_with("/sys/fs/cgroup") {
@@ -1655,10 +1646,10 @@ action = { type = "direct" }
     }
 
     #[test]
-    fn rejects_exposed_or_conflicting_daemon_ports() {
+    fn rejects_exposed_or_conflicting_control_port() {
         let cfg: HeimdallConfig = toml::from_str(&valid_toml().replace(
             "[capture]",
-            "[daemon]\ndns_port = 12345\napi_listen = \"0.0.0.0:12345\"\n\n[capture]",
+            "[daemon]\ndns_port = 5358\napi_listen = \"0.0.0.0:5358\"\n\n[capture]",
         ))
         .unwrap();
         let diagnostics = cfg.validate().unwrap_err().diagnostics();
@@ -1672,6 +1663,16 @@ action = { type = "direct" }
                 .iter()
                 .any(|item| item.code == "duplicate_daemon_port")
         );
+    }
+
+    #[test]
+    fn accepts_any_nonzero_dns_port_when_control_does_not_conflict() {
+        let cfg: HeimdallConfig = toml::from_str(&valid_toml().replace(
+            "[capture]",
+            "[daemon]\ndns_port = 12345\napi_listen = \"127.0.0.1:9999\"\n\n[capture]",
+        ))
+        .unwrap();
+        cfg.validate().unwrap();
     }
 
     #[test]

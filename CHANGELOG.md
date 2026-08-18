@@ -6,6 +6,10 @@ All notable changes to heimdall are documented here.
 
 ### Added
 
+- Replace the machine-global fixed relay port with one kernel-assigned port
+  published through daemon health and the eBPF redirect map, preparing relay
+  ownership for isolated foreground sessions.
+
 - Add Phase 1 of the agent-first event store: every `heimdall run` writes a
   user-owned `heimdall.run/v1` manifest and ordered `heimdall.event/v1` JSONL
   lifecycle/TCP/UDP metadata, with bundled schemas, writer-owned rotation, digest

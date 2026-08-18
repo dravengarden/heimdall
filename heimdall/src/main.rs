@@ -8,7 +8,7 @@
 //!   process connect(external_ip:port)
 //!       │
 //!       │  [eBPF BPF_CGROUP_INET4_CONNECT]
-//!       │  Rewrites dst → relay_ip:12345
+//!       │  Rewrites dst → map-selected loopback relay endpoint
 //!       │  Saves (orig, cgroup_id) in COOKIE_MAP[socket_cookie]
 //!       │
 //!       │  [eBPF BPF_CGROUP_INET_EGRESS on first SYN]
@@ -64,7 +64,7 @@ use aya::{
     },
 };
 use clap::Parser;
-use heimdall_common::{FAMILY_V4, FAMILY_V6, OrigDst, RELAY_PORT, relay_key};
+use heimdall_common::{FAMILY_V4, FAMILY_V6, OrigDst, relay_key};
 use heimdall_config::{Action, HeimdallConfig, Outbound, Socks5Auth, Socks5Outbound};
 use nix::sys::socket::{
     AddressFamily, ControlMessage, ControlMessageOwned, MsgFlags, SockFlag, SockType, SockaddrIn,
@@ -173,7 +173,7 @@ struct UdpRelaySocket {
 }
 
 impl UdpRelaySocket {
-    fn bind() -> Result<Self> {
+    fn bind(port: u16) -> Result<Self> {
         let fd = socket(
             AddressFamily::Inet,
             SockType::Datagram,
@@ -190,10 +190,7 @@ impl UdpRelaySocket {
             .context("bind UDP relay to loopback device")?;
         bind(
             fd.as_raw_fd(),
-            &SockaddrIn::from(std::net::SocketAddrV4::new(
-                Ipv4Addr::UNSPECIFIED,
-                RELAY_PORT,
-            )),
+            &SockaddrIn::from(std::net::SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)),
         )
         .context("bind UDP relay on IPv4 loopback range")?;
         Ok(Self {
@@ -838,6 +835,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
     let daemon_health = Arc::new(parking_lot::RwLock::new(api::HealthReport {
         contract: "heimdall.daemon.health/v2".into(),
         ready: false,
+        relay_port: 0,
         decrypt_mode: match cfg.decrypt.mode {
             heimdall_config::DecryptMode::Off => "off",
             heimdall_config::DecryptMode::Runtime => "runtime",
@@ -862,6 +860,24 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
     let api_listener = TcpListener::bind(api_listen)
         .await
         .with_context(|| format!("bind control API on {api_listen}"))?;
+
+    // Bind the complete relay endpoint before loading or attaching eBPF. The
+    // IPv4 TCP listener asks the kernel for an unused port; every sibling
+    // listener and the map below then use that same per-runtime value.
+    let relay_v4 = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .context("bind IPv4 relay loopback")?;
+    let relay_port = relay_v4.local_addr()?.port();
+    let relay_v6 = TcpListener::bind((Ipv6Addr::LOCALHOST, relay_port))
+        .await
+        .context("bind IPv6 relay loopback")?;
+    let udp_relay = Arc::new(UdpRelaySocket::bind(relay_port)?);
+    let udp_v6 = Arc::new(
+        UdpSocket::bind((Ipv6Addr::LOCALHOST, relay_port))
+            .await
+            .context("bind IPv6 UDP relay loopback")?,
+    );
+    daemon_health.write().relay_port = relay_port;
     tokio::spawn(async move {
         if let Err(e) = api::serve(app_state, api_listener).await {
             warn!(error = %e, "control API exited");
@@ -927,6 +943,17 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
             .set(0, relay6_bytes, 0)
             .context("failed to set relay IPv6 in BPF map")?;
         info!(relay_ip6 = %Ipv6Addr::LOCALHOST, "relay IPv6 written to BPF map");
+    }
+
+    {
+        let mut relay_port_map: Array<&mut aya::maps::MapData, u32> = Array::try_from(
+            bpf.map_mut("RELAY_PORT_MAP")
+                .context("RELAY_PORT_MAP not found")?,
+        )?;
+        relay_port_map
+            .set(0, u32::from(relay_port.to_be()), 0)
+            .context("failed to set relay port in BPF map")?;
+        info!(relay_port, "relay port written to BPF map");
     }
 
     // DNS_ADDR_V4 / DNS_ADDR_V6 / DNS_PORT_V6: where eBPF should
@@ -1367,21 +1394,6 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
         info!("orphan-cgroup GC spawned (interval 30s)");
     }
 
-    // ─── Relay listeners (IPv4 + IPv6 loopback) ────────────────────────
-    // Separate sockets avoid exposing the internal relay and do not depend on
-    // the host's IPV6_V6ONLY default.
-    let relay_v4 = TcpListener::bind((Ipv4Addr::LOCALHOST, RELAY_PORT))
-        .await
-        .context("bind IPv4 relay loopback")?;
-    let relay_v6 = TcpListener::bind((Ipv6Addr::LOCALHOST, RELAY_PORT))
-        .await
-        .context("bind IPv6 relay loopback")?;
-    let udp_relay = Arc::new(UdpRelaySocket::bind()?);
-    let udp_v6 = Arc::new(
-        UdpSocket::bind((Ipv6Addr::LOCALHOST, RELAY_PORT))
-            .await
-            .context("bind IPv6 UDP relay loopback")?,
-    );
     link_transaction.commit();
     daemon_health.write().ready = true;
     info!("persistent eBPF link generation committed");

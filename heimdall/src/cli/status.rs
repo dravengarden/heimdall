@@ -14,7 +14,7 @@ struct StatusJson<'a> {
     outbounds: usize,
     policies: usize,
     default_policy: &'a str,
-    relay_listen: &'static str,
+    relay_listen: Option<String>,
     dns_port: u16,
     control_listen: &'a str,
     daemon_reachable: bool,
@@ -43,6 +43,14 @@ pub async fn run(config_path: &Path, args: StatusArgs) -> Result<()> {
         .as_ref()
         .map(|health| health.decrypt_mode.as_str());
     let daemon_config_matches = daemon_decrypt_mode.map(|mode| mode == configured_decrypt_mode);
+    let relay_listen = daemon_health.as_ref().and_then(|health| {
+        (health.relay_port != 0).then(|| {
+            format!(
+                "127.0.0.1:{} + [::1]:{}",
+                health.relay_port, health.relay_port
+            )
+        })
+    });
 
     if args.json {
         println!(
@@ -52,7 +60,7 @@ pub async fn run(config_path: &Path, args: StatusArgs) -> Result<()> {
                 outbounds: cfg.proxy.outbounds.len(),
                 policies: cfg.proxy.policies.len(),
                 default_policy: &cfg.proxy.default_policy,
-                relay_listen: "127.0.0.1:12345 + [::1]:12345",
+                relay_listen,
                 dns_port: cfg.daemon.dns_port,
                 control_listen: &cfg.daemon.api_listen,
                 daemon_reachable,
@@ -68,7 +76,10 @@ pub async fn run(config_path: &Path, args: StatusArgs) -> Result<()> {
     println!("outbounds      {}", cfg.proxy.outbounds.len());
     println!("policies       {}", cfg.proxy.policies.len());
     println!("default policy {}", cfg.proxy.default_policy);
-    println!("relay listen   127.0.0.1:12345 + [::1]:12345");
+    println!(
+        "relay listen   {}",
+        relay_listen.as_deref().unwrap_or("unavailable")
+    );
     println!(
         "DNS port       {} (IPv4/IPv6 loopback)",
         cfg.daemon.dns_port

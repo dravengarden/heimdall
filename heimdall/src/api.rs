@@ -34,6 +34,7 @@ pub struct AppState {
 pub struct HealthReport {
     pub contract: String,
     pub ready: bool,
+    pub relay_port: u16,
     pub decrypt_mode: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime: Option<crate::tls_runtime::StartReport>,

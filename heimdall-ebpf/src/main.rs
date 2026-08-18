@@ -4,7 +4,7 @@
 //!
 //! 1. `connect4` (BPF_CGROUP_INET4_CONNECT)
 //!    Intercepts connect() syscalls from any process in the attached cgroup.
-//!    For registered cgroups, rewrites TCP to loopback:RELAY_PORT
+//!    For registered cgroups, rewrites TCP to the map-selected loopback relay.
 //!    and saves the original (ip, port) in COOKIE_MAP keyed by socket cookie.
 //!
 //! 2. `skb_egress` (BPF_CGROUP_INET_EGRESS)
@@ -37,8 +37,7 @@ use aya_ebpf::{
 };
 use heimdall_common::{
     DEFAULT_POLICY, FAMILY_V4, FAMILY_V6, OrigDst, POLICY_DNS_HIJACK, POLICY_DNS_SYSTEM,
-    POLICY_REDIRECT_OFF, POLICY_UDP_REJECT, RELAY_PORT, TAP_DATA_LEN, TapDir, TapEvent, UdpFlowKey,
-    relay_key,
+    POLICY_REDIRECT_OFF, POLICY_UDP_REJECT, TAP_DATA_LEN, TapDir, TapEvent, UdpFlowKey, relay_key,
 };
 
 const DNS_PORT: u16 = 53;
@@ -59,6 +58,12 @@ static RELAY_ADDR: Array<u32> = Array::pinned(2, 0);
 // 4×u32 array so it's a flat POD for the verifier.
 #[map]
 static RELAY_ADDR6: Array<[u8; 16]> = Array::pinned(1, 0);
+
+// Relay port in network byte order. Keeping this in a map lets each future
+// per-run eBPF object target its own kernel-assigned listener without baking a
+// machine-global port into the program.
+#[map]
+static RELAY_PORT_MAP: Array<u32> = Array::pinned(1, 0);
 
 // Heimdall fake-IP DNS endpoint, IPv4. Slot 0 = ip in network byte
 // order, slot 1 = port in network byte order (16-bit value stored in
@@ -149,6 +154,11 @@ fn policy_for(cgroup_id: u64) -> u8 {
     unsafe { CGROUP_POLICY.get(&cgroup_id) }
         .copied()
         .unwrap_or(DEFAULT_POLICY)
+}
+
+#[inline(always)]
+fn relay_port_be() -> Option<u16> {
+    RELAY_PORT_MAP.get(0).map(|value| *value as u16)
 }
 
 #[inline(always)]
@@ -310,8 +320,9 @@ fn try_connect4(ctx: SockAddrContext) -> Result<(), ()> {
         Some(ip) => *ip,
         None => return Ok(()),
     };
+    let relay_port_be = relay_port_be().ok_or(())?;
 
-    if dst_ip_be == relay_ip_be && u16::from_be(dst_port_be) == RELAY_PORT {
+    if dst_ip_be == relay_ip_be && dst_port_be == relay_port_be {
         return Ok(());
     }
 
@@ -390,7 +401,7 @@ fn try_connect4(ctx: SockAddrContext) -> Result<(), ()> {
         let _ = UDP_COOKIE_MAP.insert(&cookie, &orig, 0);
         unsafe {
             (*sa).user_ip4 = token_v4(token);
-            (*sa).user_port = u32::from(RELAY_PORT.to_be());
+            (*sa).user_port = u32::from(relay_port_be);
         }
         return Ok(());
     } else {
@@ -399,7 +410,7 @@ fn try_connect4(ctx: SockAddrContext) -> Result<(), ()> {
 
     unsafe {
         (*sa).user_ip4 = relay_ip_be;
-        (*sa).user_port = u32::from(RELAY_PORT.to_be());
+        (*sa).user_port = u32::from(relay_port_be);
     }
 
     Ok(())
@@ -409,7 +420,7 @@ fn try_connect4(ctx: SockAddrContext) -> Result<(), ()> {
 // connect6 — IPv6 sibling of connect4.
 //
 // Mirror logic: read user_ip6 + user_port from the sock_addr, consult
-// CGROUP_POLICY, then either bypass or rewrite to RELAY_ADDR6 + RELAY_PORT.
+// CGROUP_POLICY, then either bypass or rewrite to RELAY_ADDR6 + the mapped port.
 // Native IPv6 entries carry FAMILY_V6. IPv4-mapped destinations are
 // normalized to FAMILY_V4 so fake-IP lookup and SOCKS addressing retain the
 // application's real address family even when its runtime uses one v6 socket.
@@ -435,6 +446,7 @@ fn try_connect6(ctx: SockAddrContext) -> Result<(), ()> {
         Some(a) => *a,
         None => return Ok(()),
     };
+    let relay_port_be = relay_port_be().ok_or(())?;
 
     // Compose the on-wire 16-byte destination from the 4 BE u32s.
     let mut dst_addr = [0u8; 16];
@@ -447,7 +459,7 @@ fn try_connect6(ctx: SockAddrContext) -> Result<(), ()> {
     }
 
     // Self-loop check — already going to the relay's v6 address+port.
-    if dst_addr == relay6 && u16::from_be(dst_port_be) == RELAY_PORT {
+    if dst_addr == relay6 && dst_port_be == relay_port_be {
         return Ok(());
     }
 
@@ -518,7 +530,7 @@ fn try_connect6(ctx: SockAddrContext) -> Result<(), ()> {
             words[i] = u32::from_ne_bytes(b);
         }
         (*sa).user_ip6 = words;
-        (*sa).user_port = u32::from(RELAY_PORT.to_be());
+        (*sa).user_port = u32::from(relay_port_be);
     }
 
     Ok(())
@@ -670,8 +682,10 @@ pub fn udp6_bind(ctx: SockAddrContext) -> i32 {
 pub fn udp4_sendmsg(ctx: SockAddrContext) -> i32 {
     let sa = ctx.sock_addr;
     let dst_port_be = unsafe { (*sa).user_port as u16 };
-    if u16::from_be(dst_port_be) == RELAY_PORT && token_from_v4(unsafe { (*sa).user_ip4 }).is_some()
-    {
+    let Some(relay_port_be) = relay_port_be() else {
+        return 0;
+    };
+    if dst_port_be == relay_port_be && token_from_v4(unsafe { (*sa).user_ip4 }).is_some() {
         return 1;
     }
     let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
@@ -713,7 +727,7 @@ pub fn udp4_sendmsg(ctx: SockAddrContext) -> i32 {
     let _ = UDP_COOKIE_MAP.insert(&cookie, &orig, 0);
     unsafe {
         (*sa).user_ip4 = token_v4(token);
-        (*sa).user_port = u32::from(RELAY_PORT.to_be());
+        (*sa).user_port = u32::from(relay_port_be);
     }
     1
 }
@@ -726,6 +740,9 @@ pub fn udp6_sendmsg(ctx: SockAddrContext) -> i32 {
     let Some(relay6) = RELAY_ADDR6.get(0) else {
         return 1;
     };
+    let Some(relay_port_be) = relay_port_be() else {
+        return 0;
+    };
     let mut dst_addr = [0u8; 16];
     let mut i = 0;
     while i < 4 {
@@ -736,7 +753,7 @@ pub fn udp6_sendmsg(ctx: SockAddrContext) -> i32 {
         dst_addr[i * 4 + 3] = bytes[3];
         i += 1;
     }
-    if dst_addr == *relay6 && u16::from_be(dst_port_be) == RELAY_PORT {
+    if dst_addr == *relay6 && dst_port_be == relay_port_be {
         return 1;
     }
     let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
@@ -795,7 +812,7 @@ pub fn udp6_sendmsg(ctx: SockAddrContext) -> i32 {
     }
     unsafe {
         (*sa).user_ip6 = words;
-        (*sa).user_port = u32::from(RELAY_PORT.to_be());
+        (*sa).user_port = u32::from(relay_port_be);
     }
     1
 }

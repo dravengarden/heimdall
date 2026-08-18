@@ -130,5 +130,6 @@ Never respond to `domain_rule_requires_fake_dns` by keeping a rule that cannot
 match; choose fake DNS or rewrite the policy using IP matchers.
 
 Daemon settings are normally omitted. If needed, only set loopback
-`api_listen`, `dns_port`, cgroup, and fake-IP pools. The relay itself is fixed
-to IPv4/IPv6 loopback port 12345 and cannot be exposed or mismatched by config.
+`api_listen`, `dns_port`, cgroup, and fake-IP pools. The relay uses one
+kernel-assigned IPv4/IPv6 loopback port published as
+`agent.daemon.health.relay_port`; it cannot be exposed or selected by config.
