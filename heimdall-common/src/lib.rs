@@ -1,4 +1,4 @@
-//! Types shared between the eBPF kernel programs and the userspace daemon.
+//! Types shared between the eBPF kernel programs and the foreground CLI.
 #![cfg_attr(not(feature = "user"), no_std)]
 
 /// Original flow destination + caller identity, saved by the eBPF

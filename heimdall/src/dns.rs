@@ -1,7 +1,7 @@
 //! Fake-IP DNS server for heimdall.
 //!
-//! For each A query the server allocates a unique IP from a configured
-//! pool (default `198.19.0.0/16`) and returns it as a synthetic answer.
+//! For each A query the server allocates a unique IP from Heimdall's private
+//! `198.19.0.0/16` pool and returns it as a synthetic answer.
 //! The relay later reverses `fake_ip → hostname` and uses SOCKS5
 //! ATYP=0x03 (domain name) so the upstream proxy resolves and connects
 //! on our behalf.
@@ -17,7 +17,7 @@
 //! AAAA falls back to NOERROR + 0 records, keeping the legacy
 //! "force IPv4" behaviour. Other RR types remain empty NOERROR.
 //!
-//! Mappings stay stable for the daemon lifetime. Pool exhaustion returns
+//! Mappings stay stable for one foreground run. Pool exhaustion returns
 //! SERVFAIL instead of recycling an address that an application may still
 //! hold in its DNS cache.
 
@@ -53,6 +53,8 @@ use tokio::{
 use tracing::{debug, info, warn};
 
 const FAKE_IP_TTL_SEC: u32 = 30;
+pub const FAKE_IPV4_CIDR: &str = "198.19.0.0/16";
+pub const FAKE_IPV6_CIDR: &str = "fc00:198:19::/96";
 
 pub struct DnsResolver {
     /// Pool base in network byte order.
@@ -411,7 +413,7 @@ impl DnsResolver {
         fs::rename(&temporary, path).with_context(|| format!("publish {}", path.display()))
     }
 
-    /// Bind UDP and TCP before daemon readiness so a valid fake-DNS policy
+    /// Bind UDP and TCP before run readiness so a valid fake-DNS policy
     /// cannot silently start with an unusable resolver.
     pub async fn bind(self: Arc<Self>, port: u16) -> Result<DnsServer> {
         if port != 0 {

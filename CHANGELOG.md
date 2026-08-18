@@ -9,18 +9,18 @@ All notable changes to heimdall are documented here.
 - Add the daemonless Linux foreground backend for all decrypt modes. Each run
   owns isolated relay/DNS listeners, cgroup, unpinned maps, FD-owned links,
   event state, and a strict `heimdall.setup/v2` sudo helper that drops to the
-  invoking user before the wrapped command starts.
+  invoking user before the wrapped command starts. The session helper kills
+  and removes the command cgroup if its foreground owner dies unexpectedly.
 - Move runtime OpenSSL discovery, probe links, and perf-event reading into the
   foreground session. The setup helper opens per-CPU perf rings, transfers them
   for unprivileged mmap/read, drops privilege, and remains only for that run to
   retain Aya probe state; startup-discovered images are
   cgroup-filtered in eBPF and no decrypt mode requires a persistent daemon.
-- Add concurrent foreground-run and no-daemon real-eBPF VM acceptance,
-  including TCP/UDP/fake DNS, relay TLS, log rotation, and cleanup back to the
-  pre-run BPF-link baseline.
-- Replace the machine-global fixed relay port with one kernel-assigned port
-  published through daemon health and the eBPF redirect map, preparing relay
-  ownership for isolated foreground sessions.
+- Add concurrent foreground-run real-eBPF VM acceptance, including
+  TCP/UDP/fake DNS, relay TLS, log rotation, parent-death cleanup, and return to
+  the pre-run BPF-link baseline.
+- Replace the machine-global fixed relay port with one kernel-assigned per-run
+  port published only through that run's private eBPF redirect map.
 
 - Add Phase 1 of the agent-first event store: every `heimdall run` writes a
   user-owned `heimdall.run/v1` manifest and ordered `heimdall.event/v1` JSONL
@@ -33,12 +33,8 @@ All notable changes to heimdall are documented here.
   observes registered OpenSSL clients without changing trust; relay mode
   verifies upstream TLS, mirrors ALPN, issues per-host leaves from an explicit
   protected CA, preserves non-TLS passthrough, and captures plaintext.
-- Add `heimdall tls init-ca --json` plus `heimdall.agent/v4` decrypt
+- Add `heimdall tls init-ca --json` plus `heimdall.agent/v7` decrypt
   capabilities and repair argv for agent-driven setup.
-- Add `heimdall.daemon.health/v2` to the loopback health endpoint and embed it
-  in the agent report, including the active decrypt mode and runtime probe
-  attachment counts.
-
 ### Fixed
 
 - Preserve the resolved global `--config` path across `systemd-run` re-entry so
@@ -50,18 +46,6 @@ All notable changes to heimdall are documented here.
   claiming readiness without plaintext coverage.
 - Exercise both OpenSSL runtime capture and relay TLS termination against a
   real trusted TLS server in the disposable eBPF acceptance VM.
-- Version pinned map layouts, replace cgroup programs as one rollback-capable
-  transaction, and add a machine-readable eBPF cleanup command that refuses
-  daemon or active-workload races.
-- Keep registered cgroups intercepted across daemon restarts with pinned eBPF
-  maps and atomic link updates. Traffic fails closed while the relay is
-  unavailable; existing relay sessions and connections remain unsupported. The
-  first upgrade from a release without pinned links still requires one ordinary
-  restart to install them.
-- Restore active CLI cgroup policies and fake-DNS hostname mappings after a
-  daemon service restart. Runtime state is atomic, strict, and root-only; stale
-  registrations are removed during recovery. Existing connections remain
-  explicitly unsupported.
 - Keep a command policy registered until every descendant exits its cgroup,
   preventing background children from losing proxy enforcement when their
   immediate parent finishes. Disable `systemd-run` environment expansion so
@@ -88,27 +72,25 @@ All notable changes to heimdall are documented here.
 
 ### Changed
 
-- Bump the read-only automation contract to `heimdall.agent/v6` and report the
+- Bump the read-only automation contract to `heimdall.agent/v7` and report the
   selected execution backend, lifecycle owner, privilege setup, daemon
-  requirement, and Web UI requirement. All modes are foreground-owned and do
-  not use the compatibility daemon.
+  requirement, and Web UI requirement. Remove the daemon report because the
+  CLI no longer ships a service or health endpoint.
+- Remove `heimdall daemon`, `status`, and `ebpf cleanup`, the registration API,
+  service unit, persistent journal, global bpffs state, and orphan-GC loop.
 - Make foreground capture and relay CA files private to the invoking user
   instead of assuming daemon-owned root-only state.
 - Rename decrypt modes by execution boundary: `transparent` becomes `runtime`
   and `mitm` becomes `relay`. The breaking machine-readable names are published
-  through `heimdall.agent/v4`, `heimdall.daemon.health/v2`,
-  `heimdall.config.validate/v2`, and `heimdall.tls-ca/v2`.
+  through `heimdall.agent/v7`, `heimdall.config.validate/v2`, and
+  `heimdall.tls-ca/v2`.
 - Added opt-in, bounded TCP and UDP relay capture as root-only
   `heimdall.capture/v1` JSONL files. Capture covers direct and SOCKS5 actions,
   records its payload boundary explicitly, fails affected flows on write errors, and exposes its
   exact boundary through `heimdall agent`.
-- Added real-eBPF acceptance for an active fake-DNS command across a daemon
-  restart and exposed policy recovery, DNS recovery, connection survival, and
-  uninterrupted-continuity boundaries separately through `heimdall agent`.
 - Added real-eBPF lifecycle acceptance for Git, exit and signal propagation,
-  background descendants, unavailable-daemon pre-exec failure, and
-  unreachable-upstream fail-closed behavior. Exposed the results and the
-  unsupported daemon-restart continuity boundary through `heimdall agent`.
+  background descendants, foreground-owner death, and unreachable-upstream
+  fail-closed behavior.
 - Added real cgroup eBPF acceptance for static Go `netgo`, Java, Node.js, and
   Rust across fake-DNS TCP plus connected IPv4 and IPv6 UDP, and exposed the
   tested matrix through `heimdall agent`.
@@ -131,7 +113,7 @@ All notable changes to heimdall are documented here.
   all three starter formats are now tested through the same canonical loader.
 - Made unsupported connectionless UDP fail closed, removed implicit address bypasses
   from registered cgroups, completed fake DNS over TCP as well as UDP, and made DNS
-  plus control-listener binding fail before daemon readiness.
+  plus foreground listener binding fail before run readiness.
 - Reframed heimdall as a proxychains-style command wrapper.
 - Made unregistered cgroups bypass the relay by default; only commands started
   through `heimdall run` are redirected.
@@ -142,7 +124,6 @@ All notable changes to heimdall are documented here.
   the live CLI contract.
 - Added `heimdall agent`, a side-effect-free versioned JSON preflight with
   stable error codes, readiness exit codes, decisions, and argv arrays.
-- Renamed the daemon subcommand for a clearer CLI surface.
 - Simplified `heimdall run` to `--policy` and the wrapped command.
 
 ### Removed

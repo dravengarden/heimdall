@@ -1,19 +1,15 @@
 //! `heimdall <subcommand>` CLI handlers.
 //!
 //! The handlers share the same strict configuration loader. `heimdall run`
-//! owns its data plane; the daemon remains a compatibility surface.
+//! owns its complete data plane and persistent services are out of scope.
 
-pub mod ebpf;
 pub mod logs;
 pub mod tls;
 
 pub mod agent {
     //! Stable, side-effect-free machine contract for AI agents and automation.
 
-    use std::{
-        net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-        path::{Path, PathBuf},
-    };
+    use std::path::{Path, PathBuf};
 
     use anyhow::Result;
     use heimdall_config::{
@@ -22,7 +18,7 @@ pub mod agent {
     };
     use serde::Serialize;
 
-    const CONTRACT_VERSION: &str = "heimdall.agent/v6";
+    const CONTRACT_VERSION: &str = "heimdall.agent/v7";
 
     #[derive(clap::Args, Debug)]
     pub struct AgentArgs {
@@ -38,7 +34,6 @@ pub mod agent {
         ready: bool,
         config: ConfigReport,
         execution: Option<ExecutionReport>,
-        daemon: DaemonReport,
         capabilities: Capabilities,
         decision: Option<DecisionReport>,
         policies: Vec<String>,
@@ -79,14 +74,6 @@ pub mod agent {
         ca_cert: Option<String>,
         ca_key: Option<String>,
         ca_material_ready: bool,
-    }
-
-    #[derive(Debug, Serialize)]
-    struct DaemonReport {
-        reachable: Option<bool>,
-        control: Option<String>,
-        health: Option<crate::api::HealthReport>,
-        error: Option<MachineError>,
     }
 
     #[derive(Debug, Serialize)]
@@ -159,7 +146,6 @@ pub mod agent {
         signal_exit_code: &'static str,
         upstream_unreachable_fail_closed: bool,
         foreground_modes: &'static [&'static str],
-        runtime_mode_requires_daemon: bool,
         foreground_owned_resources: bool,
         resources_close_when_run_exits: bool,
         setup_helper_session_scoped: bool,
@@ -208,7 +194,6 @@ pub mod agent {
     #[derive(Debug, Serialize)]
     struct Actions {
         validate: Vec<String>,
-        status: Vec<String>,
         execute_prefix: Option<Vec<String>>,
         tls_ca_init: Option<Vec<String>>,
         logs_schema_event: Vec<String>,
@@ -242,8 +227,6 @@ pub mod agent {
         };
         let format = ConfigFormat::detect(&path).map(ConfigFormat::name);
         let validate_argv = argv_for(&path, &["config", "validate", "--json"]);
-        let status_argv = argv_for(&path, &["status", "--json"]);
-
         let config_result = discovery_error.map_or_else(
             || HeimdallConfig::load(&path),
             Err::<HeimdallConfig, ConfigError>,
@@ -263,19 +246,12 @@ pub mod agent {
                     error: Some(config_error(error)),
                 },
                 execution: None,
-                daemon: DaemonReport {
-                    reachable: None,
-                    control: None,
-                    health: None,
-                    error: None,
-                },
                 capabilities: capabilities(),
                 decision: None,
                 policies: Vec::new(),
                 outbounds: Vec::new(),
                 actions: Actions {
                     validate: validate_argv,
-                    status: status_argv,
                     execute_prefix: None,
                     tls_ca_init: None,
                     logs_schema_event: vec![
@@ -301,7 +277,7 @@ pub mod agent {
                 },
                 exit_codes: exit_codes(),
             },
-            Ok(config) => report_for_valid_config(path, format, config, args).await,
+            Ok(config) => report_for_valid_config(path, format, config, args),
         };
 
         let ready = report.ready;
@@ -309,7 +285,7 @@ pub mod agent {
         Ok(ready)
     }
 
-    async fn report_for_valid_config(
+    fn report_for_valid_config(
         path: PathBuf,
         format: Option<&'static str>,
         config: HeimdallConfig,
@@ -336,14 +312,8 @@ pub mod agent {
                 hint: format!("Use --policy with one of: {known_policies}."),
             }],
         });
-        let control = config.daemon.api_listen.clone();
-        let health = fetch_daemon_health(&control).await;
-        let reachable = health.is_some();
         let daemon_required = false;
-        let daemon_error = daemon_required
-            .then(|| daemon_error(&config.decrypt, health.as_ref()))
-            .flatten();
-        let ready = daemon_error.is_none() && decision_error.is_none();
+        let ready = decision_error.is_none();
         let execute_prefix = decision_error.is_none().then(|| {
             let mut argv = argv_for(&path, &["run", "--policy", &policy]);
             argv.push("--".into());
@@ -388,12 +358,6 @@ pub mod agent {
                 daemon_required,
                 web_ui_required: false,
             }),
-            daemon: DaemonReport {
-                reachable: Some(reachable),
-                control: Some(control),
-                health,
-                error: daemon_error,
-            },
             capabilities: capabilities(),
             decision: Some(DecisionReport {
                 policy,
@@ -406,7 +370,6 @@ pub mod agent {
             outbounds,
             actions: Actions {
                 validate: argv_for(&path, &["config", "validate", "--json"]),
-                status: argv_for(&path, &["status", "--json"]),
                 execute_prefix,
                 tls_ca_init: relay_ca_init_argv(&config.decrypt),
                 logs_schema_event: vec![
@@ -432,83 +395,6 @@ pub mod agent {
             },
             exit_codes: exit_codes(),
         }
-    }
-
-    fn loopback_socket(value: &str) -> SocketAddr {
-        let configured: SocketAddr = value
-            .parse()
-            .expect("strict config validation accepted the listener");
-        let ip = match configured.ip() {
-            IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::LOCALHOST),
-            IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::LOCALHOST),
-        };
-        SocketAddr::new(ip, configured.port())
-    }
-
-    pub(crate) async fn fetch_daemon_health(control: &str) -> Option<crate::api::HealthReport> {
-        let url = format!("http://{}/api/health", loopback_socket(control));
-        tokio::task::spawn_blocking(move || {
-            ureq::get(&url)
-                .timeout(std::time::Duration::from_millis(500))
-                .call()
-                .ok()?
-                .into_json()
-                .ok()
-        })
-        .await
-        .ok()
-        .flatten()
-    }
-
-    fn daemon_error(
-        decrypt: &DecryptConfig,
-        health: Option<&crate::api::HealthReport>,
-    ) -> Option<MachineError> {
-        let expected_mode = match decrypt.mode {
-            heimdall_config::DecryptMode::Off => "off",
-            heimdall_config::DecryptMode::Runtime => "runtime",
-            heimdall_config::DecryptMode::Relay => "relay",
-        };
-        let (code, message, hint) = match health {
-            None => (
-                "daemon_unreachable",
-                "the loopback daemon health endpoint is unreachable".into(),
-                "Start the daemon with this validated config, then rerun `heimdall agent`.".into(),
-            ),
-            Some(report) if report.contract != "heimdall.daemon.health/v2" => (
-                "daemon_contract_mismatch",
-                format!(
-                    "the daemon exposes {}, but this CLI requires heimdall.daemon.health/v2",
-                    report.contract
-                ),
-                "Restart the daemon with the same Heimdall release as this CLI.".into(),
-            ),
-            Some(report) if report.decrypt_mode != expected_mode => (
-                "daemon_config_mismatch",
-                format!(
-                    "the daemon uses decrypt.mode = {}, but this config selects {expected_mode}",
-                    report.decrypt_mode
-                ),
-                "Restart the daemon with the same --config path reported by this document.".into(),
-            ),
-            Some(report) if !report.ready || report.relay_port == 0 => (
-                "daemon_not_ready",
-                "the daemon is reachable but has not completed eBPF and relay initialization"
-                    .into(),
-                "Inspect daemon logs, correct the reported initialization error, and retry.".into(),
-            ),
-            Some(_) => return None,
-        };
-        Some(MachineError {
-            code,
-            message: message.clone(),
-            diagnostics: vec![ConfigDiagnostic {
-                code: code.into(),
-                path: "$.daemon".into(),
-                message,
-                hint,
-            }],
-        })
     }
 
     fn argv_for(path: &Path, suffix: &[&str]) -> Vec<String> {
@@ -674,7 +560,6 @@ pub mod agent {
                 signal_exit_code: "128+signal",
                 upstream_unreachable_fail_closed: true,
                 foreground_modes: &["off", "runtime", "relay"],
-                runtime_mode_requires_daemon: false,
                 foreground_owned_resources: true,
                 resources_close_when_run_exits: true,
                 setup_helper_session_scoped: true,
@@ -694,13 +579,14 @@ pub mod agent {
             assert_eq!(
                 argv_for(
                     Path::new("/tmp/config with spaces.toml"),
-                    &["status", "--json"]
+                    &["config", "validate", "--json"]
                 ),
                 [
                     "heimdall",
                     "--config",
                     "/tmp/config with spaces.toml",
-                    "status",
+                    "config",
+                    "validate",
                     "--json"
                 ]
             );
@@ -773,63 +659,11 @@ pub mod agent {
         }
 
         #[test]
-        fn daemon_health_reports_actionable_mode_mismatch() {
-            let decrypt = DecryptConfig {
-                mode: heimdall_config::DecryptMode::Runtime,
-                ..DecryptConfig::default()
-            };
-            let health = crate::api::HealthReport {
-                contract: "heimdall.daemon.health/v2".into(),
-                ready: true,
-                relay_port: 12345,
-                decrypt_mode: "off".into(),
-                runtime: None,
-            };
-
-            let error = daemon_error(&decrypt, Some(&health)).unwrap();
-            assert_eq!(error.code, "daemon_config_mismatch");
-            assert_eq!(error.diagnostics[0].path, "$.daemon");
-        }
-
-        #[test]
-        fn daemon_health_rejects_an_old_contract() {
-            let health = crate::api::HealthReport {
-                contract: "heimdall.daemon.health/v1".into(),
-                ready: true,
-                relay_port: 12345,
-                decrypt_mode: "off".into(),
-                runtime: None,
-            };
-
-            let error = daemon_error(&DecryptConfig::default(), Some(&health)).unwrap();
-            assert_eq!(error.code, "daemon_contract_mismatch");
-        }
-
-        #[test]
-        fn daemon_health_requires_completed_initialization() {
-            let health = crate::api::HealthReport {
-                contract: "heimdall.daemon.health/v2".into(),
-                ready: false,
-                relay_port: 0,
-                decrypt_mode: "off".into(),
-                runtime: None,
-            };
-
-            let error = daemon_error(&DecryptConfig::default(), Some(&health)).unwrap();
-            assert_eq!(error.code, "daemon_not_ready");
-            assert_eq!(
-                daemon_error(&DecryptConfig::default(), None).unwrap().code,
-                "daemon_unreachable"
-            );
-        }
-
-        #[test]
         fn lifecycle_capabilities_expose_restart_boundary() {
             let lifecycle = capabilities().lifecycle;
             assert!(lifecycle.descendant_cgroup_lifetime);
             assert!(lifecycle.upstream_unreachable_fail_closed);
             assert_eq!(lifecycle.foreground_modes, ["off", "runtime", "relay"]);
-            assert!(!lifecycle.runtime_mode_requires_daemon);
             assert!(lifecycle.foreground_owned_resources);
             assert!(lifecycle.resources_close_when_run_exits);
             assert!(lifecycle.setup_helper_session_scoped);
@@ -842,4 +676,3 @@ pub mod agent {
 pub mod config;
 pub mod init;
 pub mod run;
-pub mod status;

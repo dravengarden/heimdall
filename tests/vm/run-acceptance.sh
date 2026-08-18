@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-systemctl is-active --quiet heimdall.service
 systemctl is-active --quiet heimdall-test-socks.service
 systemctl is-active --quiet heimdall-test-http.service
 systemctl is-active --quiet heimdall-test-udp.service
@@ -41,7 +40,7 @@ capture_contains() {
 as_tester heimdall config validate --json \
   | jq -e '.contract == "heimdall.config.validate/v2" and .valid'
 as_tester heimdall agent \
-  | jq -e '.contract == "heimdall.agent/v6"
+  | jq -e '.contract == "heimdall.agent/v7"
     and .ready
     and .execution.backend == "linux-ebpf-foreground"
     and .execution.owner == "heimdall-run"
@@ -71,10 +70,6 @@ as_tester heimdall agent \
     and .capabilities.decrypt.runtime_max_bytes_per_event == 256
     and .capabilities.decrypt.runtime_requires_attached_image
     and .capabilities.decrypt.relay_library_independent
-    and .daemon.health.contract == "heimdall.daemon.health/v2"
-    and .daemon.health.ready
-    and .daemon.health.relay_port > 0
-    and .daemon.health.decrypt_mode == "off"
     and .capabilities.udp.connected
     and .capabilities.udp.association_reuse
     and .capabilities.udp.multi_response
@@ -105,38 +100,22 @@ as_tester heimdall agent \
     and .capabilities.lifecycle.signal_exit_code == "128+signal"
     and .capabilities.lifecycle.upstream_unreachable_fail_closed
     and .capabilities.lifecycle.foreground_modes == ["off", "runtime", "relay"]
-    and (.capabilities.lifecycle.runtime_mode_requires_daemon | not)
     and .capabilities.lifecycle.foreground_owned_resources
     and .capabilities.lifecycle.resources_close_when_run_exits
     and .capabilities.lifecycle.setup_helper_session_scoped
     and .capabilities.lifecycle.setup_helper_drops_privileges
     and .capabilities.lifecycle.web_ui_optional
     and .capabilities.lifecycle.concurrent_runs_isolated'
-as_tester heimdall status --json \
-  | jq -e '.daemon_reachable
-    and .daemon_ready
-    and (.relay_listen | test("^127\\.0\\.0\\.1:[0-9]+ \\+ \\[::1\\]:[0-9]+$"))
-    and .daemon_decrypt_mode == "off"
-    and .daemon_config_matches'
-
-set +e
-cleanup_report="$(heimdall ebpf cleanup --json)"
-cleanup_status=$?
-set -e
-test "$cleanup_status" -eq 1
-printf '%s' "$cleanup_report" \
-  | jq -e '.contract == "heimdall.ebpf.cleanup/v1" and (.cleaned | not) and .code == "daemon_active"'
-
-# Ordinary proxying owns its complete data plane in the foreground. Stop the
-# compatibility daemon and remove its pinned generation before exercising it.
-systemctl stop heimdall.service
-heimdall ebpf cleanup --json \
-  | jq -e '.contract == "heimdall.ebpf.cleanup/v1" and .cleaned'
+# The public CLI has no persistent service, status endpoint, or pin lifecycle.
+if heimdall help -v | grep -Eq '^  (daemon|status|ebpf)( |$)'; then
+  echo "persistent compatibility command leaked into the CLI" >&2
+  exit 1
+fi
+test ! -e /sys/fs/bpf/heimdall
 foreground_link_baseline="$(bpftool -j link show | jq 'length')"
-chown tester /run/heimdall-test/captures
+install -d -o tester -g users -m 0700 /run/heimdall-test/captures
 as_tester heimdall agent \
   | jq -e '.ready
-    and (.daemon.reachable | not)
     and .execution.backend == "linux-ebpf-foreground"
     and (.execution.daemon_required | not)'
 rm -f /tmp/heimdall-daemonless-smoke
@@ -396,58 +375,42 @@ if test "$links_released" != true; then
 fi
 test "$links_released" = true
 
-# Persistent-map upgrade coverage remains scoped to the compatibility daemon.
-systemctl start heimdall.service
-systemctl is-active --quiet heimdall.service
-as_tester heimdall agent \
-  | jq -e '.ready and .daemon.reachable and (.execution.daemon_required | not)'
-
-# A future map-layout schema must fail before any pinned program replacement.
-systemctl stop heimdall.service
-bpftool map update pinned /sys/fs/bpf/heimdall/maps/STATE_SCHEMA \
-  key 0x00 0x00 0x00 0x00 value 0xe7 0x03 0x00 0x00
-set +e
-schema_error="$(timeout -k 1s 10s heimdall --config /etc/heimdall/config.toml daemon 2>&1)"
-schema_status=$?
-set -e
-test "$schema_status" -ne 0
-printf '%s' "$schema_error" | grep -q 'incompatible pinned eBPF state schema 999'
-bpftool map update pinned /sys/fs/bpf/heimdall/maps/STATE_SCHEMA \
-  key 0x00 0x00 0x00 0x00 value 0x01 0x00 0x00 0x00
-systemctl start heimdall.service
-systemctl is-active --quiet heimdall.service
-
-# A late invalid pin forces rollback of every earlier program replacement.
-systemctl stop heimdall.service
-rm /sys/fs/bpf/heimdall/links/skb_egress-user
-link_programs_before="$(bpftool -j link show \
-  | jq -c '[.[].prog_id] | sort')"
-mkdir /sys/fs/bpf/heimdall/links/skb_egress-user
-set +e
-rollback_error="$(timeout -k 1s 10s heimdall --config /etc/heimdall/config.toml daemon 2>&1)"
-rollback_status=$?
-set -e
-test "$rollback_status" -ne 0
-link_programs_after="$(bpftool -j link show \
-  | jq -c '[.[].prog_id] | sort')"
-if test "$link_programs_before" != "$link_programs_after"; then
-  printf 'rollback changed link programs: before=%s after=%s\n%s\n' \
-    "$link_programs_before" "$link_programs_after" "$rollback_error" >&2
-  exit 1
-fi
-test -n "$rollback_error"
-rmdir /sys/fs/bpf/heimdall/links/skb_egress-user
-
-# Cleanup is idempotent and a clean subsequent start installs a full generation.
-cleanup_report="$(heimdall ebpf cleanup --json)"
-printf '%s' "$cleanup_report" \
-  | jq -e '.cleaned and .code == "cleaned" and .removed_entries > 0'
-test ! -e /sys/fs/bpf/heimdall
-heimdall ebpf cleanup --json | jq -e '.cleaned and .removed_entries == 0'
-systemctl start heimdall.service
-systemctl is-active --quiet heimdall.service
-test -e /sys/fs/bpf/heimdall/maps/STATE_SCHEMA
-as_tester heimdall agent | jq -e '.ready and .daemon.reachable'
+# Killing the foreground owner must not turn a still-running workload into
+# direct egress. The unprivileged session helper owns no listener; it only
+# observes the private socket and kills/removes this run's cgroup on EOF.
+as_tester heimdall run --policy direct -- sleep 30 &
+kill_wrapper=$!
+kill_owner=""
+kill_helper=""
+for _ in $(seq 1 200); do
+  for candidate in $(pgrep -u tester -x heimdall || true); do
+    candidate_cmdline="$(tr '\0' ' ' < "/proc/$candidate/cmdline")"
+    if printf '%s' "$candidate_cmdline" | grep -q ' run .*--no-reentry .*sleep 30'; then
+      kill_owner="$candidate"
+    elif printf '%s' "$candidate_cmdline" | grep -q ' __setup-worker '; then
+      kill_helper="$candidate"
+    fi
+  done
+  test -n "$kill_owner" && test -n "$kill_helper" && break
+  sleep 0.02
+done
+test -n "$kill_owner"
+test -n "$kill_helper"
+kill_cgroup="$(find /sys/fs/cgroup/user.slice -type d -name "heimdall-cli-$kill_owner-*" -print -quit)"
+test -n "$kill_cgroup"
+kill -KILL "$kill_owner"
+wait "$kill_wrapper" 2>/dev/null || true
+abandoned_cleaned=false
+for _ in $(seq 1 500); do
+  if ! test -e "/proc/$kill_helper" \
+    && ! test -e "$kill_cgroup" \
+    && test "$(bpftool -j link show | jq 'length')" -eq "$foreground_link_baseline"; then
+    abandoned_cleaned=true
+    break
+  fi
+  sleep 0.02
+done
+test "$abandoned_cleaned" = true
 
 test "$(stat -c '%a' /run/heimdall-test/captures)" = 700
 if find /run/heimdall-test/captures -type f ! -perm 600 -print -quit | grep -q .; then
@@ -493,14 +456,11 @@ test "$truncated_capture" = true
 # Exercise both TLS modes through the real foreground cgroup/eBPF relay. The
 # long-lived OpenSSL fixture provides a representative image before each run,
 # matching the startup discovery boundary reported by `heimdall agent`.
-systemctl stop heimdall.service
-heimdall ebpf cleanup --json | jq -e '.cleaned'
 test "$(bpftool -j link show | jq 'length')" -eq "$foreground_link_baseline"
 curl -V | grep -q OpenSSL
 rm -f /run/heimdall-test/captures/*.jsonl
 as_tester heimdall --config /etc/heimdall-test/runtime.toml agent \
   | jq -e '.ready
-    and (.daemon.reachable | not)
     and .execution.backend == "linux-ebpf-foreground"
     and .execution.owner == "heimdall-run"
     and (.execution.daemon_required | not)
@@ -536,7 +496,6 @@ as_tester heimdall tls init-ca --dir /run/heimdall-test/relay --json \
   | jq -e '.contract == "heimdall.tls-ca/v2" and .config.mode == "relay"'
 as_tester heimdall --config /etc/heimdall-test/relay.toml agent \
   | jq -e '.ready
-    and (.daemon.reachable | not)
     and .execution.backend == "linux-ebpf-foreground"
     and (.execution.daemon_required | not)
     and .config.decrypt.mode == "relay"
@@ -545,10 +504,7 @@ as_tester heimdall --config /etc/heimdall-test/relay.toml run --policy fake -- \
   curl --cacert /run/heimdall-test/relay/ca.pem -fsS --max-time 5 \
     https://fixture.test:18444/ >/dev/null
 capture_contains route:default 'GET / HTTP'
-systemctl start heimdall.service
-systemctl is-active --quiet heimdall.service
-as_tester heimdall agent \
-  | jq -e '.ready and .daemon.health.decrypt_mode == "off"'
+test ! -e /sys/fs/bpf/heimdall
 
 if find /sys/fs/cgroup/user.slice -type d -name 'heimdall-cli-*' -print -quit \
   | grep -q .; then

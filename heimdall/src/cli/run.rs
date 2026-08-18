@@ -259,7 +259,7 @@ fn prepare_dns_shim(cgroup_id: u64) -> Result<DnsShim> {
 
     // `nameserver 127.0.0.1` would normally fail (nothing on port 53),
     // but heimdall's eBPF connect4 / udp4_sendmsg hijack on this
-    // cgroup rewrites :53 traffic to the daemon's fake-IP DNS port
+    // cgroup rewrites :53 traffic to this run's fake-IP DNS port
     // (5358 by default). `single-request` reduces glibc's parallel
     // A+AAAA query churn — we synthesise both anyway.
     fs::write(
@@ -597,7 +597,7 @@ fn apply_dns_shim(shim: &DnsShim) -> Result<()> {
     .context("bind shim resolv.conf")?;
 
     // glibc consults /var/run/nscd/socket BEFORE walking nsswitch —
-    // if nscd is up, it caches lookups in the daemon's mount namespace
+    // if nscd is up, it caches lookups outside this run's process tree
     // (not ours), so even our shimmed nsswitch + resolv.conf get
     // bypassed. Overmount the socket with /dev/null so connect() to
     // it fails with ENOTSOCK/ECONNREFUSED; glibc falls back to direct

@@ -618,9 +618,8 @@ mod tests {
     #[test]
     fn verification_detects_segment_tampering() {
         let root = test_root("verify");
-        let log = RunLog::create_at(&root, &["true".into()], "default", "daemon").unwrap();
-        log.ready("heimdall-daemon", Some("127.0.0.1:7312"), &["transport"])
-            .unwrap();
+        let log = RunLog::create_at(&root, &["true".into()], "default", "foreground").unwrap();
+        log.ready("heimdall-run", None, &["transport"]).unwrap();
         log.emit(
             "run.exec",
             Some(42),

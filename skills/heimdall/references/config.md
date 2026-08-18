@@ -17,7 +17,6 @@ capture.max_bytes_per_flow = 1..67108864 (default 1048576)
 decrypt.mode = off | runtime | relay
 decrypt.ca_cert = absolute PEM path (relay only)
 decrypt.ca_key = absolute protected PEM path (relay only)
-daemon = optional implementation settings
 ```
 
 Use `heimdall init --format toml|yaml|json` for exact syntax. Do not
@@ -89,10 +88,10 @@ both directions. With decrypt off, payload is opaque transport. Runtime
 mode is CA-free but currently covers only the TLS libraries listed by
 `agent.capabilities.decrypt.runtime_libraries`. Relay mode is TLS-library-independent
 but requires client trust and does not support pinning or client-certificate
-mTLS. Runtime mode is the compatibility exception: `runtime_discovery` reports
-when OpenSSL images are scanned, so restart the explicit daemon when a new
-image appears. Require `execution.daemon_required`, matching
-`agent.daemon.health`, and a positive `runtime.attached_images` count.
+mTLS. `runtime_discovery` reports when OpenSSL images are scanned: the current
+boundary is images already loaded when the run starts. Require
+`execution.daemon_required = false` and a positive attached-image result before
+the workload starts.
 `runtime_apis` and `runtime_max_bytes_per_event` define the exact
 probe boundary. Both decrypt modes require capture on.
 
@@ -131,7 +130,5 @@ Never respond to `outbound_network_mismatch` by weakening UDP to direct.
 Never respond to `domain_rule_requires_fake_dns` by keeping a rule that cannot
 match; choose fake DNS or rewrite the policy using IP matchers.
 
-Daemon settings are normally omitted and apply only to the runtime-TLS
-compatibility path. If needed there, only set loopback `api_listen`, `dns_port`,
-cgroup, and fake-IP pools. Foreground relay/DNS ports are kernel-assigned per
-run and cannot be exposed or selected by config.
+Foreground relay and DNS ports plus fake-IP pools are internal per-run state.
+They cannot be exposed or selected by config.

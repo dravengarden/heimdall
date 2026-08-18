@@ -17,17 +17,17 @@ Run:
 heimdall agent
 ```
 
-Parse the single `heimdall.agent/v6` JSON object. Exit 0 means ready, exit 1
+Parse the single `heimdall.agent/v7` JSON object. Exit 0 means ready, exit 1
 means the document explains why, and exit 2 is invalid CLI usage. Read stable
 error `code` values before messages. Execute `actions` as argv arrays; never
 join or evaluate them as shell text.
 
-Use `execution` before interpreting daemon health:
+Use `execution` before running a command:
 
 - Require `backend = linux-ebpf-foreground`, `daemon_required = false`,
   `owner = heimdall-run`, and
   `privilege_setup = sudo-then-unprivileged-session-helper` for every decrypt
-  mode. A missing compatibility daemon is expected and is not a blocker.
+  mode. Heimdall has no persistent daemon or health endpoint.
 - `web_ui_required` must remain false for every executable path.
 
 Use `heimdall help -v` only when deeper command discovery is needed.
@@ -132,12 +132,9 @@ Read [references/commands.md](references/commands.md) for diagnosis and
 
 - Do not change host routing, firewall, DNS, or proxy state merely to use
   Heimdall.
-- Do not start the compatibility daemon unless the user explicitly requests
-  legacy persistent-state maintenance.
 - Do not install file capabilities or setuid on the full CLI. Authorize only
   the exact `heimdall __setup-worker` command.
 - Do not upload or print capture bytes without explicit authority; they can
   contain credentials and personal data.
-- Never delete `/sys/fs/bpf/heimdall` manually. Persistent cleanup belongs only
-  to the compatibility path and must use `heimdall ebpf cleanup --json` after
-  the service is stopped and workloads are empty.
+- Treat the unprivileged setup helper as part of one run. On unexpected owner
+  exit it kills and removes that run's cgroup to prevent direct-egress fallback.

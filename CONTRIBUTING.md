@@ -81,10 +81,9 @@ Use the GitHub issue template when available. Security vulnerabilities belong
 in the private process described by [SECURITY.md](SECURITY.md), not in a
 public issue. Include:
 - Kernel version (`uname -r`)
-- `heimdall status` output (config path + connection / rule counts)
-- Relevant journal entries (`journalctl -u heimdall --since "5min ago"`)
-- For proxying problems: `heimdall agent` output and a
-  minimal wrapped-command reproduction
+- `heimdall agent` output
+- The run manifest and relevant JSONL events from `heimdall logs query`
+- A minimal wrapped-command reproduction
 
 ## Licensing
 

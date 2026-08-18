@@ -42,7 +42,7 @@ body:
     id: diagnostics
     attributes:
       label: Diagnostics
-      description: Paste sanitized output from heimdall agent, heimdall status --json, or relevant journal entries.
+      description: Paste sanitized output from heimdall agent and the relevant run JSONL records.
       render: json
     validations:
       required: false

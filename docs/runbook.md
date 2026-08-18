@@ -17,12 +17,12 @@ capture, TLS, setup privilege, or lifecycle behavior:
 nix develop -c just test-vm
 ```
 
-The disposable NixOS VM stops the compatibility daemon before ordinary runs.
-It proves fake/system DNS, SOCKS5 and direct TCP/UDP, IPv4/IPv6, HTTP/3, static
+The disposable NixOS VM proves fake/system DNS, SOCKS5 and direct TCP/UDP,
+IPv4/IPv6, HTTP/3, static
 and dynamic clients, descendants, exit/signal status, two concurrent isolated
 runs, event rotation, relay TLS, fail-closed upstream errors, and return to the
-pre-run BPF-link baseline. Runtime OpenSSL capture and relay TLS are both
-tested through foreground sessions with the daemon absent.
+pre-run BPF-link baseline. It also kills a live foreground owner and proves the
+unprivileged helper removes the workload cgroup and BPF links.
 
 ## Install the daemonless path
 
@@ -48,14 +48,13 @@ sudo visudo -cf /etc/sudoers.d/heimdall
 ```
 
 `heimdall run` invokes this worker once over an inherited Unix socket. The
-worker transfers map/link FDs. In runtime TLS mode it then irrevocably drops to
-the caller and remains as a session-scoped resource holder; otherwise it exits
-before the wrapped command starts. Do not install file capabilities or setuid
-on the complete binary.
+worker transfers map/link FDs, irrevocably drops to the caller, and remains as
+a session-scoped parent-death guard. Runtime TLS also relies on it to retain
+Aya probe state. An unexpected owner exit makes the helper kill and remove only
+that run's cgroup. Do not install file capabilities or setuid on the complete
+binary.
 
-No Heimdall service is required for any decrypt mode.
-`deploy/heimdall.service` is an explicit legacy compatibility component for
-persistent-state migration and cleanup only.
+No Heimdall service exists or is required for any decrypt mode.
 
 ## Smoke test
 
@@ -63,13 +62,12 @@ Run as the ordinary authorized user:
 
 ```bash
 heimdall config validate --json
-heimdall agent | jq '{ready, execution, daemon, decision}'
+heimdall agent | jq '{ready, execution, decision}'
 heimdall run -- curl -fsS https://example.com
 heimdall logs list --json
 ```
 
-For every decrypt mode, a stopped or absent compatibility daemon does not make
-the agent report unready. The wrapped command's immediate exit or signal status
+The wrapped command's immediate exit or signal status
 is Heimdall's status, while interception remains active until every descendant
 leaves the command cgroup.
 
@@ -77,14 +75,14 @@ leaves the command cgroup.
 
 `heimdall agent [--policy NAME]` is read-only and prints exactly one JSON value.
 Exit 0 means ready, 1 means the document contains a repairable reason, and 2 is
-CLI usage failure. The current contract is `heimdall.agent/v6`.
+CLI usage failure. The current contract is `heimdall.agent/v7`.
 
 The execution section is the ownership decision that automation must use (the
 following is an excerpt):
 
 ```json
 {
-  "contract": "heimdall.agent/v6",
+  "contract": "heimdall.agent/v7",
   "ready": true,
   "execution": {
     "backend": "linux-ebpf-foreground",
@@ -92,11 +90,6 @@ following is an excerpt):
     "privilege_setup": "sudo-then-unprivileged-session-helper",
     "daemon_required": false,
     "web_ui_required": false
-  },
-  "daemon": {
-    "reachable": false,
-    "control": "127.0.0.1:9999",
-    "health": null
   }
 }
 ```
@@ -106,7 +99,7 @@ helper to discover and attach already loaded OpenSSL images. A
 missing representative image fails before the wrapped command starts.
 
 Treat every `actions.*` command as an argv array; never concatenate or
-shell-evaluate it. Consumers may rely on existing v6 field semantics and must
+shell-evaluate it. Consumers may rely on existing v7 field semantics and must
 ignore additive unknown fields. Renaming or changing an existing semantic
 requires a new contract version.
 
@@ -199,18 +192,3 @@ heimdall run -- curl https://example.com
   endpoint reported for the run from that proxy's interception.
 - runtime TLS has no attachable image: start a representative process using
   the same OpenSSL image before `heimdall run`, or use relay mode.
-
-## Remove compatibility state
-
-This command is only for an explicitly requested uninstall or incompatible
-persistent-schema repair. It is unrelated to normal foreground runs, which
-leave no bpffs pins.
-
-```bash
-sudo systemctl stop heimdall
-sudo heimdall ebpf cleanup --json
-```
-
-Exit 1 with `code = "daemon_active"` or `"active_workloads"` means no state
-was removed. Never delete `/sys/fs/bpf/heimdall` manually; that could turn a
-fail-closed compatibility workload into direct egress.

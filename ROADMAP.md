@@ -22,7 +22,7 @@ acceptance path are documented and tested.
   explicit reject actions.
 - Strict TOML, YAML, and JSON configuration with shared validation, stable
   diagnostic codes, JSON paths, and repair hints.
-- `heimdall agent` as a read-only `heimdall.agent/v6` preflight with argv-safe
+- `heimdall agent` as a read-only `heimdall.agent/v7` preflight with argv-safe
   actions, selected execution ownership, and capability evidence.
 - Daemonless foreground execution for all decrypt modes:
   each run owns isolated relay/DNS ports, maps, links, cgroup, event state, and
@@ -34,8 +34,8 @@ acceptance path are documented and tested.
   `heimdall.capture/v1` contract.
 - Relay TLS termination and startup-discovered OpenSSL runtime TLS probes in
   the foreground path.
-- Persistent-state recovery and transactional upgrades in the compatibility
-  daemon path.
+- No daemon, registration API, persistent journal, health endpoint, service
+  unit, or bpffs lifecycle path in the shipped CLI.
 - A real-eBPF NixOS acceptance VM covering dual-stack TCP/UDP, QUIC, common
   CLI/runtime clients, lifecycle behavior, and both TLS paths.
 
@@ -47,27 +47,26 @@ below and is not part of the available contract yet.
 These are the active engineering tracks. They deliberately improve the core
 proxy and its evidence before adding a larger control plane.
 
-### 1. Retire the compatibility daemon
+### 1. Daemonless lifecycle hardening
 
 The foreground data plane is now the default for every decrypt mode. It binds
 kernel-assigned per-run relay and DNS ports, creates fresh unpinned maps,
 attaches FD-owned links through `heimdall.setup/v2`, and closes every resource
-when the command tree exits. The real-eBPF VM proves daemon-unreachable
-readiness, concurrent isolated runs, runtime and relay TLS, and cleanup back to
-the pre-run link baseline.
+when the command tree exits. The old daemon, registration API, persistent
+journal, service unit, health endpoint, cleanup command, and bpffs upgrade path
+are removed. The real-eBPF VM proves concurrent isolated runs, runtime and
+relay TLS, normal cleanup, and parent-death cgroup teardown.
 
-- Remove the compatibility daemon, registration API, persistent journal, and
-  bpffs upgrade path after migration and cleanup users are retired.
 - Evaluate run-scoped dynamic attachment for `libssl` images loaded only after
   child exec without introducing a persistent broker.
-- Harden abnormal-parent-exit cleanup and measure the remaining setup-worker
-  authorization UX across supported distributions.
+- Measure setup-worker authorization UX across supported distributions and
+  extend abnormal-exit coverage beyond the current SIGKILL acceptance.
 - Keep any persistent acceleration mode explicit and opt-in; never start it
   implicitly.
 
 Acceptance target: all three decrypt modes run without enabling a Heimdall
-service, while preserving the already verified independent concurrent runs,
-exit/signal semantics, and normal-exit cleanup. See
+service, while preserving independent concurrent runs, exit/signal semantics,
+normal cleanup, and fail-closed owner-death cleanup. See
 [docs/design/daemonless-runtime.md](docs/design/daemonless-runtime.md).
 
 ### 2. Agent-first event store

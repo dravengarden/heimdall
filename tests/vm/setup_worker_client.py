@@ -66,6 +66,8 @@ def main():
         if len(received) != 15:
             raise RuntimeError(f"received {len(received)} setup FDs instead of 15")
 
+        parent.sendall(b"G")
+        parent.shutdown(socket.SHUT_WR)
         stderr = process.communicate(timeout=10)[1].decode()
         if process.returncode != 0:
             raise RuntimeError(f"setup worker failed: {stderr}")

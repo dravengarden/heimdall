@@ -118,7 +118,7 @@
               "type": "object",
               "required": ["owner", "control"],
               "properties": {
-                "owner": { "enum": ["heimdall-run", "heimdall-daemon"] },
+                "owner": { "const": "heimdall-run" },
                 "control": { "type": ["string", "null"] }
               },
               "additionalProperties": false

@@ -12,8 +12,8 @@ these rules; this file is the standardized project entry point.
   90-second pitch, [`docs/architecture.md`](docs/architecture.md) for
   the data flow + control loops.
 - **Where to start coding**: pick a doc that mentions the file you
-  want to change. Most non-trivial changes touch `heimdall/` (CLI,
-  foreground session, and compatibility daemon), `heimdall-ebpf/` (kernel programs), or `heimdall-config/`
+  want to change. Most non-trivial changes touch `heimdall/` (CLI and
+  foreground session), `heimdall-ebpf/` (kernel programs), or `heimdall-config/`
   (the small format-independent schema). See `docs/runbook.md` for build order.
 
 ## House rules
@@ -112,16 +112,15 @@ remember to ask for more if needed.
   The concise help has a footer line (`Tip: heimdall help -v …`)
   that points AI agents at the verbose form. Don't strip the footer.
 - `heimdall agent` is the stable automation entry point. Keep it read-only,
-  single-document JSON, currently versioned as `heimdall.agent/v6`, and shell-safe by
+  single-document JSON, currently versioned as `heimdall.agent/v7`, and shell-safe by
   representing commands as argv arrays. Exit 0 means ready, 1 means not ready,
-  and 2 remains clap usage failure. Additive v6 fields are allowed; renaming or
+  and 2 remains clap usage failure. Additive v7 fields are allowed; renaming or
   changing existing field semantics requires a new contract version.
 - `heimdall init` preserves `config.<ext>` unless `--force`. Don't change this:
   losing live config to a doc refresh has bitten the user already.
 - The internal relay uses one kernel-assigned port shared by its IPv4/IPv6
   TCP/UDP loopback listeners. Foreground runs write the per-run port directly
-  to their private eBPF map; the compatibility daemon also publishes its port
-  through health. It is not user-configurable.
+  to their private eBPF map. It is not user-configurable.
 - Attached command cgroups have no implicit destination bypass except relay
   self-protection and policy-selected system DNS. Express private-network
   exceptions as ordered `direct` rules; fake-IP ranges must remain eligible

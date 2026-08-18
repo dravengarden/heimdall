@@ -141,9 +141,9 @@ impl CaptureManager {
                 })?;
         }
 
-        // Why: configuration validation cannot prove the daemon identity can
+        // Why: configuration validation cannot prove the invoking identity can
         // write here. Fail before eBPF attachment instead of dropping the first
-        // intercepted flow after the daemon reports ready.
+        // intercepted flow after the run reports ready.
         let probe = config.directory.join(format!(
             ".heimdall-write-probe-{}-{}",
             std::process::id(),

@@ -5,7 +5,7 @@
 - [design/daemonless-runtime.md](design/daemonless-runtime.md) — implemented foreground per-run path for proxying and both TLS modes
 - [design/agent-event-log.md](design/agent-event-log.md) — Phase 1 JSONL events, run manifests, rotation, retention, and agent CLI, with payload blobs planned
 - [config.md](config.md) — the strict TOML/YAML/JSON configuration
-- [runbook.md](runbook.md) — build, agent JSON contract, health, and troubleshooting
+- [runbook.md](runbook.md) — build, agent JSON contract, lifecycle, and troubleshooting
 
 Agent workflows live in [`../skills/heimdall/`](../skills/heimdall/). The
 event schema map is

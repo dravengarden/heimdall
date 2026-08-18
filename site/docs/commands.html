@@ -29,11 +29,8 @@
         <h2 id="surface">The command surface</h2>
         <pre><code>heimdall run [--policy NAME] -- COMMAND [ARGS...]
 heimdall agent [--policy NAME]
-heimdall daemon  # legacy persistent compatibility path
-heimdall status [--json]
 heimdall config validate|explain|show|path
 heimdall tls init-ca [--json]
-heimdall ebpf cleanup [--json]
 heimdall logs schema|list|path|query|tail|rotate|verify|prune
 heimdall init [--dir PATH] [--format toml|yaml|json] [--force]</code></pre>
         <div class="callout"><strong>One help command, two levels.</strong><code>heimdall help [path…]</code> gives concise help. Add <code>-v</code> to recurse into subcommands and inline every option.</div>
@@ -43,9 +40,8 @@ heimdall init [--dir PATH] [--format toml|yaml|json] [--force]</code></pre>
 heimdall config path
 heimdall config show
 heimdall config validate --json
-heimdall config explain --policy default --domain example.com --port 443 --json
-heimdall status --json</code></pre>
-        <p><code>heimdall agent</code> is the read-only <code>heimdall.agent/v6</code> contract. Read <code>execution.backend</code>, owner, privilege setup, and daemon requirement before interpreting legacy compatibility-daemon health.</p>
+heimdall config explain --policy default --domain example.com --port 443 --json</code></pre>
+        <p><code>heimdall agent</code> is the read-only <code>heimdall.agent/v7</code> contract. Read <code>execution.backend</code>, owner, privilege setup, and capability evidence before execution.</p>
         <table><thead><tr><th>Exit</th><th>Meaning</th></tr></thead><tbody><tr><td><code>0</code></td><td>Ready for the selected policy and execution backend.</td></tr><tr><td><code>1</code></td><td>Not ready; follow the returned argv repair action.</td></tr><tr><td><code>2</code></td><td>CLI usage failure.</td></tr></tbody></table>
 
         <h2 id="run">Run through a proxy</h2>
@@ -68,12 +64,6 @@ heimdall run --policy corp -- curl https://internal.example.com</code></pre>
         <h2 id="agent">Agent contract</h2>
         <p>Agents should branch on evidence rather than infer support from a language or command name. Inspect:</p>
         <ul><li><code>execution</code> for foreground ownership and setup privilege drop.</li><li><code>capabilities.runtime_acceptance</code> for concrete language and protocol paths.</li><li><code>capabilities.cli_acceptance</code> for command-specific coverage such as Git.</li><li><code>capabilities.udp</code> before wrapping connectionless or QUIC workloads.</li><li><code>capabilities.lifecycle</code> for descendants, cleanup, and concurrent isolation.</li></ul>
-
-        <h2 id="cleanup">Cleanup</h2>
-        <p>Foreground runs leave no persistent pins. Cleanup is only for an explicit compatibility-daemon uninstall or schema repair:</p>
-        <pre><code>sudo systemctl stop heimdall
-sudo heimdall ebpf cleanup --json</code></pre>
-        <div class="callout warning"><strong>Do not unlink pins manually.</strong> Cleanup refuses to remove state while the daemon or active workloads still own it.</div>
 
         <div class="doc-page-footer"><a href="configuration.html">← Configuration</a><a href="runbook.html">Runbook →</a></div>
       </article>

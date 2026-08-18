@@ -28,7 +28,7 @@ stable contracts, planning, design material, and operational guidance.
 - [`ROADMAP.md`](../ROADMAP.md) — Public status, planned macOS wrapper/Network Extension backends, and roadmap
 - [`architecture.md`](architecture.md) — CLI, eBPF, DNS, TCP/UDP relay, and TLS decrypt boundaries
 - [`config.md`](config.md) — Strict TOML/YAML/JSON policy rules, credentials, capture/decrypt modes, and UDP/QUIC limits
-- [`runbook.md`](runbook.md) — Build, narrow setup authorization, agent/log contracts, daemonless operation, TLS capture, VM acceptance, and compatibility cleanup
+- [`runbook.md`](runbook.md) — Build, narrow setup authorization, agent/log contracts, daemonless operation, TLS capture, and VM acceptance
 
 ### Design documents
 

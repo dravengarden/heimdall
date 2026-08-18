@@ -163,7 +163,6 @@ in
 
   systemd.services.heimdall-test-socks = {
     wantedBy = [ "multi-user.target" ];
-    before = [ "heimdall.service" ];
     serviceConfig = {
       ExecStart = "${pkgs.python3}/bin/python3 ${./socks5_fixture.py}";
       Restart = "on-failure";
@@ -197,7 +196,6 @@ in
 
   systemd.services.heimdall-test-tls = {
     wantedBy = [ "multi-user.target" ];
-    before = [ "heimdall.service" ];
     serviceConfig = {
       ExecStart = "${pkgs.openssl}/bin/openssl s_server -quiet -www -accept 127.0.0.1:18444 -cert ${tlsFixture}/server.pem -key ${tlsFixture}/server-key.pem";
       Restart = "on-failure";
@@ -213,40 +211,9 @@ in
     };
   };
 
-  systemd.services.heimdall = {
-    wantedBy = [ "multi-user.target" ];
-    after = [
-      "network.target"
-      "heimdall-test-socks.service"
-    ];
-    requires = [ "heimdall-test-socks.service" ];
-    serviceConfig = {
-      Type = "notify";
-      NotifyAccess = "main";
-      ExecStart = "${heimdallPackage}/bin/heimdall --config ${heimdallConfig} daemon";
-      Restart = "on-failure";
-      RuntimeDirectory = "heimdall";
-      RuntimeDirectoryMode = "0700";
-      RuntimeDirectoryPreserve = "yes";
-      AmbientCapabilities = [
-        "CAP_BPF"
-        "CAP_NET_ADMIN"
-        "CAP_SYS_ADMIN"
-        "CAP_DAC_OVERRIDE"
-      ];
-      CapabilityBoundingSet = [
-        "CAP_BPF"
-        "CAP_NET_ADMIN"
-        "CAP_SYS_ADMIN"
-        "CAP_DAC_OVERRIDE"
-      ];
-    };
-  };
-
   systemd.services.heimdall-test-ready = {
     wantedBy = [ "multi-user.target" ];
     after = [
-      "heimdall.service"
       "heimdall-test-http.service"
       "heimdall-test-udp.service"
       "heimdall-test-http3.service"
@@ -255,7 +222,6 @@ in
       "user@1000.service"
     ];
     requires = [
-      "heimdall.service"
       "heimdall-test-http.service"
       "heimdall-test-udp.service"
       "heimdall-test-http3.service"

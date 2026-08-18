@@ -186,8 +186,7 @@ transfers those ring FDs and the probe links, drops to the invoking user, and
 remains only for the run lifetime to retain Aya's probe state. The foreground
 process maps and reads inherited rings. Setup fails if none can be attached. Images
 loaded only after exec are not observed in the current alpha. Require
-`execution.daemon_required = false` and verify the selected runtime capability,
-not daemon health.
+`execution.daemon_required = false` and verify the selected runtime capability.
 
 `relay` detects TLS ClientHello records at the relay, verifies the upstream
 certificate with the native trust store, mirrors the negotiated ALPN, signs a
@@ -219,21 +218,6 @@ upload. Operators own deletion and capacity policy. An `open` record's
 `payload` is `opaque_transport` for decrypt-off traffic and non-TLS passthrough,
 or `tls_plaintext` for decrypted events. Never infer plaintext from the port or
 filename.
-
-## Compatibility daemon settings
-
-Normal runs can omit this section: their relay and DNS ports are
-kernel-assigned per run. These settings apply only to the explicit legacy
-compatibility daemon used for migration and cleanup.
-
-```toml
-[daemon]
-dns_port = 5358
-api_listen = "127.0.0.1:9999"
-```
-
-`api_listen` must be loopback-only. Both DNS transports bind IPv4 and IPv6
-loopback on `dns_port`; all listener conflicts are rejected before readiness.
 
 ## Machine-readable validation
 

@@ -5,7 +5,7 @@
 //! - `validate`: parse + run schema checks; exit 0/1. CI-friendly.
 //! - `explain`: evaluate one TCP or UDP destination against the ordered rules.
 //! - `show`: print the file content (auto-discovered) so you can
-//!   see what the daemon is actually reading.
+//!   see the exact source the foreground command will read.
 //! - `path`: just the resolved path on stdout. Useful for
 //!   `cd "$(heimdall config path | xargs dirname)"`.
 //!

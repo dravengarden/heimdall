@@ -1,4 +1,4 @@
-# Heimdall flake — pure-Nix build of the eBPF object and CLI daemon.
+# Heimdall flake — pure-Nix build of the eBPF object and foreground CLI.
 #
 # Two derivations:
 #
@@ -245,7 +245,7 @@
         '';
       };
 
-      # ── heimdall: workspace daemon, embeds the eBPF artifact ─────────
+      # ── heimdall: foreground CLI, embeds the eBPF artifact ─────────
       heimdall = rustPlatform.buildRustPackage {
         pname = "heimdall";
         version = "0.1.0";

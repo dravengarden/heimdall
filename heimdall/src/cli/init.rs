@@ -75,10 +75,6 @@ mode = "off"
 [decrypt]
 mode = "off"
 
-# Most installations do not need to change daemon settings.
-# [daemon]
-# api_listen = "127.0.0.1:9999"
-# dns_port = 5358
 "#;
 
 const HEIMDALL_YAML: &str = r#"# heimdall is a proxy wrapper. System traffic is never redirected.
@@ -165,7 +161,7 @@ pub fn run(args: InitArgs) -> Result<()> {
             .to_string_lossy()
     );
     println!(
-        "  2. Start `heimdall daemon`, then use `heimdall run -- <command>`.\n     Pass --config <PATH> only if the file lives elsewhere than {}.",
+        "  2. Run `heimdall run -- <command>`. No service is required.\n     Pass --config <PATH> only if the file lives elsewhere than {}.",
         main_target.display()
     );
 

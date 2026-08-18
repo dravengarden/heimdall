@@ -34,7 +34,6 @@ In scope:
 - The session-scoped `heimdall __setup-worker`, FD-transfer protocol, and eBPF
   programs
 - The foreground relay, DNS, TLS, capture, and event-log path
-- The explicit compatibility daemon and its loopback control API
 - The `heimdall run` cgroup + mount-namespace machinery
 - The fake-IP DNS server
 - Configuration parsing (heimdall-config)
@@ -56,8 +55,6 @@ Heimdall assumes:
 - The setup worker authenticates its Unix-socket peer and confines a non-root
   caller to its own systemd user slice. Multi-user isolation beyond this
   boundary has not yet received dedicated acceptance coverage.
-- The compatibility `daemon.api_listen` remains loopback-only. Do not expose
-  it to the network; that legacy control protocol has no authentication.
 - The SOCKS5 upstream is trusted. heimdall forwards destination hostnames
   (SOCKS5 ATYP=0x03) to it; an evil upstream can MITM via
   cert injection on the upstream-of-the-upstream side. Relay TLS explicitly
@@ -68,12 +65,9 @@ Heimdall assumes:
   root. The worker then irrevocably drops to the authenticated caller before
   the workload starts; eBPF programs still run with kernel privileges. The unprivileged foreground owner
   retains only map/link/perf FDs, maps and reads inherited rings, and cannot
-  attach a different cgroup through that protocol.
-
-The compatibility daemon remains a single-tenant legacy boundary: any local
-process able to reach its control listener can attempt registration. Do not
-enable it unless the user explicitly requests legacy persistent-state
-maintenance.
+  attach a different cgroup through that protocol. The dropped helper remains
+  session-scoped and kills the command cgroup if its foreground owner dies
+  without a graceful marker.
 
 ## Hardening recommendations for operators
 
@@ -82,8 +76,5 @@ maintenance.
   with `visudo -cf`.
 - Keep the foreground user's run, capture, password, and relay-CA-key files
   private. Directories should be 0700 and private keys 0600.
-- If the compatibility daemon is enabled, keep `api_listen` loopback-only and
-  retain only `CAP_BPF`, `CAP_NET_ADMIN`, `CAP_SYS_ADMIN`, and
-  `CAP_DAC_OVERRIDE` in its systemd capability set.
 - Audit every `proxy.outbounds.<name>.auth.password_file`; a readable leak
   compromises that upstream credential.

@@ -29,16 +29,12 @@
 //!
 //! Driven by one `/etc/heimdall/config.{toml,yaml,json}` file.
 
-mod api;
 mod capture;
 mod cli;
 mod dns;
 mod ebpf;
 mod event_log;
-mod gc;
-mod policy;
 mod setup;
-mod state;
 mod tls_relay;
 mod tls_runtime;
 
@@ -201,45 +197,21 @@ struct KernelRuntime {
     udp_port_map: UdpPortMap,
     udp_token_map: UdpTokenMap,
     udp_cookie_map: UdpCookieMap,
-    _policy_engine: Option<Arc<policy::PolicyEngine>>,
     _links: KernelLinks,
 }
 
-#[allow(dead_code)]
 enum KernelLinks {
-    Aya { _links: ebpf::LinkSet },
     Raw { _fds: Vec<OwnedFd> },
 }
 
 impl SessionRuntime {
-    async fn bind(cfg: &HeimdallConfig) -> Result<Self> {
-        Self::bind_with_dns(
-            cfg,
-            cfg.daemon.dns_port,
-            std::path::Path::new(state::RUNTIME_DIR).join("fake-dns.json"),
-        )
-        .await
-    }
-
-    async fn bind_foreground(cfg: &HeimdallConfig, state_path: PathBuf) -> Result<Self> {
-        Self::bind_with_dns(cfg, 0, state_path).await
-    }
-
-    async fn bind_with_dns(
-        cfg: &HeimdallConfig,
-        dns_port: u16,
-        state_path: PathBuf,
-    ) -> Result<Self> {
+    async fn bind_foreground(_cfg: &HeimdallConfig, state_path: PathBuf) -> Result<Self> {
         let relay = RelayRuntime::bind().await?;
         let dns = Arc::new(
-            DnsResolver::with_state(
-                &cfg.daemon.fake_ip_cidr,
-                &cfg.daemon.fake_ip6_cidr,
-                &state_path,
-            )
-            .context("initialize fake-IP DNS resolver")?,
+            DnsResolver::with_state(dns::FAKE_IPV4_CIDR, dns::FAKE_IPV6_CIDR, &state_path)
+                .context("initialize fake-IP DNS resolver")?,
         );
-        let dns_server = dns.clone().bind(dns_port).await?;
+        let dns_server = dns.clone().bind(0).await?;
         let dns_port = dns_server.port();
         let dns_task = tokio::spawn(async move {
             if let Err(error) = dns_server.serve().await {
@@ -283,7 +255,6 @@ impl SessionRuntime {
             udp_port_map: Arc::new(RwLock::new(runtime.udp_port_map)),
             udp_token_map: Arc::new(RwLock::new(runtime.udp_token_map)),
             udp_cookie_map: Arc::new(RwLock::new(runtime.udp_cookie_map)),
-            _policy_engine: None,
             _links: KernelLinks::Raw {
                 _fds: runtime.links,
             },
@@ -301,13 +272,6 @@ impl SessionRuntime {
 
     fn dns_port(&self) -> u16 {
         self.dns_port
-    }
-
-    fn relay_addresses(&self) -> Result<(SocketAddr, SocketAddr)> {
-        Ok((
-            self.relay.tcp_v4.local_addr()?,
-            self.relay.tcp_v6.local_addr()?,
-        ))
     }
 
     async fn serve(&self, udp_sessions: UdpSessions, shared: Arc<Shared>) -> Result<()> {
@@ -466,8 +430,8 @@ impl ForegroundSession {
         if let Some(worker) = self.setup_worker.take() {
             match tokio::task::spawn_blocking(move || worker.shutdown()).await {
                 Ok(Ok(())) => {}
-                Ok(Err(error)) => warn!(%error, "runtime setup helper shutdown failed"),
-                Err(error) => warn!(%error, "runtime setup helper join failed"),
+                Ok(Err(error)) => warn!(%error, "setup helper shutdown failed"),
+                Err(error) => warn!(%error, "setup helper join failed"),
             }
         }
         let flows_drained = self.event_client.wait_for_flows(Duration::from_secs(2));
@@ -481,8 +445,8 @@ impl ForegroundSession {
 impl Drop for SessionRuntime {
     fn drop(&mut self) {
         // Why: a session is the lifetime boundary. Explicit cancellation keeps
-        // this owner safe to move from the daemon into `heimdall run` without
-        // leaving a detached DNS task behind after listeners are dropped.
+        // the foreground owner from leaving a detached DNS task behind after
+        // listeners are dropped.
         self.dns_task.abort();
     }
 }
@@ -743,12 +707,9 @@ struct Cli {
 #[derive(clap::Subcommand, Debug)]
 enum Cmd {
     /// Emit a stable, side-effect-free JSON preflight for AI agents.
-    /// Includes config validity, daemon reachability, the resolved run
-    /// decision, error codes, and shell-safe argv arrays.
+    /// Includes config validity, the resolved run decision, error codes,
+    /// capabilities, and shell-safe argv arrays.
     Agent(cli::agent::AgentArgs),
-
-    /// Run the legacy persistent compatibility daemon (explicit opt-in).
-    Daemon(DaemonArgs),
 
     /// Internal privileged half of one foreground run.
     #[command(name = "__setup-worker", hide = true)]
@@ -758,10 +719,6 @@ enum Cmd {
     #[command(subcommand)]
     Config(cli::config::ConfigCmd),
 
-    /// Inspect or clean up Heimdall-owned persistent eBPF state.
-    #[command(subcommand)]
-    Ebpf(cli::ebpf::EbpfCmd),
-
     /// Generate and inspect TLS trust material used by relay decryption.
     #[command(subcommand)]
     Tls(cli::tls::TlsCmd),
@@ -769,9 +726,6 @@ enum Cmd {
     /// Inspect, follow, rotate, verify, or prune per-run event logs.
     #[command(subcommand)]
     Logs(cli::logs::LogsCmd),
-
-    /// Show the selected config and compatibility-daemon health.
-    Status(StatusArgs),
 
     /// Write a minimal starter config in the selected format.
     Init(cli::init::InitArgs),
@@ -799,19 +753,6 @@ enum Cmd {
         #[arg(num_args = 0..)]
         path: Vec<String>,
     },
-}
-
-#[derive(clap::Args, Debug, Default)]
-struct DaemonArgs {}
-
-#[derive(clap::Args, Debug, Default)]
-pub struct StatusArgs {
-    /// Emit a single JSON object instead of the labeled-text view.
-    /// Drops the "(daemon down)" warnings and uses null fields when
-    /// the daemon HTTP API is unreachable. For the complete machine
-    /// contract, prefer `heimdall agent`.
-    #[arg(long)]
-    pub json: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -915,9 +856,6 @@ struct Shared {
     /// on every redirected connection. Empty when no wrapped command is
     /// running and cleared when the matching CLI exits.
     ///
-    /// Shared by Arc::clone with `api::AppState.cli_overrides` so the
-    /// HTTP register endpoints write here in lockstep with the
-    /// PolicyEngine BPF map update.
     cli_overrides: CliOverrides,
     event_clients: EventClients,
 }
@@ -933,11 +871,6 @@ pub(crate) async fn close_udp_sessions_for_cgroup(sessions: &UdpSessions, cgroup
 /// CLI processes. See `Shared.cli_overrides` for semantics.
 pub type CliOverrides = Arc<parking_lot::RwLock<StdHashMap<u64, heimdall_config::Decision>>>;
 pub type EventClients = Arc<parking_lot::RwLock<StdHashMap<u64, crate::event_log::EventClient>>>;
-
-/// Late-bound policy engine slot. Constructed after eBPF attach
-/// succeeds; the HTTP API holds an Arc clone of this slot so register
-/// endpoints can call `engine.write_one()` once it's populated.
-type PolicyEngineSlot = Arc<parking_lot::Mutex<Option<Arc<policy::PolicyEngine>>>>;
 
 /// SOCKS5 destination — IPv4 literal (ATYP=0x01), IPv6 literal
 /// (ATYP=0x04), or hostname recovered via fake-IP lookup (ATYP=0x03,
@@ -957,13 +890,9 @@ enum Dst {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Only the daemon prints structured logs by default. CLI subcommands
-    // stay quiet unless `RUST_LOG` overrides — they're meant to feed
-    // stdout into pipes / `jq` / human eyes.
-    let default_level = match cli.cmd.as_ref() {
-        Some(Cmd::Daemon(_)) => "heimdall=info",
-        _ => "heimdall=warn",
-    };
+    // Commands stay quiet unless RUST_LOG overrides; stdout belongs to their
+    // machine contract or wrapped process.
+    let default_level = "heimdall=warn";
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env().add_directive(default_level.parse()?),
@@ -993,28 +922,13 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
-        Cmd::Daemon(args) => {
-            let config_path = resolve_config_path(cli.config.as_deref())?;
-            daemon_run(&config_path, args).await
-        }
         Cmd::SetupWorker => setup_worker_entry(),
         Cmd::Config(sub) => {
             let config_path = resolve_config_path(cli.config.as_deref())?;
             cli::config::run(&config_path, sub).await
         }
-        Cmd::Ebpf(sub) => {
-            let cleaned = cli::ebpf::run(sub)?;
-            if !cleaned {
-                std::process::exit(1);
-            }
-            Ok(())
-        }
         Cmd::Tls(sub) => cli::tls::run(sub),
         Cmd::Logs(sub) => cli::logs::run(sub),
-        Cmd::Status(args) => {
-            let config_path = resolve_config_path(cli.config.as_deref())?;
-            cli::status::run(&config_path, args).await
-        }
         Cmd::Init(args) => cli::init::run(args),
         Cmd::Run(args) => {
             let config_path = resolve_config_path(cli.config.as_deref())?;
@@ -1120,63 +1034,7 @@ fn print_command_recursive(cmd: &mut clap::Command, path: &[&str]) {
     }
 }
 
-async fn restore_cli_registrations(
-    shared: &Shared,
-    cli_overrides: &CliOverrides,
-    engine: &policy::PolicyEngine,
-) -> Result<usize> {
-    let live = gc::command_cgroups()?
-        .into_iter()
-        .map(|cgroup| (cgroup.id, cgroup))
-        .collect::<StdHashMap<_, _>>();
-    let mut restored = 0;
-
-    for registration in state::load_registrations()? {
-        let Some(cgroup) = live.get(&registration.cgroup_id) else {
-            state::remove_registration(registration.cgroup_id)?;
-            continue;
-        };
-        if !cgroup.populated {
-            state::remove_registration(registration.cgroup_id)?;
-            if let Err(error) = std::fs::remove_dir(&cgroup.path) {
-                debug!(path = %cgroup.path.display(), %error, "stale CLI cgroup removal deferred to GC");
-            }
-            continue;
-        }
-        let policy = shared.cfg.policy(&registration.policy).with_context(|| {
-            format!(
-                "active cgroup {} references removed policy `{}`",
-                registration.cgroup_id, registration.policy
-            )
-        })?;
-        engine
-            .register_external(
-                registration.cgroup_id,
-                policy.dns_hijack(),
-                matches!(policy.dns.mode, heimdall_config::DnsMode::System),
-                policy.rejects_all_udp(),
-            )
-            .await?;
-        cli_overrides.write().insert(
-            registration.cgroup_id,
-            heimdall_config::Decision {
-                policy: registration.policy,
-            },
-        );
-        if let Ok(client) = event_log::EventClient::connect(registration.event_socket) {
-            shared
-                .event_clients
-                .write()
-                .insert(registration.cgroup_id, client);
-        }
-        restored += 1;
-    }
-
-    Ok(restored)
-}
-
 struct CgroupAttachTarget<'a> {
-    key: &'a str,
     path: &'a str,
     file: &'a std::fs::File,
     required: bool,
@@ -1206,22 +1064,19 @@ fn attach_cgroup_programs(
             .load()
             .with_context(|| format!("failed to load {name}"))?;
         for target in targets {
-            let link_name = format!("{name}-{}", target.key);
-            if !transaction.update_link(&link_name, program.fd()?.as_fd())? {
-                match program.attach(target.file, CgroupAttachMode::Single) {
-                    Ok(link_id) => {
-                        let link: FdLink = program.take_link(link_id)?.try_into()?;
-                        transaction.install_link(&link_name, link)?;
-                    }
-                    Err(error) if !target.required => {
-                        warn!(%error, cgroup = target.path, prog = name, "optional eBPF cgroup attach failed");
-                        continue;
-                    }
-                    Err(error) => {
-                        return Err(error).with_context(|| {
-                            format!("attach {name} to required cgroup {}", target.path)
-                        });
-                    }
+            match program.attach(target.file, CgroupAttachMode::Single) {
+                Ok(link_id) => {
+                    let link: FdLink = program.take_link(link_id)?.try_into()?;
+                    transaction.install_link(link);
+                }
+                Err(error) if !target.required => {
+                    warn!(%error, cgroup = target.path, prog = name, "optional eBPF cgroup attach failed");
+                    continue;
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("attach {name} to required cgroup {}", target.path)
+                    });
                 }
             }
             info!(
@@ -1239,22 +1094,18 @@ fn attach_cgroup_programs(
         .try_into()?;
     program.load().context("failed to load sock_release")?;
     for target in targets {
-        let link_name = format!("{name}-{}", target.key);
-        if !transaction.update_link(&link_name, program.fd()?.as_fd())? {
-            match program.attach(target.file, CgroupAttachMode::Single) {
-                Ok(link_id) => {
-                    let link: FdLink = program.take_link(link_id)?.try_into()?;
-                    transaction.install_link(&link_name, link)?;
-                }
-                Err(error) if !target.required => {
-                    warn!(%error, cgroup = target.path, prog = name, "optional eBPF cgroup attach failed");
-                    continue;
-                }
-                Err(error) => {
-                    return Err(error).with_context(|| {
-                        format!("attach {name} to required cgroup {}", target.path)
-                    });
-                }
+        match program.attach(target.file, CgroupAttachMode::Single) {
+            Ok(link_id) => {
+                let link: FdLink = program.take_link(link_id)?.try_into()?;
+                transaction.install_link(link);
+            }
+            Err(error) if !target.required => {
+                warn!(%error, cgroup = target.path, prog = name, "optional eBPF cgroup attach failed");
+                continue;
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("attach {name} to required cgroup {}", target.path));
             }
         }
         info!(
@@ -1271,26 +1122,22 @@ fn attach_cgroup_programs(
         .try_into()?;
     program.load().context("failed to load skb_egress")?;
     for target in targets {
-        let link_name = format!("{name}-{}", target.key);
-        if !transaction.update_link(&link_name, program.fd()?.as_fd())? {
-            match program.attach(
-                target.file,
-                CgroupSkbAttachType::Egress,
-                CgroupAttachMode::Single,
-            ) {
-                Ok(link_id) => {
-                    let link: FdLink = program.take_link(link_id)?.try_into()?;
-                    transaction.install_link(&link_name, link)?;
-                }
-                Err(error) if !target.required => {
-                    warn!(%error, cgroup = target.path, prog = name, "optional eBPF cgroup attach failed");
-                    continue;
-                }
-                Err(error) => {
-                    return Err(error).with_context(|| {
-                        format!("attach {name} to required cgroup {}", target.path)
-                    });
-                }
+        match program.attach(
+            target.file,
+            CgroupSkbAttachType::Egress,
+            CgroupAttachMode::Single,
+        ) {
+            Ok(link_id) => {
+                let link: FdLink = program.take_link(link_id)?.try_into()?;
+                transaction.install_link(link);
+            }
+            Err(error) if !target.required => {
+                warn!(%error, cgroup = target.path, prog = name, "optional eBPF cgroup attach failed");
+                continue;
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("attach {name} to required cgroup {}", target.path));
             }
         }
         info!(
@@ -1303,25 +1150,10 @@ fn attach_cgroup_programs(
     Ok(())
 }
 
-fn load_kernel_object(lifetime: ebpf::LinkLifetime) -> Result<Ebpf> {
-    let mut loader = EbpfLoader::new();
-    if lifetime == ebpf::LinkLifetime::Persistent {
-        ebpf::prepare_pin_dirs()?;
-        ebpf::validate_state_schema()?;
-        loader.default_map_pin_directory(ebpf::MAPS);
-    }
-
-    let mut bpf = loader.load(EBPF_BYTES).with_context(|| match lifetime {
-        ebpf::LinkLifetime::Persistent => {
-            "load eBPF object with persistent maps; if a map layout changed, stop heimdall, wait for wrapped commands to exit, then run `heimdall ebpf cleanup --json`"
-        }
-        ebpf::LinkLifetime::Process => "load eBPF object with process-owned maps",
-    })?;
-    ebpf::write_state_schema(
-        bpf.map_mut("STATE_SCHEMA")
-            .context("STATE_SCHEMA not found")?,
-    )?;
-    Ok(bpf)
+fn load_kernel_object() -> Result<Ebpf> {
+    EbpfLoader::new()
+        .load(EBPF_BYTES)
+        .context("load eBPF object with process-owned maps")
 }
 
 fn configure_kernel_maps(bpf: &mut Ebpf, relay_port: u16, dns_port: u16) -> Result<()> {
@@ -1436,7 +1268,7 @@ fn setup_worker_run(socket: &mut std::os::unix::net::UnixStream) -> Result<()> {
         "setup cgroup ID does not match its inode"
     );
 
-    let mut bpf = load_kernel_object(ebpf::LinkLifetime::Process)?;
+    let mut bpf = load_kernel_object()?;
     configure_kernel_maps(&mut bpf, request.relay_port(), request.dns_port())?;
     let mut policy_map: HashMap<aya::maps::MapData, u64, u8> = HashMap::try_from(
         bpf.take_map("CGROUP_POLICY")
@@ -1446,12 +1278,11 @@ fn setup_worker_run(socket: &mut std::os::unix::net::UnixStream) -> Result<()> {
         .insert(request.cgroup_id(), request.policy_flags(), 0)
         .context("write foreground cgroup policy")?;
 
-    let mut transaction = ebpf::LinkTransaction::new(ebpf::LinkLifetime::Process);
+    let mut transaction = ebpf::LinkTransaction::new();
     attach_cgroup_programs(
         &mut bpf,
         &mut transaction,
         &[CgroupAttachTarget {
-            key: "run",
             path: canonical
                 .to_str()
                 .context("setup cgroup path is not UTF-8")?,
@@ -1520,16 +1351,38 @@ fn setup_worker_run(socket: &mut std::os::unix::net::UnixStream) -> Result<()> {
         runtime_tls.as_ref().map(|runtime| runtime.report.clone()),
         &transferred,
     )?;
-    if runtime_tls.is_some() {
-        drop_setup_worker_privileges(peer.uid(), peer.gid())?;
-        let mut marker = [0_u8; 1];
-        while socket
-            .read(&mut marker)
-            .context("wait for runtime setup helper shutdown")?
-            != 0
-        {}
+    drop_setup_worker_privileges(peer.uid(), peer.gid())?;
+    let mut marker = [0_u8; 1];
+    let mut graceful = false;
+    while socket
+        .read(&mut marker)
+        .context("wait for setup helper shutdown")?
+        != 0
+    {
+        graceful |= marker == *b"G";
+    }
+    if !graceful {
+        kill_abandoned_cgroup(&canonical)?;
     }
     Ok(())
+}
+
+fn kill_abandoned_cgroup(cgroup: &std::path::Path) -> Result<()> {
+    // Why: if the foreground owner is SIGKILLed, its eBPF FDs close before
+    // the workload does. Kill the delegated command cgroup on unmarked EOF so
+    // surviving descendants cannot silently continue with direct egress.
+    std::fs::write(cgroup.join("cgroup.kill"), b"1")
+        .context("kill command cgroup after foreground owner exit")?;
+    for _ in 0..500 {
+        let events = std::fs::read_to_string(cgroup.join("cgroup.events"))
+            .context("read abandoned command cgroup state")?;
+        if events.lines().any(|line| line == "populated 0") {
+            std::fs::remove_dir(cgroup).context("remove abandoned command cgroup")?;
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    anyhow::bail!("abandoned command cgroup remained populated after cgroup.kill")
 }
 
 #[allow(
@@ -1563,280 +1416,6 @@ fn take_setup_hash_map(bpf: &mut Ebpf, name: &str) -> Result<aya::maps::MapData>
         aya::maps::Map::HashMap(map) | aya::maps::Map::LruHashMap(map) => Ok(map),
         _ => anyhow::bail!("{name} has an unexpected map type"),
     }
-}
-
-async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
-    // ─── Load config ──────────────────────────────────────────────────────
-    let cfg = HeimdallConfig::load(config_path).map_err(|error| {
-        anyhow::anyhow!(
-            "invalid config {}\n\n{}",
-            config_path.display(),
-            error.actionable_message()
-        )
-    })?;
-    info!(
-        path = %config_path.display(),
-        outbounds = cfg.proxy.outbounds.len(),
-        "config loaded"
-    );
-
-    let upstreams = resolve_all(&cfg)?;
-    info!(outbounds = upstreams.len(), "all outbounds resolved");
-
-    let _daemon_lock = state::DaemonLock::acquire()?;
-    let capture = capture::CaptureManager::from_config(&cfg.capture)
-        .await
-        .context("initialize transport capture")?;
-    let relay_tls = (cfg.decrypt.mode == heimdall_config::DecryptMode::Relay)
-        .then(|| {
-            let ca_cert = cfg
-                .decrypt
-                .ca_cert
-                .as_deref()
-                .context("strict config accepted relay decrypt without ca_cert")?;
-            let ca_key = cfg
-                .decrypt
-                .ca_key
-                .as_deref()
-                .context("strict config accepted relay decrypt without ca_key")?;
-            Ok::<_, anyhow::Error>(Arc::new(
-                tls_relay::RelayTls::load(ca_cert, ca_key)
-                    .context("initialize relay TLS decryption")?,
-            ))
-        })
-        .transpose()?;
-
-    let _ = &args;
-
-    // Bind command-scoped data-plane resources before eBPF attachment. They
-    // still run under the daemon today, but already share one drop boundary.
-    let mut session_runtime = SessionRuntime::bind(&cfg).await?;
-
-    // Shared between Shared{} (relay reads), AppState (HTTP register
-    // endpoints write), and the `heimdall run` flow. Initialised here
-    // so AppState gets a clone before it's spawned. See type aliases
-    // above for semantics.
-    let cli_overrides: CliOverrides = Arc::new(parking_lot::RwLock::new(StdHashMap::new()));
-    let event_clients: EventClients = Arc::new(parking_lot::RwLock::new(StdHashMap::new()));
-    let udp_sessions: UdpSessions = Arc::new(Mutex::new(StdHashMap::new()));
-    let policy_engine_slot: PolicyEngineSlot = Arc::new(parking_lot::Mutex::new(None));
-    let daemon_health = Arc::new(parking_lot::RwLock::new(api::HealthReport {
-        contract: "heimdall.daemon.health/v2".into(),
-        ready: false,
-        relay_port: 0,
-        decrypt_mode: match cfg.decrypt.mode {
-            heimdall_config::DecryptMode::Off => "off",
-            heimdall_config::DecryptMode::Runtime => "runtime",
-            heimdall_config::DecryptMode::Relay => "relay",
-        }
-        .into(),
-        runtime: None,
-    }));
-    let api_listen: SocketAddr = cfg
-        .daemon
-        .api_listen
-        .parse()
-        .with_context(|| format!("parse daemon.api_listen `{}`", cfg.daemon.api_listen))?;
-    let app_state = api::AppState {
-        policies: cfg.proxy.policies.clone(),
-        cli_overrides: cli_overrides.clone(),
-        policy_engine: policy_engine_slot.clone(),
-        udp_sessions: udp_sessions.clone(),
-        health: daemon_health.clone(),
-        event_clients: event_clients.clone(),
-    };
-    let api_listener = TcpListener::bind(api_listen)
-        .await
-        .with_context(|| format!("bind control API on {api_listen}"))?;
-
-    let relay_port = session_runtime.relay_port();
-    daemon_health.write().relay_port = relay_port;
-    tokio::spawn(async move {
-        if let Err(e) = api::serve(app_state, api_listener).await {
-            warn!(error = %e, "control API exited");
-        }
-    });
-
-    let shared = Arc::new(Shared {
-        cfg,
-        upstreams,
-        capture,
-        relay_tls,
-        dns: Some(session_runtime.dns.clone()),
-        cli_overrides: cli_overrides.clone(),
-        event_clients: event_clients.clone(),
-    });
-
-    // ─── Load eBPF object and attach programs ─────────────────────────────
-    let kernel_lifetime = ebpf::LinkLifetime::Persistent;
-    let mut bpf = load_kernel_object(kernel_lifetime)?;
-    let mut link_transaction = ebpf::LinkTransaction::new(kernel_lifetime);
-    let mut _runtime_tls = None;
-
-    if shared.cfg.decrypt.mode == heimdall_config::DecryptMode::Runtime {
-        let capture = shared
-            .capture
-            .clone()
-            .context("strict config enabled runtime decrypt without capture")?;
-        let (report, runtime_tls) =
-            tls_runtime::start(&mut bpf, capture).context("initialize runtime TLS decryption")?;
-        anyhow::ensure!(
-            report.attached_images > 0,
-            "runtime TLS found no attachable loaded OpenSSL images; start a representative OpenSSL process before restarting the daemon, or use decrypt.mode = relay"
-        );
-        daemon_health.write().runtime = Some(report);
-        _runtime_tls = Some(runtime_tls);
-    }
-
-    configure_kernel_maps(&mut bpf, relay_port, shared.cfg.daemon.dns_port)?;
-
-    // Wait for the cgroup to appear — system.slice exists from early
-    // boot, but retrying keeps startup robust if the unit races ahead.
-    // Previous approach used an ExecStartPre bash script that checked `-d`,
-    // but it was racy: the directory could vanish between the shell test and
-    // File::open here. Retrying the actual open inside the daemon avoids
-    // full restart overhead (config reload, BPF load, BPF map writes) and
-    // eliminates the TOCTOU race.
-    let cgroup = {
-        let cgroup_path = &shared.cfg.daemon.cgroup;
-        let mut attempts = 0u32;
-        const MAX_WAIT_SECS: u32 = 60;
-        loop {
-            match std::fs::File::open(cgroup_path) {
-                Ok(f) => {
-                    if attempts > 0 {
-                        info!(path = %cgroup_path, waited_secs = attempts, "cgroup appeared");
-                    }
-                    break f;
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound && attempts < MAX_WAIT_SECS => {
-                    if attempts == 0 {
-                        info!(path = %cgroup_path, "cgroup not found; waiting");
-                    }
-                    attempts += 1;
-                    std::thread::sleep(std::time::Duration::from_secs(1));
-                }
-                Err(e) => {
-                    return Err(e)
-                        .with_context(|| format!("failed to open cgroup path: {cgroup_path}"));
-                }
-            }
-        }
-    };
-
-    // A single root-cgroup attach historically appeared to succeed but did not
-    // fire in cgroup v2 hierarchical mode. Keep the verified system/user pair
-    // as data; a foreground run can instead provide exactly one required
-    // transient target to the same attach function.
-    const USER_SLICE: &str = "/sys/fs/cgroup/user.slice";
-    let user_slice_file = std::path::Path::new(USER_SLICE)
-        .exists()
-        .then(|| std::fs::File::open(USER_SLICE).ok())
-        .flatten();
-    let mut attach_targets = vec![CgroupAttachTarget {
-        key: "system",
-        path: &shared.cfg.daemon.cgroup,
-        file: &cgroup,
-        required: true,
-    }];
-    if let Some(user_cgroup) = user_slice_file.as_ref() {
-        attach_targets.push(CgroupAttachTarget {
-            key: "user",
-            path: USER_SLICE,
-            file: user_cgroup,
-            required: false,
-        });
-    }
-    attach_cgroup_programs(&mut bpf, &mut link_transaction, &attach_targets)?;
-    let port_map: PortMap = Arc::new(RwLock::new(HashMap::try_from(
-        bpf.take_map("PORT_MAP").context("PORT_MAP not found")?,
-    )?));
-    let udp_token_map: UdpTokenMap = Arc::new(RwLock::new(HashMap::try_from(
-        bpf.take_map("UDP_TOKEN_MAP")
-            .context("UDP_TOKEN_MAP not found")?,
-    )?));
-    let udp_port_map: UdpPortMap = Arc::new(RwLock::new(HashMap::try_from(
-        bpf.take_map("UDP_PORT_MAP")
-            .context("UDP_PORT_MAP not found")?,
-    )?));
-    let udp_cookie_map: UdpCookieMap = Arc::new(RwLock::new(HashMap::try_from(
-        bpf.take_map("UDP_COOKIE_MAP")
-            .context("UDP_COOKIE_MAP not found")?,
-    )?));
-
-    // ─── CLI-owned cgroup policy registry ───────────────────────────────
-    let policy_map = HashMap::try_from(
-        bpf.take_map("CGROUP_POLICY")
-            .context("CGROUP_POLICY not found")?,
-    )?;
-    let policy_engine = Arc::new(policy::PolicyEngine::new(policy_map));
-    let restored = restore_cli_registrations(&shared, &cli_overrides, &policy_engine).await?;
-    // Hand a clone to the HTTP API so /api/cli/register endpoints can write
-    // the policy byte alongside its userspace proxy choice.
-    *policy_engine_slot.lock() = Some(policy_engine.clone());
-    info!(restored, "CLI policy registry started");
-
-    // GC orphan `heimdall run` cgroups: when the wrapping CLI is killed before
-    // it can deregister + rmdir, the transient cgroup + BPF policy entry leak.
-    gc::spawn(
-        cli_overrides.clone(),
-        policy_engine_slot.clone(),
-        udp_sessions.clone(),
-        event_clients.clone(),
-    );
-    info!("orphan-cgroup GC spawned (interval 30s)");
-
-    session_runtime.install_kernel(KernelRuntime {
-        port_map,
-        udp_port_map,
-        udp_token_map,
-        udp_cookie_map,
-        _policy_engine: Some(policy_engine),
-        _links: KernelLinks::Aya {
-            _links: link_transaction.commit(),
-        },
-    })?;
-    daemon_health.write().ready = true;
-    info!("persistent eBPF link generation committed");
-    let (relay_v4, relay_v6) = session_runtime.relay_addresses()?;
-    info!(ipv4 = %relay_v4, ipv6 = %relay_v6, "heimdall ready");
-
-    // ─── systemd notify: READY + WATCHDOG ─────────────────────────────────
-    // `READY=1` lets `Type=notify` units depending on heimdall (e.g. a
-    // downstream unit, or a deployment script
-    // running `systemctl is-active --wait heimdall`) actually wait for
-    // the relay to be accepting connections, instead of the Type=simple
-    // "ready the moment exec returns" lie. The relay and CLI policy
-    // registry are ready at this point. Safe to call when
-    // not under systemd — sd-notify returns Ok(()) silently.
-    if let Err(e) = sd_notify::notify(false, &[sd_notify::NotifyState::Ready]) {
-        warn!(error = %e, "sd_notify READY failed");
-    }
-    // Watchdog heartbeat: WATCHDOG=1 every 1/3 of WatchdogSec so a hung
-    // daemon (deadlocked tokio runtime or stalled relay) gets killed
-    // + restarted by systemd instead of holding eBPF state hostage.
-    // sd-notify exposes the configured period via WATCHDOG_USEC.
-    let mut watchdog_usec: u64 = 0;
-    if sd_notify::watchdog_enabled(false, &mut watchdog_usec) && watchdog_usec > 0 {
-        let beat = std::time::Duration::from_micros(watchdog_usec / 3);
-        info!(
-            period_secs = beat.as_secs_f32(),
-            "systemd watchdog heartbeat starting"
-        );
-        tokio::spawn(async move {
-            let mut tick = tokio::time::interval(beat);
-            loop {
-                tick.tick().await;
-                if let Err(e) = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]) {
-                    warn!(error = %e, "sd_notify WATCHDOG failed");
-                }
-            }
-        });
-    } else {
-        debug!("systemd WATCHDOG_USEC unset; no heartbeat");
-    }
-
-    session_runtime.serve(udp_sessions, shared).await
 }
 
 fn spawn_tcp_relay(stream: TcpStream, peer: SocketAddr, map: PortMap, shared: Arc<Shared>) {

@@ -30,9 +30,11 @@ inherited Unix socket, authenticates the caller and cgroup identity, creates
 fresh unpinned maps, attaches eleven eBPF links to that cgroup, transfers four
 map FDs and all link FDs with `SCM_RIGHTS`; runtime mode additionally returns
 one already-opened perf ring per online CPU and startup-discovered OpenSSL
-uprobe links. For non-runtime modes it then exits. Runtime TLS requires the
-complete Aya probe state to remain alive, so the worker irrevocably drops to
-the authenticated caller and waits only for its inherited socket to close.
+uprobe links. It then irrevocably drops to the authenticated caller and waits
+only for its inherited socket. A marked close is normal teardown; an unmarked
+EOF means the owner died, so the helper kills and removes that run's cgroup
+before exiting. Runtime TLS also relies on the helper retaining complete Aya
+probe state.
 It never parses proxy
 credentials, opens capture files, terminates TLS, executes the workload, or
 listens on a persistent socket.
@@ -57,8 +59,8 @@ an interception owner or a prerequisite for any run.
    listeners.
 4. The setup worker writes those endpoints and the selected policy bits into
    fresh per-run maps, attaches only the transient cgroup, and transfers owned
-   FDs. Runtime mode keeps the now-unprivileged helper for the session; other
-   modes reap it here. Failure here occurs before the child executes.
+   FDs. Every mode keeps the now-unprivileged helper as a parent-death guard
+   for the session. Failure here occurs before the child executes.
 5. The child joins the cgroup and executes the requested argv. Processes
    outside this cgroup cannot be redirected by the per-run links.
 6. eBPF redirects TCP, UDP, and fake-DNS traffic to the foreground listeners.
@@ -111,22 +113,13 @@ TLS modes are explicit:
 - `runtime` observes supported OpenSSL APIs without changing trust. The setup
   worker discovers already mapped `libssl` images at run startup, attaches
   probes globally while the per-run policy map filters events to the command
-  cgroup, opens the per-CPU perf rings, transfers those ring and link FDs, and
-  exits. The unprivileged foreground owner only maps and reads the inherited
+  cgroup, opens the per-CPU perf rings, and transfers those ring and link FDs.
+  The unprivileged foreground owner only maps and reads the inherited
   rings. Libraries loaded later or unsupported TLS implementations remain
   opaque.
 
 The event or capture record identifies the actual observation boundary. A
 selected TLS mode alone is never proof that plaintext was observed.
-
-## Compatibility daemon
-
-`heimdall daemon` remains temporarily as an explicit legacy path for
-persistent-state migration. It owns shared listeners, persistent bpffs
-maps/links, a loopback health API, registration recovery, and orphan cleanup.
-It is opt-in, is never started by `heimdall run`, and is not needed by any
-decrypt mode. Its lifecycle and cleanup fields are reported separately by
-`heimdall.agent/v6`.
 
 ## Non-goals
 

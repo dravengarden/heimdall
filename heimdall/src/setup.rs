@@ -179,17 +179,18 @@ pub(crate) struct SetupWorker {
 
 impl SetupWorker {
     pub(crate) fn shutdown(mut self) -> Result<()> {
-        self.socket.take();
+        if let Some(mut socket) = self.socket.take() {
+            socket
+                .write_all(b"G")
+                .context("mark graceful setup helper shutdown")?;
+        }
         let status = self
             .child
             .take()
-            .context("runtime setup helper is already reaped")?
+            .context("setup helper is already reaped")?
             .wait()
-            .context("wait for runtime setup helper")?;
-        anyhow::ensure!(
-            status.success(),
-            "runtime setup helper exited with {status}"
-        );
+            .context("wait for setup helper")?;
+        anyhow::ensure!(status.success(), "setup helper exited with {status}");
         Ok(())
     }
 }
@@ -382,22 +383,16 @@ pub(crate) fn launch_worker(request: &SetupRequest) -> Result<SetupBundle> {
             drop(parent);
             let _ = child.kill();
             let _ = child.wait();
-            return Err(error).context("setup worker did not return a runtime bundle");
+            return Err(error).context("setup worker did not return a session bundle");
         }
     };
-    if request.runtime_tls() {
-        parent
-            .set_read_timeout(None)
-            .context("clear setup helper response timeout")?;
-        bundle.worker = Some(SetupWorker {
-            socket: Some(parent),
-            child: Some(child),
-        });
-        return Ok(bundle);
-    }
-    drop(parent);
-    let status = child.wait().context("wait for setup worker")?;
-    anyhow::ensure!(status.success(), "setup worker exited with {status}");
+    parent
+        .set_read_timeout(None)
+        .context("clear setup helper response timeout")?;
+    bundle.worker = Some(SetupWorker {
+        socket: Some(parent),
+        child: Some(child),
+    });
     Ok(bundle)
 }
 

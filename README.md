@@ -55,7 +55,7 @@ need compatibility hardening.
 | --- | --- | --- |
 | Command-scoped TCP and UDP proxying | Available | IPv4/IPv6, SOCKS5 and direct egress, fake DNS, ordered policies |
 | macOS support | Planned | Wrapper fallback and Network Extension backend are roadmap items; not currently available |
-| Strict configuration and agent contract | Available | TOML, YAML, JSON; `heimdall.agent/v6` with execution ownership and repairable diagnostics |
+| Strict configuration and agent contract | Available | TOML, YAML, JSON; `heimdall.agent/v7` with execution ownership and repairable diagnostics |
 | Daemonless Linux execution | Available | All decrypt modes own per-run relay, DNS, maps, links, and logs; runtime TLS keeps one unprivileged session helper, never a service |
 | Opaque flow capture | Available | Explicit bounded JSONL capture under the invoking user's ownership with `heimdall.capture/v1` |
 | Agent event logs | Available, Phase 1 | Per-run lifecycle and TCP/UDP metadata in `heimdall.event/v1`; payload remains in legacy capture |
@@ -144,10 +144,8 @@ Inspect the resulting run without a Web UI:
 ./target/release/heimdall logs verify --run RUN_ID --json
 ```
 
-No Heimdall service is needed for proxying, capture, or either TLS inspection
-mode. The compatibility service in
-[`deploy/heimdall.service`](deploy/heimdall.service) remains only for explicit
-persistent-state migration and cleanup; it is never started implicitly.
+No Heimdall service exists or is needed for proxying, capture, or either TLS
+inspection mode.
 
 ## Configuration
 
@@ -214,16 +212,16 @@ Start automation with one side-effect-free preflight:
 heimdall agent
 ```
 
-It emits one `heimdall.agent/v6` JSON document containing config validity, the
-selected execution backend and owner, whether a daemon or Web UI is required,
-daemon compatibility health, selected policy, capability evidence, stable
+It emits one `heimdall.agent/v7` JSON document containing config validity, the
+selected foreground backend and owner, confirmation that no daemon or Web UI
+is required, selected policy, capability evidence, stable
 repair codes, and exact next commands as argv arrays. Exit `0` means ready,
 `1` means not ready, and `2` remains clap usage failure.
 
 Agents should inspect `capabilities.runtime_acceptance`,
 `capabilities.cli_acceptance`, and `capabilities.lifecycle` instead of
 inferring support from a language or command name. `heimdall agent` never
-writes configuration, starts a daemon, attaches a cgroup, or executes a
+writes configuration, starts a service, attaches a cgroup, or executes a
 workload.
 
 ## Command surface
@@ -231,11 +229,8 @@ workload.
 ```text
 heimdall run [--policy NAME] -- COMMAND [ARGS...]
 heimdall agent [--policy NAME]
-heimdall daemon  # legacy persistent compatibility path; never required by run
-heimdall status [--json]
 heimdall config validate|explain|show|path
 heimdall tls init-ca [--json]
-heimdall ebpf cleanup [--json]
 heimdall logs schema|list|path|query|tail|rotate|verify|prune
 heimdall init [--dir PATH] [--format toml|yaml|json] [--force]
 ```
@@ -249,8 +244,8 @@ The disposable real-eBPF acceptance VM covers static Go `netgo`, Java,
 Node.js, Rust, Python, C, curl, and Git. It also exercises connected and
 connectionless IPv4/IPv6 UDP, HTTP/3/QUIC, descendant lifetime, command exit
 and signal status, two concurrent isolated foreground runs, complete link
-cleanup, and unreachable-upstream fail-closed behavior while the compatibility
-daemon is stopped.
+cleanup, parent-crash cgroup teardown, and unreachable-upstream fail-closed
+behavior without any persistent service.
 
 OpenSSL runtime capture and relay TLS termination are tested against a real TLS
 server. These results prove the checked-in acceptance paths; they do not claim
@@ -283,10 +278,9 @@ readiness from a badge or from a userspace-only build.
 ## Security and operations
 
 Heimdall loads privileged eBPF programs and forwards application payloads.
-Read [SECURITY.md](SECURITY.md) before authorizing the setup worker or operating
-the compatibility daemon, and
-[docs/runbook.md](docs/runbook.md) for build order, health contracts, safe
-cleanup, TLS CA setup, and failure recovery.
+Read [SECURITY.md](SECURITY.md) before authorizing the setup worker, and
+[docs/runbook.md](docs/runbook.md) for build order, machine contracts, TLS CA
+setup, and failure recovery.
 
 ## License
 

@@ -3,7 +3,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    net::{IpAddr, SocketAddr},
+    net::IpAddr,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -211,8 +211,6 @@ pub struct HeimdallConfig {
     pub capture: CaptureConfig,
     #[serde(default)]
     pub decrypt: DecryptConfig,
-    #[serde(default)]
-    pub daemon: Runtime,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -425,49 +423,6 @@ const fn default_capture_max_bytes() -> u64 {
     1_048_576
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Runtime {
-    #[serde(default = "default_cgroup")]
-    pub cgroup: String,
-    #[serde(default = "default_dns_port")]
-    pub dns_port: u16,
-    #[serde(default = "default_fake_ip_cidr")]
-    pub fake_ip_cidr: String,
-    #[serde(default = "default_fake_ip6_cidr")]
-    pub fake_ip6_cidr: String,
-    #[serde(default = "default_api_listen")]
-    pub api_listen: String,
-}
-
-impl Default for Runtime {
-    fn default() -> Self {
-        Self {
-            cgroup: default_cgroup(),
-            dns_port: default_dns_port(),
-            fake_ip_cidr: default_fake_ip_cidr(),
-            fake_ip6_cidr: default_fake_ip6_cidr(),
-            api_listen: default_api_listen(),
-        }
-    }
-}
-
-fn default_cgroup() -> String {
-    "/sys/fs/cgroup/system.slice".into()
-}
-const fn default_dns_port() -> u16 {
-    5358
-}
-fn default_fake_ip_cidr() -> String {
-    "198.19.0.0/16".into()
-}
-fn default_fake_ip6_cidr() -> String {
-    "fc00:198:19::/96".into()
-}
-fn default_api_listen() -> String {
-    "127.0.0.1:9999".into()
-}
-
 /// Policy selected for an active CLI cgroup.
 #[derive(Debug, Clone)]
 pub struct Decision {
@@ -541,8 +496,6 @@ impl HeimdallConfig {
 
         validate_capture(&mut errors, &self.capture);
         validate_decrypt(&mut errors, &self.capture, &self.decrypt);
-
-        validate_runtime(&mut errors, &self.daemon);
 
         if errors.is_empty() {
             Ok(())
@@ -771,7 +724,7 @@ fn validate_socks5(errors: &mut Vec<ConfigDiagnostic>, base: &str, socks: &Socks
                 "relative_password_file",
                 format!("{base}.auth.password_file"),
                 format!("`{}` is not absolute", auth.password_file.display()),
-                "Use an absolute path readable by the daemon.",
+                "Use an absolute path readable by the invoking user.",
             );
         }
     }
@@ -997,7 +950,7 @@ fn validate_capture(errors: &mut Vec<ConfigDiagnostic>, capture: &CaptureConfig)
             "relative_capture_directory",
             "$.capture.directory",
             format!("`{}` is not absolute", capture.directory.display()),
-            "Use an absolute directory writable only by the daemon, such as /var/lib/heimdall/captures.",
+            "Use an absolute private directory writable by the invoking user, such as /var/lib/heimdall/captures.",
         );
     }
     if capture.max_bytes_per_flow == 0 || capture.max_bytes_per_flow > 67_108_864 {
@@ -1082,90 +1035,6 @@ fn validate_decrypt(
                     "Remove the field, or set decrypt.mode to `relay` and configure both CA paths.",
                 );
             }
-        }
-    }
-}
-
-fn validate_runtime(errors: &mut Vec<ConfigDiagnostic>, runtime: &Runtime) {
-    let api = validated_socket(errors, "$.daemon.api_listen", &runtime.api_listen);
-    if runtime.dns_port == 0 {
-        push(
-            errors,
-            "invalid_dns_port",
-            "$.daemon.dns_port",
-            "dns_port must be between 1 and 65535",
-            "Use an unused local port such as 5358.",
-        );
-    }
-    if let Some(api) = api {
-        if !api.ip().is_loopback() {
-            push(
-                errors,
-                "non_loopback_control_listener",
-                "$.daemon.api_listen",
-                "the control API must bind a loopback address",
-                "Use 127.0.0.1:9999 or [::1]:9999.",
-            );
-        }
-        if api.port() == runtime.dns_port {
-            push(
-                errors,
-                "duplicate_daemon_port",
-                "$.daemon.api_listen",
-                "the control API port conflicts with an internal listener",
-                "Use a port distinct from daemon.dns_port.",
-            );
-        }
-    }
-    let cgroup = Path::new(&runtime.cgroup);
-    if !cgroup.is_absolute() || !cgroup.starts_with("/sys/fs/cgroup") {
-        push(
-            errors,
-            "invalid_cgroup",
-            "$.daemon.cgroup",
-            format!(
-                "`{}` is not an absolute path under /sys/fs/cgroup",
-                runtime.cgroup
-            ),
-            "Use an absolute cgroup v2 path under /sys/fs/cgroup.",
-        );
-    }
-    if !matches!(parse_cidr(&runtime.fake_ip_cidr), Some(Cidr::V4(_, prefix)) if prefix <= 30) {
-        push(
-            errors,
-            "invalid_fake_ip_cidr",
-            "$.daemon.fake_ip_cidr",
-            format!("`{}` is not a canonical IPv4 CIDR", runtime.fake_ip_cidr),
-            "Use a canonical IPv4 network with at least four addresses, such as 198.19.0.0/16.",
-        );
-    }
-    if !matches!(parse_cidr(&runtime.fake_ip6_cidr), Some(Cidr::V6(_, prefix)) if prefix <= 124) {
-        push(
-            errors,
-            "invalid_fake_ip6_cidr",
-            "$.daemon.fake_ip6_cidr",
-            format!("`{}` is not a canonical IPv6 CIDR", runtime.fake_ip6_cidr),
-            "Use a canonical IPv6 network with at least sixteen addresses, such as fc00:198:19::/96.",
-        );
-    }
-}
-
-fn validated_socket(
-    errors: &mut Vec<ConfigDiagnostic>,
-    path: &str,
-    value: &str,
-) -> Option<SocketAddr> {
-    match value.parse::<SocketAddr>() {
-        Ok(socket) if socket.port() != 0 => Some(socket),
-        _ => {
-            push(
-                errors,
-                "invalid_daemon_listener",
-                path,
-                format!("`{value}` is not a nonzero socket address"),
-                "Use IPv4:port or [IPv6]:port with a port between 1 and 65535.",
-            );
-            None
         }
     }
 }
@@ -1621,58 +1490,6 @@ action = { type = "direct" }
         assert!(diagnostics.iter().any(|item| {
             item.code == "missing_relay_ca_path" && item.path == "$.decrypt.ca_key"
         }));
-    }
-
-    #[test]
-    fn rejects_fake_pools_too_small_for_stable_allocation() {
-        let cfg: HeimdallConfig = toml::from_str(
-            &valid_toml().replace(
-                "[capture]",
-                "[daemon]\nfake_ip_cidr = \"198.19.0.0/31\"\nfake_ip6_cidr = \"fc00:198:19::/125\"\n\n[capture]",
-            ),
-        )
-        .unwrap();
-        let diagnostics = cfg.validate().unwrap_err().diagnostics();
-        assert!(
-            diagnostics
-                .iter()
-                .any(|item| item.code == "invalid_fake_ip_cidr")
-        );
-        assert!(
-            diagnostics
-                .iter()
-                .any(|item| item.code == "invalid_fake_ip6_cidr")
-        );
-    }
-
-    #[test]
-    fn rejects_exposed_or_conflicting_control_port() {
-        let cfg: HeimdallConfig = toml::from_str(&valid_toml().replace(
-            "[capture]",
-            "[daemon]\ndns_port = 5358\napi_listen = \"0.0.0.0:5358\"\n\n[capture]",
-        ))
-        .unwrap();
-        let diagnostics = cfg.validate().unwrap_err().diagnostics();
-        assert!(
-            diagnostics
-                .iter()
-                .any(|item| item.code == "non_loopback_control_listener")
-        );
-        assert!(
-            diagnostics
-                .iter()
-                .any(|item| item.code == "duplicate_daemon_port")
-        );
-    }
-
-    #[test]
-    fn accepts_any_nonzero_dns_port_when_control_does_not_conflict() {
-        let cfg: HeimdallConfig = toml::from_str(&valid_toml().replace(
-            "[capture]",
-            "[daemon]\ndns_port = 12345\napi_listen = \"127.0.0.1:9999\"\n\n[capture]",
-        ))
-        .unwrap();
-        cfg.validate().unwrap();
     }
 
     #[test]

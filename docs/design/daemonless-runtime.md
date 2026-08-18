@@ -121,23 +121,16 @@ from the default path. The foreground backend uses:
 - relay endpoint values populated before the child can enter the cgroup;
 - an explicit ready barrier before `exec`.
 
-Normal process exit closes the owning FDs and detaches the links. Abrupt death
-also leaves no pinned state; the owning systemd user scope supplies the outer
-process and cgroup cleanup boundary.
+Normal process exit closes the owning FDs and detaches the links. On abrupt
+owner death, the unprivileged setup helper observes unmarked socket EOF, kills
+the command cgroup, waits for it to empty, and removes it. No pinned state
+exists in either path.
 
 This removes daemon-restart continuity. That is intentional: one invocation is
 the lifecycle boundary. There is no upgrade or restart in the middle of a run.
 
-The current compatibility daemon now groups its TCP/UDP relay listeners,
-fake-DNS task, correlation maps, policy engine, and link set under one
-`SessionRuntime` drop boundary. Attach setup accepts an explicit target list,
-so the compatibility daemon supplies its system/user pair while a foreground
-run can supply one required transient cgroup.
-
-The link transaction also supports a process-owned mode that retains attached
-link FDs without creating bpffs pins. Object loading in that mode also creates
-fresh unpinned maps instead of reusing `/sys/fs/bpf/heimdall/maps`. The
-compatibility daemon continues to select persistent mode.
+The link transaction retains attached link FDs without creating bpffs pins.
+Object loading creates fresh unpinned maps for every run.
 
 The setup-worker transport now has a strict `heimdall.setup/v2` contract. It
 uses length-delimited JSON for one validated cgroup, relay/DNS ports, and the
@@ -153,9 +146,10 @@ The hidden setup worker is now wired and VM-verified. It authenticates the Unix
 socket peer against the sudo caller when available, confines non-root callers
 to their own user slice, rejects non-canonical paths and cgroup inode
 mismatches, initializes fresh maps, attaches only the requested cgroup, sends
-the fixed FD bundle, and drops to the authenticated caller. Non-runtime modes
-exit immediately; runtime mode waits on standard-input socket EOF solely to
-retain probe state. No extra inherited descriptor, persistent daemon, or
+the fixed FD bundle, and drops to the authenticated caller. Every mode waits
+on inherited-socket EOF as a parent-death guard; runtime mode also retains Aya
+probe state. Graceful teardown is explicitly marked. Unmarked EOF kills and
+removes the command cgroup before the helper exits. No persistent daemon or
 long-lived privileged listener is required.
 `heimdall run` invokes it once after binding per-run listeners and before
 executing the child.
@@ -213,7 +207,7 @@ UI has no effect on a run. Starting a run has no effect on the UI.
 ## Agent contract
 
 `heimdall agent` remains read-only and single-document JSON.
-`heimdall.agent/v6` reports:
+`heimdall.agent/v7` reports:
 
 - selected backend and whether per-run authorization is required;
 - the explicit `daemon_required = false` foreground ownership boundary;
@@ -223,8 +217,8 @@ UI has no effect on a run. Starting a run has no effect on the UI.
 - whether an active run can accept a manual rotate request;
 - exact limitations of any rootless or macOS fallback.
 
-Readiness means a new run can be attempted. It no longer depends on daemon
-health.
+Readiness means a new run can be attempted; there is no service health
+dependency.
 
 ## Performance acceptance
 
@@ -268,13 +262,14 @@ contract; `heimdall run` must never auto-enable it.
 - The narrow setup-worker protocol and sudo authorization path are active.
 - Daemonless is the default for all decrypt modes; no service is required.
 
-### Phase 4: remove the old daemon contract — pending compatibility cleanup
+### Phase 4: remove the old daemon contract — available
 
-- Remove `heimdall daemon`, its service unit, the shared relay endpoint,
-  persistent journal, global bpffs state, daemon health contract, and
-  orphan-GC logic.
-- Bump `heimdall agent` to a new contract version in the same change.
-- Update installation and upgrade instructions to remove the old service.
+- `heimdall daemon`, its service unit, registration API, persistent journal,
+  global bpffs state, health contract, cleanup CLI, and orphan-GC loop are
+  removed.
+- `heimdall.agent/v7` describes only the foreground execution owner.
+- The session helper supplies fail-closed parent-death cleanup without a
+  listener or cross-run lifetime.
 
 ### Phase 5: optional UI
 

@@ -15,10 +15,7 @@ use std::{
 use anyhow::{Context, Result};
 use aya::{
     Ebpf,
-    maps::{
-        MapData, PerfEventArray,
-        perf::{PerfEvent, PerfEventArrayBuffer},
-    },
+    maps::{MapData, PerfEventArray, perf::PerfEventArrayBuffer},
     programs::{
         UProbe,
         links::FdLink,
@@ -28,7 +25,7 @@ use aya::{
 };
 use heimdall_common::{TAP_DATA_LEN, TapDir, TapEvent};
 use tokio::sync::{mpsc, watch};
-use tracing::{info, warn};
+use tracing::warn;
 
 use crate::capture::{CaptureManager, Direction, FlowMeta};
 
@@ -78,23 +75,6 @@ impl Drop for RuntimeCapture {
     }
 }
 
-pub fn start(bpf: &mut Ebpf, capture: CaptureManager) -> Result<(StartReport, RuntimeCapture)> {
-    let (mut report, _) = load_and_attach(bpf, usize::MAX)?;
-
-    let map = bpf
-        .take_map("TAP_EVENTS")
-        .context("TAP_EVENTS map not found in eBPF object")?;
-    let (runtime, perf_cpus) = start_perf(PerfEventArray::try_from(map)?, capture)?;
-    report.perf_cpus = perf_cpus;
-    info!(
-        discovered = report.discovered_images,
-        attached = report.attached_images,
-        links = report.attached_links,
-        "runtime TLS OpenSSL probes attached"
-    );
-    Ok((report, runtime))
-}
-
 pub fn start_from_fds(
     buffers: Vec<(u32, OwnedFd)>,
     capture: CaptureManager,
@@ -123,37 +103,6 @@ pub fn start_from_fds(
         }
     }));
     Ok(RuntimeCapture { shutdown, tasks })
-}
-
-fn start_perf(
-    mut perf: PerfEventArray<MapData>,
-    capture: CaptureManager,
-) -> Result<(RuntimeCapture, Vec<u32>)> {
-    let (tx, mut rx) = mpsc::channel::<Event>(8192);
-    let (shutdown, shutdown_rx) = watch::channel(false);
-    let mut tasks = Vec::new();
-    let perf_cpus =
-        online_cpus().map_err(|(message, error)| anyhow::anyhow!("{message}: {error}"))?;
-    for &cpu in &perf_cpus {
-        let buffer = perf.open(cpu, None)?;
-        let tx = tx.clone();
-        tasks.push(tokio::spawn(read_events(
-            buffer,
-            tx,
-            cpu,
-            shutdown_rx.clone(),
-        )));
-    }
-    drop(tx);
-
-    tasks.push(tokio::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            if let Err(error) = record_event(&capture, event).await {
-                warn!(error = %error, "runtime TLS capture write failed");
-            }
-        }
-    }));
-    Ok((RuntimeCapture { shutdown, tasks }, perf_cpus))
 }
 
 pub fn prepare_setup(bpf: &mut Ebpf) -> Result<SetupRuntime> {
@@ -377,64 +326,6 @@ async fn record_event(capture: &CaptureManager, event: Event) -> Result<()> {
         "complete"
     };
     flow.close(status).await
-}
-
-async fn read_events(
-    buffer: PerfEventArrayBuffer<MapData>,
-    tx: mpsc::Sender<Event>,
-    cpu: u32,
-    mut shutdown: watch::Receiver<bool>,
-) {
-    let Ok(mut buffer) = tokio::io::unix::AsyncFd::new(buffer) else {
-        warn!(cpu, "runtime TLS perf reader registration failed");
-        return;
-    };
-    loop {
-        tokio::select! {
-            changed = shutdown.changed() => {
-                if changed.is_ok() && *shutdown.borrow() {
-                    drain_aya_events(buffer.get_mut(), &tx, cpu);
-                }
-                return;
-            }
-            ready = buffer.readable_mut() => {
-                let mut ready = match ready {
-                    Ok(ready) => ready,
-                    Err(error) => {
-                        warn!(cpu, error = %error, "runtime TLS perf reader stopped");
-                        return;
-                    }
-                };
-                drain_aya_events(ready.get_inner_mut(), &tx, cpu);
-                ready.clear_ready();
-            }
-        }
-    }
-}
-
-fn drain_aya_events(
-    buffer: &mut PerfEventArrayBuffer<MapData>,
-    tx: &mpsc::Sender<Event>,
-    cpu: u32,
-) {
-    buffer.for_each(|event| match event {
-        PerfEvent::Sample { head, tail } => {
-            let event = if tail.is_empty() {
-                decode(head)
-            } else {
-                let mut bytes = Vec::with_capacity(head.len() + tail.len());
-                bytes.extend_from_slice(head);
-                bytes.extend_from_slice(tail);
-                decode(&bytes)
-            };
-            if let Some(event) = event {
-                let _ = tx.try_send(event);
-            }
-        }
-        PerfEvent::Lost { count } => {
-            warn!(cpu, lost = count, "runtime TLS events dropped");
-        }
-    });
 }
 
 async fn read_inherited_events(

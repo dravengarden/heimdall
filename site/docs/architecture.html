@@ -67,8 +67,8 @@
 
         <h2 id="boundaries">Boundaries</h2>
         <p>The foreground CLI is the session owner. It selects a policy, creates a child cgroup, binds per-run relay and DNS listeners, executes the command, waits for every descendant, and closes all resources.</p>
-        <p>A root setup worker validates one cgroup, attaches fresh unpinned maps and FD-owned eBPF links, transfers those FDs, and drops to the invoking user before the workload starts. Runtime TLS keeps that unprivileged helper only for the run lifetime to retain probe state. It never reads proxy credentials, captures bytes, or keeps a listener.</p>
-        <div class="callout"><strong>No persistent daemon.</strong> Relay and fake-DNS ports are kernel-assigned per run on IPv4/IPv6 loopback. Runtime OpenSSL probes and their session helper are owned by the foreground invocation.</div>
+        <p>A root setup worker validates one cgroup, attaches fresh unpinned maps and FD-owned eBPF links, transfers those FDs, and drops to the invoking user before the workload starts. Every run keeps that helper as a parent-death guard; runtime TLS also uses it to retain probe state. Unmarked owner exit kills and removes only that command cgroup. It never reads proxy credentials, captures bytes, or keeps a listener.</p>
+        <div class="callout"><strong>No persistent daemon.</strong> Relay and fake-DNS ports are kernel-assigned per run on IPv4/IPv6 loopback. The session helper has no listener and exits with its foreground invocation.</div>
 
         <h2 id="lifecycle">Connection lifecycle</h2>
         <ol>

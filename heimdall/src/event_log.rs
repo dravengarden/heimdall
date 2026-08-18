@@ -817,11 +817,10 @@ mod tests {
             &root,
             &["curl".into(), "https://example.com".into()],
             "default",
-            "daemon",
+            "foreground",
         )
         .unwrap();
-        log.ready("heimdall-daemon", Some("127.0.0.1:7312"), &["transport"])
-            .unwrap();
+        log.ready("heimdall-run", None, &["transport"]).unwrap();
         log.emit(
             "run.exec",
             Some(42),

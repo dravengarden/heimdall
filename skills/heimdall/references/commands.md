@@ -12,10 +12,10 @@ heimdall config explain --policy default --network udp --domain example.com --po
 heimdall logs list --json
 ```
 
-`agent` is the primary `heimdall.agent/v6` machine contract. Exit 0 means
+`agent` is the primary `heimdall.agent/v7` machine contract. Exit 0 means
 ready, 1 means not ready, and 2 is CLI usage error. It never mutates state.
-Require the foreground execution owner and `daemon_required = false`; daemon
-health is informational legacy state and does not gate a run.
+Require the foreground execution owner and `daemon_required = false`. There is
+no persistent service or health endpoint.
 
 `config show` prints source text. `config validate` applies the shared strict
 schema. `config explain` evaluates one destination and returns the first rule
@@ -32,12 +32,13 @@ heimdall run --policy default -- curl https://example.com
 The command may re-enter through `systemd-run --user --scope`. The resolved
 global config path and exact argv survive re-entry. An authorized setup helper
 attaches one transient cgroup and drops privilege before the child starts.
-Runtime TLS keeps that unprivileged helper only until the run exits.
+Every mode keeps that unprivileged helper only until the run exits so an
+unexpected owner death can kill the command cgroup before links disappear.
 The foreground process owns relay/DNS listeners, maps, links, and logs until
 the complete descendant tree exits.
 
 For two independent runs, execute them normally in parallel; do not share a
-manual daemon or relay. Verify `capabilities.lifecycle.concurrent_runs_isolated`
+manual relay. Verify `capabilities.lifecycle.concurrent_runs_isolated`
 before depending on this boundary.
 
 ## Inspect JSONL with Linux tools
@@ -122,16 +123,3 @@ active run.
 
 Do not equate config validity with connectivity. A real acceptance check must
 exercise `heimdall run`.
-
-## Clean up compatibility state
-
-Only for an explicitly requested uninstall or persistent schema repair:
-
-```bash
-sudo systemctl stop heimdall
-sudo heimdall ebpf cleanup --json
-```
-
-Exit 1 with `daemon_active` or `active_workloads` means no state was removed.
-Do not manually unlink pins or add a force path. Foreground runs create no
-persistent bpffs state and do not need this command.
