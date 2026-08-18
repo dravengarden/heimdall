@@ -1131,6 +1131,66 @@ fn load_kernel_object(lifetime: ebpf::LinkLifetime) -> Result<Ebpf> {
     Ok(bpf)
 }
 
+fn configure_kernel_maps(bpf: &mut Ebpf, relay_port: u16, dns_port: u16) -> Result<()> {
+    let relay_ip_be = u32::from(Ipv4Addr::LOCALHOST).to_be();
+    let mut relay_map: Array<&mut aya::maps::MapData, u32> =
+        Array::try_from(bpf.map_mut("RELAY_ADDR").context("RELAY_ADDR not found")?)?;
+    relay_map
+        .set(0, relay_ip_be, 0)
+        .context("failed to set relay IP in BPF map")?;
+
+    let mut relay6_map: Array<&mut aya::maps::MapData, [u8; 16]> = Array::try_from(
+        bpf.map_mut("RELAY_ADDR6")
+            .context("RELAY_ADDR6 not found")?,
+    )?;
+    relay6_map
+        .set(0, Ipv6Addr::LOCALHOST.octets(), 0)
+        .context("failed to set relay IPv6 in BPF map")?;
+
+    let mut relay_port_map: Array<&mut aya::maps::MapData, u32> = Array::try_from(
+        bpf.map_mut("RELAY_PORT_MAP")
+            .context("RELAY_PORT_MAP not found")?,
+    )?;
+    relay_port_map
+        .set(0, u32::from(relay_port.to_be()), 0)
+        .context("failed to set relay port in BPF map")?;
+
+    let dns_v4_be = u32::from(Ipv4Addr::LOCALHOST).to_be();
+    let dns_port_be = dns_port.to_be() as u32;
+    let mut dns_map: Array<&mut aya::maps::MapData, u32> = Array::try_from(
+        bpf.map_mut("DNS_ADDR_V4")
+            .context("DNS_ADDR_V4 not found")?,
+    )?;
+    dns_map.set(0, dns_v4_be, 0).context("DNS_ADDR_V4 set ip")?;
+    dns_map
+        .set(1, dns_port_be, 0)
+        .context("DNS_ADDR_V4 set port")?;
+
+    let mut dns6_map: Array<&mut aya::maps::MapData, [u8; 16]> = Array::try_from(
+        bpf.map_mut("DNS_ADDR_V6")
+            .context("DNS_ADDR_V6 not found")?,
+    )?;
+    dns6_map
+        .set(0, Ipv6Addr::LOCALHOST.octets(), 0)
+        .context("DNS_ADDR_V6 set addr")?;
+    let mut dns6_port_map: Array<&mut aya::maps::MapData, u32> = Array::try_from(
+        bpf.map_mut("DNS_PORT_V6")
+            .context("DNS_PORT_V6 not found")?,
+    )?;
+    dns6_port_map
+        .set(0, dns_port_be, 0)
+        .context("DNS_PORT_V6 set")?;
+
+    info!(
+        relay_ip = %Ipv4Addr::LOCALHOST,
+        relay_ip6 = %Ipv6Addr::LOCALHOST,
+        relay_port,
+        dns_port,
+        "kernel relay and DNS targets configured"
+    );
+    Ok(())
+}
+
 async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
     // ─── Load config ──────────────────────────────────────────────────────
     let cfg = HeimdallConfig::load(config_path).map_err(|error| {
@@ -1252,77 +1312,7 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
         daemon_health.write().runtime = Some(report);
     }
 
-    {
-        let relay_ip_be = u32::from(Ipv4Addr::LOCALHOST).to_be();
-        let mut relay_map: Array<&mut aya::maps::MapData, u32> =
-            Array::try_from(bpf.map_mut("RELAY_ADDR").context("RELAY_ADDR not found")?)?;
-        relay_map
-            .set(0, relay_ip_be, 0)
-            .context("failed to set relay IP in BPF map")?;
-        info!(relay_ip = %Ipv4Addr::LOCALHOST, "relay IP written to BPF map");
-    }
-
-    // RELAY_ADDR6: 16-byte IPv6 relay address for connect6 to redirect to.
-    // Always write IPv6 loopback; connect6 reads slot 0 and bails if missing.
-    {
-        let relay6_bytes = Ipv6Addr::LOCALHOST.octets();
-        let mut relay6_map: Array<&mut aya::maps::MapData, [u8; 16]> = Array::try_from(
-            bpf.map_mut("RELAY_ADDR6")
-                .context("RELAY_ADDR6 not found")?,
-        )?;
-        relay6_map
-            .set(0, relay6_bytes, 0)
-            .context("failed to set relay IPv6 in BPF map")?;
-        info!(relay_ip6 = %Ipv6Addr::LOCALHOST, "relay IPv6 written to BPF map");
-    }
-
-    {
-        let mut relay_port_map: Array<&mut aya::maps::MapData, u32> = Array::try_from(
-            bpf.map_mut("RELAY_PORT_MAP")
-                .context("RELAY_PORT_MAP not found")?,
-        )?;
-        relay_port_map
-            .set(0, u32::from(relay_port.to_be()), 0)
-            .context("failed to set relay port in BPF map")?;
-        info!(relay_port, "relay port written to BPF map");
-    }
-
-    // DNS_ADDR_V4 / DNS_ADDR_V6 / DNS_PORT_V6: where eBPF should
-    // redirect :53 traffic for cgroups marked POLICY_DNS_HIJACK
-    // (typically `heimdall run` invocations with dns=fake). The
-    // daemon's DNS server binds both loopback families so v4 hijack lands
-    // on 127.0.0.1:5358 and v6 hijack lands on ::1:5358 by default.
-    {
-        let dns_port = shared.cfg.daemon.dns_port;
-
-        let dns_v4_be = u32::from(std::net::Ipv4Addr::LOCALHOST).to_be();
-        let dns_port_be = dns_port.to_be() as u32;
-        let mut dns_map: Array<&mut aya::maps::MapData, u32> = Array::try_from(
-            bpf.map_mut("DNS_ADDR_V4")
-                .context("DNS_ADDR_V4 not found")?,
-        )?;
-        dns_map.set(0, dns_v4_be, 0).context("DNS_ADDR_V4 set ip")?;
-        dns_map
-            .set(1, dns_port_be, 0)
-            .context("DNS_ADDR_V4 set port")?;
-
-        let mut dns6_map: Array<&mut aya::maps::MapData, [u8; 16]> = Array::try_from(
-            bpf.map_mut("DNS_ADDR_V6")
-                .context("DNS_ADDR_V6 not found")?,
-        )?;
-        dns6_map
-            .set(0, std::net::Ipv6Addr::LOCALHOST.octets(), 0)
-            .context("DNS_ADDR_V6 set addr")?;
-        let mut dns6_port_map: Array<&mut aya::maps::MapData, u32> = Array::try_from(
-            bpf.map_mut("DNS_PORT_V6")
-                .context("DNS_PORT_V6 not found")?,
-        )?;
-        dns6_port_map
-            .set(0, dns_port_be, 0)
-            .context("DNS_PORT_V6 set")?;
-
-        info!(dns_port, "DNS hijack target written to BPF maps (loopback)");
-    }
+    configure_kernel_maps(&mut bpf, relay_port, shared.cfg.daemon.dns_port)?;
 
     // Wait for the cgroup to appear — system.slice exists from early
     // boot, but retrying keeps startup robust if the unit races ahead.
