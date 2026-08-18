@@ -5,6 +5,7 @@ use std::{
     os::fd::{BorrowedFd, OwnedFd},
     os::unix::net::UnixStream,
     path::{Component, PathBuf},
+    process::{Command, Stdio},
 };
 
 use anyhow::{Context, Result};
@@ -256,6 +257,44 @@ pub(crate) fn receive_reply(stream: &mut UnixStream) -> Result<SetupBundle> {
             anyhow::bail!("setup worker failed ({code}): {message}")
         }
     }
+}
+
+pub(crate) fn launch_worker(request: &SetupRequest) -> Result<SetupBundle> {
+    request.validate()?;
+    let (mut parent, child_socket) = UnixStream::pair().context("create setup socketpair")?;
+    parent
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .context("bound setup worker response time")?;
+    let executable = std::env::current_exe().context("resolve heimdall executable")?;
+    let mut command = if rustix::process::geteuid().is_root() {
+        Command::new(&executable)
+    } else {
+        let mut command = Command::new("sudo");
+        command.arg("--").arg(&executable);
+        command
+    };
+    command
+        .arg("__setup-worker")
+        .stdin(Stdio::from(OwnedFd::from(child_socket)))
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit());
+    let mut child = command
+        .spawn()
+        .context("start short-lived privileged setup worker")?;
+
+    let exchange = send_request(&mut parent, request).and_then(|()| receive_reply(&mut parent));
+    drop(parent);
+    let bundle = match exchange {
+        Ok(bundle) => bundle,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error).context("setup worker did not return a runtime bundle");
+        }
+    };
+    let status = child.wait().context("wait for setup worker")?;
+    anyhow::ensure!(status.success(), "setup worker exited with {status}");
+    Ok(bundle)
 }
 
 fn send_frame<T: Serialize>(stream: &mut UnixStream, value: &T) -> Result<()> {

@@ -56,7 +56,7 @@ password_file = "/etc/heimdall/secrets/corp-password"
 
 `server` is a hostname, IPv4 address, or unbracketed IPv6 address. Durations
 accept positive integer `ms`, `s`, or `m` values. Passwords never belong in the
-config; the daemon reads the absolute `password_file`, removes one trailing
+config; the foreground session reads the absolute `password_file`, removes one trailing
 newline, and enforces the SOCKS5 1–255 byte limit.
 
 `network` is a strict capability declaration. A `route` action is rejected
@@ -179,11 +179,12 @@ and records only bytes reported as successfully transferred. It requires no
 trust change and remains compatible with certificate pinning and mTLS, but
 does not claim coverage for Go, rustls, BoringSSL, JVM, or stripped/static TLS
 implementations. Each API event is bounded to the byte count reported by
-`agent.capabilities.decrypt.runtime_max_bytes_per_event`. Probe discovery
-covers `libssl` images already mapped when the daemon starts; startup fails if
-none can be attached, and the daemon must be restarted after introducing a
-different OpenSSL image. Verify the running mode and attachment counts under
-`agent.daemon.health`, not only the selected config.
+`agent.capabilities.decrypt.runtime_max_bytes_per_event`. Runtime mode is the
+temporary daemonless exception: probe discovery covers `libssl` images already
+mapped when the explicit compatibility daemon starts, startup fails if none can
+be attached, and the daemon must be restarted after introducing a different
+OpenSSL image. Require `execution.daemon_required` and verify attachment counts
+under `agent.daemon.health`, not only the selected config.
 
 `relay` detects TLS ClientHello records at the relay, verifies the upstream
 certificate with the native trust store, mirrors the negotiated ALPN, signs a
@@ -191,8 +192,9 @@ per-host leaf certificate, and captures the resulting plaintext. Non-TLS TCP
 passes through unchanged. Generate the CA with
 `heimdall tls init-ca --dir /var/lib/heimdall/tls --json`, then explicitly trust
 `ca.pem` in each wrapped client. The private key must be a regular file with no
-group or other permissions. Certificate pinning and client-certificate mTLS
-are intentionally unsupported in this mode.
+group or other permissions and must be readable by the user invoking
+`heimdall run`. Certificate pinning and client-certificate mTLS are
+intentionally unsupported in this mode.
 
 `capture.mode` is `off` or `on`. The directory must be absolute; it defaults to
 `/var/lib/heimdall/captures`. `max_bytes_per_flow` defaults to 1 MiB and must be
@@ -200,9 +202,9 @@ between 1 byte and 64 MiB. The limit is shared by both directions. Heimdall
 continues counting relayed bytes after the limit and marks the close record as
 truncated, but stores no further payload for that flow.
 
-When capture is on, daemon startup creates the directory as `0700`, or rejects
-an existing directory that grants group/other access, and proves it is writable
-before attaching eBPF. Every flow gets one new `0600`
+When capture is on, the foreground session creates the directory as `0700`, or
+rejects an existing directory that grants group/other access, and proves it is
+writable before privileged setup. Every flow gets one new `0600`
 JSONL file. Each line is one `heimdall.capture/v1` `open`, `data`, or `close`
 record. Data payloads are base64, directions are `client_to_remote` and
 `remote_to_client`, and sequence numbers start at zero. A capture write failure
@@ -215,12 +217,11 @@ upload. Operators own deletion and capacity policy. An `open` record's
 or `tls_plaintext` for decrypted events. Never infer plaintext from the port or
 filename.
 
-## Daemon settings
+## Compatibility daemon settings
 
-Most installations can omit this section. The internal relay asks the kernel
-for an unused port at startup, binds the same value on its IPv4/IPv6 TCP/UDP
-loopback listeners, and writes that value into the eBPF redirect map. It is not
-user-configurable.
+Normal `off` and `relay` runs can omit this section: their relay and DNS ports
+are kernel-assigned per run. These settings apply only to the explicit
+compatibility daemon currently used by runtime TLS.
 
 ```toml
 [daemon]

@@ -55,11 +55,12 @@ need compatibility hardening.
 | --- | --- | --- |
 | Command-scoped TCP and UDP proxying | Available | IPv4/IPv6, SOCKS5 and direct egress, fake DNS, ordered policies |
 | macOS support | Planned | Wrapper fallback and Network Extension backend are roadmap items; not currently available |
-| Strict configuration and agent contract | Available | TOML, YAML, JSON; `heimdall.agent/v4` with repairable diagnostics |
-| Opaque flow capture | Available | Explicit bounded JSONL capture; root-only files with `heimdall.capture/v1` |
+| Strict configuration and agent contract | Available | TOML, YAML, JSON; `heimdall.agent/v5` with execution ownership and repairable diagnostics |
+| Daemonless Linux execution | Available | `off` and `relay` runs own per-run relay, DNS, maps, links, and logs; the setup worker exits before the command starts |
+| Opaque flow capture | Available | Explicit bounded JSONL capture under the invoking user's ownership with `heimdall.capture/v1` |
 | Agent event logs | Available, Phase 1 | Per-run lifecycle and TCP/UDP metadata in `heimdall.event/v1`; payload remains in legacy capture |
-| Runtime TLS decryption | Available with alpha limits | OpenSSL probes at process runtime; no CA injection |
-| Relay TLS decryption | Available with alpha limits | Local CA plus per-host leaves; client trust and protocol compatibility are required |
+| Runtime TLS decryption | Compatibility mode | OpenSSL probes currently require the explicit compatibility daemon; no CA injection |
+| Relay TLS decryption | Available daemonless with alpha limits | Local CA plus per-host leaves; client trust and protocol compatibility are required |
 | Runtime and kernel compatibility | In development | Expanding the tested matrix and documenting unsupported edge cases |
 | Capture analysis and release packaging | Planned | Better inspection workflows and reproducible distribution artifacts |
 
@@ -71,22 +72,24 @@ the explicit non-goals.
 ```mermaid
 flowchart LR
     C[heimdall run] --> G[transient cgroup v2]
-    D[heimdall daemon] --> E[cgroup eBPF hooks]
+    C --> W[short-lived privileged setup worker]
+    W --> E[per-run cgroup eBPF hooks]
     G --> E
     E --> P[policy + fake DNS]
-    P --> R[local relay]
+    P --> R[foreground per-run relay]
     R --> S[SOCKS5 or direct outbound]
     R --> X[optional capture]
     R --> T[optional runtime or relay TLS boundary]
 ```
 
-The daemon owns the relay, fake-IP DNS, loopback control endpoint, eBPF maps,
-and stale cgroup cleanup. The CLI creates a transient scope, registers its
-policy, executes the command, and waits for the complete descendant tree before
-cleaning up. Processes outside that scope are left alone.
+For normal `off` and `relay` runs, the foreground CLI owns the relay, fake-IP
+DNS, event writer, cgroup, maps, and links. A narrow privileged worker attaches
+eBPF and transfers owned file descriptors back to the CLI, then exits before
+the wrapped command starts. The CLI waits for the complete descendant tree and
+closes every per-run resource. Processes outside that cgroup are left alone.
 
 Unlike `proxychains4`, Heimdall does not use `LD_PRELOAD`. The privileged
-daemon attaches cgroup eBPF hooks, so static binaries and mixed-language
+setup worker attaches cgroup eBPF hooks, so static binaries and mixed-language
 process trees share the same interception boundary. See
 [docs/architecture.md](docs/architecture.md) for data flow and failure
 semantics.
@@ -99,10 +102,9 @@ semantics.
 - cgroup v2 and a running systemd user manager
 - Nix with flakes enabled for the pinned development toolchain
 - A reachable SOCKS5 server
-- `CAP_BPF`, `CAP_NET_ADMIN`, `CAP_SYS_ADMIN`, and `CAP_DAC_OVERRIDE` for the
-  daemon
+- `sudo` authorization for the exact hidden `heimdall __setup-worker` command
 
-Build eBPF before userspace because the object is embedded into the daemon:
+Build eBPF before userspace because the object is embedded into the binary:
 
 ```bash
 git clone https://github.com/dravengarden/heimdall.git
@@ -113,11 +115,17 @@ nix develop .#ebpf -c bash -c \
 nix develop -c cargo build --workspace --locked --release
 ```
 
-Create the strict starter configuration and start the daemon:
+Install the one binary, create the strict starter configuration, and authorize
+only its short-lived setup entry point (replace `USERNAME` with the invoking
+user):
 
 ```bash
-sudo ./target/release/heimdall init
-sudo ./target/release/heimdall daemon
+sudo install -Dm755 target/release/heimdall /usr/local/bin/heimdall
+sudo /usr/local/bin/heimdall init
+echo 'USERNAME ALL=(root) NOPASSWD: /usr/local/bin/heimdall __setup-worker' \
+  | sudo tee /etc/sudoers.d/heimdall >/dev/null
+sudo chmod 0440 /etc/sudoers.d/heimdall
+sudo visudo -cf /etc/sudoers.d/heimdall
 ```
 
 Run a command through the default policy:
@@ -135,9 +143,10 @@ Inspect the resulting run without a Web UI:
 ./target/release/heimdall logs verify --run RUN_ID --json
 ```
 
-In production, install [`deploy/heimdall.service`](deploy/heimdall.service)
-and run the CLI as an ordinary user. The daemon's control endpoint is bound to
-loopback and is intentionally not an authenticated network API.
+No Heimdall service is needed for proxying, capture, or relay TLS inspection.
+The compatibility service in [`deploy/heimdall.service`](deploy/heimdall.service)
+is currently needed only for `decrypt.mode = "runtime"` OpenSSL probes and
+persistent-state migration tooling. It is never started implicitly.
 
 ## Configuration
 
@@ -178,7 +187,8 @@ The three decryption modes are intentionally separate:
 
 - `off` keeps TLS opaque.
 - `runtime` observes supported OpenSSL calls inside the client process without
-  changing certificate trust.
+  changing certificate trust; in this release it explicitly requires the
+  compatibility daemon.
 - `relay` terminates and re-issues TLS at the local relay; clients must trust
   the explicit Heimdall CA created by `heimdall tls init-ca`.
 
@@ -203,15 +213,16 @@ Start automation with one side-effect-free preflight:
 heimdall agent
 ```
 
-It emits one `heimdall.agent/v4` JSON document containing config validity,
-daemon reachability, selected policy, declared outbounds, capability evidence,
-stable repair codes, and exact next commands as argv arrays. Exit `0` means
-ready, `1` means not ready, and `2` remains clap usage failure.
+It emits one `heimdall.agent/v5` JSON document containing config validity, the
+selected execution backend and owner, whether a daemon or Web UI is required,
+daemon compatibility health, selected policy, capability evidence, stable
+repair codes, and exact next commands as argv arrays. Exit `0` means ready,
+`1` means not ready, and `2` remains clap usage failure.
 
 Agents should inspect `capabilities.runtime_acceptance`,
 `capabilities.cli_acceptance`, and `capabilities.lifecycle` instead of
 inferring support from a language or command name. `heimdall agent` never
-writes configuration, starts the daemon, registers a cgroup, or executes a
+writes configuration, starts a daemon, attaches a cgroup, or executes a
 workload.
 
 ## Command surface
@@ -219,7 +230,7 @@ workload.
 ```text
 heimdall run [--policy NAME] -- COMMAND [ARGS...]
 heimdall agent [--policy NAME]
-heimdall daemon
+heimdall daemon  # explicit compatibility mode for runtime TLS only
 heimdall status [--json]
 heimdall config validate|explain|show|path
 heimdall tls init-ca [--json]
@@ -236,8 +247,9 @@ Use `heimdall help -v` for the complete agent-oriented surface. See
 The disposable real-eBPF acceptance VM covers static Go `netgo`, Java,
 Node.js, Rust, Python, C, curl, and Git. It also exercises connected and
 connectionless IPv4/IPv6 UDP, HTTP/3/QUIC, descendant lifetime, command exit
-and signal status, daemon recovery, unavailable-daemon failure, and
-unreachable-upstream fail-closed behavior.
+and signal status, two concurrent isolated foreground runs, complete link
+cleanup, and unreachable-upstream fail-closed behavior while the compatibility
+daemon is stopped.
 
 OpenSSL runtime capture and relay TLS termination are tested against a real TLS
 server. These results prove the checked-in acceptance paths; they do not claim
@@ -270,7 +282,8 @@ readiness from a badge or from a userspace-only build.
 ## Security and operations
 
 Heimdall loads privileged eBPF programs and forwards application payloads.
-Read [SECURITY.md](SECURITY.md) before exposing or operating the daemon, and
+Read [SECURITY.md](SECURITY.md) before authorizing the setup worker or operating
+the compatibility daemon, and
 [docs/runbook.md](docs/runbook.md) for build order, health contracts, safe
 cleanup, TLS CA setup, and failure recovery.
 

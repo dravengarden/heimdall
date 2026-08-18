@@ -211,7 +211,6 @@ impl RunLog {
         Ok(self.lock()?.manifest.run_id)
     }
 
-    #[cfg(test)]
     pub(crate) fn run_dir(&self) -> Result<PathBuf> {
         Ok(self.lock()?.run_dir.clone())
     }
@@ -224,7 +223,7 @@ impl RunLog {
         self.lock()?.emit(kind, Some(flow_id), pid, data)
     }
 
-    pub fn ready(&self, control: &str, boundaries: &[&str]) -> Result<()> {
+    pub fn ready(&self, owner: &str, control: Option<&str>, boundaries: &[&str]) -> Result<()> {
         let mut writer = self.lock()?;
         writer.manifest.state = "running".into();
         writer.emit(
@@ -232,7 +231,7 @@ impl RunLog {
             None,
             None,
             json!({
-                "listeners": {"daemon_control": control},
+                "listeners": {"owner": owner, "control": control},
                 "boundaries": boundaries
             }),
         )?;
@@ -821,7 +820,8 @@ mod tests {
             "daemon",
         )
         .unwrap();
-        log.ready("127.0.0.1:7312", &["transport"]).unwrap();
+        log.ready("heimdall-daemon", Some("127.0.0.1:7312"), &["transport"])
+            .unwrap();
         log.emit(
             "run.exec",
             Some(42),

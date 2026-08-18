@@ -49,15 +49,15 @@
         <h1>Architecture</h1>
         <p class="doc-lead">Heimdall has one product path: wrap a command and proxy that command's outbound connections. The control plane selects a policy; the data plane enforces it only for that command scope.</p>
 
-        <div class="doc-mark-card"><img src="../assets/heimdall-mark.svg" alt="Heimdall Bifröst mark"><div><strong>The mark is a guarded crossing.</strong><span>The navy arch is the boundary; the spectrum path is Bifröst; a command crosses only inside its registered policy scope.</span></div></div>
+        <div class="doc-mark-card"><img src="../assets/heimdall-mark.svg" alt="Heimdall Bifröst mark"><div><strong>The mark is a guarded crossing.</strong><span>The navy arch is the boundary; the spectrum path is Bifröst; a command crosses only inside its attached policy scope.</span></div></div>
 
         <h2 id="overview">The path at a glance</h2>
         <div class="architecture-panel">
-          <div class="architecture-panel-head"><strong>heimdall run -- command</strong><span>one registered cgroup</span></div>
+          <div class="architecture-panel-head"><strong>heimdall run -- command</strong><span>one foreground-owned cgroup</span></div>
           <div class="architecture-flow">
             <div class="architecture-node active"><small>01 / CLI</small><strong>command scope</strong><span>Runs the command and keeps descendants together.</span></div>
             <div class="architecture-arrow" aria-hidden="true">→</div>
-            <div class="architecture-node active"><small>02 / KERNEL</small><strong>cgroup eBPF</strong><span>Redirects registered TCP and UDP.</span></div>
+            <div class="architecture-node active"><small>02 / KERNEL</small><strong>cgroup eBPF</strong><span>Per-run map and link FDs.</span></div>
             <div class="architecture-arrow" aria-hidden="true">→</div>
             <div class="architecture-node active"><small>03 / RELAY</small><strong>relay + policy</strong><span>Recovers destination identity.</span></div>
             <div class="architecture-arrow" aria-hidden="true">→</div>
@@ -66,18 +66,18 @@
         </div>
 
         <h2 id="boundaries">Boundaries</h2>
-        <p>The CLI is the product surface. It selects a named policy, creates a child cgroup, executes the requested command, forwards its exit status, and cleans up.</p>
-        <p>The daemon owns the relay, fake-IP DNS, loopback control endpoint, eBPF maps, and stale cgroup cleanup. Its default eBPF policy is bypass, so an unregistered process cannot be redirected accidentally.</p>
-        <div class="callout"><strong>Loopback is deliberate.</strong>The internal relay binds fixed IPv4 and IPv6 loopback sockets on port <code>12345</code>. These endpoints cannot be exposed or made inconsistent with eBPF by configuration.</div>
+        <p>The foreground CLI is the session owner. It selects a policy, creates a child cgroup, binds per-run relay and DNS listeners, executes the command, waits for every descendant, and closes all resources.</p>
+        <p>A short-lived root setup worker validates that one cgroup, attaches fresh unpinned maps and FD-owned eBPF links, transfers those FDs to the CLI, and exits before the workload starts. It never reads proxy credentials, captures bytes, or keeps a listener.</p>
+        <div class="callout"><strong>No persistent daemon by default.</strong> Relay and fake-DNS ports are kernel-assigned per run on IPv4/IPv6 loopback. The compatibility daemon remains only for runtime OpenSSL inspection.</div>
 
         <h2 id="lifecycle">Connection lifecycle</h2>
         <ol>
           <li><code>heimdall run</code> re-enters through <code>systemd-run --user --scope</code> when it needs an isolated delegated cgroup.</li>
-          <li>The CLI registers that cgroup ID and policy name with the local daemon.</li>
-          <li>The child joins the cgroup and executes the requested command.</li>
+          <li>The CLI binds per-run relay and DNS listeners, then the authorized setup worker attaches eBPF and exits.</li>
+          <li>The child joins the cgroup only after setup succeeds, then executes the requested command.</li>
           <li>eBPF rewrites eligible TCP and UDP destinations to the local relay. DNS follows the selected fake or system mode.</li>
           <li>The relay recovers the original destination, evaluates ordered rules, and routes, connects directly, or rejects.</li>
-          <li>After the immediate child exits, the daemon keeps the policy registered until the complete descendant tree leaves the cgroup.</li>
+          <li>After the immediate child exits, the foreground owner keeps interception alive until the complete descendant tree leaves the cgroup, then closes links, maps, listeners, and logs.</li>
         </ol>
 
         <h2 id="data-boundaries">Three independent data boundaries</h2>

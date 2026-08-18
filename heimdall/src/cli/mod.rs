@@ -1,7 +1,7 @@
 //! `heimdall <subcommand>` CLI handlers.
 //!
-//! The handlers share the same strict configuration loader and the daemon's
-//! small loopback registration API.
+//! The handlers share the same strict configuration loader. `heimdall run`
+//! owns its data plane; the daemon remains a compatibility surface.
 
 pub mod ebpf;
 pub mod logs;
@@ -22,7 +22,7 @@ pub mod agent {
     };
     use serde::Serialize;
 
-    const CONTRACT_VERSION: &str = "heimdall.agent/v4";
+    const CONTRACT_VERSION: &str = "heimdall.agent/v5";
 
     #[derive(clap::Args, Debug)]
     pub struct AgentArgs {
@@ -37,6 +37,7 @@ pub mod agent {
         version: &'static str,
         ready: bool,
         config: ConfigReport,
+        execution: Option<ExecutionReport>,
         daemon: DaemonReport,
         capabilities: Capabilities,
         decision: Option<DecisionReport>,
@@ -44,6 +45,15 @@ pub mod agent {
         outbounds: Vec<String>,
         actions: Actions,
         exit_codes: ExitCodes,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct ExecutionReport {
+        backend: &'static str,
+        owner: &'static str,
+        privilege_setup: &'static str,
+        daemon_required: bool,
+        web_ui_required: bool,
     }
 
     #[derive(Debug, Serialize)]
@@ -148,15 +158,13 @@ pub mod agent {
         exit_code_passthrough: bool,
         signal_exit_code: &'static str,
         upstream_unreachable_fail_closed: bool,
-        daemon_unreachable_prevents_exec: bool,
-        daemon_restart_continuity: bool,
-        daemon_restart_enforcement_continuity: bool,
-        daemon_restart_policy_recovery: bool,
-        daemon_restart_fake_dns_recovery: bool,
-        daemon_restart_existing_connections: bool,
-        pinned_state_schema: u32,
-        transactional_program_upgrade: bool,
-        cleanup_requires_no_active_workloads: bool,
+        foreground_modes: &'static [&'static str],
+        runtime_mode_requires_daemon: bool,
+        foreground_owned_resources: bool,
+        resources_close_when_run_exits: bool,
+        setup_worker_short_lived: bool,
+        web_ui_optional: bool,
+        concurrent_runs_isolated: bool,
     }
 
     #[derive(Debug, Serialize)]
@@ -216,7 +224,7 @@ pub mod agent {
 
     /// Print one JSON document and report whether execution is ready.
     ///
-    /// This command never starts the daemon, changes config, registers a cgroup,
+    /// This command never starts a daemon, changes config, attaches a cgroup,
     /// or executes the wrapped command.
     pub async fn run(explicit_path: Option<&Path>, args: AgentArgs) -> Result<bool> {
         let path_result = explicit_path.map(PathBuf::from).map_or_else(
@@ -253,6 +261,7 @@ pub mod agent {
                     decrypt: None,
                     error: Some(config_error(error)),
                 },
+                execution: None,
                 daemon: DaemonReport {
                     reachable: None,
                     control: None,
@@ -329,7 +338,10 @@ pub mod agent {
         let control = config.daemon.api_listen.clone();
         let health = fetch_daemon_health(&control).await;
         let reachable = health.is_some();
-        let daemon_error = daemon_error(&config.decrypt, health.as_ref());
+        let daemon_required = config.decrypt.mode == heimdall_config::DecryptMode::Runtime;
+        let daemon_error = daemon_required
+            .then(|| daemon_error(&config.decrypt, health.as_ref()))
+            .flatten();
         let ready = daemon_error.is_none() && decision_error.is_none();
         let execute_prefix = decision_error.is_none().then(|| {
             let mut argv = argv_for(&path, &["run", "--policy", &policy]);
@@ -368,6 +380,25 @@ pub mod agent {
                 decrypt: Some(decrypt_report(&config.decrypt)),
                 error: None,
             },
+            execution: Some(ExecutionReport {
+                backend: if daemon_required {
+                    "linux-ebpf-compatibility-daemon"
+                } else {
+                    "linux-ebpf-foreground"
+                },
+                owner: if daemon_required {
+                    "heimdall-daemon"
+                } else {
+                    "heimdall-run"
+                },
+                privilege_setup: if daemon_required {
+                    "daemon-startup"
+                } else {
+                    "short-lived-sudo-worker"
+                },
+                daemon_required,
+                web_ui_required: false,
+            }),
             daemon: DaemonReport {
                 reachable: Some(reachable),
                 control: Some(control),
@@ -653,15 +684,13 @@ pub mod agent {
                 exit_code_passthrough: true,
                 signal_exit_code: "128+signal",
                 upstream_unreachable_fail_closed: true,
-                daemon_unreachable_prevents_exec: true,
-                daemon_restart_continuity: false,
-                daemon_restart_enforcement_continuity: true,
-                daemon_restart_policy_recovery: true,
-                daemon_restart_fake_dns_recovery: true,
-                daemon_restart_existing_connections: false,
-                pinned_state_schema: crate::ebpf::STATE_SCHEMA,
-                transactional_program_upgrade: true,
-                cleanup_requires_no_active_workloads: true,
+                foreground_modes: &["off", "relay"],
+                runtime_mode_requires_daemon: true,
+                foreground_owned_resources: true,
+                resources_close_when_run_exits: true,
+                setup_worker_short_lived: true,
+                web_ui_optional: true,
+                concurrent_runs_isolated: true,
             },
         }
     }
@@ -809,12 +838,13 @@ pub mod agent {
             let lifecycle = capabilities().lifecycle;
             assert!(lifecycle.descendant_cgroup_lifetime);
             assert!(lifecycle.upstream_unreachable_fail_closed);
-            assert!(lifecycle.daemon_unreachable_prevents_exec);
-            assert!(!lifecycle.daemon_restart_continuity);
-            assert!(lifecycle.daemon_restart_enforcement_continuity);
-            assert!(lifecycle.daemon_restart_policy_recovery);
-            assert!(lifecycle.daemon_restart_fake_dns_recovery);
-            assert!(!lifecycle.daemon_restart_existing_connections);
+            assert_eq!(lifecycle.foreground_modes, ["off", "relay"]);
+            assert!(lifecycle.runtime_mode_requires_daemon);
+            assert!(lifecycle.foreground_owned_resources);
+            assert!(lifecycle.resources_close_when_run_exits);
+            assert!(lifecycle.setup_worker_short_lived);
+            assert!(lifecycle.web_ui_optional);
+            assert!(lifecycle.concurrent_runs_isolated);
         }
     }
 }

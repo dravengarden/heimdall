@@ -37,9 +37,6 @@ mod ebpf;
 mod event_log;
 mod gc;
 mod policy;
-// The protocol is landed before the privileged re-exec is wired so its
-// framing and FD contract can be reviewed independently.
-#[allow(dead_code)]
 mod setup;
 mod state;
 mod tls_relay;
@@ -189,6 +186,7 @@ struct SessionRuntime {
     relay: RelayRuntime,
     dns: Arc<DnsResolver>,
     dns_task: tokio::task::JoinHandle<()>,
+    dns_port: u16,
     kernel: Option<KernelRuntime>,
 }
 
@@ -209,18 +207,34 @@ enum KernelLinks {
 
 impl SessionRuntime {
     async fn bind(cfg: &HeimdallConfig) -> Result<Self> {
+        Self::bind_with_dns(
+            cfg,
+            cfg.daemon.dns_port,
+            std::path::Path::new(state::RUNTIME_DIR).join("fake-dns.json"),
+        )
+        .await
+    }
+
+    async fn bind_foreground(cfg: &HeimdallConfig, state_path: PathBuf) -> Result<Self> {
+        Self::bind_with_dns(cfg, 0, state_path).await
+    }
+
+    async fn bind_with_dns(
+        cfg: &HeimdallConfig,
+        dns_port: u16,
+        state_path: PathBuf,
+    ) -> Result<Self> {
         let relay = RelayRuntime::bind().await?;
         let dns = Arc::new(
             DnsResolver::with_state(
                 &cfg.daemon.fake_ip_cidr,
                 &cfg.daemon.fake_ip6_cidr,
-                std::path::Path::new(state::RUNTIME_DIR)
-                    .join("fake-dns.json")
-                    .as_path(),
+                &state_path,
             )
             .context("initialize fake-IP DNS resolver")?,
         );
-        let dns_server = dns.clone().bind(cfg.daemon.dns_port).await?;
+        let dns_server = dns.clone().bind(dns_port).await?;
+        let dns_port = dns_server.port();
         let dns_task = tokio::spawn(async move {
             if let Err(error) = dns_server.serve().await {
                 warn!(%error, "DNS server exited");
@@ -231,6 +245,7 @@ impl SessionRuntime {
             relay,
             dns,
             dns_task,
+            dns_port,
             kernel: None,
         })
     }
@@ -250,7 +265,6 @@ impl SessionRuntime {
             .context("session kernel runtime is not installed")
     }
 
-    #[allow(dead_code)]
     fn install_setup_bundle(&mut self, bundle: setup::SetupBundle) -> Result<()> {
         let runtime = bundle.into_runtime_fds()?;
         self.install_kernel(KernelRuntime {
@@ -267,6 +281,10 @@ impl SessionRuntime {
 
     fn relay_port(&self) -> u16 {
         self.relay.port()
+    }
+
+    fn dns_port(&self) -> u16 {
+        self.dns_port
     }
 
     fn relay_addresses(&self) -> Result<(SocketAddr, SocketAddr)> {
@@ -288,6 +306,122 @@ impl SessionRuntime {
                 shared,
             )
             .await
+    }
+}
+
+pub(crate) struct ForegroundSession {
+    cgroup_id: u64,
+    runtime: Arc<SessionRuntime>,
+    relay_task: tokio::task::JoinHandle<Result<()>>,
+    udp_sessions: UdpSessions,
+    event_client: event_log::EventClient,
+}
+
+impl ForegroundSession {
+    pub(crate) async fn start(
+        cfg: &HeimdallConfig,
+        policy_name: &str,
+        cgroup_path: PathBuf,
+        cgroup_id: u64,
+        event_socket: PathBuf,
+        dns_state_path: PathBuf,
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            cfg.decrypt.mode != heimdall_config::DecryptMode::Runtime,
+            "decrypt.mode = runtime still requires the compatibility daemon; use off or relay for daemonless heimdall run"
+        );
+        let selected = cfg
+            .policy(policy_name)
+            .with_context(|| format!("selected policy `{policy_name}` disappeared"))?;
+        let mut policy_flags = 0;
+        if selected.dns_hijack() {
+            policy_flags |= heimdall_common::POLICY_DNS_HIJACK;
+        } else {
+            policy_flags |= heimdall_common::POLICY_DNS_SYSTEM;
+        }
+        if selected.rejects_all_udp() {
+            policy_flags |= heimdall_common::POLICY_UDP_REJECT;
+        }
+
+        let upstreams = resolve_all(cfg)?;
+        let capture = capture::CaptureManager::from_config(&cfg.capture)
+            .await
+            .context("initialize foreground transport capture")?;
+        let relay_tls = (cfg.decrypt.mode == heimdall_config::DecryptMode::Relay)
+            .then(|| {
+                let ca_cert = cfg
+                    .decrypt
+                    .ca_cert
+                    .as_deref()
+                    .context("strict config accepted relay decrypt without ca_cert")?;
+                let ca_key = cfg
+                    .decrypt
+                    .ca_key
+                    .as_deref()
+                    .context("strict config accepted relay decrypt without ca_key")?;
+                Ok::<_, anyhow::Error>(Arc::new(
+                    tls_relay::RelayTls::load(ca_cert, ca_key)
+                        .context("initialize foreground relay TLS decryption")?,
+                ))
+            })
+            .transpose()?;
+
+        let mut runtime = SessionRuntime::bind_foreground(cfg, dns_state_path).await?;
+        let request = setup::SetupRequest::new(
+            cgroup_path,
+            cgroup_id,
+            runtime.relay_port(),
+            runtime.dns_port(),
+            policy_flags,
+        )?;
+        let bundle = tokio::task::spawn_blocking(move || setup::launch_worker(&request))
+            .await
+            .context("join setup worker launcher")??;
+        runtime.install_setup_bundle(bundle)?;
+
+        let cli_overrides: CliOverrides = Arc::new(parking_lot::RwLock::new(StdHashMap::from([(
+            cgroup_id,
+            heimdall_config::Decision {
+                policy: policy_name.to_owned(),
+            },
+        )])));
+        let event_client = event_log::EventClient::connect(event_socket)?;
+        let event_clients: EventClients = Arc::new(parking_lot::RwLock::new(StdHashMap::from([(
+            cgroup_id,
+            event_client.clone(),
+        )])));
+        let udp_sessions: UdpSessions = Arc::new(Mutex::new(StdHashMap::new()));
+        let shared = Arc::new(Shared {
+            cfg: cfg.clone(),
+            upstreams,
+            capture,
+            relay_tls,
+            dns: Some(runtime.dns.clone()),
+            cli_overrides,
+            event_clients,
+        });
+        let runtime = Arc::new(runtime);
+        let relay_runtime = Arc::clone(&runtime);
+        let relay_sessions = Arc::clone(&udp_sessions);
+        let relay_task =
+            tokio::spawn(async move { relay_runtime.serve(relay_sessions, shared).await });
+
+        Ok(Self {
+            cgroup_id,
+            runtime,
+            relay_task,
+            udp_sessions,
+            event_client,
+        })
+    }
+
+    pub(crate) async fn shutdown(self) -> bool {
+        close_udp_sessions_for_cgroup(&self.udp_sessions, self.cgroup_id).await;
+        let flows_drained = self.event_client.wait_for_flows(Duration::from_secs(2));
+        self.relay_task.abort();
+        let _ = self.relay_task.await;
+        drop(self.runtime);
+        flows_drained
     }
 }
 
@@ -560,7 +694,7 @@ enum Cmd {
     /// decision, error codes, and shell-safe argv arrays.
     Agent(cli::agent::AgentArgs),
 
-    /// Run the small privileged eBPF relay (normally managed by systemd).
+    /// Run the runtime-TLS compatibility daemon (explicit opt-in).
     Daemon(DaemonArgs),
 
     /// Internal privileged half of one foreground run.
@@ -583,7 +717,7 @@ enum Cmd {
     #[command(subcommand)]
     Logs(cli::logs::LogsCmd),
 
-    /// Show the selected config and local daemon health.
+    /// Show the selected config and compatibility-daemon health.
     Status(StatusArgs),
 
     /// Write a minimal starter config in the selected format.
@@ -831,7 +965,7 @@ async fn main() -> Result<()> {
         Cmd::Init(args) => cli::init::run(args),
         Cmd::Run(args) => {
             let config_path = resolve_config_path(cli.config.as_deref())?;
-            cli::run::run(&config_path, args)
+            cli::run::run(&config_path, args).await
         }
     }
 }

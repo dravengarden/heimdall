@@ -2,7 +2,7 @@
 
 ## Build
 
-Build eBPF first because the daemon embeds its ELF at compile time.
+Build eBPF first because its ELF is embedded in the single userspace binary.
 
 ```bash
 nix develop .#ebpf -c bash -c \
@@ -10,341 +10,207 @@ nix develop .#ebpf -c bash -c \
 nix develop -c just verify
 ```
 
-`just verify` covers deterministic build, lint, dependency, and unit gates.
-Run the kernel data-plane acceptance separately when changing eBPF, cgroup,
-DNS, relay correlation, or routing behavior:
+Run the real kernel acceptance after changes to eBPF, cgroups, DNS, relay,
+capture, TLS, setup privilege, or lifecycle behavior:
 
 ```bash
 nix develop -c just test-vm
 ```
 
-The check boots a disposable NixOS guest and verifies real eBPF attachment,
-fake/system DNS, SOCKS5 IPv4/IPv6/domain requests, connected UDP through SOCKS5
-and direct egress, persistent association reuse, multi-response delivery,
-sequential source-port reuse, transparent UDP peer identity, IPv4
-connectionless multi-target traffic, concurrent IPv4 same-source-port sockets,
-single-peer IPv6, fail-closed IPv6 multi-target/shared-port conflicts,
-IPv4-mapped dual-stack UDP, `sendmmsg`/`recvmmsg`, token stress across 128
-destinations, IPv4 and native IPv6 HTTP/3 with QUIC Retry and a 32 KiB response,
-unregistered bypass, whole-descendant cgroup lifetime, command exit/signal
-status, unavailable-daemon pre-exec failure, unreachable-upstream failure,
-cgroup cleanup, Git's native protocol, and 100 same-source-port dual-stack TCP
-connection pairs. It also compiles and executes static Go `netgo`, Java,
-Node.js, and Rust clients through fake-DNS TCP plus connected IPv4 and IPv6
-UDP. Existing C, curl, and Python fixtures cover syscall batching, HTTP, and
-additional UDP shapes.
+The disposable NixOS VM stops the compatibility daemon before ordinary runs.
+It proves fake/system DNS, SOCKS5 and direct TCP/UDP, IPv4/IPv6, HTTP/3, static
+and dynamic clients, descendants, exit/signal status, two concurrent isolated
+runs, event rotation, relay TLS, fail-closed upstream errors, and return to the
+pre-run BPF-link baseline. Runtime OpenSSL capture is tested separately through
+the compatibility daemon.
 
-The VM also enables a deliberately small capture budget and validates TCP and
-UDP `heimdall.capture/v1` files, bidirectional records, truncation, ordering,
-and root-only permissions.
+## Install the daemonless path
 
-## Install
+Install one executable:
 
 ```bash
 sudo install -Dm755 target/release/heimdall /usr/local/bin/heimdall
 sudo /usr/local/bin/heimdall init
-sudo install -Dm644 deploy/heimdall.service \
-  /etc/systemd/system/heimdall.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now heimdall
 ```
 
-The daemon should bind only loopback listeners. Check it with:
+The normal Linux backend needs root only while attaching per-run eBPF. Grant
+the invoking user access to the exact hidden setup command, not to arbitrary
+Heimdall arguments and not to a shell. Replace `USERNAME` and validate the
+result with `visudo`:
+
+```sudoers
+USERNAME ALL=(root) NOPASSWD: /usr/local/bin/heimdall __setup-worker
+```
 
 ```bash
-heimdall status
-systemctl status heimdall
-journalctl -u heimdall -n 100
+sudo chmod 0440 /etc/sudoers.d/heimdall
+sudo visudo -cf /etc/sudoers.d/heimdall
 ```
 
-The relay must report matching kernel-assigned IPv4/IPv6 ports; fake DNS uses
-both families on `daemon.dns_port`, and the control API uses the configured
-loopback `daemon.api_listen`.
+`heimdall run` invokes this worker once over an inherited Unix socket. The
+worker transfers map/link FDs and exits before the wrapped command starts. Do
+not install file capabilities or setuid on the complete binary.
+
+No Heimdall service is required for `decrypt.mode = "off"` or `"relay"`.
+`deploy/heimdall.service` is an explicit compatibility component only for the
+current `"runtime"` OpenSSL mode and persistent-state migration.
 
 ## Smoke test
 
+Run as the ordinary authorized user:
+
 ```bash
-heimdall agent | jq .
-heimdall config validate
+heimdall config validate --json
+heimdall agent | jq '{ready, execution, daemon, decision}'
 heimdall run -- curl -fsS https://example.com
-heimdall run --policy corp -- curl -fsS https://internal.example.com
+heimdall logs list --json
 ```
 
-The wrapped command's exit status is heimdall's exit status. A daemon or
-registration failure occurs before the command is executed.
+For `off` and `relay`, a stopped or absent compatibility daemon does not make
+the agent report unready. The wrapped command's immediate exit or signal status
+is Heimdall's status, while interception remains active until every descendant
+leaves the command cgroup.
 
-## Event logs
+## Agent contract
 
-Every successful `heimdall run` initialization creates a user-owned run below
-`$XDG_STATE_HOME/heimdall/runs` (default `~/.local/state/heimdall/runs`). Phase
-1 records lifecycle and TCP/UDP flow metadata; payload bytes remain in the
-explicit root-only `heimdall.capture/v1` directory.
+`heimdall agent [--policy NAME]` is read-only and prints exactly one JSON value.
+Exit 0 means ready, 1 means the document contains a repairable reason, and 2 is
+CLI usage failure. The current contract is `heimdall.agent/v5`.
+
+The execution section is the ownership decision that automation must use (the
+following is an excerpt):
+
+```json
+{
+  "contract": "heimdall.agent/v5",
+  "ready": true,
+  "execution": {
+    "backend": "linux-ebpf-foreground",
+    "owner": "heimdall-run",
+    "privilege_setup": "short-lived-sudo-worker",
+    "daemon_required": false,
+    "web_ui_required": false
+  },
+  "daemon": {
+    "reachable": false,
+    "control": "127.0.0.1:9999",
+    "health": null
+  }
+}
+```
+
+With `decrypt.mode = "runtime"`, the backend becomes
+`linux-ebpf-compatibility-daemon`, `daemon_required` is true, and readiness
+requires matching `heimdall.daemon.health/v2` health with a positive runtime
+attachment count.
+
+Treat every `actions.*` command as an argv array; never concatenate or
+shell-evaluate it. Consumers may rely on existing v5 field semantics and must
+ignore additive unknown fields. Renaming or changing an existing semantic
+requires a new contract version.
+
+Before execution, inspect:
+
+- `config.valid`, normalized capture/decrypt values, and stable diagnostics;
+- `execution.backend`, `daemon_required`, and `privilege_setup`;
+- `decision` for the selected policy and terminal TCP/UDP actions;
+- per-family `capabilities.udp` instead of aggregate booleans;
+- protocol-specific `runtime_acceptance` and `cli_acceptance` evidence;
+- `capabilities.lifecycle.foreground_modes` and resource ownership.
+
+## Event logs for agents
+
+Every initialized run writes a user-owned manifest and append-only JSONL below
+`$XDG_STATE_HOME/heimdall/runs` (default
+`~/.local/state/heimdall/runs`). The files are the source of truth; no Web UI
+or database is required.
+
+Discover schemas and paths instead of hard-coding fields:
 
 ```bash
 heimdall logs schema --event v1
+heimdall logs schema --run v1
 heimdall logs list --json
-heimdall logs query --run RUN_ID --kind flow.close --jsonl
-heimdall logs tail --run RUN_ID --follow --jsonl
-heimdall logs rotate --run RUN_ID --json
-heimdall logs verify --run RUN_ID --json
+heimdall logs path --run RUN_ID --json
 ```
 
-Rotation never deletes data. Preview retention first; deletion requires
-`--apply`:
+Query with the CLI or ordinary Linux tools:
 
 ```bash
+heimdall logs query --run RUN_ID --kind flow.close --jsonl
+heimdall logs tail --run RUN_ID --follow --jsonl
+jq -c 'select(.kind == "flow.close" and .data.bytes_out > 0)' \
+  ~/.local/state/heimdall/runs/RUN_ID/events-*.jsonl
+rg '"kind":"run.error"' ~/.local/state/heimdall/runs/RUN_ID
+```
+
+Rotation is writer-owned and never deletes data:
+
+```bash
+heimdall logs rotate --run RUN_ID --json
+heimdall logs verify --run RUN_ID --json
 heimdall logs prune --older-than 30d --keep-last 20 --json
 heimdall logs prune --older-than 30d --keep-last 20 --apply --json
 ```
 
-## Agent contract
+Preview prune before `--apply`. Do not use `copytruncate` on an active segment.
+See [the bundled event reference](../skills/heimdall/references/events.md) for
+the complete schema and `jq` recipes.
 
-`heimdall agent [--policy NAME]` is the automation entry point.
-It is read-only and always prints exactly one JSON value before exiting:
+## Capture and TLS
 
-```json
-{
-  "contract": "heimdall.agent/v4",
-  "version": "0.1.0",
-  "ready": true,
-  "config": {
-    "path": "...",
-    "format": "toml",
-    "valid": true,
-    "capture": { "mode": "off", "directory": "/var/lib/heimdall/captures", "max_bytes_per_flow": 1048576 },
-    "decrypt": { "mode": "off", "ca_cert": null, "ca_key": null, "ca_material_ready": true },
-    "error": null
-  },
-  "daemon": {
-    "reachable": true,
-    "control": "127.0.0.1:9999",
-    "health": {
-      "contract": "heimdall.daemon.health/v2",
-      "ready": true,
-      "relay_port": 42137,
-      "decrypt_mode": "off"
-    },
-    "error": null
-  },
-  "capabilities": {
-    "capture": {
-      "contract": "heimdall.capture/v1",
-      "format": "jsonl",
-      "tcp": true,
-      "udp": true,
-      "payload": "mode_dependent",
-      "tls_plaintext": true
-    },
-    "logs": {
-      "event_contract": "heimdall.event/v1",
-      "run_contract": "heimdall.run/v1",
-      "format": "jsonl",
-      "lifecycle_events": true,
-      "flow_events": "tcp+udp_metadata",
-      "writer_owned_rotation": true,
-      "content_addressed_blobs": false
-    },
-    "decrypt": {
-      "modes": ["off", "runtime", "relay"],
-      "runtime_libraries": ["openssl"],
-      "runtime_apis": ["SSL_read", "SSL_read_ex", "SSL_write", "SSL_write_ex"],
-      "runtime_discovery": "loaded_images_at_daemon_start",
-      "runtime_max_bytes_per_event": 256,
-      "runtime_requires_attached_image": true,
-      "runtime_requires_ca_trust": false,
-      "runtime_supports_pinning_and_mtls": true,
-      "relay_library_independent": true,
-      "relay_requires_ca_trust": true,
-      "relay_supports_pinning_and_mtls": false,
-      "upstream_certificate_verification": true,
-      "non_tls_passthrough": true
-    },
-    "udp": {
-      "connected": true,
-      "connectionless": false,
-      "connectionless_ipv4": true,
-      "connectionless_ipv6": false,
-      "connectionless_ipv6_single_peer": true,
-      "ipv4_mapped_ipv6_socket": true,
-      "concurrent_shared_source_port": false,
-      "concurrent_shared_source_port_ipv4": true,
-      "concurrent_shared_source_port_ipv6": false,
-      "association_reuse": true,
-      "multi_response": true,
-      "max_socks5_payload_bytes": 65245,
-      "quic": "ipv4+ipv6-single-path",
-      "quic_ipv4": true,
-      "quic_ipv6": true,
-      "quic_address_family_migration": false,
-      "exchange": "bidirectional-session"
-    },
-    "runtime_acceptance": {
-      "tcp_fake_dns": ["curl", "go-netgo", "java", "nodejs", "rust"],
-      "udp_ipv4": ["c", "go-netgo", "java", "nodejs", "python", "rust"],
-      "udp_ipv6": ["go-netgo", "java", "nodejs", "python", "rust"],
-      "tls_runtime": ["curl-openssl"],
-      "tls_relay": ["curl"]
-    },
-    "cli_acceptance": { "tcp_fake_dns": ["git"] },
-    "lifecycle": {
-      "descendant_cgroup_lifetime": true,
-      "exit_code_passthrough": true,
-      "signal_exit_code": "128+signal",
-      "upstream_unreachable_fail_closed": true,
-      "daemon_unreachable_prevents_exec": true,
-      "daemon_restart_continuity": false,
-      "daemon_restart_enforcement_continuity": true,
-      "daemon_restart_policy_recovery": true,
-      "daemon_restart_fake_dns_recovery": true,
-      "daemon_restart_existing_connections": false,
-      "pinned_state_schema": 1,
-      "transactional_program_upgrade": true,
-      "cleanup_requires_no_active_workloads": true
-    }
-  },
-  "decision": {
-    "policy": "default",
-    "dns": "fake",
-    "tcp_final": "route:default",
-    "udp_final": "reject:refused",
-    "error": null
-  },
-  "policies": ["default"],
-  "outbounds": ["default"],
-  "actions": {
-    "validate": ["heimdall", "--config", "...", "config", "validate", "--json"],
-    "status": ["heimdall", "--config", "...", "status", "--json"],
-    "execute_prefix": ["heimdall", "--config", "...", "run", "--policy", "default", "--"],
-    "tls_ca_init": null,
-    "logs_schema_event": ["heimdall", "logs", "schema", "--event", "v1"],
-    "logs_schema_run": ["heimdall", "logs", "schema", "--run", "v1"],
-    "logs_list": ["heimdall", "logs", "list", "--json"]
-  },
-  "exit_codes": { "ready": 0, "not_ready": 1, "usage": 2 }
-}
-```
-
-Treat argv arrays as arrays; never concatenate or shell-evaluate them. When
-config cannot be loaded, `config.error.code` is a stable category and
-`diagnostics` contains stable code/path/message/hint records. The contract may
-add fields within v4; consumers
-must ignore unknown fields.
-
-Before enabling capture, agents must inspect `capabilities.capture`,
-`capabilities.decrypt`, and the normalized capture/decrypt config. The agent
-capability says plaintext is available, not that every file is plaintext.
-Inspect each open record: `opaque_transport` is relay-observed transport;
-`tls_plaintext` is decrypted content.
-
-Runtime mode requires no trust change and currently covers only OpenSSL
-images loaded when the daemon starts and the four APIs reported by
-`runtime_apis`. The daemon refuses readiness when no image can be attached;
-require a positive `daemon.health.runtime.attached_images` count. Restart
-the daemon after introducing a different `libssl` image. Each event is bounded
-by `runtime_max_bytes_per_event`.
-Relay mode is language-independent but requires clients to trust the generated
-CA and is incompatible with pinning and client-certificate mTLS. Generate its
-material only with explicit trust authority:
+Capture directories and relay CA material must be owned by and readable only by
+the user who invokes `heimdall run`. Generate relay trust material as that user:
 
 ```bash
-sudo heimdall tls init-ca --dir /var/lib/heimdall/tls --json
+install -d -m 0700 "$HOME/.local/state/heimdall/tls"
+heimdall tls init-ca --dir "$HOME/.local/state/heimdall/tls" --json
 ```
 
-The command prints a shell-safe JSON contract and matching config paths. Trust
-only `ca_cert`; keep `ca_key` private to the daemon.
+Trust only `ca.pem` in the wrapped client. Keep `ca-key.pem` mode 0600. Relay
+mode is library-independent but is incompatible with certificate pinning and
+client-certificate mTLS.
 
-Capture files are sensitive and root-only. Inspect them without changing daemon
-state:
+Runtime mode changes no trust and currently observes only the reported OpenSSL
+APIs. Start and inspect the compatibility service only when that mode was
+selected explicitly:
 
 ```bash
-sudo jq -s . /var/lib/heimdall/captures/<flow>.jsonl
+sudo systemctl enable --now heimdall
+heimdall agent | jq '{execution, daemon}'
+journalctl -u heimdall -n 100 --no-pager
 ```
-
-There is no automatic retention. Operators must bound storage externally and
-must not weaken directory or file permissions to make an agent workflow easier.
-
-Agents must inspect the per-family fields in `capabilities.udp` before choosing
-a UDP workload. The aggregate `connectionless` and
-`concurrent_shared_source_port` fields are false because support is not
-dual-stack. IPv4 supports both cases. IPv6 supports one peer per connectionless
-socket and IPv4-mapped destinations, but not arbitrary multi-target use or
-simultaneous sockets sharing one explicit port. Those conflicts are rejected
-instead of being accepted with ambiguous response identity.
-`quic: "ipv4+ipv6-single-path"` and the `quic_ipv4`/`quic_ipv6` booleans mean
-HTTP/3 is acceptance-tested on either family. Agents must still reject workflows
-that require `quic_address_family_migration` while that field is false.
-
-`capabilities.runtime_acceptance` is evidence from the real-eBPF VM, not a
-language allowlist. A runtime absent from one protocol array is unverified for
-that protocol; it is not automatically rejected by the proxy. The current
-matrix is:
-
-| Path | Acceptance-tested clients |
-|---|---|
-| Fake-DNS TCP | curl, static Go `netgo`, Java, Node.js, Rust |
-| IPv4 UDP | C, static Go `netgo`, Java, Node.js, Python, Rust |
-| IPv6 UDP | static Go `netgo`, Java, Node.js, Python, Rust |
-| Runtime TLS plaintext | curl with OpenSSL |
-| Relay TLS plaintext | curl |
-
-`capabilities.cli_acceptance` records end-to-end evidence for concrete CLI
-protocols; Git is tested with `git ls-remote` over fake-DNS TCP. Agents must
-also inspect `capabilities.lifecycle`. A wrapped command keeps its policy until
-all descendants leave the cgroup, preserves normal exit and signal status,
-fails rather than bypassing an unreachable upstream, and is not executed when
-the daemon cannot register it. Active command policies and fake-DNS mappings
-recover once a restarted daemon is ready, as reported by the two
-`daemon_restart_*_recovery` fields. Pinned maps and atomic link updates
-make `daemon_restart_enforcement_continuity` true: registered traffic remains
-intercepted and fails closed while the relay is unavailable.
-`daemon_restart_continuity` remains false because existing connections and
-relay sessions do not survive. Do not run a workflow that requires connection
-survival across a daemon restart.
-
-The first upgrade from a release that did not pin cgroup links requires one
-ordinary daemon restart to install them. Enforcement continuity applies to
-later stops and restarts after that startup succeeds.
-
-`pinned_state_schema` identifies the exact reusable map layout.
-`transactional_program_upgrade` means link replacement uses kernel CAS and
-rolls the whole generation back if any later replacement or readiness step
-fails. An unknown schema is never auto-deleted or silently migrated.
 
 ## Common failures
 
-- `unknown policy`: declare it below `proxy.policies` or choose a name reported
-  by `heimdall agent`.
+- `unknown policy`: choose one from `heimdall agent` or declare it under
+  `proxy.policies`.
 - ambiguous config discovery: keep exactly one `config.toml`, `config.yaml`,
-  `config.yml`, or `config.json` in `/etc/heimdall`, or pass an
-  explicit `--config` path.
-- daemon registration connection refused: start `heimdall.service` and confirm
-  `daemon.api_listen` matches the client config.
-- DNS lookup failure in fake mode: verify unprivileged user namespaces are
-  enabled and the child received its private resolver mount.
-- cgroup permission error: ensure the user's systemd manager is running; the
-  CLI uses `systemd-run --user --scope` to enter a delegated subtree.
-- another transparent proxy catches relay traffic: exempt the exact local
-  relay endpoint from that proxy's interception rules.
+  `config.yml`, or `config.json`, or pass global `--config PATH`.
+- setup worker denied: verify the binary path and exact sudoers command; do not
+  grant broader sudo access.
+- cgroup permission error: ensure the systemd user manager is running; Heimdall
+  re-enters a delegated `systemd-run --user --scope` and preserves `--config`.
+- fake-DNS lookup failure: verify unprivileged user namespaces are enabled so
+  the child can receive its private resolver mount.
+- relay CA key permission error: generate the key as the invoking user and keep
+  its containing directory 0700 and key 0600.
+- another transparent proxy catches relay traffic: exempt the exact loopback
+  endpoint reported for the run from that proxy's interception.
+- runtime daemon unavailable: this is fatal only when
+  `execution.daemon_required` is true.
 
-Stopping heimdall leaves its pinned eBPF maps and links active. Registered
-cgroups fail closed until the relay returns; unregistered processes continue to
-bypass heimdall. During an explicit service restart, systemd preserves the
-root-only runtime journal; after readiness, still-running wrapped commands
-regain their userspace policy decisions and fake-DNS mappings. Connections
-established before the restart are not preserved.
+## Remove compatibility state
 
-## Remove persistent eBPF state
-
-Stop the daemon, wait for every wrapped command to exit, then use the bounded
-cleanup command instead of deleting bpffs paths manually:
+This command is only for an explicitly requested uninstall or incompatible
+persistent-schema repair. It is unrelated to normal foreground runs, which
+leave no bpffs pins.
 
 ```bash
 sudo systemctl stop heimdall
 sudo heimdall ebpf cleanup --json
 ```
 
-The command emits one `heimdall.ebpf.cleanup/v1` document. Exit 0 means the
-Heimdall-owned `/sys/fs/bpf/heimdall` tree was removed (or was already absent).
-Exit 1 with `code = "daemon_active"` or `code = "active_workloads"` means it
-made no change. Do not bypass these checks: removing links from a populated
-command cgroup would turn a fail-closed outage into unproxied egress.
+Exit 1 with `code = "daemon_active"` or `"active_workloads"` means no state
+was removed. Never delete `/sys/fs/bpf/heimdall` manually; that could turn a
+fail-closed compatibility workload into direct egress.

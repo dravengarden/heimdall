@@ -6,6 +6,13 @@ All notable changes to heimdall are documented here.
 
 ### Added
 
+- Add the daemonless Linux foreground backend for `decrypt.mode = "off"` and
+  `"relay"`. Each run owns isolated relay/DNS listeners, cgroup, unpinned maps,
+  FD-owned links, event state, and a strict short-lived `heimdall.setup/v1`
+  sudo worker that exits before the wrapped command starts.
+- Add concurrent foreground-run and no-daemon real-eBPF VM acceptance,
+  including TCP/UDP/fake DNS, relay TLS, log rotation, and cleanup back to the
+  pre-run BPF-link baseline.
 - Replace the machine-global fixed relay port with one kernel-assigned port
   published through daemon health and the eBPF redirect map, preparing relay
   ownership for isolated foreground sessions.
@@ -29,6 +36,9 @@ All notable changes to heimdall are documented here.
 
 ### Fixed
 
+- Preserve the resolved global `--config` path across `systemd-run` re-entry so
+  runtime TLS cannot silently select the foreground backend from a different
+  discovered config.
 - Capture only the bytes that successful OpenSSL read/write calls actually
   transferred, including the `SSL_read_ex` and `SSL_write_ex` APIs. Runtime
   startup now fails when no loaded OpenSSL image can be attached instead of
@@ -73,6 +83,13 @@ All notable changes to heimdall are documented here.
 
 ### Changed
 
+- Bump the read-only automation contract to `heimdall.agent/v5` and report the
+  selected execution backend, lifecycle owner, privilege setup, daemon
+  requirement, and Web UI requirement. Runtime OpenSSL inspection remains on
+  the explicit compatibility daemon; normal proxying and relay TLS do not use
+  it.
+- Make foreground capture and relay CA files private to the invoking user
+  instead of assuming daemon-owned root-only state.
 - Rename decrypt modes by execution boundary: `transparent` becomes `runtime`
   and `mitm` becomes `relay`. The breaking machine-readable names are published
   through `heimdall.agent/v4`, `heimdall.daemon.health/v2`,

@@ -62,7 +62,7 @@ Actions:
 
 - `route` requires an existing outbound capable of every protocol selected by
   that rule or final action.
-- `direct` explicitly authorizes a native connection from the daemon.
+- `direct` explicitly authorizes a native connection from the session relay.
 - `reject` currently requires `method: refused`.
 
 `final.tcp` and `final.udp` are mandatory. Connected UDP may route through
@@ -83,15 +83,16 @@ probe the actual command when its runtime is absent from that path's array.
 
 ## Capture and decrypt boundary
 
-Enable capture only when the user intends to retain traffic. It writes one
-root-only JSONL using `heimdall.capture/v1`. The byte limit is shared across
+Enable capture only when the user intends to retain traffic. It writes private,
+user-owned JSONL using `heimdall.capture/v1`. The byte limit is shared across
 both directions. With decrypt off, payload is opaque transport. Runtime
 mode is CA-free but currently covers only the TLS libraries listed by
 `agent.capabilities.decrypt.runtime_libraries`. Relay mode is TLS-library-independent
 but requires client trust and does not support pinning or client-certificate
-mTLS. `runtime_discovery` reports when OpenSSL images are scanned;
-restart the daemon when a new image appears. Require a ready matching
-`agent.daemon.health` and a positive `runtime.attached_images` count.
+mTLS. Runtime mode is the compatibility exception: `runtime_discovery` reports
+when OpenSSL images are scanned, so restart the explicit daemon when a new
+image appears. Require `execution.daemon_required`, matching
+`agent.daemon.health`, and a positive `runtime.attached_images` count.
 `runtime_apis` and `runtime_max_bytes_per_event` define the exact
 probe boundary. Both decrypt modes require capture on.
 
@@ -99,7 +100,8 @@ Validate the absolute directory and bounded limit, then inspect the normalized
 values at `agent.config.capture`/`agent.config.decrypt` and capability boundary
 at `agent.capabilities.capture`/`agent.capabilities.decrypt`. Use
 `heimdall tls init-ca --json` only after explicit relay trust authority. Never
-weaken file permissions or expose `ca_key`. Heimdall does not rotate or upload
+weaken file permissions or expose `ca_key`; it must remain readable by the same
+user that invokes relay mode. Heimdall does not rotate or upload
 captures; retention is an operator decision.
 
 ## DNS invariants
@@ -129,7 +131,7 @@ Never respond to `outbound_network_mismatch` by weakening UDP to direct.
 Never respond to `domain_rule_requires_fake_dns` by keeping a rule that cannot
 match; choose fake DNS or rewrite the policy using IP matchers.
 
-Daemon settings are normally omitted. If needed, only set loopback
-`api_listen`, `dns_port`, cgroup, and fake-IP pools. The relay uses one
-kernel-assigned IPv4/IPv6 loopback port published as
-`agent.daemon.health.relay_port`; it cannot be exposed or selected by config.
+Daemon settings are normally omitted and apply only to the runtime-TLS
+compatibility path. If needed there, only set loopback `api_listen`, `dns_port`,
+cgroup, and fake-IP pools. Foreground relay/DNS ports are kernel-assigned per
+run and cannot be exposed or selected by config.

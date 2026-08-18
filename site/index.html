@@ -82,7 +82,7 @@ heimdall config validate
 <span class="code-comment"># scope one command</span>
 heimdall run -- curl https://example.com</code></pre>
             </div>
-            <p class="quickstart-foot">The rest of the machine stays outside this command's cgroup scope.</p>
+            <p class="quickstart-foot">The rest of the machine stays outside this command's cgroup scope. No persistent Heimdall daemon or Web UI is required.</p>
           </div>
         </div>
       </section>
@@ -144,19 +144,19 @@ heimdall run -- curl https://example.com</code></pre>
             </article>
             <article class="usage-step">
               <div class="usage-step-top"><span>02</span><strong>Run</strong></div>
-              <p>Register one transient cgroup and forward the child exit status.</p>
+              <p>Attach one transient cgroup and forward the child exit status.</p>
               <code>heimdall run -- your-command</code>
             </article>
             <article class="usage-step">
               <div class="usage-step-top"><span>03</span><strong>Inspect</strong></div>
               <p>Use read-only evidence when an agent or operator needs the reason.</p>
-              <code>heimdall agent --json</code>
+              <code>heimdall agent</code>
             </article>
           </div>
 
           <div class="usage-boundary">
             <strong>Scope is the contract.</strong>
-            <span>Unregistered processes bypass the eBPF redirect. Registered traffic follows the selected policy and does not silently fall back to direct egress.</span>
+            <span>Only the attached command cgroup is redirected. Its foreground session follows policy and never silently falls back to direct egress.</span>
             <a href="docs/commands.html">See the command surface <span aria-hidden="true">→</span></a>
           </div>
         </div>
@@ -177,7 +177,7 @@ heimdall run -- curl https://example.com</code></pre>
             <div class="architecture-flow">
               <div class="architecture-node active"><small>01 / CLI</small><strong>command scope</strong><span>One transient cgroup.</span></div>
               <div class="architecture-arrow" aria-hidden="true">→</div>
-              <div class="architecture-node active"><small>02 / KERNEL</small><strong>cgroup eBPF</strong><span>Redirects registered traffic.</span></div>
+              <div class="architecture-node active"><small>02 / KERNEL</small><strong>cgroup eBPF</strong><span>Per-run FD-owned links.</span></div>
               <div class="architecture-arrow" aria-hidden="true">→</div>
               <div class="architecture-node active"><small>03 / RELAY</small><strong>relay + policy</strong><span>Recovers destination.</span></div>
               <div class="architecture-arrow" aria-hidden="true">→</div>

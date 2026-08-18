@@ -12,8 +12,8 @@ these rules; this file is the standardized project entry point.
   90-second pitch, [`docs/architecture.md`](docs/architecture.md) for
   the data flow + control loops.
 - **Where to start coding**: pick a doc that mentions the file you
-  want to change. Most non-trivial changes touch `heimdall/` (CLI and
-  daemon), `heimdall-ebpf/` (kernel programs), or `heimdall-config/`
+  want to change. Most non-trivial changes touch `heimdall/` (CLI,
+  foreground session, and compatibility daemon), `heimdall-ebpf/` (kernel programs), or `heimdall-config/`
   (the small format-independent schema). See `docs/runbook.md` for build order.
 
 ## House rules
@@ -62,7 +62,7 @@ Just change the code. Bump `CHANGELOG.md` if it's user-visible.
 
 ### Build flow
 
-eBPF must be built **before** the userspace daemon (it's
+eBPF must be built **before** the userspace binary (it's
 `include_bytes!`'d into the binary). `docs/runbook.md` has the
 canonical incantation.
 
@@ -112,16 +112,17 @@ remember to ask for more if needed.
   The concise help has a footer line (`Tip: heimdall help -v …`)
   that points AI agents at the verbose form. Don't strip the footer.
 - `heimdall agent` is the stable automation entry point. Keep it read-only,
-  single-document JSON, currently versioned as `heimdall.agent/v4`, and shell-safe by
+  single-document JSON, currently versioned as `heimdall.agent/v5`, and shell-safe by
   representing commands as argv arrays. Exit 0 means ready, 1 means not ready,
-  and 2 remains clap usage failure. Additive v4 fields are allowed; renaming or
+  and 2 remains clap usage failure. Additive v5 fields are allowed; renaming or
   changing existing field semantics requires a new contract version.
 - `heimdall init` preserves `config.<ext>` unless `--force`. Don't change this:
   losing live config to a doc refresh has bitten the user already.
 - The internal relay uses one kernel-assigned port shared by its IPv4/IPv6
-  TCP/UDP loopback listeners. The active port is published by daemon health
-  and written to the eBPF map; it is not user-configurable.
-- Registered cgroups have no implicit destination bypass except relay
+  TCP/UDP loopback listeners. Foreground runs write the per-run port directly
+  to their private eBPF map; the compatibility daemon also publishes its port
+  through health. It is not user-configurable.
+- Attached command cgroups have no implicit destination bypass except relay
   self-protection and policy-selected system DNS. Express private-network
   exceptions as ordered `direct` rules; fake-IP ranges must remain eligible
   for relay redirection.

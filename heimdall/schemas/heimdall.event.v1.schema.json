@@ -116,8 +116,11 @@
           "properties": {
             "listeners": {
               "type": "object",
-              "required": ["daemon_control"],
-              "properties": { "daemon_control": { "type": "string" } },
+              "required": ["owner", "control"],
+              "properties": {
+                "owner": { "enum": ["heimdall-run", "heimdall-daemon"] },
+                "control": { "type": ["string", "null"] }
+              },
               "additionalProperties": false
             },
             "boundaries": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }

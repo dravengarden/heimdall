@@ -28,7 +28,7 @@
 
         <h2 id="file">One file, one source of truth</h2>
         <p>Heimdall reads exactly one <code>/etc/heimdall/config.&lt;format&gt;</code> file. The extension selects the parser; it does not select a different product model.</p>
-        <div class="callout warning"><strong>Do not put passwords in config.</strong> Use an absolute <code>password_file</code> with daemon-only permissions. The daemon removes one trailing newline and enforces the SOCKS5 length limit.</div>
+        <div class="callout warning"><strong>Do not put passwords in config.</strong> Use an absolute <code>password_file</code> readable only by the invoking user. The foreground session removes one trailing newline and enforces the SOCKS5 length limit.</div>
 
         <h2 id="minimal">Minimal configuration</h2>
         <div class="code-card"><div class="code-card-head"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>config.toml</span><button class="copy-button" type="button" data-copy="#minimal-config">Copy</button></div><pre id="minimal-config"><code>version = 1&#10;&#10;[proxy]&#10;default_policy = "default"&#10;&#10;[proxy.outbounds.default]&#10;type = "socks5"&#10;server = "127.0.0.1"&#10;server_port = 1080&#10;network = ["tcp"]&#10;&#10;[proxy.policies.default.dns]&#10;mode = "fake"&#10;&#10;[proxy.policies.default.final]&#10;tcp = { type = "route", outbound = "default" }&#10;udp = { type = "reject", method = "refused" }&#10;&#10;[capture]&#10;mode = "off"&#10;&#10;[decrypt]&#10;mode = "off"</code></pre></div>
@@ -49,7 +49,7 @@
         <h2 id="capture">Capture and decrypt</h2>
         <p>Proxying decides where traffic goes. Capture decides whether bytes are retained. Decrypt decides what those retained bytes represent. These are separate opt-in choices.</p>
         <pre><code>[capture]&#10;mode = "on"&#10;directory = "/var/lib/heimdall/captures"&#10;max_bytes_per_flow = 1048576&#10;&#10;[decrypt]&#10;mode = "runtime" # off | runtime | relay</code></pre>
-        <ul><li><code>runtime</code> observes supported OpenSSL APIs without changing client trust.</li><li><code>relay</code> terminates and rebuilds TLS at the relay; clients must trust the explicit Heimdall CA.</li><li>Both modes require capture to be enabled and report actual coverage through <code>heimdall agent</code>.</li></ul>
+        <ul><li><code>runtime</code> observes supported OpenSSL APIs without changing trust; it currently requires the explicit compatibility daemon.</li><li><code>relay</code> runs in the foreground relay; clients must trust a private, invoking-user-owned Heimdall CA.</li><li>Both modes require capture and report actual coverage through <code>heimdall agent</code>. No Web UI is required.</li></ul>
 
         <div class="doc-page-footer"><a href="architecture.html">← Architecture</a><a href="commands.html">Command workflows →</a></div>
       </article>

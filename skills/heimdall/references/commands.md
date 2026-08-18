@@ -1,9 +1,5 @@
 # Command workflows
 
-The daemonless and `heimdall logs` contracts are documented in
-[events.md](events.md). Phase 1 logs cover run lifecycle and TCP/UDP metadata while
-the existing daemon and payload-capture path remain operational.
-
 ## Inspect without mutation
 
 ```bash
@@ -13,111 +9,133 @@ heimdall config show
 heimdall config validate --json
 heimdall config explain --policy default --domain example.com --port 443 --json
 heimdall config explain --policy default --network udp --domain example.com --port 443 --json
-heimdall status --json
+heimdall logs list --json
 ```
 
-`agent` is the primary machine contract: one versioned JSON object, stable
-error categories, and next actions represented as argv arrays. Exit 0 means
-ready, 1 means not ready, and 2 means CLI usage error. It never mutates state.
-Require its embedded `heimdall.daemon.health/v2` document to be ready and to
-publish a positive `relay_port`, and require it to match the configured decrypt
-mode; runtime capture additionally requires a positive attached-image count.
-Read `config.capture` and `config.decrypt` for normalized modes and limits;
-read both capture and decrypt capabilities before consuming a file. Branch on
-the open record's `payload`: `opaque_transport` is not decrypted, while
-`tls_plaintext` is.
+`agent` is the primary `heimdall.agent/v5` machine contract. Exit 0 means
+ready, 1 means not ready, and 2 is CLI usage error. It never mutates state.
+Branch on `execution.daemon_required` before daemon health: an unreachable
+daemon is expected for the foreground `off` and `relay` paths, but blocks the
+compatibility `runtime` path.
 
-For an explicitly approved relay-decryption setup, generate trust material without shell
-evaluation:
+`config show` prints source text. `config validate` applies the shared strict
+schema. `config explain` evaluates one destination and returns the first rule
+plus structured action; use `--network udp` and either `--domain` or `--ip` as
+appropriate.
+
+## Run through a policy
 
 ```bash
-heimdall tls init-ca --dir /var/lib/heimdall/tls --json
+heimdall agent --policy default
+heimdall run --policy default -- curl https://example.com
 ```
 
-Trust only the reported public `ca_cert` in the wrapped client. Keep the
-reported `ca_key` daemon-only and mode `0600`.
+The command may re-enter through `systemd-run --user --scope`. The resolved
+global config path and exact argv survive re-entry. A short-lived authorized
+setup worker attaches one transient cgroup and exits before the child starts.
+The foreground process owns relay/DNS listeners, maps, links, and logs until
+the complete descendant tree exits.
 
-`config show` prints source text, not a normalized form. `config validate`
-decodes the selected syntax, rejects unknown
-fields and types, then runs semantic validation.
+For two independent runs, execute them normally in parallel; do not share a
+manual daemon or relay. Verify `capabilities.lifecycle.concurrent_runs_isolated`
+before depending on this boundary.
 
-`config explain` evaluates one TCP or UDP destination against the selected
-policy and returns the first matching rule plus its structured action. TCP is
-the default; add `--network udp` for UDP. Use `--ip` instead of `--domain` for
-IP/CIDR rules; omit both to test port-only and final actions.
+## Inspect JSONL with Linux tools
 
-## Run through a proxy
+Discover the path first:
 
 ```bash
-heimdall agent
-heimdall run -- curl https://example.com
-heimdall agent --policy corp
-heimdall run --policy corp -- curl https://internal.example.com
+run_dir="$(heimdall logs path --run "$run_id" --json | jq -er '.run_dir')"
 ```
 
-The selected policy owns DNS, ordered rules, and final TCP/UDP actions. The
-wrapped process may be re-executed through `systemd-run --user --scope` to
-obtain an isolated cgroup. Its original argv is preserved without shell or
-systemd environment expansion. Heimdall returns the immediate child's status
-but retains the policy until every descendant leaves the cgroup.
+Then query append-only segments directly:
 
-Inspect `agent.capabilities.udp` before wrapping a UDP command. Connected,
-bidirectional multi-response traffic reuses one association per socket.
-IPv4 connectionless traffic and concurrent same-source-port sockets are
-supported. The aggregate booleans remain false because those IPv6 cases are
-unsupported, so branch on `connectionless_ipv4`/`connectionless_ipv6` and the
-matching `concurrent_shared_source_port_*` fields. One-peer IPv6 and
-IPv4-mapped dual-stack clients have separate positive fields. Do not exceed
-`max_socks5_payload_bytes`; `quic_ipv4` and `quic_ipv6` authorize single-path
-HTTP/3 on either family. Require `quic_address_family_migration` for workflows
-that migrate an existing QUIC connection across families.
+```bash
+jq -c 'select(.kind == "policy.decision")' "$run_dir"/events-*.jsonl
+jq -r 'select(.kind == "flow.close") |
+  [.flow_id, .data.status, .data.client_to_remote_bytes,
+   .data.remote_to_client_bytes] | @tsv' "$run_dir"/events-*.jsonl
+rg '"kind":"run.error"|"kind":"tls.error"' "$run_dir"
+wc -l "$run_dir"/events-*.jsonl
+heimdall logs verify --run "$run_id" --json
+```
 
-Inspect `capabilities.runtime_acceptance` before asserting that a language
-runtime is covered. Membership is path-specific (`tcp_fake_dns`, `udp_ipv4`,
-or `udp_ipv6`). Absence means no committed VM evidence for that path, not a
-configuration error and not proof of incompatibility.
+For a live stream across writer-owned rotation:
 
-Inspect `capabilities.cli_acceptance` for evidence about concrete command
-protocols such as Git. Inspect `capabilities.lifecycle` before depending on
-exit/signal propagation or failure boundaries. An unavailable daemon prevents
-the wrapped command from starting and an unreachable selected upstream fails
-instead of falling back to direct egress.
-`daemon_restart_enforcement_continuity` means pinned eBPF state keeps active
-cgroups intercepted and fail-closed while the daemon is unavailable.
-`daemon_restart_policy_recovery` and `daemon_restart_fake_dns_recovery` mean
-their userspace state recovers after the new daemon is ready. Existing
-connections are not preserved; reject workflows that require them while
-`daemon_restart_continuity` or `daemon_restart_existing_connections` is false.
-Pinned program upgrades are transactional when
-`transactional_program_upgrade` is true. Never guess around a
-`pinned_state_schema` mismatch.
+```bash
+heimdall logs tail --run "$run_id" --follow --jsonl |
+  jq --unbuffered -c 'select(.kind == "run.error" or .kind == "flow.close")'
+```
 
-## Clean up persistent eBPF state
+Do not rename, truncate, or `copytruncate` active segments.
 
-Only for an explicitly requested uninstall or schema repair:
+## Relay TLS
+
+Only with authority to install local trust:
+
+```bash
+install -d -m 0700 "$HOME/.local/state/heimdall/tls"
+heimdall tls init-ca --dir "$HOME/.local/state/heimdall/tls" --json
+```
+
+Trust only the reported `ca_cert`. Keep `ca_key` private, mode 0600, and owned
+by the same user that runs Heimdall. No daemon is required for relay TLS.
+
+## Runtime TLS compatibility
+
+Only when `execution.daemon_required` is true:
+
+```bash
+sudo systemctl start heimdall
+heimdall agent | jq -e '
+  .ready and .execution.daemon_required and
+  .daemon.health.contract == "heimdall.daemon.health/v2" and
+  .daemon.health.runtime.attached_images > 0'
+```
+
+Runtime mode currently discovers loaded OpenSSL images at daemon startup.
+Restart after introducing a new `libssl` image. Do not infer coverage for Go
+TLS, rustls, BoringSSL, JVM TLS, or static/stripped implementations.
+
+## Rotate and retain
+
+```bash
+heimdall logs rotate --run "$run_id" --json
+heimdall logs prune --older-than 30d --keep-last 20 --json
+heimdall logs prune --older-than 30d --keep-last 20 --apply --json
+```
+
+Rotation never deletes. Preview prune before `--apply`, and never prune an
+active run.
+
+## Diagnose failures
+
+1. Preserve `heimdall agent` JSON even when it exits 1.
+2. Execute `actions.validate` as argv, not shell text.
+3. Preview the same policy and destination with `config explain`.
+4. If foreground setup fails, verify the exact sudoers binary path and
+   `heimdall __setup-worker` authorization.
+5. If and only if runtime mode requires the daemon, inspect:
+
+   ```bash
+   heimdall status --json
+   journalctl -u heimdall --since "10 min ago" --no-pager
+   ```
+
+6. Reproduce with the smallest command that uses the same protocol and policy.
+
+Do not equate config validity with connectivity. A real acceptance check must
+exercise `heimdall run`.
+
+## Clean up compatibility state
+
+Only for an explicitly requested uninstall or persistent schema repair:
 
 ```bash
 sudo systemctl stop heimdall
 sudo heimdall ebpf cleanup --json
 ```
 
-Parse the single `heimdall.ebpf.cleanup/v1` result. Exit 1 with
-`daemon_active` or `active_workloads` means no state was removed and the agent
-must stop. Do not manually unlink pins or add a force path.
-
-## Diagnose failures
-
-1. Run `heimdall agent` and preserve its JSON even when it exits 1.
-2. Follow its `actions.validate` or `actions.status` argv array.
-3. If the daemon is unavailable, inspect recent logs:
-
-   ```bash
-   journalctl -u heimdall --since "10 min ago" --no-pager
-   ```
-
-4. Preview a destination with `heimdall config explain --policy NAME ... --json`.
-5. Preview daemon readiness with `heimdall agent --policy NAME`.
-6. Reproduce with a small command such as `curl`, preserving the same policy.
-
-Do not equate config validity with connectivity. A real acceptance check must
-exercise the selected policy through `heimdall run`.
+Exit 1 with `daemon_active` or `active_workloads` means no state was removed.
+Do not manually unlink pins or add a force path. Foreground runs create no
+persistent bpffs state and do not need this command.

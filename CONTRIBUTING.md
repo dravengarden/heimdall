@@ -25,7 +25,7 @@ nix develop
 
 ## Building
 
-eBPF must be built **before** the userspace daemon — `heimdall/src/main.rs`
+eBPF must be built **before** the userspace binary — `heimdall/src/main.rs`
 embeds the eBPF object via `include_bytes!`.
 
 ```bash

@@ -1,7 +1,7 @@
 # Agent-first event log design
 
-Status: Phase 1 implemented for run lifecycle and TCP/UDP flow metadata. Payload
-blobs, TLS/HTTP events, and full daemonless ownership remain in progress.
+Status: Phase 1 implemented for daemonless run lifecycle and TCP/UDP flow
+metadata. Payload blobs and TLS/HTTP events remain in progress.
 
 This document defines the storage and CLI contract that replaces per-flow
 `heimdall.capture/v1` files. The goals are direct Linux-tool usability, strict
@@ -135,11 +135,11 @@ optional fields cannot reinterpret an existing kind.
   truncation state, and optional blob reference.
 - `flow.close`: byte counters, duration, status, and error code when present.
 
-During Phase 1 deregistration, the daemon first prevents new flows for the run,
-closes its UDP sessions, and drains every tracked TCP/UDP flow through
-`flow.close`. Only then may `heimdall run` append `run.close` and finalize the
-manifest. The drain is bounded to five seconds; a timeout is an explicit
-deregistration error rather than silent evidence loss.
+During Phase 1 shutdown, the foreground owner first prevents new flows, closes
+its UDP sessions, and waits up to two seconds for tracked event flows to drain
+through `flow.close`. Only then does `heimdall run` append `run.close` and
+finalize the manifest. A timeout is recorded as incomplete drain evidence,
+never silently treated as complete.
 
 `flow.data.data.boundary` is one of:
 

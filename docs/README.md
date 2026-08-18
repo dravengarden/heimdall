@@ -1,8 +1,8 @@
 # Documentation
 
 - [../ROADMAP.md](../ROADMAP.md) — project status, active development, and non-goals
-- [architecture.md](architecture.md) — CLI/daemon boundary and data path
-- [design/daemonless-runtime.md](design/daemonless-runtime.md) — accepted foreground per-run replacement for the persistent daemon
+- [architecture.md](architecture.md) — foreground CLI/setup-worker boundary and data path
+- [design/daemonless-runtime.md](design/daemonless-runtime.md) — implemented foreground per-run path and remaining runtime-TLS compatibility boundary
 - [design/agent-event-log.md](design/agent-event-log.md) — Phase 1 JSONL events, run manifests, rotation, retention, and agent CLI, with payload blobs planned
 - [config.md](config.md) — the strict TOML/YAML/JSON configuration
 - [runbook.md](runbook.md) — build, agent JSON contract, health, and troubleshooting

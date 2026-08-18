@@ -1,6 +1,6 @@
 # Event and run schemas
 
-Phase 1 of the daemonless event-store contract is available. It records run
+The daemonless Phase 1 event-store contract is available. It records run
 lifecycle and TCP/UDP flow metadata in `heimdall.event/v1`; payload blobs, TLS
 metadata, and derived HTTP records remain planned. Inspect
 `agent.capabilities.logs` and use the current `heimdall.capture/v1` workflow in
@@ -82,7 +82,7 @@ producer version mismatch.
 | Kind | Required `data` fields |
 | --- | --- |
 | `run.open` | `policy` string, `backend` string, `capture` object, `schemas` object |
-| `run.ready` | `listeners` object, `boundaries` string array |
+| `run.ready` | `listeners` object with `owner` and nullable `control`, `boundaries` string array |
 | `run.exec` | `child_pid` unsigned integer, `executable` string, `argv_count` unsigned integer |
 | `run.warning` | `code` string, `message` string, `phase` string, `context` object |
 | `run.error` | `code` string, `message` string, `phase` string, `retryable` boolean, `context` object |
@@ -105,9 +105,9 @@ Destination identity uses exactly one of `host` or `ip`, plus `port`; agents
 must not infer a hostname from SNI when the destination is an IP. An action has
 `type` equal to `route`, `direct`, or `reject`; only `route` has an `outbound`.
 
-For a closed Phase 1 run, successful deregistration drains all tracked flows
-before `run.close`. Treat a missing `flow.close`, a deregistration error, or a
-failed `logs verify` result as incomplete evidence.
+For a closed Phase 1 run, foreground shutdown drains tracked flows before
+`run.close`. Treat a missing `flow.close`, a shutdown error, or a failed
+`logs verify` result as incomplete evidence.
 
 ### Flow data
 

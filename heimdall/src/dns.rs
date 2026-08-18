@@ -117,6 +117,12 @@ pub struct DnsServer {
     port: u16,
 }
 
+impl DnsServer {
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+}
+
 impl DnsResolver {
     /// `fake_cidr` is the IPv4 CIDR; `fake6_cidr` is the optional IPv6
     /// CIDR for AAAA synthesis (pass empty string to disable IPv6).
@@ -411,22 +417,23 @@ impl DnsResolver {
         let udp4 = UdpSocket::bind((Ipv4Addr::LOCALHOST, port))
             .await
             .with_context(|| format!("bind IPv4 DNS UDP on port {port}"))?;
-        let udp6 = UdpSocket::bind((Ipv6Addr::LOCALHOST, port))
+        let selected_port = udp4.local_addr()?.port();
+        let udp6 = UdpSocket::bind((Ipv6Addr::LOCALHOST, selected_port))
             .await
-            .with_context(|| format!("bind IPv6 DNS UDP on port {port}"))?;
-        let tcp4 = TcpListener::bind((Ipv4Addr::LOCALHOST, port))
+            .with_context(|| format!("bind IPv6 DNS UDP on port {selected_port}"))?;
+        let tcp4 = TcpListener::bind((Ipv4Addr::LOCALHOST, selected_port))
             .await
-            .with_context(|| format!("bind IPv4 DNS TCP on port {port}"))?;
-        let tcp6 = TcpListener::bind((Ipv6Addr::LOCALHOST, port))
+            .with_context(|| format!("bind IPv4 DNS TCP on port {selected_port}"))?;
+        let tcp6 = TcpListener::bind((Ipv6Addr::LOCALHOST, selected_port))
             .await
-            .with_context(|| format!("bind IPv6 DNS TCP on port {port}"))?;
+            .with_context(|| format!("bind IPv6 DNS TCP on port {selected_port}"))?;
         Ok(DnsServer {
             resolver: self,
             udp4: Arc::new(udp4),
             udp6: Arc::new(udp6),
             tcp4,
             tcp6,
-            port,
+            port: selected_port,
         })
     }
 
@@ -647,6 +654,19 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn bind_zero_selects_one_port_for_every_transport() {
+        let resolver = Arc::new(DnsResolver::new("198.19.0.0/16", "").unwrap());
+        let server = resolver.bind(0).await.unwrap();
+        let port = server.port();
+
+        assert_ne!(port, 0);
+        assert_eq!(server.udp4.local_addr().unwrap().port(), port);
+        assert_eq!(server.udp6.local_addr().unwrap().port(), port);
+        assert_eq!(server.tcp4.local_addr().unwrap().port(), port);
+        assert_eq!(server.tcp6.local_addr().unwrap().port(), port);
     }
 
     #[tokio::test]

@@ -132,6 +132,18 @@ in
     linger = true;
   };
 
+  security.sudo.extraRules = [
+    {
+      users = [ "tester" ];
+      commands = [
+        {
+          command = "${heimdallPackage}/bin/heimdall __setup-worker";
+          options = [ "NOPASSWD" ];
+        }
+      ];
+    }
+  ];
+
   environment.systemPackages = [
     heimdallPackage
     pkgs.curl

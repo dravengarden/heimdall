@@ -1,12 +1,13 @@
 ---
 name: heimdall
-description: Operate and configure the Heimdall proxychains-style CLI wrapper. Use when an agent needs to run a command through a named egress policy, create or strictly repair Heimdall TOML/YAML/JSON configuration, inspect daemon health, diagnose command-scoped SOCKS5 routing or fake/system DNS, or work with heimdall.service and /etc/heimdall/config.*.
+description: Operate and configure the Heimdall command-scoped TCP/UDP proxy and TLS inspection wrapper. Use when an agent needs to run one command through a named policy, repair strict TOML/YAML/JSON config, query Heimdall JSONL evidence, diagnose foreground eBPF setup, or operate the explicit runtime-TLS compatibility daemon.
 ---
 
 # Heimdall
 
-Treat Heimdall as a command wrapper, not a host-wide traffic router. It affects
-only cgroups registered by `heimdall run`.
+Treat Heimdall as a command wrapper, not a host-wide router. A normal run
+attaches eBPF only to its transient command cgroup and owns its relay, DNS,
+maps, links, and logs in the foreground.
 
 ## Start with the machine contract
 
@@ -16,48 +17,55 @@ Run:
 heimdall agent
 ```
 
-Parse the single `heimdall.agent/v4` JSON object. Exit 0 means ready, exit 1
+Parse the single `heimdall.agent/v5` JSON object. Exit 0 means ready, exit 1
 means the document explains why, and exit 2 is invalid CLI usage. Read stable
 error `code` values before messages. Execute `actions` as argv arrays; never
 join or evaluate them as shell text.
 
-Require `daemon.health.contract` to be `heimdall.daemon.health/v2`,
-`daemon.health.ready` to be true, `daemon.health.relay_port` to be positive,
-and `daemon.health.decrypt_mode` to match `config.decrypt.mode`. Treat
-`daemon_unreachable`, `daemon_contract_mismatch`,
-`daemon_not_ready`, and `daemon_config_mismatch` as hard stops before executing
-a wrapped command.
+Use `execution` before interpreting daemon health:
+
+- For `backend = linux-ebpf-foreground`, require
+  `daemon_required = false`, `owner = heimdall-run`, and
+  `privilege_setup = short-lived-sudo-worker`. A missing compatibility daemon
+  is expected and is not a blocker.
+- For `backend = linux-ebpf-compatibility-daemon`, require
+  `daemon_required = true`, a ready `heimdall.daemon.health/v2` document, a
+  positive relay port, matching decrypt mode, and—for runtime TLS—a positive
+  attached-image count.
+- `web_ui_required` must remain false for every executable path.
 
 Use `heimdall help -v` only when deeper command discovery is needed.
 
-The daemonless redesign and agent-first JSONL contracts are documented in
-[references/events.md](references/events.md). Phase 1 `heimdall logs` commands
-are available for run lifecycle and TCP/UDP metadata. Inspect
-`capabilities.logs.flow_events` before expecting UDP, payload, TLS, or derived
-HTTP records; continue using current capture files for unsupported evidence.
+## Select evidence boundaries
+
+Read [references/events.md](references/events.md) before consuming run logs.
+Phase 1 `heimdall.event/v1` records lifecycle and TCP/UDP metadata in
+user-owned JSONL. Use `heimdall logs schema`, `list`, `path`, `query`, `tail`,
+`rotate`, and `verify`; standard `jq`, `rg`, `sed`, `sort`, and `wc` are valid
+consumers. Do not require or start a Web UI.
 
 If capture is requested, inspect `config.capture`, `config.decrypt`,
 `capabilities.capture`, and `capabilities.decrypt`. Require capture `mode: on`
-and a suitable byte limit before either decrypt mode. Read each capture open
-record's `payload`; only `tls_plaintext` is decrypted.
+and a suitable byte limit before either decrypt mode. Only an explicit
+`tls_plaintext.*` boundary is plaintext evidence; never infer it from port,
+SNI, process, or byte shape.
 
-Choose `runtime` only when `runtime_libraries` contains the client's TLS
-implementation and account for `runtime_discovery`; a newly
-introduced OpenSSL image requires a daemon restart before wrapping the command.
-Also require `daemon.health.runtime.attached_images` to be greater than
-zero and use `runtime_apis` plus `runtime_max_bytes_per_event` as the
-capture boundary. It changes no trust and supports pinning/mTLS, but absence
-from the library or API arrays means no plaintext guarantee. Choose `relay`
-for TLS-library-independent capture only with explicit authority to install local trust. If
-`ca_material_ready` is false, execute `actions.tls_ca_init` as an argv array,
-then trust its public `ca_cert`; never expose or copy `ca_key`. Do not select
-relay mode for certificate-pinned or client-certificate mTLS traffic.
+Choose `relay` only with authority to install local trust. Require
+`ca_material_ready`, trust only the public `ca_cert`, keep `ca_key` mode 0600
+and readable only by the invoking user, and reject pinned or client-certificate
+mTLS workflows.
+
+Choose `runtime` only when the client uses a reported OpenSSL API. It currently
+requires the explicit compatibility daemon; require positive runtime attachment
+health and restart that daemon after introducing a new `libssl` image. It
+changes no trust and can coexist with pinning/mTLS, but absence from the library
+or API arrays means there is no plaintext guarantee.
 
 ## Validate and repair configuration
 
 Read [references/config.md](references/config.md) before creating or changing a
 config. Keep exactly one discovered
-`/etc/heimdall/config.{toml,yaml,yml,json}` file unless `--config` is
+`/etc/heimdall/config.{toml,yaml,yml,json}` unless global `--config` is
 explicit.
 
 After every edit, run:
@@ -66,14 +74,12 @@ After every edit, run:
 heimdall config validate --json
 ```
 
-If validation fails, process every `diagnostics` entry. Use `code` for control
-flow, `path` to locate the field, and `hint` as the repair constraint. Repeat
-until `valid` is true. An `outbound_network_mismatch` must be repaired by
-enabling the required protocol on that outbound or selecting a capable
-outbound; never silently change `route` to `direct`. Never put a password value
-in config; use an absolute `password_file`.
+Process every diagnostic using `code` for control flow, `path` to locate the
+field, and `hint` as the repair constraint. Repeat until `valid` is true. Never
+silently replace `route` with `direct`, and never put a password value in the
+config; use an absolute `password_file`.
 
-Then run:
+Preview ordered policy decisions before execution:
 
 ```bash
 heimdall config explain --policy <policy> --domain example.com --port 443 --json
@@ -81,64 +87,60 @@ heimdall config explain --policy <policy> --network udp --domain example.com --p
 heimdall agent --policy <policy>
 ```
 
-Use `config explain` to verify ordered rule selection before execution. Do not
-treat configuration validity or an explained decision as daemon or network
-acceptance.
+Config validity is not connectivity evidence.
 
-Before choosing a UDP workload, inspect `capabilities.udp` in the agent report.
-Bidirectional, multi-response sessions are supported for connected sockets.
-IPv4 also supports connectionless multi-target traffic and concurrent sockets
-sharing one source port. The aggregate booleans stay false because IPv6 does
-not support those cases; inspect the `*_ipv4` and `*_ipv6` fields rather than
-guessing. `connectionless_ipv6_single_peer` permits one peer per IPv6 socket,
-and `ipv4_mapped_ipv6_socket` covers dual-stack clients targeting IPv4. Respect
-`max_socks5_payload_bytes`. `quic_ipv4` and `quic_ipv6` permit single-path
-HTTP/3 on either family; do not infer address-family migration while
-`quic_address_family_migration` is false.
+## Check protocol evidence
 
-Before claiming compatibility for a language runtime, inspect
-`capabilities.runtime_acceptance`. Treat each array as protocol-specific VM
-evidence, not as a general allowlist. An absent runtime means unverified and
-should trigger a bounded probe with the actual command when compatibility is
-required.
+Before choosing UDP, inspect `capabilities.udp`. IPv4 supports connectionless
+multi-target traffic and concurrent sockets sharing one source port. IPv6
+supports connected traffic and one peer per connectionless socket, including
+IPv4-mapped destinations, but not multi-target or duplicate explicitly bound
+ports. Branch on family-specific fields. Respect
+`max_socks5_payload_bytes`; `quic_ipv4` and `quic_ipv6` cover single-family
+paths only while `quic_address_family_migration` is false.
 
-Inspect `capabilities.cli_acceptance` for protocol-specific CLI evidence and
-`capabilities.lifecycle` before executing a long-lived or failure-sensitive
-workflow. Descendants remain inside the command policy after their immediate
-parent exits. Do not add environment proxy variables or a direct fallback for
-them. `daemon_restart_enforcement_continuity` means registered traffic remains
-intercepted and fails closed while a restarted daemon is unavailable. Refuse a
-workflow that requires existing connections to survive while
-`daemon_restart_continuity` or `daemon_restart_existing_connections` is false.
-Policy and fake-DNS recovery fields mean the userspace decision is restored
-after daemon readiness.
-`pinned_state_schema` must match the installed binary.
-`transactional_program_upgrade` means a partial link replacement is rolled
-back before startup fails.
+Inspect `capabilities.runtime_acceptance` and `cli_acceptance` before claiming
+tested compatibility. Membership is path-specific VM evidence, not a general
+allowlist. An absent runtime is unverified and should trigger a bounded probe
+with the actual command when compatibility matters.
 
-## Run a command
+Require lifecycle fields appropriate to the workflow:
+
+- `foreground_modes` contains the selected non-runtime mode;
+- `foreground_owned_resources`, `resources_close_when_run_exits`, and
+  `setup_worker_short_lived` are true;
+- `concurrent_runs_isolated` is true when running independent policies in
+  parallel;
+- `descendant_cgroup_lifetime` and `upstream_unreachable_fail_closed` are true
+  for long-lived or failure-sensitive commands.
+
+## Run and inspect
 
 ```bash
 heimdall run --policy <policy> -- curl https://example.com
+heimdall logs list --json
+heimdall logs query --run RUN_ID --kind flow.close --jsonl
+heimdall logs verify --run RUN_ID --json
 ```
 
-Omit `--policy` to use `proxy.default_policy`. DNS belongs to the policy and is
-not a per-run override. Keep the wrapped command after `--`. Read
-[references/commands.md](references/commands.md) for runtime diagnostics.
+Omit `--policy` to use `proxy.default_policy`. Keep argv after `--`. Heimdall
+may re-enter through `systemd-run --user --scope`; the resolved global config
+path and argv are preserved. It returns the immediate child's status but keeps
+interception alive until every descendant leaves the cgroup.
 
-## Preserve the ownership boundary
+Read [references/commands.md](references/commands.md) for diagnosis and
+[references/events.md](references/events.md) for direct Linux-tool recipes.
+
+## Preserve ownership boundaries
 
 - Do not change host routing, firewall, DNS, or proxy state merely to use
   Heimdall.
-- Do not start the privileged daemon when the user asked only for config review.
-- For runtime failures, collect `heimdall agent`, `heimdall status --json`, and
-  recent `heimdall.service` logs before changing state.
-- Do not claim runtime TLS coverage beyond
-  `capabilities.decrypt.runtime_libraries` and `runtime_apis`.
-- Do not enable capture without explicit retention intent; its root-only files
-  can contain credentials and other application data. Heimdall does not rotate
-  them.
-- Never delete `/sys/fs/bpf/heimdall` manually. For an explicitly requested
-  uninstall or incompatible-schema repair, stop the service, prove all wrapped
-  workloads exited, then run `heimdall ebpf cleanup --json`. Treat
-  `daemon_active` and `active_workloads` as hard stops; never work around them.
+- Do not start the compatibility daemon unless `execution.daemon_required` is
+  true or the user explicitly requests persistent-state maintenance.
+- Do not install file capabilities or setuid on the full CLI. Authorize only
+  the exact `heimdall __setup-worker` command.
+- Do not upload or print capture bytes without explicit authority; they can
+  contain credentials and personal data.
+- Never delete `/sys/fs/bpf/heimdall` manually. Persistent cleanup belongs only
+  to the compatibility path and must use `heimdall ebpf cleanup --json` after
+  the service is stopped and workloads are empty.

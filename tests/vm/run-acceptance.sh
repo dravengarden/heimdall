@@ -16,7 +16,7 @@ as_tester() {
     HOME=/home/tester \
     XDG_RUNTIME_DIR=/run/user/1000 \
     DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
-    PATH=/run/current-system/sw/bin \
+    PATH=/run/wrappers/bin:/run/current-system/sw/bin \
     "$@"
 }
 
@@ -70,8 +70,13 @@ capture_contains() {
 as_tester heimdall config validate --json \
   | jq -e '.contract == "heimdall.config.validate/v2" and .valid'
 as_tester heimdall agent \
-  | jq -e '.contract == "heimdall.agent/v4"
+  | jq -e '.contract == "heimdall.agent/v5"
     and .ready
+    and .execution.backend == "linux-ebpf-foreground"
+    and .execution.owner == "heimdall-run"
+    and .execution.privilege_setup == "short-lived-sudo-worker"
+    and (.execution.daemon_required | not)
+    and (.execution.web_ui_required | not)
     and .config.capture.mode == "on"
     and .config.capture.directory == "/run/heimdall-test/captures"
     and .config.capture.max_bytes_per_flow == 128
@@ -128,15 +133,13 @@ as_tester heimdall agent \
     and .actions.logs_list == ["heimdall", "logs", "list", "--json"]
     and .capabilities.lifecycle.signal_exit_code == "128+signal"
     and .capabilities.lifecycle.upstream_unreachable_fail_closed
-    and .capabilities.lifecycle.daemon_unreachable_prevents_exec
-    and (.capabilities.lifecycle.daemon_restart_continuity | not)
-    and .capabilities.lifecycle.daemon_restart_enforcement_continuity
-    and .capabilities.lifecycle.daemon_restart_policy_recovery
-    and .capabilities.lifecycle.daemon_restart_fake_dns_recovery
-    and (.capabilities.lifecycle.daemon_restart_existing_connections | not)
-    and .capabilities.lifecycle.pinned_state_schema == 1
-    and .capabilities.lifecycle.transactional_program_upgrade
-    and .capabilities.lifecycle.cleanup_requires_no_active_workloads'
+    and .capabilities.lifecycle.foreground_modes == ["off", "relay"]
+    and .capabilities.lifecycle.runtime_mode_requires_daemon
+    and .capabilities.lifecycle.foreground_owned_resources
+    and .capabilities.lifecycle.resources_close_when_run_exits
+    and .capabilities.lifecycle.setup_worker_short_lived
+    and .capabilities.lifecycle.web_ui_optional
+    and .capabilities.lifecycle.concurrent_runs_isolated'
 as_tester heimdall status --json \
   | jq -e '.daemon_reachable
     and .daemon_ready
@@ -151,6 +154,23 @@ set -e
 test "$cleanup_status" -eq 1
 printf '%s' "$cleanup_report" \
   | jq -e '.contract == "heimdall.ebpf.cleanup/v1" and (.cleaned | not) and .code == "daemon_active"'
+
+# Ordinary proxying owns its complete data plane in the foreground. Stop the
+# compatibility daemon and remove its pinned generation before exercising it.
+systemctl stop heimdall.service
+heimdall ebpf cleanup --json \
+  | jq -e '.contract == "heimdall.ebpf.cleanup/v1" and .cleaned'
+foreground_link_baseline="$(bpftool -j link show | jq 'length')"
+chown tester /run/heimdall-test/captures
+as_tester heimdall agent \
+  | jq -e '.ready
+    and (.daemon.reachable | not)
+    and .execution.backend == "linux-ebpf-foreground"
+    and (.execution.daemon_required | not)'
+rm -f /tmp/heimdall-daemonless-smoke
+as_tester heimdall run --policy direct -- \
+  sh -c 'touch /tmp/heimdall-daemonless-smoke'
+test -e /tmp/heimdall-daemonless-smoke
 
 CGO_ENABLED=0 go build -tags netgo -trimpath \
   -o /run/heimdall-test/runtime-go /etc/heimdall-test/runtime_client.go
@@ -370,86 +390,45 @@ test "$(grep -c '"atyp": 4' /run/heimdall-test/socks.log)" -eq 100
 test "$(as_tester curl -4fsS --max-time 5 http://127.0.0.1:18080/)" = "fixture-v4"
 test ! -s /run/heimdall-test/socks.log
 
-rm -f /tmp/heimdall-restart-ready /tmp/heimdall-restart-stop-go \
-  /tmp/heimdall-restart-stop-done /tmp/heimdall-restart-start-go \
-  /tmp/heimdall-restart-blocked /tmp/heimdall-restart-bypass \
-  /tmp/heimdall-restart.out
-as_tester heimdall run --policy fake -- sh -c \
-  'getent ahostsv4 fixture.test >/dev/null; touch /tmp/heimdall-restart-ready; while test ! -e /tmp/heimdall-restart-stop-go; do sleep 0.02; done; if curl -4fsS --max-time 2 http://192.0.2.1:18080/ >/dev/null; then touch /tmp/heimdall-restart-bypass; else touch /tmp/heimdall-restart-blocked; fi; touch /tmp/heimdall-restart-stop-done; while test ! -e /tmp/heimdall-restart-start-go; do sleep 0.02; done; curl -4fsS --max-time 5 http://fixture.test:18080/ > /tmp/heimdall-restart.out' &
-restart_run_pid=$!
-for _ in $(seq 1 250); do
-  test -e /tmp/heimdall-restart-ready && break
-  sleep 0.02
-done
-test -e /tmp/heimdall-restart-ready
-test "$(find /run/heimdall/registrations -type f -name '*.json' | wc -l)" -eq 1
-test "$(find /sys/fs/bpf/heimdall/links -type f | wc -l)" -ge 10
-systemctl stop heimdall.service
-test "$(find /sys/fs/bpf/heimdall/links -type f | wc -l)" -ge 10
-set +e
-cleanup_report="$(heimdall ebpf cleanup --json)"
-cleanup_status=$?
-set -e
-test "$cleanup_status" -eq 1
-printf '%s' "$cleanup_report" \
-  | jq -e '(.cleaned | not) and .code == "active_workloads" and (.active_cgroups | length) == 1 and (.registrations | length) == 1'
-: > /run/heimdall-test/socks.log
-touch /tmp/heimdall-restart-stop-go
-for _ in $(seq 1 250); do
-  test -e /tmp/heimdall-restart-stop-done && break
-  sleep 0.02
-done
-test -e /tmp/heimdall-restart-stop-done
-test -e /tmp/heimdall-restart-blocked
-test ! -e /tmp/heimdall-restart-bypass
-test ! -s /run/heimdall-test/socks.log
-systemctl start heimdall.service
-systemctl is-active --quiet heimdall.service
-restored_registration=false
+# Two foreground invocations own disjoint listener ports, maps, links, and DNS
+# state while sharing no daemon registration or pinned eBPF generation.
+as_tester heimdall run --policy direct -- sleep 1 &
+parallel_run_one=$!
+as_tester heimdall run --policy direct -- sleep 1 &
+parallel_run_two=$!
+parallel_ready=false
 for _ in $(seq 1 100); do
-  if journalctl -u heimdall.service -n 100 --no-pager \
-    | grep 'restored=1' >/dev/null; then
-    restored_registration=true
+  if test "$(as_tester heimdall logs list --json \
+    | jq '[.runs[] | select(.state == "running" and .policy == "direct")] | length')" -ge 2; then
+    parallel_ready=true
     break
   fi
   sleep 0.02
 done
-test "$restored_registration" = true
-: > /run/heimdall-test/socks.log
-touch /tmp/heimdall-restart-start-go
-for _ in $(seq 1 500); do
-  ! kill -0 "$restart_run_pid" 2>/dev/null && break
+test "$parallel_ready" = true
+test "$(bpftool -j link show | jq 'length')" \
+  -ge "$((foreground_link_baseline + 22))"
+wait "$parallel_run_one"
+wait "$parallel_run_two"
+links_released=false
+for _ in $(seq 1 100); do
+  if test "$(bpftool -j link show | jq 'length')" -eq "$foreground_link_baseline"; then
+    links_released=true
+    break
+  fi
   sleep 0.02
 done
-if kill -0 "$restart_run_pid" 2>/dev/null; then
-  journalctl -u heimdall.service -n 100 --no-pager >&2
-  kill "$restart_run_pid" 2>/dev/null || true
-  wait "$restart_run_pid" 2>/dev/null || true
-  echo "wrapped command did not resume after daemon restart" >&2
-  exit 1
+if test "$links_released" != true; then
+  printf 'foreground BPF links did not return to baseline: baseline=%s actual=%s\n' \
+    "$foreground_link_baseline" "$(bpftool -j link show | jq 'length')" >&2
 fi
-wait "$restart_run_pid"
-test "$(cat /tmp/heimdall-restart.out)" = "fixture-v4"
-grep -q '"host": "fixture.test"' /run/heimdall-test/socks.log
-test "$(find /run/heimdall/registrations -type f -name '*.json' | wc -l)" -eq 0
+test "$links_released" = true
 
-systemctl stop heimdall.service
-set +e
-daemon_report="$(as_tester heimdall agent)"
-agent_status=$?
-set -e
-test "$agent_status" -eq 1
-printf '%s' "$daemon_report" | jq -e '.ready == false and .daemon.reachable == false'
-rm -f /tmp/heimdall-unregistered-command
-if as_tester heimdall run --policy direct -- \
-  sh -c 'touch /tmp/heimdall-unregistered-command'; then
-  echo "command executed without daemon registration" >&2
-  exit 1
-fi
-test ! -e /tmp/heimdall-unregistered-command
+# Persistent-map upgrade coverage remains scoped to the compatibility daemon.
 systemctl start heimdall.service
 systemctl is-active --quiet heimdall.service
-as_tester heimdall agent | jq -e '.ready and .daemon.reachable'
+as_tester heimdall agent \
+  | jq -e '.ready and .daemon.reachable and (.execution.daemon_required | not)'
 
 # A future map-layout schema must fail before any pinned program replacement.
 systemctl stop heimdall.service
@@ -562,17 +541,20 @@ capture_contains runtime 'GET / HTTP'
 stop_manual_daemon
 
 rm -f /run/heimdall-test/captures/*.jsonl
-heimdall tls init-ca --dir /run/heimdall-test/relay --json \
+install -d -o tester -g users -m 0700 /run/heimdall-test/relay
+as_tester heimdall tls init-ca --dir /run/heimdall-test/relay --json \
   | jq -e '.contract == "heimdall.tls-ca/v2" and .config.mode == "relay"'
-start_manual_daemon /etc/heimdall-test/relay.toml \
-  /run/heimdall-test/relay-daemon.log
 as_tester heimdall --config /etc/heimdall-test/relay.toml agent \
-  | jq -e '.ready and .daemon.health.decrypt_mode == "relay"'
+  | jq -e '.ready
+    and (.daemon.reachable | not)
+    and .execution.backend == "linux-ebpf-foreground"
+    and (.execution.daemon_required | not)
+    and .config.decrypt.mode == "relay"
+    and .config.decrypt.ca_material_ready'
 as_tester heimdall --config /etc/heimdall-test/relay.toml run --policy fake -- \
   curl --cacert /run/heimdall-test/relay/ca.pem -fsS --max-time 5 \
     https://fixture.test:18444/ >/dev/null
 capture_contains route:default 'GET / HTTP'
-stop_manual_daemon
 systemctl start heimdall.service
 systemctl is-active --quiet heimdall.service
 as_tester heimdall agent \

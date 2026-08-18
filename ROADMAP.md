@@ -22,16 +22,20 @@ acceptance path are documented and tested.
   explicit reject actions.
 - Strict TOML, YAML, and JSON configuration with shared validation, stable
   diagnostic codes, JSON paths, and repair hints.
-- `heimdall agent` as a read-only `heimdall.agent/v4` preflight with argv-safe
-  actions and capability evidence.
+- `heimdall agent` as a read-only `heimdall.agent/v5` preflight with argv-safe
+  actions, selected execution ownership, and capability evidence.
+- Daemonless foreground execution for `decrypt.mode = "off"` and `"relay"`:
+  each run owns isolated relay/DNS ports, maps, links, cgroup, event state, and
+  a short-lived privileged setup worker.
 - Phase 1 per-run `heimdall.event/v1` lifecycle and TCP/UDP flow metadata,
   offline schemas, writer-owned rotation, integrity verification, and the
   agent-first `heimdall logs` CLI.
-- Bounded root-only opaque capture under the `heimdall.capture/v1` contract.
-- OpenSSL runtime TLS probes and relay TLS termination under explicit
-  `runtime` and `relay` modes.
-- Recovery of active command policy and fake-DNS state across daemon restarts,
-  with fail-closed behavior while the relay is unavailable.
+- Bounded private, invoking-user-owned capture under the
+  `heimdall.capture/v1` contract.
+- Relay TLS termination in the foreground path, and OpenSSL runtime TLS probes
+  through the explicit compatibility daemon.
+- Persistent-state recovery and transactional upgrades in the compatibility
+  daemon path.
 - A real-eBPF NixOS acceptance VM covering dual-stack TCP/UDP, QUIC, common
   CLI/runtime clients, lifecycle behavior, and both TLS paths.
 
@@ -43,37 +47,27 @@ below and is not part of the available contract yet.
 These are the active engineering tracks. They deliberately improve the core
 proxy and its evidence before adding a larger control plane.
 
-### 1. Daemonless command lifecycle
+### 1. Complete the daemonless TLS migration
 
-The fixed relay-port prerequisite has been removed: the current runtime now
-binds one kernel-assigned IPv4/IPv6 TCP/UDP relay port and writes it into eBPF.
-Relay listeners and fake DNS now share one explicit session drop boundary;
-correlation maps, the policy engine, and links are owned there too. Attach setup
-is target-driven, and process mode creates fresh unpinned maps plus FD-owned
-links. The strict `heimdall.setup/v1` Unix-socket protocol now validates one
-cgroup request and transfers a fixed, close-on-exec map/link FD manifest.
-Parent-side typed map reconstruction and link-FD duplication are implemented.
-The hidden setup worker is implemented and VM-verified: it validates the socket
-peer and cgroup identity, attaches one target, transfers all map/link FDs, and
-exits. `heimdall run` invocation and transient authorization UX are still
-pending.
+The foreground data plane is now the default for `off` and `relay`. It binds
+kernel-assigned per-run relay and DNS ports, creates fresh unpinned maps,
+attaches FD-owned links through `heimdall.setup/v1`, and closes every resource
+when the command tree exits. The real-eBPF VM proves daemon-unreachable
+readiness, concurrent isolated runs, relay TLS, and cleanup back to the
+pre-run link baseline.
 
-- Move relay, DNS, TLS, capture, and process-tree ownership into a foreground
-  session created by `heimdall run`.
-- Replace the shared relay endpoint, global registrations, and persistent bpffs
-  pins with per-run ports, cgroups, maps, links, and a private control socket.
-- Acquire Linux interception privilege through a narrow per-run setup worker;
-  never grant the whole CLI persistent capabilities.
-- Require zero Heimdall processes, listeners, cgroups, links, maps, and sockets
-  after the wrapped process tree exits.
+- Move OpenSSL probe discovery and attachment from daemon startup into the
+  foreground session or a run-scoped attach broker.
+- Remove the compatibility daemon, registration API, persistent journal, and
+  bpffs upgrade path after runtime TLS no longer depends on them.
+- Harden abnormal-parent-exit cleanup and measure the remaining setup-worker
+  authorization UX across supported distributions.
 - Keep any persistent acceleration mode explicit and opt-in; never start it
   implicitly.
-  automatically.
 
-Acceptance target: one installed binary runs proxy-only or TLS-inspected
-commands without enabling a Heimdall service, supports independent concurrent
-runs, preserves exit/signal semantics, and leaves no runtime residue after
-normal exit or crashes. See
+Acceptance target: all three decrypt modes run without enabling a Heimdall
+service, while preserving the already verified independent concurrent runs,
+exit/signal semantics, and normal-exit cleanup. See
 [docs/design/daemonless-runtime.md](docs/design/daemonless-runtime.md).
 
 ### 2. Agent-first event store
@@ -123,7 +117,7 @@ trusted.
 ### 5. Capture analysis workflow
 
 - Make bounded capture easier to inspect without changing its explicit payload
-  boundary or root-only ownership.
+  boundary or strict private ownership.
 - Add deterministic metadata and filtering primitives for agent-assisted flow
   triage.
 - Document retention, redaction, and failure behavior for production-like

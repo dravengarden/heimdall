@@ -16,20 +16,20 @@
 //!      so we land in `app.slice/run-<id>.scope/`.
 //!   3. mkdir a sibling cgroup `<parent>/heimdall-cli-<pid>-<rand>/`.
 //!      Read its inode → cgroup_id (cgroup v2 invariant).
-//!   4. POST `/api/cli/register` to the daemon, which writes both the
-//!      userspace cli_overrides map (relay reads) and the
-//!      CGROUP_POLICY BPF map (kernel-side connect4 reads).
+//!   4. Bind per-run relay and DNS listeners, then invoke a short-lived
+//!      privileged setup worker. The worker attaches eBPF to only this
+//!      cgroup and transfers the map/link FDs back before exiting.
 //!   5. Fork. Child writes its PID to `cgroup.procs` and exec's the
 //!      wrapped command. Parent waits for the child and every descendant
 //!      inherited by the command cgroup.
-//!   6. Once the cgroup is empty, POST `/api/cli/deregister` and rmdir it.
-//!      Forward the immediate child's exit code (or signal) as our own.
+//!   6. Once the cgroup is empty, close the per-run listeners/maps/links and
+//!      rmdir it. Forward the immediate child's exit code (or signal).
 //!
-//! Permission model: completely non-root. Users land under their
-//! systemd user manager's delegated subtree; everything we do is
-//! within their own UID's authority.
+//! Permission model: the session owner and relay are unprivileged. One
+//! short-lived authorized setup worker runs as root only to load/attach eBPF
+//! and transfers owned FDs back before the wrapped command starts.
 
-use std::ffi::CString;
+use std::ffi::{CString, OsString};
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -79,7 +79,6 @@ struct RunDecision {
     dns: String,
 }
 
-/// JSON body for `POST /api/cli/register`.
 #[derive(Debug, Serialize)]
 struct RegisterReq {
     cgroup_id: u64,
@@ -88,7 +87,6 @@ struct RegisterReq {
     event_socket: PathBuf,
 }
 
-/// Response shape — mirrors api::CliOverrideEntry.
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 struct RegisterResp {
@@ -97,7 +95,7 @@ struct RegisterResp {
     run_id: uuid::Uuid,
 }
 
-pub fn run(config_path: &Path, args: RunArgs) -> Result<()> {
+pub async fn run(config_path: &Path, args: RunArgs) -> Result<()> {
     let cfg = HeimdallConfig::load(config_path).map_err(|error| {
         anyhow!(
             "invalid config {}\n\n{}",
@@ -117,10 +115,15 @@ pub fn run(config_path: &Path, args: RunArgs) -> Result<()> {
     // Re-entry: if not under user@<UID>.service, hand off to
     // systemd-run so the next invocation lands in a writable cgroup.
     if !args.no_reentry && !in_user_service_scope()? {
-        return reexec_via_systemd_run(&args);
+        return reexec_via_systemd_run(config_path, &args);
     }
 
-    let event_log = crate::event_log::RunLog::create(&args.command, &decision.policy, "daemon")?;
+    let backend = if cfg.decrypt.mode == heimdall_config::DecryptMode::Runtime {
+        "linux-ebpf-compatibility-daemon"
+    } else {
+        "linux-ebpf-foreground"
+    };
+    let event_log = crate::event_log::RunLog::create(&args.command, &decision.policy, backend)?;
     let rotation_server = crate::event_log::RotationServer::start(event_log.clone())?;
     let outcome = run_registered(
         &cfg,
@@ -128,7 +131,8 @@ pub fn run(config_path: &Path, args: RunArgs) -> Result<()> {
         &args,
         &event_log,
         rotation_server.event_socket_path(),
-    );
+    )
+    .await;
     match outcome {
         Ok((exit_code, descendants_cleaned)) => {
             event_log.finish(exit_code, descendants_cleaned)?;
@@ -143,29 +147,32 @@ pub fn run(config_path: &Path, args: RunArgs) -> Result<()> {
     }
 }
 
-fn run_registered(
+async fn run_registered(
     cfg: &HeimdallConfig,
     decision: &RunDecision,
     args: &RunArgs,
     event_log: &crate::event_log::RunLog,
     event_socket: &Path,
 ) -> Result<(i32, bool)> {
-    let api_addr = api_loopback_addr(&cfg.daemon.api_listen);
+    if cfg.decrypt.mode == heimdall_config::DecryptMode::Runtime {
+        return run_registered_daemon(cfg, decision, args, event_log, event_socket);
+    }
+
     let cgroup_path = create_sibling_cgroup()?;
     let cgroup_id = read_cgroup_id(&cgroup_path).inspect_err(|_| {
         let _ = fs::remove_dir(&cgroup_path);
     })?;
 
-    // Register before fork so the child inherits the policy.
-    register_with_daemon(
-        &api_addr,
+    let session = crate::ForegroundSession::start(
+        cfg,
+        &decision.policy,
+        cgroup_path.clone(),
         cgroup_id,
-        decision,
-        event_log.run_id()?,
-        event_socket,
+        event_socket.to_path_buf(),
+        event_log.run_dir()?.join("fake-dns.json"),
     )
+    .await
     .inspect_err(|_| {
-        // Best-effort cleanup before bailing.
         let _ = fs::remove_dir(&cgroup_path);
     })?;
     let boundaries = match cfg.decrypt.mode {
@@ -175,8 +182,9 @@ fn run_registered(
         }
         heimdall_config::DecryptMode::Relay => vec!["transport", "tls_plaintext.relay"],
     };
-    if let Err(error) = event_log.ready(&api_addr, &boundaries) {
-        cleanup_before_exec(&api_addr, cgroup_id, &cgroup_path, args.keep_cgroup);
+    if let Err(error) = event_log.ready("heimdall-run", None, &boundaries) {
+        session.shutdown().await;
+        cleanup_before_exec(&cgroup_path, args.keep_cgroup);
         return Err(error);
     }
 
@@ -189,7 +197,8 @@ fn run_registered(
         match prepare_dns_shim(cgroup_id) {
             Ok(shim) => Some(shim),
             Err(error) => {
-                cleanup_before_exec(&api_addr, cgroup_id, &cgroup_path, args.keep_cgroup);
+                session.shutdown().await;
+                cleanup_before_exec(&cgroup_path, args.keep_cgroup);
                 return Err(error);
             }
         }
@@ -201,22 +210,22 @@ fn run_registered(
         fork_into_cgroup_and_exec(&cgroup_path, &args.command, dns_shim.as_ref(), event_log);
 
     // A shell or CLI can leave background descendants after its immediate
-    // process exits. Deregistering here would turn those still-running
-    // descendants into unproxied traffic. Keep the policy until cgroup v2
-    // reports that the entire command tree is empty.
+    // process exits. Closing the foreground links here would turn those
+    // still-running descendants into unproxied traffic. Keep the complete
+    // session alive until cgroup v2 reports that the command tree is empty.
     let cgroup_empty = wait_for_cgroup_empty(&cgroup_path).inspect_err(|e| {
-        warn!(error = %e, path = %cgroup_path.display(), "cannot prove command cgroup is empty; retaining registration for daemon GC");
+        warn!(error = %e, path = %cgroup_path.display(), "cannot prove command cgroup is empty before foreground shutdown");
     });
     let descendants_cleaned = cgroup_empty.is_ok();
-    if descendants_cleaned {
-        if let Err(e) = deregister_with_daemon(&api_addr, cgroup_id) {
-            warn!(error = %e, "deregister failed; daemon will GC eventually");
-        }
-        if !args.keep_cgroup
-            && let Err(e) = fs::remove_dir(&cgroup_path)
-        {
-            warn!(error = %e, path = %cgroup_path.display(), "rmdir cgroup failed");
-        }
+    let flows_drained = session.shutdown().await;
+    if !flows_drained {
+        warn!("foreground relay event flows did not drain before shutdown");
+    }
+    if descendants_cleaned
+        && !args.keep_cgroup
+        && let Err(e) = fs::remove_dir(&cgroup_path)
+    {
+        warn!(error = %e, path = %cgroup_path.display(), "rmdir cgroup failed");
     }
     if let Some(shim) = dns_shim {
         // Tmp files are cheap; ignore cleanup errors (parent might have
@@ -228,13 +237,78 @@ fn run_registered(
     Ok((exit_code, descendants_cleaned))
 }
 
-fn cleanup_before_exec(base: &str, cgroup_id: u64, cgroup_path: &Path, keep_cgroup: bool) {
-    if let Err(error) = deregister_with_daemon(base, cgroup_id) {
-        warn!(%error, "cannot deregister failed pre-exec run; daemon GC will retry");
+fn run_registered_daemon(
+    cfg: &HeimdallConfig,
+    decision: &RunDecision,
+    args: &RunArgs,
+    event_log: &crate::event_log::RunLog,
+    event_socket: &Path,
+) -> Result<(i32, bool)> {
+    let api_addr = api_loopback_addr(&cfg.daemon.api_listen);
+    let cgroup_path = create_sibling_cgroup()?;
+    let cgroup_id = read_cgroup_id(&cgroup_path).inspect_err(|_| {
+        let _ = fs::remove_dir(&cgroup_path);
+    })?;
+    register_with_daemon(
+        &api_addr,
+        cgroup_id,
+        decision,
+        event_log.run_id()?,
+        event_socket,
+    )
+    .inspect_err(|_| {
+        let _ = fs::remove_dir(&cgroup_path);
+    })?;
+    if let Err(error) = event_log.ready(
+        "heimdall-daemon",
+        Some(&api_addr),
+        &["transport", "tls_plaintext.runtime"],
+    ) {
+        cleanup_daemon_registration(&api_addr, cgroup_id, &cgroup_path, args.keep_cgroup);
+        return Err(error);
     }
+    let dns_shim = if decision.dns == "fake" {
+        match prepare_dns_shim(cgroup_id) {
+            Ok(shim) => Some(shim),
+            Err(error) => {
+                cleanup_daemon_registration(&api_addr, cgroup_id, &cgroup_path, args.keep_cgroup);
+                return Err(error);
+            }
+        }
+    } else {
+        None
+    };
+    let exit_code =
+        fork_into_cgroup_and_exec(&cgroup_path, &args.command, dns_shim.as_ref(), event_log);
+    let descendants_cleaned = wait_for_cgroup_empty(&cgroup_path).is_ok();
+    if descendants_cleaned {
+        if let Err(error) = deregister_with_daemon(&api_addr, cgroup_id) {
+            warn!(%error, "cannot deregister compatibility-daemon run");
+        }
+        if !args.keep_cgroup
+            && let Err(error) = fs::remove_dir(&cgroup_path)
+        {
+            warn!(%error, path = %cgroup_path.display(), "cannot remove command cgroup");
+        }
+    }
+    if let Some(shim) = dns_shim {
+        let _ = fs::remove_file(&shim.nsswitch);
+        let _ = fs::remove_file(&shim.resolv);
+    }
+    Ok((exit_code, descendants_cleaned))
+}
+
+fn cleanup_before_exec(cgroup_path: &Path, keep_cgroup: bool) {
     if !keep_cgroup && let Err(error) = fs::remove_dir(cgroup_path) {
         warn!(%error, path = %cgroup_path.display(), "cannot remove failed pre-exec cgroup");
     }
+}
+
+fn cleanup_daemon_registration(base: &str, cgroup_id: u64, cgroup_path: &Path, keep_cgroup: bool) {
+    if let Err(error) = deregister_with_daemon(base, cgroup_id) {
+        warn!(%error, "cannot deregister failed compatibility-daemon run");
+    }
+    cleanup_before_exec(cgroup_path, keep_cgroup);
 }
 
 /// Files generated by `prepare_dns_shim` and bind-mounted into the
@@ -336,7 +410,7 @@ fn read_proc_self_cgroup() -> Result<String> {
     Ok(path)
 }
 
-fn reexec_via_systemd_run(args: &RunArgs) -> Result<()> {
+fn reexec_via_systemd_run(config_path: &Path, args: &RunArgs) -> Result<()> {
     let exe = std::env::current_exe().context("current_exe")?;
     let mut cmd = Command::new("systemd-run");
     // systemd-run expands `$VAR`, `${VAR}`, and `$$` in argv by default.
@@ -351,23 +425,33 @@ fn reexec_via_systemd_run(args: &RunArgs) -> Result<()> {
         "--expand-environment=no",
         "--",
     ]);
-    cmd.arg(&exe);
-    cmd.arg("run");
-    cmd.arg("--no-reentry");
-    if let Some(policy) = &args.policy {
-        cmd.arg("--policy").arg(policy);
-    }
-    if args.keep_cgroup {
-        cmd.arg("--keep-cgroup");
-    }
-    cmd.arg("--");
-    for a in &args.command {
-        cmd.arg(a);
-    }
+    cmd.args(reentry_command_args(&exe, config_path, args));
     let status = cmd
         .status()
         .context("exec systemd-run --user --scope (is systemd-user running?)")?;
     std::process::exit(status.code().unwrap_or(1));
+}
+
+fn reentry_command_args(exe: &Path, config_path: &Path, args: &RunArgs) -> Vec<OsString> {
+    let mut argv = vec![
+        exe.as_os_str().to_owned(),
+        "--config".into(),
+        config_path.as_os_str().to_owned(),
+        "run".into(),
+        "--no-reentry".into(),
+    ];
+    if let Some(policy) = &args.policy {
+        argv.push("--policy".into());
+        argv.push(policy.into());
+    }
+    if args.keep_cgroup {
+        argv.push("--keep-cgroup".into());
+    }
+    argv.push("--".into());
+    for a in &args.command {
+        argv.push(a.into());
+    }
+    argv
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -435,10 +519,6 @@ fn cgroup_is_populated(events: &str) -> Result<bool> {
         .ok_or_else(|| anyhow!("cgroup.events has no populated field"))
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Daemon HTTP API — register / deregister
-// ────────────────────────────────────────────────────────────────────────────
-
 fn api_loopback_addr(api_listen: &str) -> String {
     format!("http://{api_listen}")
 }
@@ -446,22 +526,21 @@ fn api_loopback_addr(api_listen: &str) -> String {
 fn register_with_daemon(
     base: &str,
     cgroup_id: u64,
-    d: &RunDecision,
+    decision: &RunDecision,
     run_id: uuid::Uuid,
     event_socket: &Path,
 ) -> Result<()> {
-    let body = RegisterReq {
-        cgroup_id,
-        policy: d.policy.clone(),
-        run_id,
-        event_socket: event_socket.to_path_buf(),
-    };
     let url = format!("{base}/api/cli/register");
-    let resp = ureq::post(&url)
+    let response = ureq::post(&url)
         .set("Content-Type", "application/json")
-        .send_json(serde_json::to_value(&body)?)
-        .map_err(|e| anyhow!("POST {url}: {e}"))?;
-    let _: RegisterResp = resp
+        .send_json(serde_json::to_value(RegisterReq {
+            cgroup_id,
+            policy: decision.policy.clone(),
+            run_id,
+            event_socket: event_socket.to_path_buf(),
+        })?)
+        .map_err(|error| anyhow!("POST {url}: {error}"))?;
+    let _: RegisterResp = response
         .into_json()
         .context("parse /api/cli/register response")?;
     Ok(())
@@ -471,7 +550,7 @@ fn deregister_with_daemon(base: &str, cgroup_id: u64) -> Result<()> {
     let url = format!("{base}/api/cli/deregister?cgroup_id={cgroup_id}");
     ureq::post(&url)
         .send_string("")
-        .map_err(|e| anyhow!("POST {url}: {e}"))?;
+        .map_err(|error| anyhow!("POST {url}: {error}"))?;
     Ok(())
 }
 
@@ -682,7 +761,9 @@ fn wait_for_child(child: Pid) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::cgroup_is_populated;
+    use std::{ffi::OsString, path::Path};
+
+    use super::{RunArgs, cgroup_is_populated, reentry_command_args};
 
     #[test]
     fn parses_cgroup_population_without_field_order_assumptions() {
@@ -694,5 +775,37 @@ mod tests {
     fn rejects_missing_or_invalid_population_state() {
         assert!(cgroup_is_populated("frozen 0\n").is_err());
         assert!(cgroup_is_populated("populated maybe\n").is_err());
+    }
+
+    #[test]
+    fn reentry_preserves_the_resolved_global_config_path() {
+        let args = RunArgs {
+            policy: Some("corp".to_string()),
+            no_reentry: false,
+            keep_cgroup: true,
+            command: vec!["sh".to_string(), "-c".to_string(), "exit 0".to_string()],
+        };
+
+        assert_eq!(
+            reentry_command_args(
+                Path::new("/opt/heimdall/bin/heimdall"),
+                Path::new("/etc/heimdall/runtime.toml"),
+                &args,
+            ),
+            Vec::<OsString>::from([
+                "/opt/heimdall/bin/heimdall".into(),
+                "--config".into(),
+                "/etc/heimdall/runtime.toml".into(),
+                "run".into(),
+                "--no-reentry".into(),
+                "--policy".into(),
+                "corp".into(),
+                "--keep-cgroup".into(),
+                "--".into(),
+                "sh".into(),
+                "-c".into(),
+                "exit 0".into(),
+            ])
+        );
     }
 }
