@@ -1,6 +1,6 @@
 ---
 name: heimdall
-description: Operate and configure the Heimdall command-scoped TCP/UDP proxy and TLS inspection wrapper. Use when an agent needs to run one command through a named policy, repair strict TOML/YAML/JSON config, query Heimdall JSONL evidence, diagnose foreground eBPF setup, or operate the explicit runtime-TLS compatibility daemon.
+description: Operate and configure the Heimdall command-scoped TCP/UDP proxy and TLS inspection wrapper. Use when an agent needs to run one command through a named policy, repair strict TOML/YAML/JSON config, query Heimdall JSONL evidence, or diagnose foreground eBPF and TLS setup.
 ---
 
 # Heimdall
@@ -17,21 +17,17 @@ Run:
 heimdall agent
 ```
 
-Parse the single `heimdall.agent/v5` JSON object. Exit 0 means ready, exit 1
+Parse the single `heimdall.agent/v6` JSON object. Exit 0 means ready, exit 1
 means the document explains why, and exit 2 is invalid CLI usage. Read stable
 error `code` values before messages. Execute `actions` as argv arrays; never
 join or evaluate them as shell text.
 
 Use `execution` before interpreting daemon health:
 
-- For `backend = linux-ebpf-foreground`, require
-  `daemon_required = false`, `owner = heimdall-run`, and
-  `privilege_setup = short-lived-sudo-worker`. A missing compatibility daemon
-  is expected and is not a blocker.
-- For `backend = linux-ebpf-compatibility-daemon`, require
-  `daemon_required = true`, a ready `heimdall.daemon.health/v2` document, a
-  positive relay port, matching decrypt mode, and—for runtime TLS—a positive
-  attached-image count.
+- Require `backend = linux-ebpf-foreground`, `daemon_required = false`,
+  `owner = heimdall-run`, and
+  `privilege_setup = sudo-then-unprivileged-session-helper` for every decrypt
+  mode. A missing compatibility daemon is expected and is not a blocker.
 - `web_ui_required` must remain false for every executable path.
 
 Use `heimdall help -v` only when deeper command discovery is needed.
@@ -55,11 +51,12 @@ Choose `relay` only with authority to install local trust. Require
 and readable only by the invoking user, and reject pinned or client-certificate
 mTLS workflows.
 
-Choose `runtime` only when the client uses a reported OpenSSL API. It currently
-requires the explicit compatibility daemon; require positive runtime attachment
-health and restart that daemon after introducing a new `libssl` image. It
-changes no trust and can coexist with pinning/mTLS, but absence from the library
-or API arrays means there is no plaintext guarantee.
+Choose `runtime` only when the client uses a reported OpenSSL API. Ensure a
+representative `libssl` image is already mapped when the run starts; the
+  setup helper fails before exec if no image can be attached. It drops
+  privilege before the workload starts and exits with the run. It changes no
+  trust and can coexist with pinning/mTLS, but later-loaded or absent
+libraries and APIs have no plaintext guarantee.
 
 ## Validate and repair configuration
 
@@ -106,9 +103,9 @@ with the actual command when compatibility matters.
 
 Require lifecycle fields appropriate to the workflow:
 
-- `foreground_modes` contains the selected non-runtime mode;
-- `foreground_owned_resources`, `resources_close_when_run_exits`, and
-  `setup_worker_short_lived` are true;
+- `foreground_modes` contains the selected mode;
+- `foreground_owned_resources`, `resources_close_when_run_exits`,
+  `setup_helper_session_scoped`, and `setup_helper_drops_privileges` are true;
 - `concurrent_runs_isolated` is true when running independent policies in
   parallel;
 - `descendant_cgroup_lifetime` and `upstream_unreachable_fail_closed` are true
@@ -135,8 +132,8 @@ Read [references/commands.md](references/commands.md) for diagnosis and
 
 - Do not change host routing, firewall, DNS, or proxy state merely to use
   Heimdall.
-- Do not start the compatibility daemon unless `execution.daemon_required` is
-  true or the user explicitly requests persistent-state maintenance.
+- Do not start the compatibility daemon unless the user explicitly requests
+  legacy persistent-state maintenance.
 - Do not install file capabilities or setuid on the full CLI. Authorize only
   the exact `heimdall __setup-worker` command.
 - Do not upload or print capture bytes without explicit authority; they can

@@ -6,10 +6,15 @@ All notable changes to heimdall are documented here.
 
 ### Added
 
-- Add the daemonless Linux foreground backend for `decrypt.mode = "off"` and
-  `"relay"`. Each run owns isolated relay/DNS listeners, cgroup, unpinned maps,
-  FD-owned links, event state, and a strict short-lived `heimdall.setup/v1`
-  sudo worker that exits before the wrapped command starts.
+- Add the daemonless Linux foreground backend for all decrypt modes. Each run
+  owns isolated relay/DNS listeners, cgroup, unpinned maps, FD-owned links,
+  event state, and a strict `heimdall.setup/v2` sudo helper that drops to the
+  invoking user before the wrapped command starts.
+- Move runtime OpenSSL discovery, probe links, and perf-event reading into the
+  foreground session. The setup helper opens per-CPU perf rings, transfers them
+  for unprivileged mmap/read, drops privilege, and remains only for that run to
+  retain Aya probe state; startup-discovered images are
+  cgroup-filtered in eBPF and no decrypt mode requires a persistent daemon.
 - Add concurrent foreground-run and no-daemon real-eBPF VM acceptance,
   including TCP/UDP/fake DNS, relay TLS, log rotation, and cleanup back to the
   pre-run BPF-link baseline.
@@ -83,11 +88,10 @@ All notable changes to heimdall are documented here.
 
 ### Changed
 
-- Bump the read-only automation contract to `heimdall.agent/v5` and report the
+- Bump the read-only automation contract to `heimdall.agent/v6` and report the
   selected execution backend, lifecycle owner, privilege setup, daemon
-  requirement, and Web UI requirement. Runtime OpenSSL inspection remains on
-  the explicit compatibility daemon; normal proxying and relay TLS do not use
-  it.
+  requirement, and Web UI requirement. All modes are foreground-owned and do
+  not use the compatibility daemon.
 - Make foreground capture and relay CA files private to the invoking user
   instead of assuming daemon-owned root-only state.
 - Rename decrypt modes by execution boundary: `transparent` becomes `runtime`

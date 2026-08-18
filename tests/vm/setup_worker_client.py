@@ -37,12 +37,13 @@ def main():
         child.close()
         request = json.dumps(
             {
-                "contract": "heimdall.setup/v1",
+                "contract": "heimdall.setup/v2",
                 "cgroup_path": cgroup,
                 "cgroup_id": os.stat(cgroup).st_ino,
                 "relay_port": 12345,
                 "dns_port": 5358,
                 "policy_flags": 2,
+                "runtime_tls": False,
             },
             separators=(",", ":"),
         ).encode()

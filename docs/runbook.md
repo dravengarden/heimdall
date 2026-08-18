@@ -21,8 +21,8 @@ The disposable NixOS VM stops the compatibility daemon before ordinary runs.
 It proves fake/system DNS, SOCKS5 and direct TCP/UDP, IPv4/IPv6, HTTP/3, static
 and dynamic clients, descendants, exit/signal status, two concurrent isolated
 runs, event rotation, relay TLS, fail-closed upstream errors, and return to the
-pre-run BPF-link baseline. Runtime OpenSSL capture is tested separately through
-the compatibility daemon.
+pre-run BPF-link baseline. Runtime OpenSSL capture and relay TLS are both
+tested through foreground sessions with the daemon absent.
 
 ## Install the daemonless path
 
@@ -48,12 +48,14 @@ sudo visudo -cf /etc/sudoers.d/heimdall
 ```
 
 `heimdall run` invokes this worker once over an inherited Unix socket. The
-worker transfers map/link FDs and exits before the wrapped command starts. Do
-not install file capabilities or setuid on the complete binary.
+worker transfers map/link FDs. In runtime TLS mode it then irrevocably drops to
+the caller and remains as a session-scoped resource holder; otherwise it exits
+before the wrapped command starts. Do not install file capabilities or setuid
+on the complete binary.
 
-No Heimdall service is required for `decrypt.mode = "off"` or `"relay"`.
-`deploy/heimdall.service` is an explicit compatibility component only for the
-current `"runtime"` OpenSSL mode and persistent-state migration.
+No Heimdall service is required for any decrypt mode.
+`deploy/heimdall.service` is an explicit legacy compatibility component for
+persistent-state migration and cleanup only.
 
 ## Smoke test
 
@@ -66,7 +68,7 @@ heimdall run -- curl -fsS https://example.com
 heimdall logs list --json
 ```
 
-For `off` and `relay`, a stopped or absent compatibility daemon does not make
+For every decrypt mode, a stopped or absent compatibility daemon does not make
 the agent report unready. The wrapped command's immediate exit or signal status
 is Heimdall's status, while interception remains active until every descendant
 leaves the command cgroup.
@@ -75,19 +77,19 @@ leaves the command cgroup.
 
 `heimdall agent [--policy NAME]` is read-only and prints exactly one JSON value.
 Exit 0 means ready, 1 means the document contains a repairable reason, and 2 is
-CLI usage failure. The current contract is `heimdall.agent/v5`.
+CLI usage failure. The current contract is `heimdall.agent/v6`.
 
 The execution section is the ownership decision that automation must use (the
 following is an excerpt):
 
 ```json
 {
-  "contract": "heimdall.agent/v5",
+  "contract": "heimdall.agent/v6",
   "ready": true,
   "execution": {
     "backend": "linux-ebpf-foreground",
     "owner": "heimdall-run",
-    "privilege_setup": "short-lived-sudo-worker",
+    "privilege_setup": "sudo-then-unprivileged-session-helper",
     "daemon_required": false,
     "web_ui_required": false
   },
@@ -99,13 +101,12 @@ following is an excerpt):
 }
 ```
 
-With `decrypt.mode = "runtime"`, the backend becomes
-`linux-ebpf-compatibility-daemon`, `daemon_required` is true, and readiness
-requires matching `heimdall.daemon.health/v2` health with a positive runtime
-attachment count.
+With `decrypt.mode = "runtime"`, the same foreground backend uses the setup
+helper to discover and attach already loaded OpenSSL images. A
+missing representative image fails before the wrapped command starts.
 
 Treat every `actions.*` command as an argv array; never concatenate or
-shell-evaluate it. Consumers may rely on existing v5 field semantics and must
+shell-evaluate it. Consumers may rely on existing v6 field semantics and must
 ignore additive unknown fields. Renaming or changing an existing semantic
 requires a new contract version.
 
@@ -172,13 +173,12 @@ mode is library-independent but is incompatible with certificate pinning and
 client-certificate mTLS.
 
 Runtime mode changes no trust and currently observes only the reported OpenSSL
-APIs. Start and inspect the compatibility service only when that mode was
-selected explicitly:
+APIs. Ensure a representative `libssl` image is already mapped before starting
+the run; setup fails before exec if no image can be attached:
 
 ```bash
-sudo systemctl enable --now heimdall
-heimdall agent | jq '{execution, daemon}'
-journalctl -u heimdall -n 100 --no-pager
+heimdall agent | jq '{execution, capabilities: .capabilities.decrypt}'
+heimdall run -- curl https://example.com
 ```
 
 ## Common failures
@@ -197,8 +197,8 @@ journalctl -u heimdall -n 100 --no-pager
   its containing directory 0700 and key 0600.
 - another transparent proxy catches relay traffic: exempt the exact loopback
   endpoint reported for the run from that proxy's interception.
-- runtime daemon unavailable: this is fatal only when
-  `execution.daemon_required` is true.
+- runtime TLS has no attachable image: start a representative process using
+  the same OpenSSL image before `heimdall run`, or use relay mode.
 
 ## Remove compatibility state
 

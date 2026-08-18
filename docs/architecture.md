@@ -8,8 +8,8 @@ heimdall run -- command
         |
         +-- transient user cgroup
         +-- per-run relay + fake DNS + JSONL writer
-        +-- short-lived privileged setup worker
-        |      `-- attach eBPF and transfer map/link FDs, then exit
+        +-- setup worker
+        |      `-- attach eBPF, transfer FDs, then drop privilege
         |
         `-- wrapped command tree
                 |
@@ -25,10 +25,15 @@ forwards its exit status, waits for every inherited descendant, and tears down
 the session.
 
 The hidden `heimdall __setup-worker` process is the only privileged component
-in the default path. It accepts one `heimdall.setup/v1` request over an
+in the default path. It accepts one `heimdall.setup/v2` request over an
 inherited Unix socket, authenticates the caller and cgroup identity, creates
 fresh unpinned maps, attaches eleven eBPF links to that cgroup, transfers four
-map FDs and all link FDs with `SCM_RIGHTS`, and exits. It never parses proxy
+map FDs and all link FDs with `SCM_RIGHTS`; runtime mode additionally returns
+one already-opened perf ring per online CPU and startup-discovered OpenSSL
+uprobe links. For non-runtime modes it then exits. Runtime TLS requires the
+complete Aya probe state to remain alive, so the worker irrevocably drops to
+the authenticated caller and waits only for its inherited socket to close.
+It never parses proxy
 credentials, opens capture files, terminates TLS, executes the workload, or
 listens on a persistent socket.
 
@@ -51,8 +56,9 @@ an interception owner or a prerequisite for any run.
    and another kernel-assigned port across IPv4/IPv6 UDP/TCP fake-DNS
    listeners.
 4. The setup worker writes those endpoints and the selected policy bits into
-   fresh per-run maps, attaches only the transient cgroup, transfers owned FDs,
-   and exits. Failure here occurs before the child executes.
+   fresh per-run maps, attaches only the transient cgroup, and transfers owned
+   FDs. Runtime mode keeps the now-unprivileged helper for the session; other
+   modes reap it here. Failure here occurs before the child executes.
 5. The child joins the cgroup and executes the requested argv. Processes
    outside this cgroup cannot be redirected by the per-run links.
 6. eBPF redirects TCP, UDP, and fake-DNS traffic to the foreground listeners.
@@ -102,21 +108,25 @@ TLS modes are explicit:
   presents a leaf signed by the user-owned Heimdall CA, and records plaintext
   after both handshakes. Client trust is required; pinning and client-certificate
   mTLS are incompatible boundaries.
-- `runtime` observes the supported OpenSSL APIs without changing trust. This
-  alpha still uses the explicit compatibility daemon because per-run dynamic
-  probe discovery and attachment are not implemented yet.
+- `runtime` observes supported OpenSSL APIs without changing trust. The setup
+  worker discovers already mapped `libssl` images at run startup, attaches
+  probes globally while the per-run policy map filters events to the command
+  cgroup, opens the per-CPU perf rings, transfers those ring and link FDs, and
+  exits. The unprivileged foreground owner only maps and reads the inherited
+  rings. Libraries loaded later or unsupported TLS implementations remain
+  opaque.
 
 The event or capture record identifies the actual observation boundary. A
 selected TLS mode alone is never proof that plaintext was observed.
 
 ## Compatibility daemon
 
-`heimdall daemon` remains temporarily for `decrypt.mode = "runtime"` and
-persistent-state migration. That path owns shared listeners, persistent bpffs
+`heimdall daemon` remains temporarily as an explicit legacy path for
+persistent-state migration. It owns shared listeners, persistent bpffs
 maps/links, a loopback health API, registration recovery, and orphan cleanup.
-It is opt-in, is never started by `heimdall run`, and is not needed by `off` or
-`relay` modes. Its lifecycle and cleanup fields are reported separately by
-`heimdall.agent/v5`.
+It is opt-in, is never started by `heimdall run`, and is not needed by any
+decrypt mode. Its lifecycle and cleanup fields are reported separately by
+`heimdall.agent/v6`.
 
 ## Non-goals
 

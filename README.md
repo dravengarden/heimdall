@@ -55,11 +55,11 @@ need compatibility hardening.
 | --- | --- | --- |
 | Command-scoped TCP and UDP proxying | Available | IPv4/IPv6, SOCKS5 and direct egress, fake DNS, ordered policies |
 | macOS support | Planned | Wrapper fallback and Network Extension backend are roadmap items; not currently available |
-| Strict configuration and agent contract | Available | TOML, YAML, JSON; `heimdall.agent/v5` with execution ownership and repairable diagnostics |
-| Daemonless Linux execution | Available | `off` and `relay` runs own per-run relay, DNS, maps, links, and logs; the setup worker exits before the command starts |
+| Strict configuration and agent contract | Available | TOML, YAML, JSON; `heimdall.agent/v6` with execution ownership and repairable diagnostics |
+| Daemonless Linux execution | Available | All decrypt modes own per-run relay, DNS, maps, links, and logs; runtime TLS keeps one unprivileged session helper, never a service |
 | Opaque flow capture | Available | Explicit bounded JSONL capture under the invoking user's ownership with `heimdall.capture/v1` |
 | Agent event logs | Available, Phase 1 | Per-run lifecycle and TCP/UDP metadata in `heimdall.event/v1`; payload remains in legacy capture |
-| Runtime TLS decryption | Compatibility mode | OpenSSL probes currently require the explicit compatibility daemon; no CA injection |
+| Runtime TLS decryption | Available daemonless with alpha limits | Startup-discovered OpenSSL images; no CA injection; unsupported TLS libraries remain opaque |
 | Relay TLS decryption | Available daemonless with alpha limits | Local CA plus per-host leaves; client trust and protocol compatibility are required |
 | Runtime and kernel compatibility | In development | Expanding the tested matrix and documenting unsupported edge cases |
 | Capture analysis and release packaging | Planned | Better inspection workflows and reproducible distribution artifacts |
@@ -72,7 +72,7 @@ the explicit non-goals.
 ```mermaid
 flowchart LR
     C[heimdall run] --> G[transient cgroup v2]
-    C --> W[short-lived privileged setup worker]
+    C --> W[setup worker; drops privilege after attach]
     W --> E[per-run cgroup eBPF hooks]
     G --> E
     E --> P[policy + fake DNS]
@@ -82,11 +82,13 @@ flowchart LR
     R --> T[optional runtime or relay TLS boundary]
 ```
 
-For normal `off` and `relay` runs, the foreground CLI owns the relay, fake-IP
-DNS, event writer, cgroup, maps, and links. A narrow privileged worker attaches
-eBPF and transfers owned file descriptors back to the CLI, then exits before
-the wrapped command starts. The CLI waits for the complete descendant tree and
-closes every per-run resource. Processes outside that cgroup are left alone.
+For every decrypt mode, the foreground CLI owns the relay, fake-IP
+DNS, event writer, cgroup, maps, and links. A narrow setup worker attaches eBPF,
+transfers owned file descriptors back to the CLI, and immediately drops to the
+invoking user. In runtime TLS mode that unprivileged helper remains scoped to
+the invocation to retain Aya's probe state; other modes reap it before exec.
+The CLI waits for the complete descendant tree and closes every per-run
+resource. Processes outside that cgroup are left alone.
 
 Unlike `proxychains4`, Heimdall does not use `LD_PRELOAD`. The privileged
 setup worker attaches cgroup eBPF hooks, so static binaries and mixed-language
@@ -116,8 +118,7 @@ nix develop -c cargo build --workspace --locked --release
 ```
 
 Install the one binary, create the strict starter configuration, and authorize
-only its short-lived setup entry point (replace `USERNAME` with the invoking
-user):
+only its setup entry point (replace `USERNAME` with the invoking user):
 
 ```bash
 sudo install -Dm755 target/release/heimdall /usr/local/bin/heimdall
@@ -143,10 +144,10 @@ Inspect the resulting run without a Web UI:
 ./target/release/heimdall logs verify --run RUN_ID --json
 ```
 
-No Heimdall service is needed for proxying, capture, or relay TLS inspection.
-The compatibility service in [`deploy/heimdall.service`](deploy/heimdall.service)
-is currently needed only for `decrypt.mode = "runtime"` OpenSSL probes and
-persistent-state migration tooling. It is never started implicitly.
+No Heimdall service is needed for proxying, capture, or either TLS inspection
+mode. The compatibility service in
+[`deploy/heimdall.service`](deploy/heimdall.service) remains only for explicit
+persistent-state migration and cleanup; it is never started implicitly.
 
 ## Configuration
 
@@ -187,8 +188,8 @@ The three decryption modes are intentionally separate:
 
 - `off` keeps TLS opaque.
 - `runtime` observes supported OpenSSL calls inside the client process without
-  changing certificate trust; in this release it explicitly requires the
-  compatibility daemon.
+  changing certificate trust. Its setup helper attaches images already loaded
+  when the run starts, drops privilege, and exits with that run.
 - `relay` terminates and re-issues TLS at the local relay; clients must trust
   the explicit Heimdall CA created by `heimdall tls init-ca`.
 
@@ -213,7 +214,7 @@ Start automation with one side-effect-free preflight:
 heimdall agent
 ```
 
-It emits one `heimdall.agent/v5` JSON document containing config validity, the
+It emits one `heimdall.agent/v6` JSON document containing config validity, the
 selected execution backend and owner, whether a daemon or Web UI is required,
 daemon compatibility health, selected policy, capability evidence, stable
 repair codes, and exact next commands as argv arrays. Exit `0` means ready,
@@ -230,7 +231,7 @@ workload.
 ```text
 heimdall run [--policy NAME] -- COMMAND [ARGS...]
 heimdall agent [--policy NAME]
-heimdall daemon  # explicit compatibility mode for runtime TLS only
+heimdall daemon  # legacy persistent compatibility path; never required by run
 heimdall status [--json]
 heimdall config validate|explain|show|path
 heimdall tls init-ca [--json]

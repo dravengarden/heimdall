@@ -179,12 +179,15 @@ and records only bytes reported as successfully transferred. It requires no
 trust change and remains compatible with certificate pinning and mTLS, but
 does not claim coverage for Go, rustls, BoringSSL, JVM, or stripped/static TLS
 implementations. Each API event is bounded to the byte count reported by
-`agent.capabilities.decrypt.runtime_max_bytes_per_event`. Runtime mode is the
-temporary daemonless exception: probe discovery covers `libssl` images already
-mapped when the explicit compatibility daemon starts, startup fails if none can
-be attached, and the daemon must be restarted after introducing a different
-OpenSSL image. Require `execution.daemon_required` and verify attachment counts
-under `agent.daemon.health`, not only the selected config.
+`agent.capabilities.decrypt.runtime_max_bytes_per_event`. Runtime mode is
+foreground-owned: its setup helper discovers `libssl` images
+already mapped when the run starts, opens one perf ring per online CPU,
+transfers those ring FDs and the probe links, drops to the invoking user, and
+remains only for the run lifetime to retain Aya's probe state. The foreground
+process maps and reads inherited rings. Setup fails if none can be attached. Images
+loaded only after exec are not observed in the current alpha. Require
+`execution.daemon_required = false` and verify the selected runtime capability,
+not daemon health.
 
 `relay` detects TLS ClientHello records at the relay, verifies the upstream
 certificate with the native trust store, mirrors the negotiated ALPN, signs a
@@ -219,9 +222,9 @@ filename.
 
 ## Compatibility daemon settings
 
-Normal `off` and `relay` runs can omit this section: their relay and DNS ports
-are kernel-assigned per run. These settings apply only to the explicit
-compatibility daemon currently used by runtime TLS.
+Normal runs can omit this section: their relay and DNS ports are
+kernel-assigned per run. These settings apply only to the explicit legacy
+compatibility daemon used for migration and cleanup.
 
 ```toml
 [daemon]

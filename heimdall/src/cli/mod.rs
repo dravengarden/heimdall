@@ -22,7 +22,7 @@ pub mod agent {
     };
     use serde::Serialize;
 
-    const CONTRACT_VERSION: &str = "heimdall.agent/v5";
+    const CONTRACT_VERSION: &str = "heimdall.agent/v6";
 
     #[derive(clap::Args, Debug)]
     pub struct AgentArgs {
@@ -162,7 +162,8 @@ pub mod agent {
         runtime_mode_requires_daemon: bool,
         foreground_owned_resources: bool,
         resources_close_when_run_exits: bool,
-        setup_worker_short_lived: bool,
+        setup_helper_session_scoped: bool,
+        setup_helper_drops_privileges: bool,
         web_ui_optional: bool,
         concurrent_runs_isolated: bool,
     }
@@ -338,7 +339,7 @@ pub mod agent {
         let control = config.daemon.api_listen.clone();
         let health = fetch_daemon_health(&control).await;
         let reachable = health.is_some();
-        let daemon_required = config.decrypt.mode == heimdall_config::DecryptMode::Runtime;
+        let daemon_required = false;
         let daemon_error = daemon_required
             .then(|| daemon_error(&config.decrypt, health.as_ref()))
             .flatten();
@@ -381,21 +382,9 @@ pub mod agent {
                 error: None,
             },
             execution: Some(ExecutionReport {
-                backend: if daemon_required {
-                    "linux-ebpf-compatibility-daemon"
-                } else {
-                    "linux-ebpf-foreground"
-                },
-                owner: if daemon_required {
-                    "heimdall-daemon"
-                } else {
-                    "heimdall-run"
-                },
-                privilege_setup: if daemon_required {
-                    "daemon-startup"
-                } else {
-                    "short-lived-sudo-worker"
-                },
+                backend: "linux-ebpf-foreground",
+                owner: "heimdall-run",
+                privilege_setup: "sudo-then-unprivileged-session-helper",
                 daemon_required,
                 web_ui_required: false,
             }),
@@ -639,7 +628,7 @@ pub mod agent {
                 modes: &["off", "runtime", "relay"],
                 runtime_libraries: &["openssl"],
                 runtime_apis: &["SSL_read", "SSL_read_ex", "SSL_write", "SSL_write_ex"],
-                runtime_discovery: "loaded_images_at_daemon_start",
+                runtime_discovery: "loaded_images_at_run_start",
                 runtime_max_bytes_per_event: heimdall_common::TAP_DATA_LEN,
                 runtime_requires_attached_image: true,
                 runtime_requires_ca_trust: false,
@@ -684,11 +673,12 @@ pub mod agent {
                 exit_code_passthrough: true,
                 signal_exit_code: "128+signal",
                 upstream_unreachable_fail_closed: true,
-                foreground_modes: &["off", "relay"],
-                runtime_mode_requires_daemon: true,
+                foreground_modes: &["off", "runtime", "relay"],
+                runtime_mode_requires_daemon: false,
                 foreground_owned_resources: true,
                 resources_close_when_run_exits: true,
-                setup_worker_short_lived: true,
+                setup_helper_session_scoped: true,
+                setup_helper_drops_privileges: true,
                 web_ui_optional: true,
                 concurrent_runs_isolated: true,
             },
@@ -757,7 +747,7 @@ pub mod agent {
             assert_eq!(capabilities().decrypt.modes, ["off", "runtime", "relay"]);
             assert_eq!(
                 capabilities().decrypt.runtime_discovery,
-                "loaded_images_at_daemon_start"
+                "loaded_images_at_run_start"
             );
             assert_eq!(
                 capabilities().decrypt.runtime_apis,
@@ -838,11 +828,12 @@ pub mod agent {
             let lifecycle = capabilities().lifecycle;
             assert!(lifecycle.descendant_cgroup_lifetime);
             assert!(lifecycle.upstream_unreachable_fail_closed);
-            assert_eq!(lifecycle.foreground_modes, ["off", "relay"]);
-            assert!(lifecycle.runtime_mode_requires_daemon);
+            assert_eq!(lifecycle.foreground_modes, ["off", "runtime", "relay"]);
+            assert!(!lifecycle.runtime_mode_requires_daemon);
             assert!(lifecycle.foreground_owned_resources);
             assert!(lifecycle.resources_close_when_run_exits);
-            assert!(lifecycle.setup_worker_short_lived);
+            assert!(lifecycle.setup_helper_session_scoped);
+            assert!(lifecycle.setup_helper_drops_privileges);
             assert!(lifecycle.web_ui_optional);
             assert!(lifecycle.concurrent_runs_isolated);
         }

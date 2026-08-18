@@ -1,11 +1,11 @@
-//! Narrow protocol between `heimdall run` and its short-lived setup worker.
+//! Narrow protocol between `heimdall run` and its privileged setup worker.
 
 use std::{
     io::{IoSlice, IoSliceMut, Read, Write},
     os::fd::{BorrowedFd, OwnedFd},
     os::unix::net::UnixStream,
     path::{Component, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
 };
 
 use anyhow::{Context, Result};
@@ -20,8 +20,11 @@ use rustix::net::{
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-const CONTRACT: &str = "heimdall.setup/v1";
+const CONTRACT: &str = "heimdall.setup/v2";
 const MAX_FRAME_BYTES: usize = 64 * 1024;
+// Linux permits at most 253 descriptors in one SCM_RIGHTS message. Keep room
+// for transport details while supporting hosts with large CPU sets.
+const MAX_FDS: usize = 240;
 const RIGHTS_MARKER: &[u8] = b"F";
 const KNOWN_POLICY_FLAGS: u8 =
     POLICY_REDIRECT_OFF | POLICY_DNS_HIJACK | POLICY_UDP_REJECT | POLICY_DNS_SYSTEM;
@@ -35,6 +38,7 @@ pub(crate) struct SetupRequest {
     relay_port: u16,
     dns_port: u16,
     policy_flags: u8,
+    runtime_tls: bool,
 }
 
 impl SetupRequest {
@@ -44,6 +48,7 @@ impl SetupRequest {
         relay_port: u16,
         dns_port: u16,
         policy_flags: u8,
+        runtime_tls: bool,
     ) -> Result<Self> {
         let request = Self {
             contract: CONTRACT.to_owned(),
@@ -52,6 +57,7 @@ impl SetupRequest {
             relay_port,
             dns_port,
             policy_flags,
+            runtime_tls,
         };
         request.validate()?;
         Ok(request)
@@ -99,6 +105,10 @@ impl SetupRequest {
     pub(crate) const fn policy_flags(&self) -> u8 {
         self.policy_flags
     }
+
+    pub(crate) const fn runtime_tls(&self) -> bool {
+        self.runtime_tls
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -119,6 +129,8 @@ pub(crate) enum SetupFd {
     Udp6RecvmsgLink,
     SockReleaseLink,
     SkbEgressLink,
+    RuntimeTlsLink,
+    RuntimePerfBuffer,
 }
 
 pub(crate) const FD_MANIFEST: [SetupFd; 15] = [
@@ -145,6 +157,7 @@ enum SetupReply {
     Ready {
         contract: String,
         fds: Vec<SetupFd>,
+        runtime: Option<crate::tls_runtime::StartReport>,
     },
     Error {
         contract: String,
@@ -155,6 +168,39 @@ enum SetupReply {
 
 pub(crate) struct SetupBundle {
     pub(crate) fds: Vec<(SetupFd, OwnedFd)>,
+    pub(crate) runtime: Option<crate::tls_runtime::StartReport>,
+    worker: Option<SetupWorker>,
+}
+
+pub(crate) struct SetupWorker {
+    socket: Option<UnixStream>,
+    child: Option<Child>,
+}
+
+impl SetupWorker {
+    pub(crate) fn shutdown(mut self) -> Result<()> {
+        self.socket.take();
+        let status = self
+            .child
+            .take()
+            .context("runtime setup helper is already reaped")?
+            .wait()
+            .context("wait for runtime setup helper")?;
+        anyhow::ensure!(
+            status.success(),
+            "runtime setup helper exited with {status}"
+        );
+        Ok(())
+    }
+}
+
+impl Drop for SetupWorker {
+    fn drop(&mut self) {
+        self.socket.take();
+        if let Some(mut child) = self.child.take() {
+            let _ = child.wait();
+        }
+    }
 }
 
 pub(crate) struct RuntimeFds {
@@ -163,16 +209,52 @@ pub(crate) struct RuntimeFds {
     pub(crate) udp_token_map: HashMap<MapData, u32, OrigDst>,
     pub(crate) udp_cookie_map: HashMap<MapData, u64, OrigDst>,
     pub(crate) links: Vec<OwnedFd>,
+    pub(crate) runtime_buffers: Vec<(u32, OwnedFd)>,
+    pub(crate) runtime: Option<crate::tls_runtime::StartReport>,
+    pub(crate) worker: Option<SetupWorker>,
 }
 
 impl SetupBundle {
     pub(crate) fn into_runtime_fds(self) -> Result<RuntimeFds> {
-        let mut fds = self.fds.into_iter();
+        let Self {
+            fds,
+            runtime,
+            worker,
+        } = self;
+        let mut fds = fds.into_iter();
         let port_map = take_map(&mut fds, SetupFd::PortMap)?;
         let udp_port_map = take_map(&mut fds, SetupFd::UdpPortMap)?;
         let udp_token_map = take_map(&mut fds, SetupFd::UdpTokenMap)?;
         let udp_cookie_map = take_map(&mut fds, SetupFd::UdpCookieMap)?;
-        let links = fds.map(|(_, fd)| fd).collect();
+        let mut links = Vec::new();
+        for _ in 0..FD_MANIFEST.len() - 4 {
+            let (_, fd) = fds.next().context("setup bundle is missing a link FD")?;
+            links.push(fd);
+        }
+        let mut runtime_buffers = Vec::new();
+        if let Some(report) = runtime.as_ref() {
+            for _ in 0..report.attached_links {
+                let (kind, fd) = fds
+                    .next()
+                    .context("setup bundle is missing a runtime TLS link FD")?;
+                anyhow::ensure!(
+                    kind == SetupFd::RuntimeTlsLink,
+                    "setup runtime link order changed"
+                );
+                links.push(fd);
+            }
+            for &cpu in &report.perf_cpus {
+                let (kind, fd) = fds
+                    .next()
+                    .context("setup bundle is missing a runtime perf buffer FD")?;
+                anyhow::ensure!(
+                    kind == SetupFd::RuntimePerfBuffer,
+                    "setup runtime perf buffer order changed"
+                );
+                runtime_buffers.push((cpu, fd));
+            }
+        }
+        anyhow::ensure!(fds.next().is_none(), "setup bundle contains trailing FDs");
         Ok(RuntimeFds {
             port_map: HashMap::try_from(Map::from_map_data(MapData::from_fd(port_map)?)?)?,
             udp_port_map: HashMap::try_from(Map::from_map_data(MapData::from_fd(udp_port_map)?)?)?,
@@ -183,6 +265,9 @@ impl SetupBundle {
                 udp_cookie_map,
             )?)?)?,
             links,
+            runtime_buffers,
+            runtime,
+            worker,
         })
     }
 }
@@ -207,18 +292,25 @@ pub(crate) fn receive_request(stream: &mut UnixStream) -> Result<SetupRequest> {
     Ok(request)
 }
 
-pub(crate) fn send_ready(stream: &mut UnixStream, fds: &[BorrowedFd<'_>]) -> Result<()> {
+pub(crate) fn send_ready(
+    stream: &mut UnixStream,
+    manifest: Vec<SetupFd>,
+    runtime: Option<crate::tls_runtime::StartReport>,
+    fds: &[BorrowedFd<'_>],
+) -> Result<()> {
     anyhow::ensure!(
-        fds.len() == FD_MANIFEST.len(),
-        "setup worker produced {} FDs, expected {}",
+        fds.len() == manifest.len(),
+        "setup worker produced {} FDs, manifest has {}",
         fds.len(),
-        FD_MANIFEST.len()
+        manifest.len()
     );
+    validate_manifest(&manifest, runtime.as_ref())?;
     send_frame(
         stream,
         &SetupReply::Ready {
             contract: CONTRACT.to_owned(),
-            fds: FD_MANIFEST.to_vec(),
+            fds: manifest,
+            runtime,
         },
     )?;
     send_rights(stream, fds)
@@ -237,15 +329,18 @@ pub(crate) fn send_error(stream: &mut UnixStream, code: &str, message: &str) -> 
 
 pub(crate) fn receive_reply(stream: &mut UnixStream) -> Result<SetupBundle> {
     match receive_frame::<SetupReply>(stream)? {
-        SetupReply::Ready { contract, fds } => {
+        SetupReply::Ready {
+            contract,
+            fds,
+            runtime,
+        } => {
             anyhow::ensure!(contract == CONTRACT, "unsupported setup reply contract");
-            anyhow::ensure!(
-                fds == FD_MANIFEST,
-                "setup worker returned an unexpected FD manifest"
-            );
+            validate_manifest(&fds, runtime.as_ref())?;
             let owned = receive_rights(stream, fds.len())?;
             Ok(SetupBundle {
                 fds: fds.into_iter().zip(owned).collect(),
+                runtime,
+                worker: None,
             })
         }
         SetupReply::Error {
@@ -278,20 +373,29 @@ pub(crate) fn launch_worker(request: &SetupRequest) -> Result<SetupBundle> {
         .stdin(Stdio::from(OwnedFd::from(child_socket)))
         .stdout(Stdio::null())
         .stderr(Stdio::inherit());
-    let mut child = command
-        .spawn()
-        .context("start short-lived privileged setup worker")?;
+    let mut child = command.spawn().context("start privileged setup worker")?;
 
     let exchange = send_request(&mut parent, request).and_then(|()| receive_reply(&mut parent));
-    drop(parent);
-    let bundle = match exchange {
+    let mut bundle = match exchange {
         Ok(bundle) => bundle,
         Err(error) => {
+            drop(parent);
             let _ = child.kill();
             let _ = child.wait();
             return Err(error).context("setup worker did not return a runtime bundle");
         }
     };
+    if request.runtime_tls() {
+        parent
+            .set_read_timeout(None)
+            .context("clear setup helper response timeout")?;
+        bundle.worker = Some(SetupWorker {
+            socket: Some(parent),
+            child: Some(child),
+        });
+        return Ok(bundle);
+    }
+    drop(parent);
     let status = child.wait().context("wait for setup worker")?;
     anyhow::ensure!(status.success(), "setup worker exited with {status}");
     Ok(bundle)
@@ -331,7 +435,8 @@ fn receive_frame<T: DeserializeOwned>(stream: &mut UnixStream) -> Result<T> {
 }
 
 fn send_rights(stream: &UnixStream, fds: &[BorrowedFd<'_>]) -> Result<()> {
-    let mut control_bytes = [0_u8; rustix::cmsg_space!(ScmRights(FD_MANIFEST.len()))];
+    anyhow::ensure!(fds.len() <= MAX_FDS, "setup FD count exceeds {MAX_FDS}");
+    let mut control_bytes = [0_u8; rustix::cmsg_space!(ScmRights(MAX_FDS))];
     let mut control = SendAncillaryBuffer::new(&mut control_bytes);
     anyhow::ensure!(
         control.push(SendAncillaryMessage::ScmRights(fds)),
@@ -349,10 +454,10 @@ fn send_rights(stream: &UnixStream, fds: &[BorrowedFd<'_>]) -> Result<()> {
 }
 
 fn receive_rights(stream: &UnixStream, expected: usize) -> Result<Vec<OwnedFd>> {
-    anyhow::ensure!(expected == FD_MANIFEST.len(), "invalid setup FD count");
+    anyhow::ensure!(expected <= MAX_FDS, "invalid setup FD count");
     let mut marker = [0_u8; 1];
     let mut iov = [IoSliceMut::new(&mut marker)];
-    let mut control_bytes = [0_u8; rustix::cmsg_space!(ScmRights(FD_MANIFEST.len()))];
+    let mut control_bytes = [0_u8; rustix::cmsg_space!(ScmRights(MAX_FDS))];
     let mut control = RecvAncillaryBuffer::new(&mut control_bytes);
     let message = recvmsg(stream, &mut iov, &mut control, RecvFlags::CMSG_CLOEXEC)
         .context("receive setup file descriptors")?;
@@ -380,6 +485,50 @@ fn receive_rights(stream: &UnixStream, expected: usize) -> Result<Vec<OwnedFd>> 
     Ok(owned)
 }
 
+fn validate_manifest(
+    manifest: &[SetupFd],
+    runtime: Option<&crate::tls_runtime::StartReport>,
+) -> Result<()> {
+    anyhow::ensure!(manifest.len() <= MAX_FDS, "setup FD manifest is too large");
+    anyhow::ensure!(
+        manifest.starts_with(&FD_MANIFEST),
+        "setup worker returned an unexpected base FD manifest"
+    );
+    match runtime {
+        None => anyhow::ensure!(
+            manifest == FD_MANIFEST,
+            "setup worker returned runtime FDs without a runtime report"
+        ),
+        Some(report) => {
+            let tail = &manifest[FD_MANIFEST.len()..];
+            let link_end = report.attached_links;
+            anyhow::ensure!(
+                tail.len() == report.attached_links + report.perf_cpus.len(),
+                "setup runtime FD count does not match its report"
+            );
+            anyhow::ensure!(
+                tail[..link_end]
+                    .iter()
+                    .all(|kind| *kind == SetupFd::RuntimeTlsLink),
+                "setup runtime link manifest contains an unexpected FD"
+            );
+            anyhow::ensure!(
+                tail[link_end..]
+                    .iter()
+                    .all(|kind| *kind == SetupFd::RuntimePerfBuffer),
+                "setup runtime perf manifest contains an unexpected FD"
+            );
+            anyhow::ensure!(
+                report.attached_images > 0
+                    && report.attached_links > 0
+                    && !report.perf_cpus.is_empty(),
+                "setup runtime report is incomplete"
+            );
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -396,6 +545,7 @@ mod tests {
             12345,
             5353,
             POLICY_DNS_HIJACK,
+            false,
         )
         .unwrap()
     }
@@ -413,6 +563,7 @@ mod tests {
             "relay_port": 12345,
             "dns_port": 5353,
             "policy_flags": POLICY_DNS_HIJACK,
+            "runtime_tls": false,
             "command": ["sh"]
         });
         assert!(serde_json::from_value::<SetupRequest>(malformed).is_err());
@@ -427,6 +578,7 @@ mod tests {
                 12345,
                 5353,
                 POLICY_DNS_HIJACK,
+                false,
             )
             .is_err()
         );
@@ -437,6 +589,7 @@ mod tests {
                 12345,
                 5353,
                 1 << 7,
+                false,
             )
             .is_err()
         );
@@ -450,7 +603,7 @@ mod tests {
             .collect();
         let borrowed: Vec<BorrowedFd<'_>> = files.iter().map(AsFd::as_fd).collect();
 
-        send_ready(&mut worker, &borrowed).unwrap();
+        send_ready(&mut worker, FD_MANIFEST.to_vec(), None, &borrowed).unwrap();
         let bundle = receive_reply(&mut parent).unwrap();
 
         assert_eq!(
@@ -461,6 +614,56 @@ mod tests {
             let flags = nix::fcntl::fcntl(fd.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFD).unwrap();
             assert_ne!(flags & libc::FD_CLOEXEC, 0);
         }
+    }
+
+    #[test]
+    fn runtime_reply_transfers_counted_links_and_perf_buffers() {
+        let (mut worker, mut parent) = UnixStream::pair().unwrap();
+        let report = crate::tls_runtime::StartReport {
+            discovered_images: 1,
+            attached_images: 1,
+            attached_links: 2,
+            perf_cpus: vec![0, 2],
+        };
+        let mut manifest = FD_MANIFEST.to_vec();
+        manifest.extend([
+            SetupFd::RuntimeTlsLink,
+            SetupFd::RuntimeTlsLink,
+            SetupFd::RuntimePerfBuffer,
+            SetupFd::RuntimePerfBuffer,
+        ]);
+        let files: Vec<File> = (0..manifest.len())
+            .map(|_| File::open("/dev/null").unwrap())
+            .collect();
+        let borrowed: Vec<BorrowedFd<'_>> = files.iter().map(AsFd::as_fd).collect();
+
+        send_ready(
+            &mut worker,
+            manifest.clone(),
+            Some(report.clone()),
+            &borrowed,
+        )
+        .unwrap();
+        let bundle = receive_reply(&mut parent).unwrap();
+
+        assert_eq!(bundle.runtime, Some(report));
+        assert_eq!(
+            bundle.fds.iter().map(|(kind, _)| *kind).collect::<Vec<_>>(),
+            manifest
+        );
+    }
+
+    #[test]
+    fn runtime_reply_rejects_a_mismatched_link_count() {
+        let report = crate::tls_runtime::StartReport {
+            discovered_images: 1,
+            attached_images: 1,
+            attached_links: 2,
+            perf_cpus: vec![0],
+        };
+        let mut manifest = FD_MANIFEST.to_vec();
+        manifest.extend([SetupFd::RuntimeTlsLink, SetupFd::RuntimePerfBuffer]);
+        assert!(validate_manifest(&manifest, Some(&report)).is_err());
     }
 
     #[test]

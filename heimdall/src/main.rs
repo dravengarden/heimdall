@@ -1,7 +1,7 @@
 //! heimdall — transparent SOCKS5 egress proxy driven by eBPF.
 //!
-//! A small privileged daemon redirects only cgroups registered by
-//! `heimdall run`; every other process bypasses it.
+//! Each `heimdall run` owns one foreground relay and a privilege-dropping
+//! setup helper; every process outside its cgroup bypasses it.
 //!
 //! ## TCP correlation path
 //!
@@ -15,7 +15,7 @@
 //!       │  Moves COOKIE_MAP[cookie] → PORT_MAP[family, src_port]
 //!       │
 //!       ▼
-//!   heimdall daemon
+//!   heimdall foreground relay
 //!     1. accept() → (family, src_port) → original destination + cgroup
 //!     2. cgroup_id → policy name from the active CLI registration
 //!     3. evaluate the ordered rules and execute route/direct/reject
@@ -45,7 +45,7 @@ mod tls_runtime;
 use std::{
     collections::HashMap as StdHashMap,
     ffi::OsString,
-    io::{IoSlice, IoSliceMut},
+    io::{IoSlice, IoSliceMut, Read},
     net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     os::fd::{AsFd, AsRawFd, OwnedFd},
     os::unix::fs::MetadataExt,
@@ -190,6 +190,12 @@ struct SessionRuntime {
     kernel: Option<KernelRuntime>,
 }
 
+struct InstalledSetupRuntime {
+    buffers: Vec<(u32, OwnedFd)>,
+    report: Option<tls_runtime::StartReport>,
+    worker: Option<setup::SetupWorker>,
+}
+
 struct KernelRuntime {
     port_map: PortMap,
     udp_port_map: UdpPortMap,
@@ -265,8 +271,13 @@ impl SessionRuntime {
             .context("session kernel runtime is not installed")
     }
 
-    fn install_setup_bundle(&mut self, bundle: setup::SetupBundle) -> Result<()> {
+    fn install_setup_bundle(
+        &mut self,
+        bundle: setup::SetupBundle,
+    ) -> Result<InstalledSetupRuntime> {
         let runtime = bundle.into_runtime_fds()?;
+        let runtime_buffers = runtime.runtime_buffers;
+        let runtime_report = runtime.runtime;
         self.install_kernel(KernelRuntime {
             port_map: Arc::new(RwLock::new(runtime.port_map)),
             udp_port_map: Arc::new(RwLock::new(runtime.udp_port_map)),
@@ -276,6 +287,11 @@ impl SessionRuntime {
             _links: KernelLinks::Raw {
                 _fds: runtime.links,
             },
+        })?;
+        Ok(InstalledSetupRuntime {
+            buffers: runtime_buffers,
+            report: runtime_report,
+            worker: runtime.worker,
         })
     }
 
@@ -315,6 +331,8 @@ pub(crate) struct ForegroundSession {
     relay_task: tokio::task::JoinHandle<Result<()>>,
     udp_sessions: UdpSessions,
     event_client: event_log::EventClient,
+    _runtime_tls: Option<tls_runtime::RuntimeCapture>,
+    setup_worker: Option<setup::SetupWorker>,
 }
 
 impl ForegroundSession {
@@ -326,10 +344,6 @@ impl ForegroundSession {
         event_socket: PathBuf,
         dns_state_path: PathBuf,
     ) -> Result<Self> {
-        anyhow::ensure!(
-            cfg.decrypt.mode != heimdall_config::DecryptMode::Runtime,
-            "decrypt.mode = runtime still requires the compatibility daemon; use off or relay for daemonless heimdall run"
-        );
         let selected = cfg
             .policy(policy_name)
             .with_context(|| format!("selected policy `{policy_name}` disappeared"))?;
@@ -373,11 +387,38 @@ impl ForegroundSession {
             runtime.relay_port(),
             runtime.dns_port(),
             policy_flags,
+            cfg.decrypt.mode == heimdall_config::DecryptMode::Runtime,
         )?;
         let bundle = tokio::task::spawn_blocking(move || setup::launch_worker(&request))
             .await
             .context("join setup worker launcher")??;
-        runtime.install_setup_bundle(bundle)?;
+        let installed = runtime.install_setup_bundle(bundle)?;
+        let runtime_tls = match installed.report {
+            Some(report) => {
+                anyhow::ensure!(
+                    report.attached_images > 0,
+                    "runtime TLS found no attachable loaded OpenSSL images; start a representative OpenSSL process before `heimdall run`, or use decrypt.mode = relay"
+                );
+                anyhow::ensure!(
+                    installed.buffers.len() == report.perf_cpus.len(),
+                    "setup worker returned an incomplete runtime TLS perf bundle"
+                );
+                let capture = capture
+                    .clone()
+                    .context("strict config enabled runtime decrypt without capture")?;
+                Some(
+                    tls_runtime::start_from_fds(installed.buffers, capture)
+                        .context("start foreground runtime TLS capture")?,
+                )
+            }
+            None => {
+                anyhow::ensure!(
+                    installed.buffers.is_empty(),
+                    "setup worker returned runtime TLS buffers without a report"
+                );
+                None
+            }
+        };
 
         let cli_overrides: CliOverrides = Arc::new(parking_lot::RwLock::new(StdHashMap::from([(
             cgroup_id,
@@ -412,11 +453,23 @@ impl ForegroundSession {
             relay_task,
             udp_sessions,
             event_client,
+            _runtime_tls: runtime_tls,
+            setup_worker: installed.worker,
         })
     }
 
-    pub(crate) async fn shutdown(self) -> bool {
+    pub(crate) async fn shutdown(mut self) -> bool {
         close_udp_sessions_for_cgroup(&self.udp_sessions, self.cgroup_id).await;
+        if let Some(runtime_tls) = self._runtime_tls.take() {
+            runtime_tls.shutdown().await;
+        }
+        if let Some(worker) = self.setup_worker.take() {
+            match tokio::task::spawn_blocking(move || worker.shutdown()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => warn!(%error, "runtime setup helper shutdown failed"),
+                Err(error) => warn!(%error, "runtime setup helper join failed"),
+            }
+        }
         let flows_drained = self.event_client.wait_for_flows(Duration::from_secs(2));
         self.relay_task.abort();
         let _ = self.relay_task.await;
@@ -694,7 +747,7 @@ enum Cmd {
     /// decision, error codes, and shell-safe argv arrays.
     Agent(cli::agent::AgentArgs),
 
-    /// Run the runtime-TLS compatibility daemon (explicit opt-in).
+    /// Run the legacy persistent compatibility daemon (explicit opt-in).
     Daemon(DaemonArgs),
 
     /// Internal privileged half of one foreground run.
@@ -1413,18 +1466,93 @@ fn setup_worker_run(socket: &mut std::os::unix::net::UnixStream) -> Result<()> {
         "setup worker attached an unexpected number of links"
     );
 
+    let runtime_tls = request
+        .runtime_tls()
+        .then(|| {
+            let runtime = tls_runtime::prepare_setup(&mut bpf)
+                .context("prepare daemonless runtime TLS probes")?;
+            anyhow::ensure!(
+                runtime.report.attached_images > 0,
+                "runtime TLS found no attachable loaded OpenSSL images; start a representative OpenSSL process before `heimdall run`, or use decrypt.mode = relay"
+            );
+            Ok::<_, anyhow::Error>(runtime)
+        })
+        .transpose()?;
+    let runtime_link_fds = runtime_tls
+        .as_ref()
+        .map(|runtime| {
+            runtime
+                .links
+                .iter()
+                .map(ebpf::duplicate_link_fd)
+                .collect::<Result<Vec<_>>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+
     let maps = [
         take_setup_hash_map(&mut bpf, "PORT_MAP")?,
         take_setup_hash_map(&mut bpf, "UDP_PORT_MAP")?,
         take_setup_hash_map(&mut bpf, "UDP_TOKEN_MAP")?,
         take_setup_hash_map(&mut bpf, "UDP_COOKIE_MAP")?,
     ];
-    let transferred: Vec<_> = maps
+    let mut manifest = setup::FD_MANIFEST.to_vec();
+    let mut transferred: Vec<_> = maps
         .iter()
         .map(|map| map.fd().as_fd())
         .chain(link_fds.iter().map(AsFd::as_fd))
         .collect();
-    setup::send_ready(socket, &transferred)
+    if let Some(runtime) = runtime_tls.as_ref() {
+        manifest.extend(std::iter::repeat_n(
+            setup::SetupFd::RuntimeTlsLink,
+            runtime_link_fds.len(),
+        ));
+        transferred.extend(runtime_link_fds.iter().map(AsFd::as_fd));
+        manifest.extend(std::iter::repeat_n(
+            setup::SetupFd::RuntimePerfBuffer,
+            runtime.buffers.len(),
+        ));
+        transferred.extend(runtime.buffers.iter().map(AsFd::as_fd));
+    }
+    setup::send_ready(
+        socket,
+        manifest,
+        runtime_tls.as_ref().map(|runtime| runtime.report.clone()),
+        &transferred,
+    )?;
+    if runtime_tls.is_some() {
+        drop_setup_worker_privileges(peer.uid(), peer.gid())?;
+        let mut marker = [0_u8; 1];
+        while socket
+            .read(&mut marker)
+            .context("wait for runtime setup helper shutdown")?
+            != 0
+        {}
+    }
+    Ok(())
+}
+
+#[allow(
+    unsafe_code,
+    reason = "the privileged setup process must irrevocably become its socket peer before waiting"
+)]
+fn drop_setup_worker_privileges(uid: u32, gid: u32) -> Result<()> {
+    if uid == 0 {
+        return Ok(());
+    }
+    let result = unsafe { libc::setgroups(0, std::ptr::null()) };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error()).context("clear setup helper groups");
+    }
+    let result = unsafe { libc::setresgid(gid, gid, gid) };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error()).context("drop setup helper group privileges");
+    }
+    let result = unsafe { libc::setresuid(uid, uid, uid) };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error()).context("drop setup helper user privileges");
+    }
+    Ok(())
 }
 
 fn take_setup_hash_map(bpf: &mut Ebpf, name: &str) -> Result<aya::maps::MapData> {
@@ -1543,19 +1671,21 @@ async fn daemon_run(config_path: &PathBuf, args: DaemonArgs) -> Result<()> {
     let kernel_lifetime = ebpf::LinkLifetime::Persistent;
     let mut bpf = load_kernel_object(kernel_lifetime)?;
     let mut link_transaction = ebpf::LinkTransaction::new(kernel_lifetime);
+    let mut _runtime_tls = None;
 
     if shared.cfg.decrypt.mode == heimdall_config::DecryptMode::Runtime {
         let capture = shared
             .capture
             .clone()
             .context("strict config enabled runtime decrypt without capture")?;
-        let report =
+        let (report, runtime_tls) =
             tls_runtime::start(&mut bpf, capture).context("initialize runtime TLS decryption")?;
         anyhow::ensure!(
             report.attached_images > 0,
             "runtime TLS found no attachable loaded OpenSSL images; start a representative OpenSSL process before restarting the daemon, or use decrypt.mode = relay"
         );
         daemon_health.write().runtime = Some(report);
+        _runtime_tls = Some(runtime_tls);
     }
 
     configure_kernel_maps(&mut bpf, relay_port, shared.cfg.daemon.dns_port)?;

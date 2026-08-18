@@ -114,6 +114,11 @@ impl LinkSet {
     }
 }
 
+pub fn duplicate_link_fd(link: &FdLink) -> Result<OwnedFd> {
+    let id = link.info().context("query process-owned eBPF link")?.id();
+    link_by_id(id)
+}
+
 #[allow(
     unsafe_code,
     reason = "BPF_LINK_GET_FD_BY_ID returns a new owned raw descriptor"

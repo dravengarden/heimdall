@@ -1,8 +1,7 @@
 # Daemonless runtime design
 
-Status: implemented for Linux `decrypt.mode = "off"` and `"relay"`.
-`"runtime"` remains on the explicit compatibility daemon until per-run OpenSSL
-probe attachment is implemented.
+Status: implemented for all Linux decrypt modes. Runtime OpenSSL coverage is
+startup-discovered: a representative `libssl` image must already be mapped.
 
 ## Decision
 
@@ -32,9 +31,7 @@ SOCKS5 and forward TCP/UDP while the wrapped command is running.
    object remains embedded in it.
 2. `heimdall run` is foreground-owned. Signals, exit status, descendants, and
    cleanup have one parent lifecycle.
-3. No persistent service is a prerequisite for proxy-only or relay TLS
-   inspection. Runtime OpenSSL inspection is the temporary compatibility
-   exception.
+3. No persistent service is a prerequisite for proxying or TLS inspection.
 4. Privilege is acquired only for the smallest operation and shortest lifetime
    required by the selected backend. Heimdall never grants file capabilities
    to the complete CLI binary.
@@ -58,9 +55,9 @@ heimdall run (unprivileged session owner)
       | creates run directory and private control socket
       | validates config and selects a backend
       |
-      +---- minimal privileged setup worker
+      +---- minimal setup worker
       |       validates cgroup and attaches per-run eBPF links
-      |       passes owned FDs back, then normally exits
+      |       passes owned FDs back, then drops privilege
       |
       +---- relay + DNS + optional TLS boundary
       |       loopback ports allocated per run
@@ -88,16 +85,20 @@ installed binary:
   socket, not arbitrary CLI arguments;
 - it attaches only the requested transient cgroup and creates per-run BPF
   resources;
-- it passes FDs to the parent with `SCM_RIGHTS` and normally exits;
+- it passes FDs to the parent with `SCM_RIGHTS` and drops privilege before the
+  workload starts;
 - it cannot open the capture directory, parse SOCKS credentials, terminate
   TLS, execute the child, or keep a listener alive.
 
-Runtime TLS is the one mode that can require privileged attachment after the
-child loads a library dynamically. If startup cannot resolve every requested
-probe target in advance, a narrower attach broker may remain for that run. It
-accepts only verified image/offset attachment requests for the run's process
-tree and exits before session teardown. That broker is not implemented yet, so
-the current `runtime` mode reports and requires the compatibility daemon.
+Runtime TLS discovers already mapped `libssl` images during privileged setup.
+The worker attaches those probes globally, but the per-run `CGROUP_POLICY` map
+causes the eBPF programs to emit only for the wrapped command cgroup. It
+opens the per-CPU perf rings and transfers those ring FDs and the uprobe links
+to the foreground owner. Aya's complete probe state must remain alive, so the
+now-unprivileged helper waits for the session socket to close and is reaped by
+the foreground owner. A library loaded only after child exec is outside the current coverage;
+dynamic run-scoped attachment remains a possible future extension, not a
+reason to keep a persistent broker.
 
 The authorization mechanism may be `sudo` initially and Polkit later. Both are
 per-run authorization paths, not persistent Heimdall services. Installing a
@@ -138,11 +139,13 @@ link FDs without creating bpffs pins. Object loading in that mode also creates
 fresh unpinned maps instead of reusing `/sys/fs/bpf/heimdall/maps`. The
 compatibility daemon continues to select persistent mode.
 
-The setup-worker transport now has a strict `heimdall.setup/v1` contract. It
+The setup-worker transport now has a strict `heimdall.setup/v2` contract. It
 uses length-delimited JSON for one validated cgroup, relay/DNS ports, and the
 known kernel policy bits, followed by one fixed-order `SCM_RIGHTS` bundle of
-four correlation maps and eleven cgroup links. Received descriptors are
-close-on-exec. Unknown fields, unknown policy bits, path traversal, manifest
+four correlation maps and eleven cgroup links. Runtime mode appends a counted
+set of OpenSSL uprobe links followed by one already-opened perf ring for each
+reported online CPU. Received descriptors are close-on-exec. Unknown fields,
+unknown policy bits, path traversal, manifest
 changes, missing descriptors, and ancillary truncation fail closed. Parent-side
 typed map reconstruction and process-owned link transfer are implemented.
 
@@ -150,8 +153,10 @@ The hidden setup worker is now wired and VM-verified. It authenticates the Unix
 socket peer against the sudo caller when available, confines non-root callers
 to their own user slice, rejects non-canonical paths and cgroup inode
 mismatches, initializes fresh maps, attaches only the requested cgroup, sends
-the fixed FD bundle, and exits. It receives the socket on standard input, so no
-extra inherited descriptor or long-lived privileged listener is required.
+the fixed FD bundle, and drops to the authenticated caller. Non-runtime modes
+exit immediately; runtime mode waits on standard-input socket EOF solely to
+retain probe state. No extra inherited descriptor, persistent daemon, or
+long-lived privileged listener is required.
 `heimdall run` invokes it once after binding per-run listeners and before
 executing the child.
 
@@ -179,15 +184,14 @@ contract. It must never detach as an optimization.
 TLS remains an explicit run mode, not a daemon feature.
 
 - `off`: proxy bytes without plaintext inspection.
-- `runtime`: observe supported TLS-library APIs. The current alpha explicitly
-  routes this mode through the compatibility daemon.
+- `runtime`: observe supported OpenSSL APIs through startup-discovered probes
+  owned by the foreground session. It changes no trust, but does not observe
+  unsupported or later-loaded TLS libraries.
 - `relay`: terminate TLS in the per-run relay using explicitly initialized and
   trusted CA material.
 
-Moving runtime discovery from daemon startup to session startup remains the
-last daemonless TLS task. Relay mode already owns its handshakes only for that
-run. Both modes identify the actual observation boundary; neither mode
-requires a UI.
+Both runtime discovery and relay handshakes are owned only for that run. Both
+modes identify the actual observation boundary; neither mode requires a UI.
 
 ## Optional Web UI
 
@@ -209,10 +213,10 @@ UI has no effect on a run. Starting a run has no effect on the UI.
 ## Agent contract
 
 `heimdall agent` remains read-only and single-document JSON.
-`heimdall.agent/v5` reports:
+`heimdall.agent/v6` reports:
 
 - selected backend and whether per-run authorization is required;
-- whether the selected config requires the compatibility daemon;
+- the explicit `daemon_required = false` foreground ownership boundary;
 - supported TCP, UDP, DNS, and TLS boundaries;
 - event and run-manifest schema versions;
 - argv arrays for schema, list, query, tail, rotate, and prune commands;
@@ -250,21 +254,21 @@ contract; `heimdall run` must never auto-enable it.
   derived TLS/HTTP events remain on the event-log roadmap.
 - `heimdall.capture/v1` remains the explicit bounded payload path.
 
-### Phase 2: foreground session owner — available for `off` and `relay`
+### Phase 2: foreground session owner — available
 
 - Relay, DNS, relay TLS, capture, and lifecycle ownership are grouped under the
   foreground session boundary.
 - Ports and mutable state are allocated per run.
 - Concurrent sessions and process-tree cleanup are proven in the VM.
 
-### Phase 3: transient eBPF backend — available for `off` and `relay`
+### Phase 3: transient eBPF backend — available
 
 - Global pins and registrations are replaced by FD-owned per-run links and
   maps in the foreground modes.
 - The narrow setup-worker protocol and sudo authorization path are active.
-- Daemonless is the default for `off` and `relay`; no service is required.
+- Daemonless is the default for all decrypt modes; no service is required.
 
-### Phase 4: remove the old daemon contract — pending runtime TLS migration
+### Phase 4: remove the old daemon contract — pending compatibility cleanup
 
 - Remove `heimdall daemon`, its service unit, the shared relay endpoint,
   persistent journal, global bpffs state, daemon health contract, and

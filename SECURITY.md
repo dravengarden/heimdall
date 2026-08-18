@@ -31,7 +31,7 @@ issues.
 
 In scope:
 
-- The short-lived `heimdall __setup-worker`, FD-transfer protocol, and eBPF
+- The session-scoped `heimdall __setup-worker`, FD-transfer protocol, and eBPF
   programs
 - The foreground relay, DNS, TLS, capture, and event-log path
 - The explicit compatibility daemon and its loopback control API
@@ -64,14 +64,16 @@ Heimdall assumes:
   uses a user-generated CA only when selected. RFC 1929 username/password authentication is
   plaintext on the connection to the SOCKS5 server, so use it only over a
   trusted local or otherwise protected transport.
-- eBPF programs are loaded by the short-lived root setup worker. They run with
-  kernel privileges; the unprivileged foreground owner retains only map/link
-  FDs and cannot attach a different cgroup through that protocol.
+- eBPF programs and runtime perf rings are opened while the setup worker is
+  root. The worker then irrevocably drops to the authenticated caller before
+  the workload starts; eBPF programs still run with kernel privileges. The unprivileged foreground owner
+  retains only map/link/perf FDs, maps and reads inherited rings, and cannot
+  attach a different cgroup through that protocol.
 
 The compatibility daemon remains a single-tenant legacy boundary: any local
 process able to reach its control listener can attempt registration. Do not
-enable it unless runtime TLS or explicit persistent-state maintenance requires
-it.
+enable it unless the user explicitly requests legacy persistent-state
+maintenance.
 
 ## Hardening recommendations for operators
 

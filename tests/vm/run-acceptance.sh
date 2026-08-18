@@ -20,35 +20,6 @@ as_tester() {
     "$@"
 }
 
-start_manual_daemon() {
-  local config_path="$1"
-  local log_path="$2"
-  systemctl stop heimdall.service
-  heimdall --config "$config_path" daemon >"$log_path" 2>&1 &
-  manual_daemon_pid=$!
-  local ready=false
-  for _ in $(seq 1 250); do
-    if curl --noproxy '*' -fsS http://127.0.0.1:9999/api/health \
-      | jq -e '.ready' >/dev/null 2>&1; then
-      ready=true
-      break
-    fi
-    if ! kill -0 "$manual_daemon_pid" 2>/dev/null; then
-      break
-    fi
-    sleep 0.02
-  done
-  if test "$ready" != true; then
-    cat "$log_path" >&2
-    return 1
-  fi
-}
-
-stop_manual_daemon() {
-  kill "$manual_daemon_pid"
-  wait "$manual_daemon_pid" || true
-}
-
 capture_contains() {
   local action="$1"
   local needle="$2"
@@ -70,11 +41,11 @@ capture_contains() {
 as_tester heimdall config validate --json \
   | jq -e '.contract == "heimdall.config.validate/v2" and .valid'
 as_tester heimdall agent \
-  | jq -e '.contract == "heimdall.agent/v5"
+  | jq -e '.contract == "heimdall.agent/v6"
     and .ready
     and .execution.backend == "linux-ebpf-foreground"
     and .execution.owner == "heimdall-run"
-    and .execution.privilege_setup == "short-lived-sudo-worker"
+    and .execution.privilege_setup == "sudo-then-unprivileged-session-helper"
     and (.execution.daemon_required | not)
     and (.execution.web_ui_required | not)
     and .config.capture.mode == "on"
@@ -96,7 +67,7 @@ as_tester heimdall agent \
     and .capabilities.decrypt.modes == ["off", "runtime", "relay"]
     and .capabilities.decrypt.runtime_libraries == ["openssl"]
     and .capabilities.decrypt.runtime_apis == ["SSL_read", "SSL_read_ex", "SSL_write", "SSL_write_ex"]
-    and .capabilities.decrypt.runtime_discovery == "loaded_images_at_daemon_start"
+    and .capabilities.decrypt.runtime_discovery == "loaded_images_at_run_start"
     and .capabilities.decrypt.runtime_max_bytes_per_event == 256
     and .capabilities.decrypt.runtime_requires_attached_image
     and .capabilities.decrypt.relay_library_independent
@@ -133,11 +104,12 @@ as_tester heimdall agent \
     and .actions.logs_list == ["heimdall", "logs", "list", "--json"]
     and .capabilities.lifecycle.signal_exit_code == "128+signal"
     and .capabilities.lifecycle.upstream_unreachable_fail_closed
-    and .capabilities.lifecycle.foreground_modes == ["off", "relay"]
-    and .capabilities.lifecycle.runtime_mode_requires_daemon
+    and .capabilities.lifecycle.foreground_modes == ["off", "runtime", "relay"]
+    and (.capabilities.lifecycle.runtime_mode_requires_daemon | not)
     and .capabilities.lifecycle.foreground_owned_resources
     and .capabilities.lifecycle.resources_close_when_run_exits
-    and .capabilities.lifecycle.setup_worker_short_lived
+    and .capabilities.lifecycle.setup_helper_session_scoped
+    and .capabilities.lifecycle.setup_helper_drops_privileges
     and .capabilities.lifecycle.web_ui_optional
     and .capabilities.lifecycle.concurrent_runs_isolated'
 as_tester heimdall status --json \
@@ -518,27 +490,45 @@ test "$tcp_capture" = true
 test "$udp_capture" = true
 test "$truncated_capture" = true
 
-# Exercise both TLS modes through the real cgroup/eBPF relay. The long-lived
-# OpenSSL fixture is loaded before runtime daemon startup, matching the
-# discovery boundary reported by `heimdall agent`.
+# Exercise both TLS modes through the real foreground cgroup/eBPF relay. The
+# long-lived OpenSSL fixture provides a representative image before each run,
+# matching the startup discovery boundary reported by `heimdall agent`.
+systemctl stop heimdall.service
+heimdall ebpf cleanup --json | jq -e '.cleaned'
+test "$(bpftool -j link show | jq 'length')" -eq "$foreground_link_baseline"
 curl -V | grep -q OpenSSL
 rm -f /run/heimdall-test/captures/*.jsonl
-start_manual_daemon /etc/heimdall-test/runtime.toml \
-  /run/heimdall-test/runtime-daemon.log
 as_tester heimdall --config /etc/heimdall-test/runtime.toml agent \
   | jq -e '.ready
-    and .daemon.health.decrypt_mode == "runtime"
-    and .daemon.health.runtime.discovered_images > 0
-    and .daemon.health.runtime.attached_images > 0'
+    and (.daemon.reachable | not)
+    and .execution.backend == "linux-ebpf-foreground"
+    and .execution.owner == "heimdall-run"
+    and (.execution.daemon_required | not)
+    and .config.decrypt.mode == "runtime"'
 as_tester heimdall --config /etc/heimdall-test/runtime.toml run --policy fake -- \
-  curl --cacert /etc/heimdall-test/upstream-ca.pem -fsS --max-time 5 \
-    https://fixture.test:18444/ >/dev/null
+  sh -c 'sleep 0.5; exec curl --cacert /etc/heimdall-test/upstream-ca.pem -fsS --max-time 5 https://fixture.test:18444/' \
+    >/dev/null &
+runtime_process=$!
+runtime_helper=""
+for _ in $(seq 1 100); do
+  for candidate in $(pgrep -u tester -x heimdall); do
+    if tr '\0' ' ' < "/proc/$candidate/cmdline" | grep -q ' __setup-worker '; then
+      runtime_helper="$candidate"
+      break 2
+    fi
+  done
+  sleep 0.02
+done
+test -n "$runtime_helper"
+test "$(awk '/^Uid:/{print $2 ":" $3 ":" $4}' "/proc/$runtime_helper/status")" = "1000:1000:1000"
+test -z "$(pgrep -u root -x heimdall || true)"
+wait "$runtime_process"
 for _ in $(seq 1 100); do
   capture_contains runtime 'GET / HTTP' && break
   sleep 0.02
 done
 capture_contains runtime 'GET / HTTP'
-stop_manual_daemon
+test "$(bpftool -j link show | jq 'length')" -eq "$foreground_link_baseline"
 
 rm -f /run/heimdall-test/captures/*.jsonl
 install -d -o tester -g users -m 0700 /run/heimdall-test/relay

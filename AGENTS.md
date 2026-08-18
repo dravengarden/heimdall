@@ -112,9 +112,9 @@ remember to ask for more if needed.
   The concise help has a footer line (`Tip: heimdall help -v …`)
   that points AI agents at the verbose form. Don't strip the footer.
 - `heimdall agent` is the stable automation entry point. Keep it read-only,
-  single-document JSON, currently versioned as `heimdall.agent/v5`, and shell-safe by
+  single-document JSON, currently versioned as `heimdall.agent/v6`, and shell-safe by
   representing commands as argv arrays. Exit 0 means ready, 1 means not ready,
-  and 2 remains clap usage failure. Additive v5 fields are allowed; renaming or
+  and 2 remains clap usage failure. Additive v6 fields are allowed; renaming or
   changing existing field semantics requires a new contract version.
 - `heimdall init` preserves `config.<ext>` unless `--force`. Don't change this:
   losing live config to a doc refresh has bitten the user already.

@@ -12,11 +12,10 @@ heimdall config explain --policy default --network udp --domain example.com --po
 heimdall logs list --json
 ```
 
-`agent` is the primary `heimdall.agent/v5` machine contract. Exit 0 means
+`agent` is the primary `heimdall.agent/v6` machine contract. Exit 0 means
 ready, 1 means not ready, and 2 is CLI usage error. It never mutates state.
-Branch on `execution.daemon_required` before daemon health: an unreachable
-daemon is expected for the foreground `off` and `relay` paths, but blocks the
-compatibility `runtime` path.
+Require the foreground execution owner and `daemon_required = false`; daemon
+health is informational legacy state and does not gate a run.
 
 `config show` prints source text. `config validate` applies the shared strict
 schema. `config explain` evaluates one destination and returns the first rule
@@ -31,8 +30,9 @@ heimdall run --policy default -- curl https://example.com
 ```
 
 The command may re-enter through `systemd-run --user --scope`. The resolved
-global config path and exact argv survive re-entry. A short-lived authorized
-setup worker attaches one transient cgroup and exits before the child starts.
+global config path and exact argv survive re-entry. An authorized setup helper
+attaches one transient cgroup and drops privilege before the child starts.
+Runtime TLS keeps that unprivileged helper only until the run exits.
 The foreground process owns relay/DNS listeners, maps, links, and logs until
 the complete descendant tree exits.
 
@@ -81,21 +81,22 @@ heimdall tls init-ca --dir "$HOME/.local/state/heimdall/tls" --json
 Trust only the reported `ca_cert`. Keep `ca_key` private, mode 0600, and owned
 by the same user that runs Heimdall. No daemon is required for relay TLS.
 
-## Runtime TLS compatibility
+## Runtime TLS
 
-Only when `execution.daemon_required` is true:
+Only when the client uses a reported OpenSSL API:
 
 ```bash
-sudo systemctl start heimdall
 heimdall agent | jq -e '
-  .ready and .execution.daemon_required and
-  .daemon.health.contract == "heimdall.daemon.health/v2" and
-  .daemon.health.runtime.attached_images > 0'
+  .ready and (.execution.daemon_required | not) and
+  .execution.owner == "heimdall-run" and
+  .capabilities.decrypt.runtime_discovery == "loaded_images_at_run_start"'
+heimdall run -- curl https://example.com
 ```
 
-Runtime mode currently discovers loaded OpenSSL images at daemon startup.
-Restart after introducing a new `libssl` image. Do not infer coverage for Go
-TLS, rustls, BoringSSL, JVM TLS, or static/stripped implementations.
+Runtime mode discovers loaded OpenSSL images at run startup. Keep a
+representative image mapped before invoking the run. Do not infer coverage for
+Go TLS, rustls, BoringSSL, JVM TLS, later-loaded images, or static/stripped
+implementations.
 
 ## Rotate and retain
 
@@ -115,13 +116,8 @@ active run.
 3. Preview the same policy and destination with `config explain`.
 4. If foreground setup fails, verify the exact sudoers binary path and
    `heimdall __setup-worker` authorization.
-5. If and only if runtime mode requires the daemon, inspect:
-
-   ```bash
-   heimdall status --json
-   journalctl -u heimdall --since "10 min ago" --no-pager
-   ```
-
+5. For runtime TLS setup failures, confirm a representative OpenSSL image was
+   mapped before invocation and preserve the pre-exec error.
 6. Reproduce with the smallest command that uses the same protocol and policy.
 
 Do not equate config validity with connectivity. A real acceptance check must

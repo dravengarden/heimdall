@@ -29,7 +29,7 @@
         <h2 id="surface">The command surface</h2>
         <pre><code>heimdall run [--policy NAME] -- COMMAND [ARGS...]
 heimdall agent [--policy NAME]
-heimdall daemon  # runtime-TLS compatibility only
+heimdall daemon  # legacy persistent compatibility path
 heimdall status [--json]
 heimdall config validate|explain|show|path
 heimdall tls init-ca [--json]
@@ -45,7 +45,7 @@ heimdall config show
 heimdall config validate --json
 heimdall config explain --policy default --domain example.com --port 443 --json
 heimdall status --json</code></pre>
-        <p><code>heimdall agent</code> is the read-only <code>heimdall.agent/v5</code> contract. Read <code>execution.backend</code>, owner, privilege setup, and daemon requirement before interpreting compatibility-daemon health.</p>
+        <p><code>heimdall agent</code> is the read-only <code>heimdall.agent/v6</code> contract. Read <code>execution.backend</code>, owner, privilege setup, and daemon requirement before interpreting legacy compatibility-daemon health.</p>
         <table><thead><tr><th>Exit</th><th>Meaning</th></tr></thead><tbody><tr><td><code>0</code></td><td>Ready for the selected policy and execution backend.</td></tr><tr><td><code>1</code></td><td>Not ready; follow the returned argv repair action.</td></tr><tr><td><code>2</code></td><td>CLI usage failure.</td></tr></tbody></table>
 
         <h2 id="run">Run through a proxy</h2>
@@ -53,7 +53,7 @@ heimdall status --json</code></pre>
 heimdall run -- curl https://example.com
 heimdall agent --policy corp
 heimdall run --policy corp -- curl https://internal.example.com</code></pre>
-        <p>The selected policy owns DNS, ordered rules, and final TCP/UDP actions. The wrapped process may re-enter through <code>systemd-run --user --scope</code>; the resolved global config path and exact argv are preserved. For <code>off</code> and <code>relay</code>, no Heimdall daemon is used.</p>
+        <p>The selected policy owns DNS, ordered rules, and final TCP/UDP actions. The wrapped process may re-enter through <code>systemd-run --user --scope</code>; the resolved global config path and exact argv are preserved. No decrypt mode uses a persistent Heimdall daemon.</p>
 
         <h2 id="explain">Explain a decision</h2>
         <p>Preview one TCP or UDP destination without running it:</p>
@@ -67,7 +67,7 @@ heimdall run --policy corp -- curl https://internal.example.com</code></pre>
 
         <h2 id="agent">Agent contract</h2>
         <p>Agents should branch on evidence rather than infer support from a language or command name. Inspect:</p>
-        <ul><li><code>execution</code> for foreground versus runtime-daemon ownership.</li><li><code>capabilities.runtime_acceptance</code> for concrete language and protocol paths.</li><li><code>capabilities.cli_acceptance</code> for command-specific coverage such as Git.</li><li><code>capabilities.udp</code> before wrapping connectionless or QUIC workloads.</li><li><code>capabilities.lifecycle</code> for descendants, cleanup, and concurrent isolation.</li></ul>
+        <ul><li><code>execution</code> for foreground ownership and setup privilege drop.</li><li><code>capabilities.runtime_acceptance</code> for concrete language and protocol paths.</li><li><code>capabilities.cli_acceptance</code> for command-specific coverage such as Git.</li><li><code>capabilities.udp</code> before wrapping connectionless or QUIC workloads.</li><li><code>capabilities.lifecycle</code> for descendants, cleanup, and concurrent isolation.</li></ul>
 
         <h2 id="cleanup">Cleanup</h2>
         <p>Foreground runs leave no persistent pins. Cleanup is only for an explicit compatibility-daemon uninstall or schema repair:</p>

@@ -414,6 +414,23 @@ impl DnsResolver {
     /// Bind UDP and TCP before daemon readiness so a valid fake-DNS policy
     /// cannot silently start with an unusable resolver.
     pub async fn bind(self: Arc<Self>, port: u16) -> Result<DnsServer> {
+        if port != 0 {
+            return self.bind_once(port).await;
+        }
+
+        let mut last_error = None;
+        for _ in 0..32 {
+            match self.clone().bind_once(0).await {
+                Ok(server) => return Ok(server),
+                Err(error) => last_error = Some(error),
+            }
+            tokio::task::yield_now().await;
+        }
+        Err(last_error.context("fake-DNS ephemeral port allocation did not run")?)
+            .context("reserve one ephemeral port for every DNS transport after 32 attempts")
+    }
+
+    async fn bind_once(self: Arc<Self>, port: u16) -> Result<DnsServer> {
         let udp4 = UdpSocket::bind((Ipv4Addr::LOCALHOST, port))
             .await
             .with_context(|| format!("bind IPv4 DNS UDP on port {port}"))?;
@@ -633,6 +650,8 @@ fn parse_v6_cidr(s: &str) -> Result<(Ipv6Addr, u8)> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
 
     #[tokio::test]
@@ -667,6 +686,25 @@ mod tests {
         assert_eq!(server.udp6.local_addr().unwrap().port(), port);
         assert_eq!(server.tcp4.local_addr().unwrap().port(), port);
         assert_eq!(server.tcp6.local_addr().unwrap().port(), port);
+    }
+
+    #[tokio::test]
+    async fn concurrent_ephemeral_binds_retry_cross_protocol_collisions() {
+        let mut tasks = Vec::new();
+        for _ in 0..32 {
+            tasks.push(tokio::spawn(async {
+                Arc::new(DnsResolver::new("198.19.0.0/16", "").unwrap())
+                    .bind(0)
+                    .await
+                    .unwrap()
+            }));
+        }
+        let mut servers = Vec::new();
+        for task in tasks {
+            servers.push(task.await.unwrap());
+        }
+        let ports: HashSet<_> = servers.iter().map(DnsServer::port).collect();
+        assert_eq!(ports.len(), servers.len());
     }
 
     #[tokio::test]
