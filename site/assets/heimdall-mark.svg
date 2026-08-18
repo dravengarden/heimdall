@@ -1,23 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
   <title id="title">Heimdall Bifröst mark</title>
-  <desc id="desc">A guarded navy arch framing a spectrum path that crosses through it.</desc>
+  <desc id="desc">A navy arch framing a compact spectrum road that crosses its guarded opening.</desc>
 
-  <path
-    d="M49 228V111a79 79 0 0 1 158 0v117"
-    fill="none"
-    stroke="#132A62"
-    stroke-width="26"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-  />
+  <path d="M54 222V98a74 74 0 0 1 148 0v124h-27V98a47 47 0 0 0-94 0v124z" fill="#132A62" />
 
-  <g fill="none" stroke-width="12" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M20 236c44-27 58-52 58-78 0-20 13-33 34-42" stroke="#7148D9" />
-    <path d="M43 236c40-29 52-53 52-78 0-19 12-32 22-42" stroke="#3476E8" />
-    <path d="M66 236c34-29 45-53 45-78 0-18 9-31 15-42" stroke="#18B9D1" />
-    <path d="M89 236c28-28 37-52 37-78 0-18 3-30 3-42" stroke="#20B779" />
-    <path d="M112 236c22-28 29-52 29-78 0-18-3-30-3-42" stroke="#E6B52A" />
-    <path d="M135 236c16-28 22-52 22-78 0-18-9-31-15-42" stroke="#EE7D31" />
-    <path d="M158 236c10-29 15-53 15-78 0-19-12-32-22-42" stroke="#E54B64" />
-  </g>
+  <path fill="#7148D9" d="M41 222C75 202 94 181 94 158c0-19 7-37 18-50h6c-10 13-16 31-16 50 0 23-13 44-35 64z" />
+  <path fill="#3476E8" d="M67 222c22-21 35-42 35-64 0-19 6-37 16-50h6c-9 13-14 31-14 50 0 23-9 44-24 64z" />
+  <path fill="#18B9D1" d="M93 222c15-21 24-42 24-64 0-19 4-37 7-50h6c-3 13-7 31-7 50 0 23-4 44-11 64z" />
+  <path fill="#20B779" d="M119 222c7-21 11-42 11-64 0-19-1-37-1-50h7c1 13 1 31 1 50 0 23 4 44 5 64z" />
+  <path fill="#E6B52A" d="M145 222c-1-21-5-42-5-64 0-19 1-37-4-50h6c5 13 8 31 8 50 0 23 4 44 6 64z" />
+  <path fill="#E54B64" d="M171 222c-2-21-6-42-6-64 0-19-6-37-15-50h6c11 13 18 31 18 50 0 23 10 44 20 64z" />
 </svg>

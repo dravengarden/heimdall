@@ -3,10 +3,10 @@
   <desc id="desc">A guarded Bifröst crossing for command-scoped CLI egress.</desc>
 
   <rect width="1600" height="440" rx="28" fill="#F7F4ED" />
-  <path d="M0 0h1600v16H0z" fill="#132A62" />
-  <path d="M0 424h1600v16H0z" fill="#132A62" />
+  <path d="M0 0h1600v16H0z" fill="#242321" />
+  <path d="M0 424h1600v16H0z" fill="#242321" />
 
-  <g fill="#132A62" opacity="0.12">
+  <g fill="#242321" opacity="0.12">
     <circle cx="104" cy="78" r="3" />
     <circle cx="178" cy="78" r="3" />
     <circle cx="252" cy="78" r="3" />
@@ -17,33 +17,23 @@
 
   <g font-family="Inter, ui-sans-serif, system-ui, -apple-system, sans-serif">
     <text x="112" y="158" fill="#7148D9" font-size="19" font-weight="800" letter-spacing="5">GUARDED BIFRÖST</text>
-    <text x="108" y="248" fill="#132A62" font-size="78" font-weight="850" letter-spacing="2">HEIMDALL</text>
+    <text x="108" y="248" fill="#242321" font-size="78" font-weight="850" letter-spacing="2">HEIMDALL</text>
     <text x="114" y="300" fill="#405475" font-size="25">Command-scoped TCP/UDP proxying with transparent TLS inspection</text>
     <text x="114" y="350" fill="#6A7788" font-size="18">CLI scope  ·  explicit policy  ·  visible boundaries  ·  Linux first</text>
   </g>
 
   <g transform="translate(1150 54) scale(1.22)">
-    <path
-      d="M49 228V111a79 79 0 0 1 158 0v117"
-      fill="none"
-      stroke="#132A62"
-      stroke-width="26"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-    />
-    <g fill="none" stroke-width="12" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M20 236c44-27 58-52 58-78 0-20 13-33 34-42" stroke="#7148D9" />
-      <path d="M43 236c40-29 52-53 52-78 0-19 12-32 22-42" stroke="#3476E8" />
-      <path d="M66 236c34-29 45-53 45-78 0-18 9-31 15-42" stroke="#18B9D1" />
-      <path d="M89 236c28-28 37-52 37-78 0-18 3-30 3-42" stroke="#20B779" />
-      <path d="M112 236c22-28 29-52 29-78 0-18-3-30-3-42" stroke="#E6B52A" />
-      <path d="M135 236c16-28 22-52 22-78 0-18-9-31-15-42" stroke="#EE7D31" />
-      <path d="M158 236c10-29 15-53 15-78 0-19-12-32-22-42" stroke="#E54B64" />
-    </g>
+    <path d="M54 222V98a74 74 0 0 1 148 0v124h-27V98a47 47 0 0 0-94 0v124z" fill="#132A62" />
+    <path fill="#7148D9" d="M41 222C75 202 94 181 94 158c0-19 7-37 18-50h6c-10 13-16 31-16 50 0 23-13 44-35 64z" />
+    <path fill="#3476E8" d="M67 222c22-21 35-42 35-64 0-19 6-37 16-50h6c-9 13-14 31-14 50 0 23-9 44-24 64z" />
+    <path fill="#18B9D1" d="M93 222c15-21 24-42 24-64 0-19 4-37 7-50h6c-3 13-7 31-7 50 0 23-4 44-11 64z" />
+    <path fill="#20B779" d="M119 222c7-21 11-42 11-64 0-19-1-37-1-50h7c1 13 1 31 1 50 0 23 4 44 5 64z" />
+    <path fill="#E6B52A" d="M145 222c-1-21-5-42-5-64 0-19 1-37-4-50h6c5 13 8 31 8 50 0 23 4 44 6 64z" />
+    <path fill="#E54B64" d="M171 222c-2-21-6-42-6-64 0-19-6-37-15-50h6c11 13 18 31 18 50 0 23 10 44 20 64z" />
   </g>
 
   <g transform="translate(114 382)">
-    <path d="M0 0h430" stroke="#132A62" stroke-width="3" stroke-linecap="round" />
+    <path d="M0 0h430" stroke="#242321" stroke-width="3" stroke-linecap="round" />
     <path d="M0 0h62" stroke="#7148D9" stroke-width="6" stroke-linecap="round" />
     <path d="M62 0h62" stroke="#3476E8" stroke-width="6" />
     <path d="M124 0h62" stroke="#18B9D1" stroke-width="6" />

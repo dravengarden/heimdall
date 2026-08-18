@@ -1,27 +1,27 @@
 :root {
   color-scheme: light;
-  --ink-950: #081536;
-  --ink-900: #132a62;
-  --ink-850: #1b3977;
-  --ink-800: #24488a;
-  --ink-700: #36568d;
+  --ink-950: #242321;
+  --ink-900: #2d2b29;
+  --ink-850: #3c3935;
+  --ink-800: #514c46;
+  --ink-700: #6a655d;
   --paper: #f7f4ed;
   --panel: #fffdf8;
   --panel-tint: #eef2f5;
   --line: #d9dedc;
-  --text: #18263f;
-  --muted: #5c697a;
-  --faint: #89939f;
-  --cyan: #18b9d1;
-  --cyan-soft: #b6edf0;
-  --violet: #7148d9;
+  --text: #282624;
+  --muted: #625d56;
+  --faint: #8d877e;
+  --cyan: #087f8a;
+  --cyan-soft: #cdeeed;
+  --violet: #7046c8;
   --blue: #2453b6;
-  --amber: #e6b52a;
-  --coral: #e54b64;
-  --green: #20b779;
-  --orange: #ee7d31;
-  --shadow: 0 24px 60px rgba(19, 42, 98, 0.12);
-  --shadow-soft: 0 12px 30px rgba(19, 42, 98, 0.08);
+  --amber: #d99b19;
+  --coral: #d9475d;
+  --green: #159b68;
+  --orange: #df6c29;
+  --shadow: 0 24px 60px rgba(44, 40, 34, 0.12);
+  --shadow-soft: 0 12px 30px rgba(44, 40, 34, 0.08);
   --radius-lg: 28px;
   --radius-md: 18px;
   --radius-sm: 12px;
@@ -2000,6 +2000,316 @@ code {
 
 .docs-page .architecture-node small {
   color: #587298;
+}
+
+/* Paper-first documentation theme: the mark carries the color; the page stays quiet. */
+.site-header {
+  border-bottom-color: var(--line);
+  background: rgba(247, 244, 237, 0.96);
+  color: var(--text);
+  box-shadow: 0 1px 0 rgba(44, 40, 34, 0.03);
+}
+
+.site-header::after {
+  position: absolute;
+  right: 0;
+  bottom: -3px;
+  left: 0;
+  height: 3px;
+  background: linear-gradient(
+    90deg,
+    #7148d9 0 14%,
+    #3476e8 14% 28%,
+    #18b9d1 28% 42%,
+    #20b779 42% 56%,
+    #e6b52a 56% 70%,
+    #ee7d31 70% 84%,
+    #e54b64 84% 100%
+  );
+  content: "";
+}
+
+.brand-mark {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: 0 5px 18px rgba(44, 40, 34, 0.12);
+}
+
+.brand-name {
+  color: var(--text);
+}
+
+.brand-tagline {
+  color: var(--muted);
+}
+
+.nav-links a {
+  color: var(--muted);
+}
+
+.nav-links a:hover,
+.nav-links a:focus-visible,
+.nav-links a[aria-current="page"] {
+  background: #eee9e1;
+  color: var(--text);
+}
+
+.nav-github {
+  border-color: rgba(8, 127, 138, 0.42);
+  color: #087f8a !important;
+}
+
+.menu-toggle {
+  border-color: var(--line);
+  background: var(--panel);
+  color: var(--text);
+}
+
+.hero,
+.hero-docs {
+  background: var(--paper);
+  color: var(--text);
+}
+
+.hero::before,
+.hero-docs::before {
+  background: var(--paper);
+}
+
+.hero::after {
+  background-image: linear-gradient(rgba(44, 40, 34, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(44, 40, 34, 0.045) 1px, transparent 1px);
+  opacity: 0.28;
+}
+
+.hero h1,
+.hero-docs h1 {
+  color: var(--ink-900);
+}
+
+.hero h1 em {
+  color: var(--cyan);
+}
+
+.hero-lead {
+  color: var(--muted);
+}
+
+.hero-identity {
+  color: var(--violet);
+}
+
+.hero-identity img {
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.button-primary {
+  background: var(--cyan);
+  box-shadow: 0 12px 30px rgba(8, 127, 138, 0.18);
+  color: #ffffff;
+}
+
+.button-primary:hover,
+.button-primary:focus-visible {
+  box-shadow: 0 16px 36px rgba(8, 127, 138, 0.26);
+}
+
+.button-quiet {
+  border-color: var(--line);
+  background: rgba(255, 253, 250, 0.5);
+  color: var(--text);
+}
+
+.button-quiet:hover,
+.button-quiet:focus-visible {
+  background: #eee9e1;
+}
+
+.hero-note,
+.quickstart-foot {
+  color: var(--muted);
+}
+
+.hero-note strong {
+  color: var(--text);
+}
+
+.hero-mark-card {
+  border-color: var(--line);
+  background: var(--panel);
+  box-shadow: var(--shadow-soft);
+}
+
+.hero-mark-frame {
+  border-color: var(--line);
+  background: #ffffff;
+}
+
+.hero-mark-kicker {
+  color: var(--violet);
+}
+
+.hero-mark-card strong {
+  color: var(--text);
+}
+
+.hero-mark-card p,
+.quickstart-heading {
+  color: var(--muted);
+}
+
+.quickstart-heading span {
+  color: var(--violet);
+}
+
+.quickstart-heading strong {
+  color: var(--text);
+}
+
+.code-card,
+.doc-content pre {
+  border-color: #45413b;
+  background: #292826;
+}
+
+.code-card-head {
+  border-bottom-color: rgba(245, 240, 230, 0.14);
+  color: #c9c1b5;
+}
+
+.copy-button {
+  border-color: rgba(245, 240, 230, 0.22);
+  background: rgba(255, 255, 255, 0.04);
+  color: #ddd5c8;
+}
+
+.copy-button:hover,
+.copy-button:focus-visible {
+  border-color: var(--cyan);
+  color: var(--cyan-soft);
+}
+
+pre {
+  color: #eee8dc;
+}
+
+.code-key {
+  color: #a8e8dc;
+}
+
+.code-string {
+  color: #f2c66b;
+}
+
+.code-comment {
+  color: #a59b8d;
+}
+
+.usage-step code {
+  border-color: #ddd8cf;
+  background: #f1eee8;
+  color: #334c7d;
+}
+
+.usage-step-top span {
+  background: var(--cyan);
+  color: #ffffff;
+}
+
+.usage-boundary {
+  background: rgba(255, 253, 250, 0.72);
+}
+
+.architecture-section {
+  background: var(--panel-tint);
+  color: var(--text);
+}
+
+.architecture-section .section-heading h2 {
+  color: var(--ink-900);
+}
+
+.architecture-section .section-kicker {
+  color: var(--violet);
+}
+
+.architecture-section .section-heading p {
+  color: var(--muted);
+}
+
+.architecture-panel {
+  border-color: var(--line);
+  background: var(--panel);
+  box-shadow: var(--shadow-soft);
+}
+
+.architecture-panel-head {
+  border-bottom-color: var(--line);
+  color: var(--muted);
+}
+
+.architecture-panel-head strong {
+  color: var(--violet);
+}
+
+.architecture-node,
+.docs-page .architecture-node {
+  border-color: var(--line);
+  background: #faf8f3;
+}
+
+.architecture-node.active,
+.docs-page .architecture-node.active {
+  border-color: #80d3cc;
+  background: #e8f5f1;
+}
+
+.architecture-node small,
+.docs-page .architecture-node small {
+  color: #56636d;
+}
+
+.architecture-node strong {
+  color: var(--ink-900);
+}
+
+.architecture-node span,
+.architecture-foot {
+  color: var(--muted);
+}
+
+.architecture-arrow {
+  color: var(--cyan);
+}
+
+.site-footer {
+  background: var(--ink-950);
+}
+
+.sidebar-nav a:hover,
+.sidebar-nav a:focus-visible,
+.sidebar-nav a[aria-current="page"] {
+  background: #e8f5f1;
+  color: #087f78;
+}
+
+.doc-content :not(pre) > code {
+  border-color: #ded8ce;
+  background: #f0ece5;
+  color: #3e4f78;
+}
+
+@media (max-width: 860px) {
+  .nav-links {
+    border-color: var(--line);
+    background: rgba(255, 253, 250, 0.98);
+    box-shadow: 0 20px 45px rgba(44, 40, 34, 0.16);
+  }
+
+  .nav-links a {
+    color: var(--muted);
+  }
 }
 
 @media (max-width: 620px) {
