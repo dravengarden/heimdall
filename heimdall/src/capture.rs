@@ -98,6 +98,10 @@ impl CaptureManager {
             events: self.events.clone(),
         }))))
     }
+
+    pub(crate) fn event_client(&self) -> Option<EventClient> {
+        self.events.clone()
+    }
 }
 
 impl CaptureFlow {

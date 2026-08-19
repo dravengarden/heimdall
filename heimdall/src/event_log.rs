@@ -375,31 +375,48 @@ impl RunWriter {
         let path = self.run_dir.join(&relative);
         let parent = path.parent().context("blob path has no parent")?;
         create_private_dir(parent)?;
-        let created = match OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .mode(0o600)
-            .open(&path)
-        {
-            Ok(mut file) => {
-                file.write_all(payload)
-                    .with_context(|| format!("write blob {}", path.display()))?;
-                file.sync_all()
-                    .with_context(|| format!("sync blob {}", path.display()))?;
-                true
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                let metadata = fs::symlink_metadata(&path)
-                    .with_context(|| format!("inspect existing blob {}", path.display()))?;
+        let created = match fs::symlink_metadata(&path) {
+            Ok(metadata) => {
                 anyhow::ensure!(
-                    metadata.file_type().is_file() && metadata.len() == payload.len() as u64,
-                    "existing blob {} is not the expected regular file",
+                    metadata.file_type().is_file()
+                        && metadata.len() == payload.len() as u64
+                        && hex::encode(Sha256::digest(
+                            fs::read(&path).with_context(|| format!(
+                                "read existing blob {}",
+                                path.display()
+                            ))?
+                        )) == digest,
+                    "existing blob {} does not match its digest",
                     path.display()
                 );
                 false
             }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let temporary = parent.join(format!(".{digest}.{}.tmp", Uuid::now_v7()));
+                let mut file = OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .mode(0o600)
+                    .open(&temporary)
+                    .with_context(|| format!("create blob temporary {}", temporary.display()))?;
+                let write_result = file
+                    .write_all(payload)
+                    .with_context(|| format!("write blob temporary {}", temporary.display()))
+                    .and_then(|()| {
+                        file.sync_all()
+                            .with_context(|| format!("sync blob temporary {}", temporary.display()))
+                    })
+                    .and_then(|()| {
+                        fs::hard_link(&temporary, &path)
+                            .with_context(|| format!("publish blob {}", path.display()))
+                    });
+                drop(file);
+                let _ = fs::remove_file(&temporary);
+                write_result?;
+                true
+            }
             Err(error) => {
-                return Err(error).with_context(|| format!("create blob {}", path.display()));
+                return Err(error).with_context(|| format!("inspect blob {}", path.display()));
             }
         };
         if created {
@@ -533,7 +550,8 @@ struct ControlRequest {
 struct EmitRequest {
     contract: String,
     kind: String,
-    flow_id: Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    flow_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pid: Option<u32>,
     data: Value,
@@ -616,7 +634,8 @@ impl RotationServer {
                 match event_listener.accept() {
                     Ok((mut stream, _)) => {
                         if let Err(error) = serve_event(&log, &mut stream) {
-                            let _ = write_control_error(&mut stream, "event_failed", &error);
+                            let code = classify_event_error(&error);
+                            let _ = write_control_error(&mut stream, code, &error);
                         }
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -696,21 +715,42 @@ fn serve_event(log: &RunLog, stream: &mut UnixStream) -> Result<()> {
     anyhow::ensure!(
         matches!(
             request.kind.as_str(),
-            "flow.open" | "flow.data" | "flow.close" | "tls.handshake" | "tls.error"
+            "dns.query"
+                | "dns.answer"
+                | "policy.decision"
+                | "flow.open"
+                | "flow.data"
+                | "flow.close"
+                | "tls.runtime"
+                | "tls.handshake"
+                | "tls.error"
         ),
         "unsupported external event kind"
     );
     match (request.kind.as_str(), request.payload_base64) {
         ("flow.data", Some(encoded)) => {
+            let flow_id = request.flow_id.context("flow.data requires flow_id")?;
             let payload = STANDARD
                 .decode(encoded)
                 .context("decode flow.data payload")?;
-            log.emit_payload(request.flow_id, request.pid, request.data, &payload)?;
+            log.emit_payload(flow_id, request.pid, request.data, &payload)?;
         }
         ("flow.data", None) => anyhow::bail!("flow.data requires payload_base64"),
         (_, Some(_)) => anyhow::bail!("payload_base64 is only valid for flow.data"),
         (_, None) => {
-            log.emit_flow(&request.kind, request.flow_id, request.pid, request.data)?;
+            if let Some(flow_id) = request.flow_id {
+                log.emit_flow(&request.kind, flow_id, request.pid, request.data)?;
+            } else {
+                anyhow::ensure!(
+                    matches!(
+                        request.kind.as_str(),
+                        "dns.query" | "dns.answer" | "policy.decision"
+                    ),
+                    "{} requires flow_id",
+                    request.kind
+                );
+                log.emit(&request.kind, request.pid, request.data)?;
+            }
         }
     }
     write_json_line(
@@ -771,6 +811,16 @@ impl EventClient {
     }
 
     pub fn emit(&self, kind: &str, flow_id: Uuid, data: Value) -> Result<()> {
+        self.emit_with_pid(kind, flow_id, None, data)
+    }
+
+    pub fn emit_with_pid(
+        &self,
+        kind: &str,
+        flow_id: Uuid,
+        pid: Option<u32>,
+        data: Value,
+    ) -> Result<()> {
         let mut stream = UnixStream::connect(self.socket_path.as_ref())
             .with_context(|| format!("connect event socket {}", self.socket_path.display()))?;
         configure_client_timeouts(&stream)?;
@@ -779,8 +829,8 @@ impl EventClient {
             &EmitRequest {
                 contract: "heimdall.logs.emit/v1".into(),
                 kind: kind.into(),
-                flow_id,
-                pid: None,
+                flow_id: Some(flow_id),
+                pid,
                 data,
                 payload_base64: None,
             },
@@ -792,13 +842,36 @@ impl EventClient {
         stream
             .read_to_end(&mut response)
             .context("read event response")?;
-        let response: Value = serde_json::from_slice(&response).context("decode event response")?;
-        anyhow::ensure!(response["ok"] == true, "event writer rejected record");
-        Ok(())
+        ensure_event_response(&response, "record event")
     }
 }
 
 impl EventClient {
+    pub fn emit_run(&self, kind: &str, data: Value) -> Result<()> {
+        let mut stream = UnixStream::connect(self.socket_path.as_ref())
+            .with_context(|| format!("connect event socket {}", self.socket_path.display()))?;
+        configure_client_timeouts(&stream)?;
+        write_json_line(
+            &mut stream,
+            &EmitRequest {
+                contract: "heimdall.logs.emit/v1".into(),
+                kind: kind.into(),
+                flow_id: None,
+                pid: None,
+                data,
+                payload_base64: None,
+            },
+        )?;
+        stream
+            .shutdown(std::net::Shutdown::Write)
+            .context("finish run event request")?;
+        let mut response = Vec::new();
+        stream
+            .read_to_end(&mut response)
+            .context("read run event response")?;
+        ensure_event_response(&response, "record run event")
+    }
+
     pub fn emit_payload(
         &self,
         flow_id: Uuid,
@@ -816,7 +889,7 @@ impl EventClient {
             &EmitRequest {
                 contract: "heimdall.logs.emit/v1".into(),
                 kind: "flow.data".into(),
-                flow_id,
+                flow_id: Some(flow_id),
                 pid: None,
                 data: json!({
                     "direction": direction,
@@ -835,13 +908,7 @@ impl EventClient {
         stream
             .read_to_end(&mut response)
             .context("read payload event response")?;
-        let response: Value =
-            serde_json::from_slice(&response).context("decode payload event response")?;
-        anyhow::ensure!(
-            response["ok"] == true,
-            "event writer rejected payload record"
-        );
-        Ok(())
+        ensure_event_response(&response, "record payload event")
     }
 }
 
@@ -896,6 +963,33 @@ fn write_control_error(stream: &mut UnixStream, code: &str, error: &anyhow::Erro
             message: Some(error.to_string()),
         },
     )
+}
+
+fn classify_event_error(error: &anyhow::Error) -> &'static str {
+    for cause in error.chain() {
+        let Some(io_error) = cause.downcast_ref::<std::io::Error>() else {
+            continue;
+        };
+        if io_error.raw_os_error() == Some(libc::ENOSPC) {
+            return "event_store_full";
+        }
+        if io_error.kind() == std::io::ErrorKind::PermissionDenied {
+            return "event_store_permission_denied";
+        }
+    }
+    "event_failed"
+}
+
+fn ensure_event_response(response: &[u8], operation: &str) -> Result<()> {
+    let response: Value = serde_json::from_slice(response).context("decode event response")?;
+    if response["ok"] == true {
+        return Ok(());
+    }
+    let code = response["code"].as_str().unwrap_or("event_failed");
+    let message = response["message"]
+        .as_str()
+        .unwrap_or("event writer rejected request");
+    anyhow::bail!("{operation} failed [{code}]: {message}")
 }
 
 fn write_json_line(writer: &mut impl Write, value: &impl Serialize) -> Result<()> {
@@ -1175,8 +1269,28 @@ mod tests {
             .join(&digest[..2])
             .join(&digest[2..4])
             .join(&digest);
-        assert_eq!(fs::read(blob).unwrap(), b"ping");
+        assert_eq!(fs::read(&blob).unwrap(), b"ping");
+        assert!(fs::read_dir(blob.parent().unwrap()).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")
+        }));
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(runtime).unwrap();
+    }
+
+    #[test]
+    fn event_store_io_failures_have_stable_codes() {
+        let full = anyhow::Error::new(std::io::Error::from_raw_os_error(libc::ENOSPC))
+            .context("write payload");
+        assert_eq!(classify_event_error(&full), "event_store_full");
+
+        let denied = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        assert_eq!(
+            classify_event_error(&denied),
+            "event_store_permission_denied"
+        );
     }
 }

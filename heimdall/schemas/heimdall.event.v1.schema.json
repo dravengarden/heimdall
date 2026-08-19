@@ -29,6 +29,7 @@
     { "$ref": "#/$defs/flow_open" },
     { "$ref": "#/$defs/flow_data" },
     { "$ref": "#/$defs/flow_close" },
+    { "$ref": "#/$defs/tls_runtime" },
     { "$ref": "#/$defs/tls_client_hello" },
     { "$ref": "#/$defs/tls_handshake" },
     { "$ref": "#/$defs/tls_error" },
@@ -66,7 +67,8 @@
     },
     "action": {
       "oneOf": [
-        { "type": "object", "required": ["type"], "properties": { "type": { "enum": ["direct", "reject"] } }, "additionalProperties": false },
+        { "type": "object", "required": ["type"], "properties": { "type": { "const": "direct" } }, "additionalProperties": false },
+        { "type": "object", "required": ["type", "method"], "properties": { "type": { "const": "reject" }, "method": { "type": "string" } }, "additionalProperties": false },
         { "type": "object", "required": ["type", "outbound"], "properties": { "type": { "const": "route" }, "outbound": { "type": "string" } }, "additionalProperties": false }
       ]
     },
@@ -173,8 +175,21 @@
         "kind": { "const": "dns.query" },
         "data": {
           "type": "object",
-          "required": ["transport", "name", "query_type", "policy"],
-          "properties": { "transport": { "enum": ["udp", "tcp"] }, "name": { "type": "string" }, "query_type": { "type": "string" }, "policy": { "type": "string" } },
+          "required": ["exchange_id", "transport", "questions", "policy"],
+          "properties": {
+            "exchange_id": { "$ref": "#/$defs/uuid_v7" },
+            "transport": { "enum": ["udp", "tcp"] },
+            "questions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["name", "query_type"],
+                "properties": { "name": { "type": "string" }, "query_type": { "type": "string" } },
+                "additionalProperties": false
+              }
+            },
+            "policy": { "type": "string" }
+          },
           "additionalProperties": false
         }
       }
@@ -184,8 +199,22 @@
         "kind": { "const": "dns.answer" },
         "data": {
           "type": "object",
-          "required": ["rcode", "answers", "boundary", "latency_us"],
-          "properties": { "rcode": { "type": "string" }, "answers": { "type": "array", "items": { "type": "object" } }, "boundary": { "enum": ["fake", "system"] }, "latency_us": { "$ref": "#/$defs/uint_zero" } },
+          "required": ["exchange_id", "rcode", "answers", "boundary", "latency_us"],
+          "properties": {
+            "exchange_id": { "$ref": "#/$defs/uuid_v7" },
+            "rcode": { "type": "string" },
+            "answers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["name", "record_type", "value", "ttl"],
+                "properties": { "name": { "type": "string" }, "record_type": { "type": "string" }, "value": { "type": "string" }, "ttl": { "$ref": "#/$defs/uint_zero" } },
+                "additionalProperties": false
+              }
+            },
+            "boundary": { "enum": ["fake", "system"] },
+            "latency_us": { "$ref": "#/$defs/uint_zero" }
+          },
           "additionalProperties": false
         }
       }
@@ -195,8 +224,15 @@
         "kind": { "const": "policy.decision" },
         "data": {
           "type": "object",
-          "required": ["network", "destination", "rule", "action"],
-          "properties": { "network": { "enum": ["tcp", "udp"] }, "destination": { "$ref": "#/$defs/destination" }, "rule": { "type": "object" }, "action": { "$ref": "#/$defs/action" } },
+          "required": ["source", "policy", "network", "destination", "rule", "action"],
+          "properties": {
+            "source": { "type": "object", "required": ["cgroup_id"], "properties": { "cgroup_id": { "$ref": "#/$defs/uint_zero" } }, "additionalProperties": false },
+            "policy": { "type": "string" },
+            "network": { "enum": ["tcp", "udp"] },
+            "destination": { "$ref": "#/$defs/destination" },
+            "rule": { "type": "object", "required": ["name", "source"], "properties": { "name": { "type": ["string", "null"] }, "source": { "enum": ["ordered_rule", "final"] } }, "additionalProperties": false },
+            "action": { "$ref": "#/$defs/action" }
+          },
           "additionalProperties": false
         }
       }
@@ -261,6 +297,26 @@
           "type": "object",
           "required": ["network", "status", "error_code", "client_to_remote_bytes", "remote_to_client_bytes", "duration_us"],
           "properties": { "network": { "enum": ["tcp", "udp"] }, "status": { "type": "string" }, "error_code": { "type": ["string", "null"] }, "client_to_remote_bytes": { "$ref": "#/$defs/uint_zero" }, "remote_to_client_bytes": { "$ref": "#/$defs/uint_zero" }, "duration_us": { "$ref": "#/$defs/uint_zero" } },
+          "additionalProperties": false
+        }
+      }
+    },
+    "tls_runtime": {
+      "required": ["flow_id", "pid"],
+      "properties": {
+        "kind": { "const": "tls.runtime" },
+        "data": {
+          "type": "object",
+          "required": ["library", "api_family", "direction", "boundary", "reported_bytes", "observed_bytes", "truncated"],
+          "properties": {
+            "library": { "const": "openssl" },
+            "api_family": { "enum": ["SSL_read*", "SSL_write*"] },
+            "direction": { "enum": ["client_to_remote", "remote_to_client"] },
+            "boundary": { "const": "tls_plaintext.runtime" },
+            "reported_bytes": { "$ref": "#/$defs/uint_zero" },
+            "observed_bytes": { "$ref": "#/$defs/uint_zero" },
+            "truncated": { "type": "boolean" }
+          },
           "additionalProperties": false
         }
       }

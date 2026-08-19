@@ -98,9 +98,10 @@ native IPv6 paths; address-family migration is not claimed.
 ## Capture and TLS boundaries
 
 Capture is a relay/application-boundary feature, not a kernel packet recorder.
-`heimdall.event/v1` contains lifecycle, flow metadata, and references to
-bounded content-addressed blobs below the private run directory. JSONL never
-contains base64 payloads, and there is no separate capture log or upload path.
+`heimdall.event/v1` contains lifecycle, correlated fake-DNS exchanges, policy
+decisions, flow/TLS metadata, and references to bounded content-addressed blobs
+below the private run directory. JSONL never contains base64 payloads, and
+there is no separate capture log or upload path.
 
 TLS modes are explicit:
 
@@ -114,8 +115,9 @@ TLS modes are explicit:
   probes globally while the per-run policy map filters events to the command
   cgroup, opens the per-CPU perf rings, and transfers those ring and link FDs.
   The unprivileged foreground owner only maps and reads the inherited
-  rings. Libraries loaded later or unsupported TLS implementations remain
-  opaque.
+  rings. Every observed call emits `tls.runtime` plus a same-flow
+  `flow.data` reference. Libraries loaded later or unsupported TLS
+  implementations remain opaque.
 
 The event or capture record identifies the actual observation boundary. A
 selected TLS mode alone is never proof that plaintext was observed.

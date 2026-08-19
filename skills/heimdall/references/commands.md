@@ -53,6 +53,11 @@ Then query append-only segments directly:
 
 ```bash
 jq -c 'select(.kind == "policy.decision")' "$run_dir"/events-*.jsonl
+jq -s 'map(select(.kind == "dns.query" or .kind == "dns.answer"))
+  | group_by(.data.exchange_id)' "$run_dir"/events-*.jsonl
+jq -c 'select(.kind == "tls.runtime") |
+  [.pid, .data.api_family, .data.direction, .data.observed_bytes]' \
+  "$run_dir"/events-*.jsonl
 jq -r 'select(.kind == "flow.close") |
   [.flow_id, .data.status, .data.client_to_remote_bytes,
    .data.remote_to_client_bytes] | @tsv' "$run_dir"/events-*.jsonl

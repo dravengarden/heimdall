@@ -57,7 +57,7 @@ need compatibility hardening.
 | macOS support | Planned | Wrapper fallback and Network Extension backend are roadmap items; not currently available |
 | Strict configuration and agent contract | Available | TOML, YAML, JSON; `heimdall.agent/v8` with execution ownership and repairable diagnostics |
 | Daemonless Linux execution | Available | All decrypt modes own per-run relay, DNS, maps, links, and logs; runtime TLS keeps one unprivileged session helper, never a service |
-| Agent event logs and capture | Available | Per-run `heimdall.event/v1` JSONL plus bounded content-addressed payload blobs; no second capture log |
+| Agent event logs and capture | Available | Per-run lifecycle, fake-DNS, policy, TCP/UDP and TLS evidence plus bounded content-addressed blobs; no second capture log |
 | Runtime TLS decryption | Available daemonless with alpha limits | Startup-discovered OpenSSL images; no CA injection; unsupported TLS libraries remain opaque |
 | Relay TLS decryption | Available daemonless with alpha limits | Local CA plus per-host leaves; client trust and protocol compatibility are required |
 | Static Linux packaging | Available | Reproducible x86_64 musl archive, checksum, atomic install, and one-level rollback |

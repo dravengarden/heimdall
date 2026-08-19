@@ -311,9 +311,30 @@ enum InheritedPerfEvent {
 
 async fn record_event(capture: &CaptureManager, event: Event) -> Result<()> {
     let destination = format!("process:{}", event.tgid);
+    let flow_id = uuid::Uuid::now_v7();
+    let truncated = event.payload.len() < event.total_len as usize;
+    if let Some(events) = capture.event_client() {
+        events.emit_with_pid(
+            "tls.runtime",
+            flow_id,
+            Some(event.tgid),
+            serde_json::json!({
+                "library": "openssl",
+                "api_family": match event.direction {
+                    Direction::ClientToRemote => "SSL_write*",
+                    Direction::RemoteToClient => "SSL_read*",
+                },
+                "direction": event.direction.name(),
+                "boundary": "tls_plaintext.runtime",
+                "reported_bytes": event.total_len,
+                "observed_bytes": event.payload.len(),
+                "truncated": truncated
+            }),
+        )?;
+    }
     let flow = capture
         .open(FlowMeta {
-            flow_id: uuid::Uuid::now_v7(),
+            flow_id,
             boundary: "tls_plaintext.runtime",
             network: "tls",
             cgroup_id: event.cgroup_id,
@@ -325,7 +346,7 @@ async fn record_event(capture: &CaptureManager, event: Event) -> Result<()> {
         })
         .await?;
     flow.data(event.direction, &event.payload).await?;
-    let status = if event.payload.len() < event.total_len as usize {
+    let status = if truncated {
         "source_truncated"
     } else {
         "complete"

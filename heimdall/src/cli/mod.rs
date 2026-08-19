@@ -103,6 +103,9 @@ pub mod agent {
         format: &'static str,
         lifecycle_events: bool,
         flow_events: &'static str,
+        dns_events: &'static str,
+        policy_decision_events: bool,
+        tls_events: &'static str,
         writer_owned_rotation: bool,
         content_addressed_blobs: bool,
     }
@@ -112,6 +115,7 @@ pub mod agent {
         modes: &'static [&'static str],
         runtime_libraries: &'static [&'static str],
         runtime_apis: &'static [&'static str],
+        runtime_evidence: &'static str,
         runtime_discovery: &'static str,
         runtime_max_bytes_per_event: usize,
         runtime_requires_attached_image: bool,
@@ -540,6 +544,9 @@ pub mod agent {
                 format: "jsonl",
                 lifecycle_events: true,
                 flow_events: "tcp+udp+payload",
+                dns_events: "fake",
+                policy_decision_events: true,
+                tls_events: "runtime+relay",
                 writer_owned_rotation: true,
                 content_addressed_blobs: true,
             },
@@ -547,6 +554,7 @@ pub mod agent {
                 modes: &["off", "runtime", "relay"],
                 runtime_libraries: &["openssl"],
                 runtime_apis: &["SSL_read", "SSL_read_ex", "SSL_write", "SSL_write_ex"],
+                runtime_evidence: "tls.runtime+flow.data",
                 runtime_discovery: "loaded_images_at_run_start",
                 runtime_max_bytes_per_event: heimdall_common::TAP_DATA_LEN,
                 runtime_requires_attached_image: true,
@@ -673,6 +681,10 @@ pub mod agent {
                 ["SSL_read", "SSL_read_ex", "SSL_write", "SSL_write_ex"]
             );
             assert_eq!(
+                capabilities().decrypt.runtime_evidence,
+                "tls.runtime+flow.data"
+            );
+            assert_eq!(
                 capabilities().decrypt.runtime_max_bytes_per_event,
                 heimdall_common::TAP_DATA_LEN
             );
@@ -687,6 +699,9 @@ pub mod agent {
             assert_eq!(logs.format, "jsonl");
             assert!(logs.lifecycle_events);
             assert_eq!(logs.flow_events, "tcp+udp+payload");
+            assert_eq!(logs.dns_events, "fake");
+            assert!(logs.policy_decision_events);
+            assert_eq!(logs.tls_events, "runtime+relay");
             assert!(logs.writer_owned_rotation);
             assert!(logs.content_addressed_blobs);
         }

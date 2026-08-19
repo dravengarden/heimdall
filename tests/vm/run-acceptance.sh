@@ -59,11 +59,15 @@ as_tester heimdall agent \
     and .capabilities.logs.format == "jsonl"
     and .capabilities.logs.lifecycle_events
     and .capabilities.logs.flow_events == "tcp+udp+payload"
+    and .capabilities.logs.dns_events == "fake"
+    and .capabilities.logs.policy_decision_events
+    and .capabilities.logs.tls_events == "runtime+relay"
     and .capabilities.logs.writer_owned_rotation
     and .capabilities.logs.content_addressed_blobs
     and .capabilities.decrypt.modes == ["off", "runtime", "relay"]
     and .capabilities.decrypt.runtime_libraries == ["openssl"]
     and .capabilities.decrypt.runtime_apis == ["SSL_read", "SSL_read_ex", "SSL_write", "SSL_write_ex"]
+    and .capabilities.decrypt.runtime_evidence == "tls.runtime+flow.data"
     and .capabilities.decrypt.runtime_discovery == "loaded_images_at_run_start"
     and .capabilities.decrypt.runtime_max_bytes_per_event == 256
     and .capabilities.decrypt.runtime_requires_attached_image
@@ -170,7 +174,14 @@ if find "$tcp_run_dir" -maxdepth 1 -name 'events-*.jsonl' -printf '%m\n' \
 fi
 as_tester heimdall logs query --run "$tcp_run_id" --jsonl \
   | jq -s -e '
-    (map(.seq) == [range(1; length + 1)])
+    ([.[] | select(.kind == "dns.query") | .data.exchange_id] | unique) as $dns
+    | (map(.seq) == [range(1; length + 1)])
+    and (($dns | length) > 0)
+    and any(.[]; .kind == "dns.answer" and (.data.exchange_id as $id | $dns | index($id)))
+    and any(.[]; .kind == "policy.decision"
+      and .data.network == "tcp"
+      and .data.destination.host == "fixture.test"
+      and .data.action.type == "route")
     and any(.[]; .kind == "flow.open" and .data.network == "tcp")
     and any(.[]; .kind == "flow.data" and .data.blob.algorithm == "sha256")
     and any(.[]; .kind == "flow.close" and .data.network == "tcp" and .data.status == "complete")
@@ -179,7 +190,7 @@ as_tester heimdall logs query --run "$tcp_run_id" --jsonl \
 as_tester heimdall logs verify --run "$tcp_run_id" --json \
   | jq -e '.valid and .state == "closed" and .events >= 8 and .blobs >= 1' >/dev/null
 as_tester heimdall logs schema --event v1 \
-  | jq -e '."$schema" == "https://json-schema.org/draft/2020-12/schema" and (.oneOf | length) == 17' >/dev/null
+  | jq -e '."$schema" == "https://json-schema.org/draft/2020-12/schema" and (.oneOf | length) == 18' >/dev/null
 as_tester heimdall logs schema --run v1 \
   | jq -e '."$schema" == "https://json-schema.org/draft/2020-12/schema"' >/dev/null
 
@@ -465,6 +476,13 @@ for _ in $(seq 1 100); do
   sleep 0.02
 done
 capture_contains tls_plaintext.runtime 'GET / HTTP'
+find /home/tester/.local/state/heimdall/runs -name 'events-*.jsonl' -type f -print0 \
+  | xargs -0 jq -e -s 'any(.[]; .kind == "tls.runtime"
+      and .data.library == "openssl"
+      and .data.boundary == "tls_plaintext.runtime"
+      and (.data.api_family == "SSL_read*" or .data.api_family == "SSL_write*")
+      and .data.observed_bytes > 0
+      and .pid > 0)' >/dev/null
 test "$(bpftool -j link show | jq 'length')" -eq "$foreground_link_baseline"
 
 install -d -o tester -g users -m 0700 /run/heimdall-test/relay

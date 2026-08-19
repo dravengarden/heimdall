@@ -30,6 +30,8 @@ acceptance path are documented and tested.
 - Per-run `heimdall.event/v1` lifecycle, TCP/UDP metadata, and bounded
   content-addressed payload blobs, with offline schemas, byte/age rotation,
   integrity verification, payload-aware filters, and `heimdall logs`.
+- Correlated fake-DNS query/answer evidence, ordered policy-decision evidence,
+  and explicit OpenSSL runtime-observation metadata.
 - Relay TLS termination and startup-discovered OpenSSL runtime TLS probes in
   the foreground path.
 - No background service, machine-wide control plane, or persistent kernel
@@ -69,9 +71,10 @@ normal cleanup, and fail-closed owner-death cleanup. See
 
 ### 2. Agent-first event store
 
-- Extend the available per-run event store beyond relay TLS handshake/error
-  evidence with DNS/policy, ClientHello, runtime TLS, and optional HTTP records.
-- Harden content-addressed payload coalescing and out-of-space diagnostics.
+- Extend the available per-run event store beyond fake-DNS, policy, runtime
+  TLS, and relay TLS evidence with ClientHello and optional HTTP records.
+- Add bounded block coalescing and recovery tooling around the available
+  atomic blob publication and stable `event_store_full` diagnostics.
 - Keep the available rotation writer-owned and loss-aware; do not support
   external `copytruncate` against active logs.
 - Publish exhaustive schema and Linux-tool recipes in the bundled Heimdall
@@ -110,12 +113,12 @@ trusted.
 
 ### 5. Capture analysis workflow
 
-- Make bounded capture easier to inspect without changing its explicit payload
-  boundary or strict private ownership.
-- Add deterministic metadata and filtering primitives for agent-assisted flow
-  triage.
-- Document retention, redaction, and failure behavior for production-like
-  capture directories.
+- Extend the available boundary/direction/blob filters with bounded block
+  inspection that does not weaken strict private ownership.
+- Add explicit redaction and allowlist controls before sensitive bytes reach
+  the content-addressed store.
+- Keep documenting retention and failure behavior for production-like private
+  run stores.
 
 Acceptance target: an operator or agent can identify the capture boundary,
 select a flow, and explain why bytes are opaque or plaintext without guessing

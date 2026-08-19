@@ -42,7 +42,7 @@ heimdall config show
 heimdall config validate --json
 heimdall config explain --policy default --domain example.com --port 443 --json</code></pre>
         <p><code>heimdall agent</code> is the read-only <code>heimdall.agent/v8</code> contract. Read <code>execution.backend</code>, owner, privilege setup, and capability evidence before execution.</p>
-        <p>Payload analysis stays file-first: use <code>heimdall logs query --run RUN_ID --boundary tls_plaintext.relay --has-blob --jsonl</code>, then verify the referenced SHA-256 blobs with <code>heimdall logs verify</code>.</p>
+        <p>Evidence stays file-first: correlate <code>dns.query</code>/<code>dns.answer</code> by <code>data.exchange_id</code>, inspect <code>policy.decision</code> for the matched rule, and use <code>heimdall logs query --run RUN_ID --boundary tls_plaintext.relay --has-blob --jsonl</code> for payloads. Verify referenced SHA-256 blobs with <code>heimdall logs verify</code>.</p>
         <table><thead><tr><th>Exit</th><th>Meaning</th></tr></thead><tbody><tr><td><code>0</code></td><td>Ready for the selected policy and execution backend.</td></tr><tr><td><code>1</code></td><td>Not ready; follow the returned argv repair action.</td></tr><tr><td><code>2</code></td><td>CLI usage failure.</td></tr></tbody></table>
 
         <h2 id="run">Run through a proxy</h2>

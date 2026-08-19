@@ -79,6 +79,7 @@
           <li>The child joins the cgroup only after setup succeeds, then executes the requested command.</li>
           <li>eBPF rewrites eligible TCP and UDP destinations to the local relay. DNS follows the selected fake or system mode.</li>
           <li>The relay recovers the original destination, evaluates ordered rules, and routes, connects directly, or rejects.</li>
+          <li>The run writer records correlated fake-DNS exchanges, policy decisions, flow boundaries, and explicit runtime/relay TLS observations.</li>
           <li>After the immediate child exits, the foreground owner keeps interception alive until the complete descendant tree leaves the cgroup, then closes links, maps, listeners, and logs.</li>
         </ol>
 
@@ -87,7 +88,7 @@
           <thead><tr><th>Layer</th><th>Decision</th><th>Default</th></tr></thead>
           <tbody>
             <tr><td>Proxy</td><td>Whether and where a connection is relayed.</td><td>Policy required</td></tr>
-            <tr><td>Capture</td><td>Whether bounded bytes are retained as JSONL.</td><td><code>off</code></td></tr>
+            <tr><td>Capture</td><td>Whether bounded bytes are retained as content-addressed blobs referenced by JSONL.</td><td><code>off</code></td></tr>
             <tr><td>Decrypt</td><td>Whether retained TLS bytes are runtime-probed or relay-terminated.</td><td><code>off</code></td></tr>
           </tbody>
         </table>

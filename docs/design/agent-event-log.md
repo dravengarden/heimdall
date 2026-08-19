@@ -2,8 +2,9 @@
 
 Status: lifecycle, TCP/UDP metadata, bounded content-addressed payload blobs,
 payload-aware queries, byte/age rotation, and integrity verification are
-implemented. Relay TLS handshake/error metadata is implemented; DNS/policy,
-ClientHello, runtime TLS metadata, and derived HTTP events remain in progress.
+implemented. Correlated fake-DNS, policy-decision, OpenSSL runtime-observation,
+and relay TLS handshake/error metadata are implemented. ClientHello and
+derived HTTP events remain in progress.
 
 This document defines the unified storage and CLI contract. The goals are direct Linux-tool usability, strict
 machine discovery, bounded storage, and loss-aware rotation. The event log is
@@ -112,8 +113,8 @@ feature, not part of v1.
 ## Event kinds
 
 The v1 schema reserves the kinds below. The current writer emits run lifecycle,
-TCP/UDP flow records, payload references, and relay `tls.handshake`/`tls.error`.
-DNS, policy-decision, ClientHello, runtime TLS metadata, and HTTP kinds are not
+fake-DNS, policy-decision, TCP/UDP flow, payload-reference, `tls.runtime`, and
+relay `tls.handshake`/`tls.error` records. ClientHello and HTTP kinds are not
 yet emitted and must not be inferred from their presence in the schema. New
 meanings require a new schema version; optional fields cannot reinterpret an
 existing kind.
@@ -129,9 +130,11 @@ existing kind.
 
 ### DNS and policy
 
-- `dns.query`: transport, query name, type, and policy.
-- `dns.answer`: rcode, answers, fake/system boundary, and latency.
-- `policy.decision`: network, destination identity, matched rule, and action.
+- `dns.query`: exchange UUID, transport, question array, and policy.
+- `dns.answer`: matching exchange UUID, rcode, answers, fake boundary, and
+  latency.
+- `policy.decision`: cgroup source, policy, network, destination identity,
+  matched rule or final action, and selected action.
 
 ### Flows
 
@@ -157,6 +160,8 @@ still `transport`.
 
 ### TLS metadata
 
+- `tls.runtime`: OpenSSL API family, direction, observed/reported byte counts,
+  truncation, PID, and the explicit `tls_plaintext.runtime` boundary.
 - `tls.client_hello`: SNI, offered ALPN, version range, and parser status.
 - `tls.handshake`: mode, negotiated version/cipher/ALPN, peer identity result,
   trust boundary, and latency.
@@ -190,22 +195,23 @@ Binary and large plaintext payloads are never embedded as base64 in JSONL.
 ```
 
 `path` is relative to the run directory and MUST resolve below `blobs/` after
-canonicalization. Identical bytes in one run may share a blob. Readers verify
-the digest before trusting content. Compression, if later added, gets explicit
-stored/content sizes and encoding fields; it never changes digest semantics.
-The writer coalesces consecutive bytes from the same flow and direction into
-bounded blocks before creating blobs, so a byte stream does not create one file
-per relay read. Block size and maximum flush latency are explicit capture
-settings and appear in `run.json`.
+canonicalization. Identical bytes in one run share a blob. Publication uses a
+private temporary file and an atomic same-filesystem link, so a failed write
+never publishes a partial digest path. Readers verify the digest before
+trusting content. Compression, if later added, gets explicit stored/content
+sizes and encoding fields; it never changes digest semantics. Each observed
+chunk is currently one blob reference; bounded cross-read block coalescing
+remains planned and will require explicit size and flush-latency fields.
 
 Capture profiles:
 
 - `metadata`: no payload blobs; lengths, policy, DNS, TLS metadata, and errors
   remain available;
 - `payload`: bounded opaque or plaintext blobs according to the TLS boundary;
-- `off`: only minimal run lifecycle and fatal-error evidence.
+- `off` is reserved in the schema; current `capture.mode = off` maps to the
+  `metadata` profile so agent-readable flow evidence remains available.
 
-The default is `metadata`. Plaintext payload capture requires explicit
+The current default is `metadata`. Plaintext payload capture requires explicit
 configuration because it may contain credentials or personal data.
 
 ## Rotation
@@ -350,14 +356,17 @@ to bridge rotation while preserving the same raw event objects.
 - `heimdall logs verify` checks JSON syntax, schema, run IDs, sequence
   continuity, segment digests, blob paths, blob digests, and final-state
   consistency.
-- If storage becomes unavailable, metadata or payload capture never silently
-  downgrades. The configured policy chooses `terminate_run` or
-  `continue_without_payload`; the latter emits a durable warning before the
-  downgrade whenever any writable segment remains.
+- Payload publication never silently downgrades. An affected flow fails with
+  `event_store_full`, `event_store_permission_denied`, or `event_failed`; no
+  partial digest path is published.
+- Policy evidence is committed before the selected network action. Fake-DNS
+  does not answer a query when its query/answer evidence cannot be committed,
+  so a successful path never silently omits these decision records.
 - A crash may leave only the last segment unfinalized. Verification reports
   the last complete line and `incomplete_tail`; it never invents a close event.
-- Secrets are not redacted after writing. Redaction and header/body allowlists
-  run before blob creation so forbidden bytes never reach disk.
+- The current writer does not redact payloads. Do not enable capture without
+  authority to retain the bytes. Future redaction or allowlists must run before
+  blob creation so forbidden bytes never reach disk.
 
 ## External standards
 

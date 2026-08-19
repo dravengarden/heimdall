@@ -18,7 +18,7 @@ stable contracts, planning, design material, and operational guidance.
 - [`ROADMAP.md`](../ROADMAP.md) — Public status, active development tracks, planned macOS support, and non-goals
 - [`architecture.md`](architecture.md) — Foreground CLI ownership, setup privilege drop, per-run eBPF/relay/DNS lifecycle, fail-closed UDP correlation, capture, and TLS boundaries
 - [`design/daemonless-runtime.md`](design/daemonless-runtime.md) — Foreground per-run architecture and implementation status for session-owned data-plane and kernel resources
-- [`design/agent-event-log.md`](design/agent-event-log.md) — Daemonless JSONL/run schemas, content-addressed blobs, rotation, and CLI
+- [`design/agent-event-log.md`](design/agent-event-log.md) — Daemonless JSONL/run schemas, DNS/policy/TLS evidence, content-addressed blobs, rotation, and CLI
 - [`install.md`](install.md) — Static Linux release installation, narrow setup authorization, upgrade, and one-level rollback
 - [`runbook.md`](runbook.md) — Runbook
 
@@ -37,5 +37,5 @@ stable contracts, planning, design material, and operational guidance.
 ### Design documents
 
 - [`design/daemonless-runtime.md`](design/daemonless-runtime.md) — Implemented foreground replacement for all decrypt modes, including startup-discovered OpenSSL probes
-- [`design/agent-event-log.md`](design/agent-event-log.md) — Agent-first event storage and CLI contract with lifecycle, TCP/UDP metadata, and payload blobs
+- [`design/agent-event-log.md`](design/agent-event-log.md) — Agent-first event storage and CLI contract with lifecycle, DNS/policy/TLS observations, TCP/UDP metadata, and payload blobs
 - [`../skills/heimdall/references/events.md`](../skills/heimdall/references/events.md) — Agent-facing schema map and safe parsing rules

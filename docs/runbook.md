@@ -141,7 +141,7 @@ Query with the CLI or ordinary Linux tools:
 ```bash
 heimdall logs query --run RUN_ID --kind flow.close --jsonl
 heimdall logs tail --run RUN_ID --follow --jsonl
-jq -c 'select(.kind == "flow.close" and .data.bytes_out > 0)' \
+jq -c 'select(.kind == "flow.close" and .data.client_to_remote_bytes > 0)' \
   ~/.local/state/heimdall/runs/RUN_ID/events-*.jsonl
 rg '"kind":"run.error"' ~/.local/state/heimdall/runs/RUN_ID
 ```
@@ -161,8 +161,8 @@ the complete schema and `jq` recipes.
 
 ## Capture and TLS
 
-Capture directories and relay CA material must be owned by and readable only by
-the user who invokes `heimdall run`. Generate relay trust material as that user:
+Run directories, payload blobs, and relay CA material are private to the user
+who invokes `heimdall run`. Generate relay trust material as that user:
 
 ```bash
 install -d -m 0700 "$HOME/.local/state/heimdall/tls"

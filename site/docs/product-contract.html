@@ -37,7 +37,7 @@
         <p>Selecting a TLS mode is not proof of plaintext. Agents must read the reported capability and event boundary.</p>
 
         <h2 id="evidence">Agent evidence is file-first</h2>
-        <ul><li><code>heimdall agent</code> emits one read-only <code>heimdall.agent/v8</code> document with argv-safe actions.</li><li>Each run writes one <code>heimdall.run/v1</code> manifest and ordered <code>heimdall.event/v1</code> JSONL.</li><li><code>jq</code>, <code>rg</code>, <code>sed</code>, <code>sort</code>, <code>wc</code>, and <code>heimdall logs</code> are supported analysis paths.</li><li>Heimdall owns active-file rotation; schemas and integrity verification work offline.</li></ul>
+        <ul><li><code>heimdall agent</code> emits one read-only <code>heimdall.agent/v8</code> document with argv-safe actions.</li><li>Each run writes one <code>heimdall.run/v1</code> manifest and ordered <code>heimdall.event/v1</code> JSONL.</li><li>Fake-DNS exchanges, policy decisions, flow boundaries, and TLS observations are explicit records.</li><li><code>jq</code>, <code>rg</code>, <code>sed</code>, <code>sort</code>, <code>wc</code>, and <code>heimdall logs</code> are supported analysis paths.</li><li>Heimdall owns active-file rotation; schemas and integrity verification work offline.</li></ul>
 
         <h2 id="viewer">Optional viewer</h2>
         <p>A future Web UI is explicitly started, unprivileged, and read-only. It reads the same files directly and has no authority over policy, TLS, capture, or the data plane. Its lifecycle cannot affect a run.</p>

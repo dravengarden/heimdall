@@ -39,8 +39,9 @@ Use `heimdall help -v` only when deeper command discovery is needed.
 ## Select evidence boundaries
 
 Read [references/events.md](references/events.md) before consuming run logs.
-`heimdall.event/v1` records lifecycle, TCP/UDP metadata, and bounded blob
-references in user-owned JSONL. Use `heimdall logs schema`, `list`, `path`,
+`heimdall.event/v1` records lifecycle, fake-DNS exchanges, policy decisions,
+TCP/UDP and TLS metadata, and bounded blob references in user-owned JSONL.
+Use `heimdall logs schema`, `list`, `path`,
 `query`, `tail`, `rotate`, `verify`, and `prune`; standard `jq`, `rg`, `sed`,
 `sort`, `sha256sum`, and `wc` are valid consumers. Do not require or start a
 Web UI.

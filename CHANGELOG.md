@@ -26,6 +26,11 @@ migration guide.
   JSONL lifecycle/TCP/UDP evidence with bounded content-addressed payload
   blobs, payload-aware filters, byte/age rotation, integrity verification,
   retention, and `heimdall logs` workflows.
+- Add correlated fake-DNS query/answer records, ordered TCP/UDP policy
+  decisions, explicit OpenSSL runtime-observation records, and negotiated
+  relay TLS evidence.
+- Publish blobs atomically, verify an existing digest before reuse, and return
+  stable `event_store_full` or `event_store_permission_denied` failures.
 - Add explicit `off`, `runtime`, and `relay` TLS modes. Runtime mode observes
   startup-discovered OpenSSL APIs without changing trust; relay mode validates
   upstream TLS and issues per-host leaves from invoking-user-owned CA material.

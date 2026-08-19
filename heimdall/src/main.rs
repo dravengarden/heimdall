@@ -355,6 +355,10 @@ impl ForegroundSession {
             .context("join setup worker launcher")??;
         let installed = runtime.install_setup_bundle(bundle)?;
         let event_client = event_log::EventClient::connect(event_socket)?;
+        runtime
+            .dns
+            .configure_events(event_client.clone(), policy_name)
+            .context("configure foreground DNS event evidence")?;
         let capture =
             capture::CaptureManager::from_config(&cfg.capture, Some(event_client.clone()))
                 .await
@@ -1473,6 +1477,41 @@ fn destination_from_orig(orig: &OrigDst, shared: &Shared) -> Dst {
     }
 }
 
+fn emit_policy_decision(
+    shared: &Shared,
+    owner: (u64, &str),
+    network: &'static str,
+    destination: &Dst,
+    port: u16,
+    rule: Option<&heimdall_config::RouteRule>,
+    action: &Action,
+) -> Result<()> {
+    let (cgroup_id, policy) = owner;
+    let Some(events) = shared.event_clients.read().get(&cgroup_id).cloned() else {
+        return Ok(());
+    };
+    let destination = match destination {
+        Dst::Domain(host) => serde_json::json!({"host": host, "port": port}),
+        Dst::Ip4(ip) => serde_json::json!({"ip": ip, "port": port}),
+        Dst::Ip6(ip) => serde_json::json!({"ip": ip, "port": port}),
+    };
+    let rule = rule.map_or_else(
+        || serde_json::json!({"name": null, "source": "final"}),
+        |rule| serde_json::json!({"name": rule.name, "source": "ordered_rule"}),
+    );
+    events.emit_run(
+        "policy.decision",
+        serde_json::json!({
+            "source": {"cgroup_id": cgroup_id},
+            "policy": policy,
+            "network": network,
+            "destination": destination,
+            "rule": rule,
+            "action": serde_json::to_value(action).context("encode policy action")?
+        }),
+    )
+}
+
 async fn relay(mut client: TcpStream, key: u32, map: PortMap, shared: Arc<Shared>) -> Result<()> {
     // Pop the original destination (and cgroup_id) from the BPF map.
     let orig = {
@@ -1518,7 +1557,16 @@ async fn relay(mut client: TcpStream, key: u32, map: PortMap, shared: Arc<Shared
         Dst::Domain(domain) => Some(domain.as_str()),
         Dst::Ip4(_) | Dst::Ip6(_) => None,
     };
-    let action = policy.decide_tcp(domain, ip, dst_port);
+    let (rule, action) = policy.explain_tcp(domain, ip, dst_port);
+    emit_policy_decision(
+        &shared,
+        (orig.cgroup_id, &decision.policy),
+        "tcp",
+        &dst,
+        dst_port,
+        rule,
+        action,
+    )?;
 
     // ─── Execute the selected terminal action ─────────────────────────────
     let result: Result<(u64, u64)> = async {
@@ -1894,7 +1942,17 @@ fn resolve_udp_session(orig: &OrigDst, shared: &Shared) -> Result<UdpSessionSpec
         Dst::Ip6(ip) => (None, Some(std::net::IpAddr::V6(*ip))),
     };
 
-    let action = match policy.decide_udp(domain, ip, dst_port).clone() {
+    let (rule, selected_action) = policy.explain_udp(domain, ip, dst_port);
+    emit_policy_decision(
+        shared,
+        (orig.cgroup_id, &decision.policy),
+        "udp",
+        &dst,
+        dst_port,
+        rule,
+        selected_action,
+    )?;
+    let action = match selected_action.clone() {
         Action::Route { outbound } => {
             let upstream = shared
                 .upstreams

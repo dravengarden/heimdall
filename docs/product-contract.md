@@ -66,7 +66,9 @@ the reported capability and event boundary.
 1. `heimdall agent` is read-only, emits exactly one `heimdall.agent/v8` JSON
    document, and represents executable actions as argv arrays.
 2. Each run writes one `heimdall.run/v1` manifest and ordered append-only
-   `heimdall.event/v1` JSONL segments owned by the invoking user.
+   `heimdall.event/v1` JSONL segments owned by the invoking user. Fake-DNS
+   exchanges, policy decisions, flow boundaries, and TLS observations are
+   explicit records rather than filename or port inferences.
 3. JSONL files are the evidence source of truth. `jq`, `rg`, `sed`, `sort`,
    `wc`, and the `heimdall logs` commands are supported analysis paths.
 4. Heimdall owns active-file rotation. Agents use `logs rotate`, `tail`,

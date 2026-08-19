@@ -32,6 +32,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    time::Instant,
 };
 
 use anyhow::{Context, Result};
@@ -50,6 +51,9 @@ use tokio::{
     net::{TcpListener, TcpStream, UdpSocket},
 };
 use tracing::{debug, info, warn};
+use uuid::Uuid;
+
+use crate::event_log::EventClient;
 
 const FAKE_IP_TTL_SEC: u32 = 30;
 pub const FAKE_IPV4_CIDR: &str = "198.19.0.0/16";
@@ -71,6 +75,7 @@ pub struct DnsResolver {
 
     state_path: Option<PathBuf>,
     state_write: Mutex<()>,
+    evidence: RwLock<Option<DnsEvidence>>,
 
     /// IPv6 fake-IP pool: only populated when `fake_ip6_cidr` is set.
     /// Mirror of the v4 fields, scaled up: 128-bit base + 64-bit ring
@@ -78,6 +83,12 @@ pub struct DnsResolver {
     /// always ≤ 128 - prefix; for typical /96 that's 32 bits anyway).
     /// `None` means "answer AAAA with empty NOERROR".
     v6: Option<V6Pool>,
+}
+
+#[derive(Clone)]
+struct DnsEvidence {
+    events: EventClient,
+    policy: String,
 }
 
 struct V6Pool {
@@ -178,10 +189,24 @@ impl DnsResolver {
             by_name: RwLock::new(HashMap::new()),
             state_path,
             state_write: Mutex::new(()),
+            evidence: RwLock::new(None),
             v6,
         };
         resolver.load_state()?;
         Ok(resolver)
+    }
+
+    pub fn configure_events(&self, events: EventClient, policy: &str) -> Result<()> {
+        let mut evidence = self.evidence.write();
+        anyhow::ensure!(
+            evidence.is_none(),
+            "DNS event evidence is already configured"
+        );
+        *evidence = Some(DnsEvidence {
+            events,
+            policy: policy.to_owned(),
+        });
+        Ok(())
     }
 
     /// Allocate or retrieve the fake IP for `hostname`.
@@ -474,7 +499,13 @@ impl DnsResolver {
                 }
             };
 
-            let resp = self.handle(msg);
+            let resp = match self.handle_observed(msg, "udp") {
+                Ok(response) => response,
+                Err(error) => {
+                    warn!(%error, ?peer, "record DNS evidence failed");
+                    continue;
+                }
+            };
             let resp_bytes = match resp.to_bytes() {
                 Ok(b) => b,
                 Err(e) => {
@@ -503,7 +534,7 @@ impl DnsResolver {
                 .context("read DNS TCP query")?;
             let query = Message::from_bytes(&request).context("decode DNS TCP query")?;
             let response = self
-                .handle(query)
+                .handle_observed(query, "tcp")?
                 .to_bytes()
                 .context("encode DNS TCP response")?;
             anyhow::ensure!(
@@ -587,6 +618,61 @@ impl DnsResolver {
             }
         }
         response
+    }
+
+    fn handle_observed(&self, query: Message, transport: &'static str) -> Result<Message> {
+        let started = Instant::now();
+        let evidence = self.evidence.read().clone();
+        let exchange_id = Uuid::now_v7();
+        if let Some(evidence) = &evidence {
+            let questions = query
+                .queries
+                .iter()
+                .map(|question| {
+                    serde_json::json!({
+                        "name": canonicalise(&question.name().to_ascii()),
+                        "query_type": format!("{:?}", question.query_type())
+                    })
+                })
+                .collect::<Vec<_>>();
+            evidence.events.emit_run(
+                "dns.query",
+                serde_json::json!({
+                    "exchange_id": exchange_id,
+                    "transport": transport,
+                    "questions": questions,
+                    "policy": evidence.policy
+                }),
+            )?;
+        }
+
+        let response = self.handle(query);
+        if let Some(evidence) = evidence {
+            let answers = response
+                .answers
+                .iter()
+                .map(|answer| {
+                    serde_json::json!({
+                        "name": canonicalise(&answer.name.to_ascii()),
+                        "record_type": format!("{:?}", answer.record_type()),
+                        "value": answer.data.to_string(),
+                        "ttl": answer.ttl
+                    })
+                })
+                .collect::<Vec<_>>();
+            evidence.events.emit_run(
+                "dns.answer",
+                serde_json::json!({
+                    "exchange_id": exchange_id,
+                    "rcode": format!("{:?}", response.metadata.response_code),
+                    "answers": answers,
+                    "boundary": "fake",
+                    "latency_us": u64::try_from(started.elapsed().as_micros())
+                        .unwrap_or(u64::MAX)
+                }),
+            )?;
+        }
+        Ok(response)
     }
 }
 

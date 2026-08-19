@@ -1,9 +1,9 @@
 # Event and run schemas
 
-The daemonless event store records lifecycle, TCP/UDP flow metadata, and
-bounded content-addressed payload blobs and relay TLS handshake/error evidence
-in `heimdall.event/v1`. DNS/policy, ClientHello, runtime TLS metadata, and
-derived HTTP records remain planned. Inspect
+The daemonless event store records lifecycle, TCP/UDP flow metadata, bounded
+content-addressed payload blobs, correlated fake-DNS and policy evidence,
+OpenSSL runtime observations, and relay TLS handshake/error evidence in
+`heimdall.event/v1`. ClientHello and derived HTTP records remain planned. Inspect
 `agent.capabilities.logs` and use [commands.md](commands.md) whenever required
 evidence is not yet emitted.
 
@@ -64,6 +64,7 @@ policy.decision
 flow.open
 flow.data
 flow.close
+tls.runtime
 tls.client_hello
 tls.handshake
 tls.error
@@ -88,12 +89,13 @@ producer version mismatch.
 | `run.warning` | `code` string, `message` string, `phase` string, `context` object |
 | `run.error` | `code` string, `message` string, `phase` string, `retryable` boolean, `context` object |
 | `run.close` | `exit_code` integer or null, `signal` integer or null, `descendants_cleaned` boolean, `complete` boolean |
-| `dns.query` | `transport` enum, `name` string, `query_type` string, `policy` string |
-| `dns.answer` | `rcode` string, `answers` array, `boundary` enum, `latency_us` unsigned integer |
-| `policy.decision` | `network` enum, `destination` object, `rule` object, `action` object |
+| `dns.query` | `exchange_id` UUIDv7, `transport` enum, `questions` array, `policy` string |
+| `dns.answer` | `exchange_id` UUIDv7, `rcode` string, `answers` array, `boundary` enum, `latency_us` unsigned integer |
+| `policy.decision` | `source` object, `policy` string, `network` enum, `destination` object, `rule` object, `action` object |
 | `flow.open` | `network` enum, `source` object, `destination` object, `action` object, `policy` string, `boundary` enum |
 | `flow.data` | `direction` enum, `boundary` enum, `original_bytes` unsigned integer, `stored_bytes` unsigned integer, `truncated` boolean, `blob` object or null |
 | `flow.close` | `network` enum, `status` string, `error_code` string or null, `client_to_remote_bytes` unsigned integer, `remote_to_client_bytes` unsigned integer, `duration_us` unsigned integer |
+| `tls.runtime` | `library` string, `api_family` enum, `direction` enum, `boundary` constant, observed/reported byte counts, `truncated` boolean |
 | `tls.client_hello` | `sni` string or null, `alpn_offered` string array, `min_version` string or null, `max_version` string or null, `parser_status` string |
 | `tls.handshake` | `mode` enum, `version` string, `cipher` string, `alpn` string or null, `peer_identity` object, `trust` object, `latency_us` unsigned integer |
 | `tls.error` | `mode` enum, `code` string, `message` string, `phase` string, `retryable` boolean, `peer_identity` object or null |
@@ -107,7 +109,8 @@ The `run.open.data.capture` object contains `profile` and
 `flow.data` records in the event segments.
 Destination identity uses exactly one of `host` or `ip`, plus `port`; agents
 must not infer a hostname from SNI when the destination is an IP. An action has
-`type` equal to `route`, `direct`, or `reject`; only `route` has an `outbound`.
+`type` equal to `route`, `direct`, or `reject`; `route` has an `outbound` and
+`reject` has a `method`.
 
 For a closed run, foreground shutdown drains tracked flows before
 `run.close`. Treat a missing `flow.close`, a shutdown error, or a failed
