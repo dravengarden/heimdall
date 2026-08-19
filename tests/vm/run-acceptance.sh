@@ -62,6 +62,7 @@ as_tester heimdall agent \
     and .capabilities.logs.dns_events == "fake"
     and .capabilities.logs.policy_decision_events
     and .capabilities.logs.tls_events == "runtime+relay"
+    and .capabilities.logs.client_hello_events
     and .capabilities.logs.writer_owned_rotation
     and .capabilities.logs.content_addressed_blobs
     and .capabilities.decrypt.modes == ["off", "runtime", "relay"]
@@ -499,11 +500,16 @@ as_tester heimdall --config /etc/heimdall-test/relay.toml run --policy fake -- \
     https://fixture.test:18444/ >/dev/null
 capture_contains tls_plaintext.relay 'GET / HTTP'
 find /home/tester/.local/state/heimdall/runs -name 'events-*.jsonl' -type f -print0 \
-  | xargs -0 jq -e -s 'any(.[]; .kind == "tls.handshake"
-      and .data.mode == "relay"
-      and .data.peer_identity.verified
-      and .data.version != "unknown"
-      and .data.cipher != "unknown")' >/dev/null
+  | xargs -0 jq -e -s '
+      any(.[]; .kind == "tls.client_hello"
+        and .data.sni == "fixture.test"
+        and (.data.alpn_offered | index("http/1.1"))
+        and .data.parser_status == "parsed_versions_unavailable")
+      and any(.[]; .kind == "tls.handshake"
+        and .data.mode == "relay"
+        and .data.peer_identity.verified
+        and .data.version != "unknown"
+        and .data.cipher != "unknown")' >/dev/null
 
 run_count_before_prune="$(as_tester heimdall logs list --json | jq '.runs | length')"
 as_tester heimdall logs prune --keep-last 1 --max-total-bytes 1 --json \

@@ -3,8 +3,8 @@
 Status: lifecycle, TCP/UDP metadata, bounded content-addressed payload blobs,
 payload-aware queries, byte/age rotation, and integrity verification are
 implemented. Correlated fake-DNS, policy-decision, OpenSSL runtime-observation,
-and relay TLS handshake/error metadata are implemented. ClientHello and
-derived HTTP events remain in progress.
+relay ClientHello, and relay TLS handshake/error metadata are implemented.
+Derived HTTP events remain in progress.
 
 This document defines the unified storage and CLI contract. The goals are direct Linux-tool usability, strict
 machine discovery, bounded storage, and loss-aware rotation. The event log is
@@ -113,9 +113,9 @@ feature, not part of v1.
 ## Event kinds
 
 The v1 schema reserves the kinds below. The current writer emits run lifecycle,
-fake-DNS, policy-decision, TCP/UDP flow, payload-reference, `tls.runtime`, and
-relay `tls.handshake`/`tls.error` records. ClientHello and HTTP kinds are not
-yet emitted and must not be inferred from their presence in the schema. New
+fake-DNS, policy-decision, TCP/UDP flow, payload-reference, `tls.runtime`, relay
+`tls.client_hello`, and relay `tls.handshake`/`tls.error` records. HTTP kinds are
+not yet emitted and must not be inferred from their presence in the schema. New
 meanings require a new schema version; optional fields cannot reinterpret an
 existing kind.
 
@@ -162,7 +162,10 @@ still `transport`.
 
 - `tls.runtime`: OpenSSL API family, direction, observed/reported byte counts,
   truncation, PID, and the explicit `tls_plaintext.runtime` boundary.
-- `tls.client_hello`: SNI, offered ALPN, version range, and parser status.
+- `tls.client_hello`: SNI and offered ALPN from rustls' parsed relay
+  ClientHello. `min_version` and `max_version` are currently null because the
+  public parser API does not expose the offered version list;
+  `parser_status=parsed_versions_unavailable` makes that limit explicit.
 - `tls.handshake`: mode, negotiated version/cipher/ALPN, peer identity result,
   trust boundary, and latency.
 - `tls.error`: mode, stable code, phase, and peer-verification evidence.

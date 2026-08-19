@@ -27,8 +27,8 @@ migration guide.
   blobs, payload-aware filters, byte/age rotation, integrity verification,
   retention, and `heimdall logs` workflows.
 - Add correlated fake-DNS query/answer records, ordered TCP/UDP policy
-  decisions, explicit OpenSSL runtime-observation records, and negotiated
-  relay TLS evidence.
+  decisions, explicit OpenSSL runtime-observation records, parsed relay
+  ClientHello records, and negotiated relay TLS evidence.
 - Publish blobs atomically, verify an existing digest before reuse, and return
   stable `event_store_full` or `event_store_permission_denied` failures.
 - Add explicit `off`, `runtime`, and `relay` TLS modes. Runtime mode observes

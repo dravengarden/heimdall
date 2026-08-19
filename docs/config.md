@@ -187,7 +187,8 @@ process maps and reads inherited rings. Setup fails if none can be attached. Ima
 loaded only after exec are not observed in the current alpha. Require
 `execution.daemon_required = false` and verify the selected runtime capability.
 
-`relay` detects TLS ClientHello records at the relay, verifies the upstream
+`relay` detects TLS ClientHello records at the relay, records parsed SNI and
+offered ALPN as `tls.client_hello`, verifies the upstream
 certificate with the native trust store, mirrors the negotiated ALPN, signs a
 per-host leaf certificate, and captures the resulting plaintext. Non-TLS TCP
 passes through unchanged. Generate the CA with

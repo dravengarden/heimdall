@@ -19,7 +19,10 @@ use tokio_rustls::{LazyConfigAcceptor, TlsConnector};
 use tracing::warn;
 use x509_parser::{parse_x509_certificate, pem::parse_x509_pem};
 
-use crate::capture::{self, CaptureManager, FlowMeta};
+use crate::{
+    capture::{self, CaptureManager, FlowMeta},
+    event_log::FlowEventClient,
+};
 
 const CLIENT_HELLO_TIMEOUT: Duration = Duration::from_secs(3);
 const CLASSIFY_TIMEOUT: Duration = Duration::from_millis(150);
@@ -106,6 +109,7 @@ impl RelayTls {
         remote: &mut TcpStream,
         fallback_name: &str,
         capture: &CaptureManager,
+        events: Option<&FlowEventClient>,
         meta: FlowMeta<'_>,
     ) -> Result<RelayCopyReport> {
         let handshake_started = Instant::now();
@@ -122,6 +126,25 @@ impl RelayTls {
             .alpn()
             .map(|items| items.map(<[u8]>::to_vec).collect::<Vec<_>>())
             .unwrap_or_default();
+        if let Some(events) = events {
+            events.emit(
+                "tls.client_hello",
+                meta.flow_id,
+                serde_json::json!({
+                    "sni": hello.server_name(),
+                    "alpn_offered": offered_alpn
+                        .iter()
+                        .map(|protocol| match std::str::from_utf8(protocol) {
+                            Ok(protocol) => protocol.to_owned(),
+                            Err(_) => format!("hex:{}", hex::encode(protocol)),
+                        })
+                        .collect::<Vec<_>>(),
+                    "min_version": null,
+                    "max_version": null,
+                    "parser_status": "parsed_versions_unavailable"
+                }),
+            )?;
+        }
 
         let name = ServerName::try_from(server_name.clone())
             .with_context(|| format!("invalid TLS server name `{server_name}`"))?;
@@ -358,6 +381,7 @@ mod tests {
                     &mut upstream,
                     "fixture.test",
                     &capture,
+                    None,
                     FlowMeta {
                         flow_id: uuid::Uuid::now_v7(),
                         boundary: "tls_plaintext.relay",

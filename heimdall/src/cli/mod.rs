@@ -106,6 +106,7 @@ pub mod agent {
         dns_events: &'static str,
         policy_decision_events: bool,
         tls_events: &'static str,
+        client_hello_events: bool,
         writer_owned_rotation: bool,
         content_addressed_blobs: bool,
     }
@@ -547,6 +548,7 @@ pub mod agent {
                 dns_events: "fake",
                 policy_decision_events: true,
                 tls_events: "runtime+relay",
+                client_hello_events: true,
                 writer_owned_rotation: true,
                 content_addressed_blobs: true,
             },
@@ -702,6 +704,7 @@ pub mod agent {
             assert_eq!(logs.dns_events, "fake");
             assert!(logs.policy_decision_events);
             assert_eq!(logs.tls_events, "runtime+relay");
+            assert!(logs.client_hello_events);
             assert!(logs.writer_owned_rotation);
             assert!(logs.content_addressed_blobs);
         }

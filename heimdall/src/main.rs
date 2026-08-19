@@ -1717,7 +1717,14 @@ async fn copy_tcp_transport(
             .context("strict config enabled relay decrypt without capture")?;
         let fallback_name = meta.destination.to_owned();
         match relay_tls
-            .copy(client, remote, &fallback_name, manager, meta)
+            .copy(
+                client,
+                remote,
+                &fallback_name,
+                manager,
+                event_client.as_ref(),
+                meta,
+            )
             .await
         {
             Ok(report) => {

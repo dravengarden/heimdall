@@ -79,7 +79,7 @@
           <li>The child joins the cgroup only after setup succeeds, then executes the requested command.</li>
           <li>eBPF rewrites eligible TCP and UDP destinations to the local relay. DNS follows the selected fake or system mode.</li>
           <li>The relay recovers the original destination, evaluates ordered rules, and routes, connects directly, or rejects.</li>
-          <li>The run writer records correlated fake-DNS exchanges, policy decisions, flow boundaries, and explicit runtime/relay TLS observations.</li>
+          <li>The run writer records correlated fake-DNS exchanges, policy decisions, flow boundaries, parsed relay ClientHello, and explicit runtime/relay TLS observations.</li>
           <li>After the immediate child exits, the foreground owner keeps interception alive until the complete descendant tree leaves the cgroup, then closes links, maps, listeners, and logs.</li>
         </ol>
 

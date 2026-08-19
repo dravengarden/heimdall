@@ -72,7 +72,7 @@ normal cleanup, and fail-closed owner-death cleanup. See
 ### 2. Agent-first event store
 
 - Extend the available per-run event store beyond fake-DNS, policy, runtime
-  TLS, and relay TLS evidence with ClientHello and optional HTTP records.
+  TLS, ClientHello, and relay TLS evidence with optional HTTP records.
 - Add bounded block coalescing and recovery tooling around the available
   atomic blob publication and stable `event_store_full` diagnostics.
 - Keep the available rotation writer-owned and loss-aware; do not support

@@ -2,8 +2,8 @@
 
 The daemonless event store records lifecycle, TCP/UDP flow metadata, bounded
 content-addressed payload blobs, correlated fake-DNS and policy evidence,
-OpenSSL runtime observations, and relay TLS handshake/error evidence in
-`heimdall.event/v1`. ClientHello and derived HTTP records remain planned. Inspect
+OpenSSL runtime observations, relay ClientHello, and relay TLS handshake/error
+evidence in `heimdall.event/v1`. Derived HTTP records remain planned. Inspect
 `agent.capabilities.logs` and use [commands.md](commands.md) whenever required
 evidence is not yet emitted.
 
@@ -96,7 +96,7 @@ producer version mismatch.
 | `flow.data` | `direction` enum, `boundary` enum, `original_bytes` unsigned integer, `stored_bytes` unsigned integer, `truncated` boolean, `blob` object or null |
 | `flow.close` | `network` enum, `status` string, `error_code` string or null, `client_to_remote_bytes` unsigned integer, `remote_to_client_bytes` unsigned integer, `duration_us` unsigned integer |
 | `tls.runtime` | `library` string, `api_family` enum, `direction` enum, `boundary` constant, observed/reported byte counts, `truncated` boolean |
-| `tls.client_hello` | `sni` string or null, `alpn_offered` string array, `min_version` string or null, `max_version` string or null, `parser_status` string |
+| `tls.client_hello` | `sni` string or null, `alpn_offered` string array, null version bounds, `parser_status=parsed_versions_unavailable` |
 | `tls.handshake` | `mode` enum, `version` string, `cipher` string, `alpn` string or null, `peer_identity` object, `trust` object, `latency_us` unsigned integer |
 | `tls.error` | `mode` enum, `code` string, `message` string, `phase` string, `retryable` boolean, `peer_identity` object or null |
 | `http.request` | `parser` object, `source_seq` unsigned integer array, `method` string, `scheme` string or null, `authority` string or null, `path` string, `headers` array, `body` object or null |

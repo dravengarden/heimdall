@@ -722,6 +722,7 @@ fn serve_event(log: &RunLog, stream: &mut UnixStream) -> Result<()> {
                 | "flow.data"
                 | "flow.close"
                 | "tls.runtime"
+                | "tls.client_hello"
                 | "tls.handshake"
                 | "tls.error"
         ),

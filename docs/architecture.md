@@ -108,8 +108,10 @@ TLS modes are explicit:
 - `off` forwards TLS records without plaintext inspection.
 - `relay` runs inside the foreground relay. It validates upstream TLS,
   presents a leaf signed by the user-owned Heimdall CA, and records plaintext
-  after both handshakes. Client trust is required; pinning and client-certificate
-  mTLS are incompatible boundaries.
+  after both handshakes. The parsed ClientHello is recorded before upstream
+  verification, so SNI and offered ALPN remain available when a later handshake
+  fails. Client trust is required; pinning and client-certificate mTLS are
+  incompatible boundaries.
 - `runtime` observes supported OpenSSL APIs without changing trust. The setup
   worker discovers already mapped `libssl` images at run startup, attaches
   probes globally while the per-run policy map filters events to the command
