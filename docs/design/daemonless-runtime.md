@@ -111,8 +111,7 @@ backend.
 
 ## Per-run kernel state
 
-The fixed relay-port prerequisite and shared runtime state have been removed
-from the default path. The foreground backend uses:
+The foreground backend uses:
 
 - kernel-assigned loopback TCP, UDP, and DNS ports;
 - one transient cgroup per run;
@@ -126,8 +125,8 @@ owner death, the unprivileged setup helper observes unmarked socket EOF, kills
 the command cgroup, waits for it to empty, and removes it. No pinned state
 exists in either path.
 
-This removes daemon-restart continuity. That is intentional: one invocation is
-the lifecycle boundary. There is no upgrade or restart in the middle of a run.
+One invocation is the lifecycle boundary. There is no upgrade or restart in
+the middle of a run.
 
 The link transaction retains attached link FDs without creating bpffs pins.
 Object loading creates fresh unpinned maps for every run.
@@ -238,43 +237,26 @@ A persistent acceleration service may be considered only after these numbers
 exist. If added, it is an explicit opt-in profile with a visible capability
 contract; `heimdall run` must never auto-enable it.
 
-## Migration plan
+## Implementation status
 
-### Phase 1: event store — available
+Available now:
 
 - `heimdall.event/v1`, `heimdall.run/v1`, segment rotation, schema discovery,
-  integrity verification, retention, and `heimdall logs` commands are active.
-- Lifecycle plus TCP/UDP metadata are emitted; content-addressed blobs and
-  derived TLS/HTTP events remain on the event-log roadmap.
-- `heimdall.capture/v1` remains the explicit bounded payload path.
+  integrity verification, retention, and the `heimdall logs` commands;
+- lifecycle plus TCP/UDP metadata and the separate bounded
+  `heimdall.capture/v1` payload path;
+- one foreground owner for relay, DNS, TLS, capture, event writing, and process
+  lifecycle;
+- per-run ports, cgroup, maps, FD-owned links, and mutable policy state;
+- the narrow `heimdall.setup/v2` authorization path with privilege drop;
+- concurrent-session, descendant, normal-cleanup, and parent-death acceptance
+  in the disposable real-eBPF VM;
+- `heimdall.agent/v7` reporting only the foreground execution owner and its
+  actual capability evidence.
 
-### Phase 2: foreground session owner — available
-
-- Relay, DNS, relay TLS, capture, and lifecycle ownership are grouped under the
-  foreground session boundary.
-- Ports and mutable state are allocated per run.
-- Concurrent sessions and process-tree cleanup are proven in the VM.
-
-### Phase 3: transient eBPF backend — available
-
-- Global pins and registrations are replaced by FD-owned per-run links and
-  maps in the foreground modes.
-- The narrow setup-worker protocol and sudo authorization path are active.
-- Daemonless is the default for all decrypt modes; no service is required.
-
-### Phase 4: remove the old daemon contract — available
-
-- `heimdall daemon`, its service unit, registration API, persistent journal,
-  global bpffs state, health contract, cleanup CLI, and orphan-GC loop are
-  removed.
-- `heimdall.agent/v7` describes only the foreground execution owner.
-- The session helper supplies fail-closed parent-death cleanup without a
-  listener or cross-run lifetime.
-
-### Phase 5: optional UI
-
-- Build the read-only viewer only after event/log contracts are stable.
-- Test that every UI view can be reconstructed from files without a live run.
+Planned work is limited to the acceptance and product boundaries in
+[ROADMAP.md](../../ROADMAP.md), including content-addressed payloads, derived
+TLS/HTTP events, broader runtime coverage, and an optional read-only viewer.
 
 ## Acceptance criteria
 

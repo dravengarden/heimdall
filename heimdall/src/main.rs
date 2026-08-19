@@ -1942,7 +1942,7 @@ async fn open_udp_capture(
         Dst::Ip6(ip) => ip.to_string(),
         Dst::Domain(domain) => domain.clone(),
     };
-    let legacy = if let Some(manager) = &shared.capture {
+    let payload_capture = if let Some(manager) = &shared.capture {
         Some(
             manager
                 .open(capture::FlowMeta {
@@ -1983,7 +1983,7 @@ async fn open_udp_capture(
         )?;
     }
     Ok(Some(UdpObservation {
-        legacy,
+        payload_capture,
         events: event_client,
         flow_id,
         started: std::time::Instant::now(),
@@ -1993,7 +1993,7 @@ async fn open_udp_capture(
 }
 
 struct UdpObservation {
-    legacy: Option<capture::CaptureFlow>,
+    payload_capture: Option<capture::CaptureFlow>,
     events: Option<event_log::FlowEventClient>,
     flow_id: uuid::Uuid,
     started: std::time::Instant,
@@ -2008,15 +2008,15 @@ impl UdpObservation {
             capture::Direction::RemoteToClient => &self.remote_to_client_bytes,
         }
         .fetch_add(payload.len() as u64, Ordering::Relaxed);
-        if let Some(legacy) = &self.legacy {
-            legacy.data(direction, payload).await?;
+        if let Some(payload_capture) = &self.payload_capture {
+            payload_capture.data(direction, payload).await?;
         }
         Ok(())
     }
 
     async fn close(self, result: &Result<()>) -> Result<()> {
-        let legacy_result = if let Some(legacy) = self.legacy {
-            legacy
+        let capture_result = if let Some(payload_capture) = self.payload_capture {
+            payload_capture
                 .close(if result.is_ok() { "complete" } else { "error" })
                 .await
         } else {
@@ -2039,7 +2039,7 @@ impl UdpObservation {
         } else {
             Ok(())
         };
-        legacy_result?;
+        capture_result?;
         event_result
     }
 }

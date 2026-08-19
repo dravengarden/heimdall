@@ -171,17 +171,6 @@ impl ConfigError {
     }
 
     fn hint(&self) -> String {
-        if matches!(
-            self,
-            Self::ParseToml { .. } | Self::ParseYaml { .. } | Self::ParseJson { .. }
-        ) && self.to_string().contains("unknown variant")
-            && ["transparent", "mitm"]
-                .iter()
-                .any(|removed| self.to_string().contains(removed))
-        {
-            return "Replace the removed decrypt mode with `runtime` for TLS-library probes or `relay` for relay TLS termination."
-                .into();
-        }
         match self {
             Self::Read { .. } => "Create the file or pass the intended path with --config.",
             Self::UnsupportedFormat { .. } => {
@@ -1337,18 +1326,6 @@ decrypt: { mode: "off" }
     }
 
     #[test]
-    fn rejects_removed_ncl_format_with_a_repair_hint() {
-        let path = temp_config("ncl", "{}");
-        let error = HeimdallConfig::load(&path).unwrap_err();
-        assert_eq!(error.code(), "unsupported_config_format");
-        let diagnostic = error.diagnostics().pop().unwrap();
-        assert_eq!(diagnostic.path, "$");
-        assert!(diagnostic.hint.contains(".toml"));
-        assert!(!diagnostic.hint.contains(".ncl"));
-        fs::remove_file(path).unwrap();
-    }
-
-    #[test]
     fn rejects_duplicate_rule_match_values() {
         let source = valid_toml().replace(
             "[proxy.policies.default.final]",
@@ -1423,26 +1400,6 @@ action = { type = "direct" }
         .unwrap();
         relay.validate().unwrap();
         assert_eq!(relay.decrypt.mode, DecryptMode::Relay);
-    }
-
-    #[test]
-    fn rejects_removed_decrypt_mode_names_with_repair_values() {
-        for removed in ["transparent", "mitm"] {
-            for (extension, content) in [
-                ("toml", format!("mode = \"{removed}\"")),
-                ("yaml", format!("mode: {removed}")),
-                ("json", format!(r#"{{"mode":"{removed}"}}"#)),
-            ] {
-                let path = temp_config(extension, &content);
-                let error = parse_typed::<DecryptConfig>(&path).unwrap_err();
-                let diagnostic = error.diagnostics().pop().unwrap();
-                assert!(diagnostic.message.contains("runtime"));
-                assert!(diagnostic.message.contains("relay"));
-                assert!(diagnostic.hint.contains("runtime"));
-                assert!(diagnostic.hint.contains("relay"));
-                fs::remove_file(path).unwrap();
-            }
-        }
     }
 
     #[test]

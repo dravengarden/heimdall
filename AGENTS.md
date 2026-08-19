@@ -8,9 +8,10 @@ these rules; this file is the standardized project entry point.
 - **What**: command-scoped transparent egress proxy for CLI processes
   started through `heimdall run`, written
   in Rust + aya eBPF.
-- **Where to start reading**: [`README.md`](README.md) for the
-  90-second pitch, [`docs/architecture.md`](docs/architecture.md) for
-  the data flow + control loops.
+- **Where to start reading**: [`README.md`](README.md) for the 90-second
+  pitch, [`docs/product-contract.md`](docs/product-contract.md) for normative
+  requirements, and [`docs/architecture.md`](docs/architecture.md) for the
+  data flow and lifecycle.
 - **Where to start coding**: pick a doc that mentions the file you
   want to change. Most non-trivial changes touch `heimdall/` (CLI and
   foreground session), `heimdall-ebpf/` (kernel programs), or `heimdall-config/`

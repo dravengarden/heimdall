@@ -32,11 +32,11 @@
     "backend": { "type": "string" },
     "capture": {
       "type": "object",
-      "required": ["profile", "event_schema", "legacy_payload_capture"],
+      "required": ["profile", "event_schema", "payload_contract"],
       "properties": {
         "profile": { "enum": ["off", "metadata", "payload"] },
         "event_schema": { "const": "heimdall.event/v1" },
-        "legacy_payload_capture": { "type": "boolean" }
+        "payload_contract": { "const": "heimdall.capture/v1" }
       },
       "additionalProperties": false
     },

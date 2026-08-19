@@ -92,8 +92,8 @@
             "backend": { "type": "string" },
             "capture": {
               "type": "object",
-              "required": ["profile", "legacy_payload_capture"],
-              "properties": { "profile": { "enum": ["off", "metadata", "payload"] }, "legacy_payload_capture": { "type": "boolean" } },
+              "required": ["profile", "payload_contract"],
+              "properties": { "profile": { "enum": ["off", "metadata", "payload"] }, "payload_contract": { "const": "heimdall.capture/v1" } },
               "additionalProperties": false
             },
             "schemas": {

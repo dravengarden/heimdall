@@ -138,7 +138,7 @@ resolver. The relay then sees resolved IPs, so domain rules are rejected and
 policies must use `ip_cidr`, `port`, or protocol matchers.
 
 Use `heimdall config explain --network udp ... --json` to inspect a UDP policy
-decision. `--network` defaults to `tcp` for compatibility.
+decision. Without `--network`, the command explains TCP.
 
 ## Capture and decrypt
 

@@ -178,7 +178,7 @@ impl RunLog {
             capture: json!({
                 "profile": "metadata",
                 "event_schema": EVENT_CONTRACT,
-                "legacy_payload_capture": true
+                "payload_contract": "heimdall.capture/v1"
             }),
             segments: Vec::new(),
             blobs: BlobSummary::default(),
@@ -200,7 +200,7 @@ impl RunLog {
             json!({
                 "policy": policy,
                 "backend": backend,
-                "capture": {"profile": "metadata", "legacy_payload_capture": true},
+                "capture": {"profile": "metadata", "payload_contract": "heimdall.capture/v1"},
                 "schemas": {"event": EVENT_CONTRACT, "run": RUN_CONTRACT}
             }),
         )?;
@@ -873,7 +873,10 @@ mod tests {
         let manifest = read_manifest(&run_dir.join("run.json")).unwrap();
         assert_eq!(manifest.state, "closed");
         assert_eq!(manifest.segments.len(), 2);
+        assert_eq!(manifest.capture["payload_contract"], "heimdall.capture/v1");
         assert_eq!(manifest.result.unwrap().exit_code, Some(0));
+        let events = fs::read_to_string(run_dir.join("events-000001.jsonl")).unwrap();
+        assert!(events.contains(r#""payload_contract":"heimdall.capture/v1""#));
         fs::remove_dir_all(&root).unwrap();
         fs::remove_dir_all(&runtime).unwrap();
     }

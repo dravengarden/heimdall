@@ -14,6 +14,7 @@ stable contracts, planning, design material, and operational guidance.
 ## Reading order
 
 - [`README.md`](../README.md) — Project overview and quick start
+- [`product-contract.md`](product-contract.md) — Normative product, lifecycle, network, TLS, agent evidence, optional UI, and platform requirements
 - [`ROADMAP.md`](../ROADMAP.md) — Public status, active development tracks, planned macOS support, and non-goals
 - [`architecture.md`](architecture.md) — Foreground CLI ownership, setup privilege drop, per-run eBPF/relay/DNS lifecycle, fail-closed UDP correlation, capture, and TLS boundaries
 - [`design/daemonless-runtime.md`](design/daemonless-runtime.md) — Foreground per-run architecture and implementation status for session-owned data-plane and kernel resources
@@ -25,6 +26,7 @@ stable contracts, planning, design material, and operational guidance.
 ### Core documents
 
 - [`README.md`](../README.md) — Project overview and quick start
+- [`product-contract.md`](product-contract.md) — Single normative statement of the current product contract
 - [`ROADMAP.md`](../ROADMAP.md) — Public status, planned macOS wrapper/Network Extension backends, and roadmap
 - [`architecture.md`](architecture.md) — CLI, eBPF, DNS, TCP/UDP relay, and TLS decrypt boundaries
 - [`config.md`](config.md) — Strict TOML/YAML/JSON policy rules, credentials, capture/decrypt modes, and UDP/QUIC limits

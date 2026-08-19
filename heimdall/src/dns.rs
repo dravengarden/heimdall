@@ -13,9 +13,8 @@
 //! AAAA queries are answered with synthetic IPv6 addresses from a
 //! parallel `fake_ip6_cidr` pool, mirroring the IPv4 path: same
 //! reverse-lookup at relay time, same SOCKS5 ATYP=0x03 hostname
-//! forwarding upstream. When `fake_ip6_cidr` is empty (or unset)
-//! AAAA falls back to NOERROR + 0 records, keeping the legacy
-//! "force IPv4" behaviour. Other RR types remain empty NOERROR.
+//! forwarding upstream. Without an IPv6 pool, AAAA returns NOERROR with no
+//! records. Other RR types also return empty NOERROR.
 //!
 //! Mappings stay stable for one foreground run. Pool exhaustion returns
 //! SERVFAIL instead of recycling an address that an application may still
@@ -77,7 +76,7 @@ pub struct DnsResolver {
     /// Mirror of the v4 fields, scaled up: 128-bit base + 64-bit ring
     /// counter (we only allocate within the host bits, which is
     /// always ≤ 128 - prefix; for typical /96 that's 32 bits anyway).
-    /// `None` means "answer AAAA with empty NOERROR" (legacy behaviour).
+    /// `None` means "answer AAAA with empty NOERROR".
     v6: Option<V6Pool>,
 }
 

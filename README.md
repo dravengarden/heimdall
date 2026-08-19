@@ -58,14 +58,14 @@ need compatibility hardening.
 | Strict configuration and agent contract | Available | TOML, YAML, JSON; `heimdall.agent/v7` with execution ownership and repairable diagnostics |
 | Daemonless Linux execution | Available | All decrypt modes own per-run relay, DNS, maps, links, and logs; runtime TLS keeps one unprivileged session helper, never a service |
 | Opaque flow capture | Available | Explicit bounded JSONL capture under the invoking user's ownership with `heimdall.capture/v1` |
-| Agent event logs | Available, Phase 1 | Per-run lifecycle and TCP/UDP metadata in `heimdall.event/v1`; payload remains in legacy capture |
+| Agent event logs | Available, Phase 1 | Per-run lifecycle and TCP/UDP metadata in `heimdall.event/v1`; bounded payloads use the separate `heimdall.capture/v1` contract |
 | Runtime TLS decryption | Available daemonless with alpha limits | Startup-discovered OpenSSL images; no CA injection; unsupported TLS libraries remain opaque |
 | Relay TLS decryption | Available daemonless with alpha limits | Local CA plus per-host leaves; client trust and protocol compatibility are required |
 | Runtime and kernel compatibility | In development | Expanding the tested matrix and documenting unsupported edge cases |
 | Capture analysis and release packaging | Planned | Better inspection workflows and reproducible distribution artifacts |
 
-See [ROADMAP.md](ROADMAP.md) for the source of truth, status definitions, and
-the explicit non-goals.
+See [docs/product-contract.md](docs/product-contract.md) for the normative
+requirements and [ROADMAP.md](ROADMAP.md) for status and planned work.
 
 ## Architecture
 
@@ -85,10 +85,10 @@ flowchart LR
 For every decrypt mode, the foreground CLI owns the relay, fake-IP
 DNS, event writer, cgroup, maps, and links. A narrow setup worker attaches eBPF,
 transfers owned file descriptors back to the CLI, and immediately drops to the
-invoking user. In runtime TLS mode that unprivileged helper remains scoped to
-the invocation to retain Aya's probe state; other modes reap it before exec.
-The CLI waits for the complete descendant tree and closes every per-run
-resource. Processes outside that cgroup are left alone.
+invoking user. Every mode keeps that unprivileged helper scoped to the
+invocation as a parent-death guard; runtime TLS also needs it to retain Aya's
+probe state. The CLI waits for the complete descendant tree and closes every
+per-run resource. Processes outside that cgroup are left alone.
 
 Unlike `proxychains4`, Heimdall does not use `LD_PRELOAD`. The privileged
 setup worker attaches cgroup eBPF hooks, so static binaries and mixed-language
@@ -250,8 +250,7 @@ behavior without any persistent service.
 OpenSSL runtime capture and relay TLS termination are tested against a real TLS
 server. These results prove the checked-in acceptance paths; they do not claim
 that every language TLS implementation or every kernel release is supported.
-The current compatibility work is tracked in the
-[roadmap](ROADMAP.md).
+The current acceptance-matrix work is tracked in the [roadmap](ROADMAP.md).
 
 ## Development
 

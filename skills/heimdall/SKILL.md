@@ -9,6 +9,10 @@ Treat Heimdall as a command wrapper, not a host-wide router. A normal run
 attaches eBPF only to its transient command cgroup and owns its relay, DNS,
 maps, links, and logs in the foreground.
 
+Treat [`../../docs/product-contract.md`](../../docs/product-contract.md) as the
+normative product boundary. This skill supplies operating procedure and must
+not broaden that contract.
+
 ## Start with the machine contract
 
 Run:

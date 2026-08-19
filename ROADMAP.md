@@ -34,8 +34,8 @@ acceptance path are documented and tested.
   `heimdall.capture/v1` contract.
 - Relay TLS termination and startup-discovered OpenSSL runtime TLS probes in
   the foreground path.
-- No daemon, registration API, persistent journal, health endpoint, service
-  unit, or bpffs lifecycle path in the shipped CLI.
+- No background service, machine-wide control plane, or persistent kernel
+  state in the shipped CLI.
 - A real-eBPF NixOS acceptance VM covering dual-stack TCP/UDP, QUIC, common
   CLI/runtime clients, lifecycle behavior, and both TLS paths.
 
@@ -52,10 +52,8 @@ proxy and its evidence before adding a larger control plane.
 The foreground data plane is now the default for every decrypt mode. It binds
 kernel-assigned per-run relay and DNS ports, creates fresh unpinned maps,
 attaches FD-owned links through `heimdall.setup/v2`, and closes every resource
-when the command tree exits. The old daemon, registration API, persistent
-journal, service unit, health endpoint, cleanup command, and bpffs upgrade path
-are removed. The real-eBPF VM proves concurrent isolated runs, runtime and
-relay TLS, normal cleanup, and parent-death cgroup teardown.
+when the command tree exits. The real-eBPF VM proves concurrent isolated runs,
+runtime and relay TLS, normal cleanup, and parent-death cgroup teardown.
 
 - Evaluate run-scoped dynamic attachment for `libssl` images loaded only after
   child exec without introducing a persistent broker.
@@ -148,8 +146,8 @@ from file names or process names.
 
 - Improve schema discoverability and generated examples while keeping one
   format-independent model and strict cross-format semantics.
-- Add safe config inspection and migration guidance for future pre-1.0 schema
-  changes; do not silently accept removed fields or mode names.
+- Publish each future pre-1.0 schema change as one complete current contract;
+  do not add aliases or hidden compatibility parsing.
 
 ### macOS backend and fallback
 
@@ -179,13 +177,13 @@ The following are intentionally not on the current roadmap:
 - A replacement VPN, desktop traffic dashboard, or host-wide always-on system
   proxy.
 - A workload policy language layered on top of the small proxy schema.
-- Nickel configuration or a fourth first-class configuration syntax.
+- A fourth first-class configuration syntax.
 - Claims of universal TLS decryption across every language, TLS library, or
   certificate-pinning implementation.
 
 A read-only, explicitly started viewer for completed or live event files is
-planned after the event schema stabilizes. It is not a daemon, MITM owner,
-policy editor, or requirement for any CLI feature.
+planned after the event schema stabilizes. It has no data-plane, TLS, or policy
+authority and is not required by any CLI feature.
 
 These boundaries keep Heimdall focused on a reliable command wrapper and leave
 application-specific inspection to explicit tools and trust decisions.

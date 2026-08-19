@@ -94,7 +94,7 @@ Required fields:
 | `command` | object | Executable, argv count, and optional redacted argv array |
 | `policy` | string | Selected policy name |
 | `backend` | string | Actual interception backend |
-| `capture` | object | Metadata/payload/TLS boundaries and truncation limits |
+| `capture` | object | Event profile, `heimdall.event/v1`, and the separate `heimdall.capture/v1` payload contract |
 | `segments` | object array | File, first/last sequence, bytes, SHA-256, final state |
 | `blobs` | object | Count and total stored bytes |
 | `result` | object or null | Exit status, signal, Heimdall error code, completeness |

@@ -101,6 +101,9 @@ producer version mismatch.
 
 `network` is `tcp` or `udp`. DNS `transport` is `udp` or `tcp`. DNS
 `boundary` is `fake` or `system`. TLS `mode` is `runtime` or `relay`.
+The `run.open.data.capture` object contains `profile` and
+`payload_contract = "heimdall.capture/v1"`; payload records are separate from
+the metadata event segments.
 Destination identity uses exactly one of `host` or `ip`, plus `port`; agents
 must not infer a hostname from SNI when the destination is an IP. An action has
 `type` equal to `route`, `direct`, or `reject`; only `route` has an `outbound`.
