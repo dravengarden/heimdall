@@ -728,7 +728,7 @@ enum Cmd {
     #[command(subcommand)]
     Tls(cli::tls::TlsCmd),
 
-    /// Inspect, follow, rotate, verify, or prune per-run event logs.
+    /// Inspect, follow, rotate, verify, recover, or prune per-run event logs.
     #[command(subcommand)]
     Logs(cli::logs::LogsCmd),
 

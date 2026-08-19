@@ -52,7 +52,7 @@ heimdall run -- curl -fsS https://example.com</code></pre>
         <div class="callout"><strong>Exit status is part of the contract.</strong>The wrapped command's exit status is Heimdall's exit status. A setup failure happens before execution, and the foreground owner remains until all descendants exit.</div>
 
         <h2 id="acceptance">Acceptance coverage</h2>
-        <p>The VM exercises real eBPF attachment, fake/system DNS, SOCKS5 TCP/UDP, QUIC, descendants, signals, concurrent isolated runs, runtime and relay TLS, log rotation, fail-closed errors, parent-death cgroup cleanup, and link cleanup.</p>
+        <p>The VM exercises real eBPF attachment, fake/system DNS, SOCKS5 TCP/UDP, QUIC, descendants, signals, concurrent isolated runs, runtime and relay TLS, log rotation, orphan recovery, fail-closed errors, parent-death cgroup cleanup, and link cleanup.</p>
         <table><thead><tr><th>Evidence</th><th>What it proves</th></tr></thead><tbody><tr><td><code>just verify</code></td><td>Build, format, lint, dependency, unit, and userspace gates.</td></tr><tr><td><code>just test-package</code></td><td>Static linking, checksum, install, upgrade, and rollback.</td></tr><tr><td><code>just test-vm</code></td><td>The static release binary on the real kernel daemonless data path.</td></tr><tr><td><code>heimdall agent</code></td><td>Config, execution ownership, capabilities, and repair actions.</td></tr><tr><td><code>heimdall logs verify</code></td><td>Per-run JSONL sequence and segment integrity.</td></tr></tbody></table>
 
         <h2 id="diagnose">Diagnose failures</h2>

@@ -75,9 +75,9 @@ the reported capability and event boundary.
    explicit records rather than filename or port inferences.
 3. JSONL files are the evidence source of truth. `jq`, `rg`, `sed`, `sort`,
    `wc`, and the `heimdall logs` commands are supported analysis paths.
-4. Heimdall owns active-file rotation. Agents use `logs rotate`, `tail`,
-   `query`, `verify`, and `prune`; external rename and `copytruncate` are not
-   safe for active segments.
+4. Heimdall owns active-file rotation and orphan recovery. Agents use `logs
+   rotate`, `tail`, `query`, `verify`, `recover`, and `prune`; external rename
+   and `copytruncate` are not safe for active segments.
 5. Schemas are bundled and available offline. The Heimdall skill documents
    field meanings, safe queries, rotation, integrity checks, and capability
    gates.

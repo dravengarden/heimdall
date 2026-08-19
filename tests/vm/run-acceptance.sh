@@ -78,6 +78,7 @@ as_tester heimdall agent \
     and .capabilities.logs.writer_owned_rotation
     and .capabilities.logs.content_addressed_blobs
     and .capabilities.logs.bounded_block_coalescing
+    and .capabilities.logs.incomplete_run_recovery
     and .capabilities.decrypt.modes == ["off", "runtime", "relay"]
     and .capabilities.decrypt.runtime_libraries == ["openssl"]
     and .capabilities.decrypt.runtime_apis == ["SSL_read", "SSL_read_ex", "SSL_write", "SSL_write_ex"]
@@ -113,6 +114,7 @@ as_tester heimdall agent \
     and .actions.logs_schema_event == ["heimdall", "logs", "schema", "--event", "v1"]
     and .actions.logs_schema_run == ["heimdall", "logs", "schema", "--run", "v1"]
     and .actions.logs_list == ["heimdall", "logs", "list", "--json"]
+    and .actions.logs_recover_preview == ["heimdall", "logs", "recover", "--run", "<RUN_ID>", "--json"]
     and .capabilities.lifecycle.signal_exit_code == "128+signal"
     and .capabilities.lifecycle.upstream_unreachable_fail_closed
     and .capabilities.lifecycle.foreground_modes == ["off", "runtime", "relay"]
@@ -242,6 +244,16 @@ for _ in $(seq 1 100); do
   sleep 0.02
 done
 test -n "$rotation_run_id"
+set +e
+active_recovery="$(as_tester heimdall logs recover --run "$rotation_run_id" --json 2>/dev/null)"
+active_recovery_status=$?
+set -e
+test "$active_recovery_status" -eq 1
+printf '%s' "$active_recovery" \
+  | jq -e '.contract == "heimdall.logs.recover/v1"
+    and (.applicable | not)
+    and (.applied | not)
+    and .code == "run_active"' >/dev/null
 as_tester heimdall logs rotate --run "$rotation_run_id" --json \
   | jq -e '.contract == "heimdall.logs.control/v1" and .ok' >/dev/null
 wait "$rotation_process"
@@ -444,6 +456,9 @@ test -n "$kill_owner"
 test -n "$kill_helper"
 kill_cgroup="$(find /sys/fs/cgroup/user.slice -type d -name "heimdall-cli-$kill_owner-*" -print -quit)"
 test -n "$kill_cgroup"
+abandoned_run_id="$(as_tester heimdall logs list --json \
+  | jq -er 'first(.runs[] | select(.state == "running" and .policy == "direct")) | .run_id')"
+test -n "$abandoned_run_id"
 kill -KILL "$kill_owner"
 wait "$kill_wrapper" 2>/dev/null || true
 abandoned_cleaned=false
@@ -457,6 +472,20 @@ for _ in $(seq 1 500); do
   sleep 0.02
 done
 test "$abandoned_cleaned" = true
+as_tester heimdall logs recover --run "$abandoned_run_id" --json \
+  | jq -e '.contract == "heimdall.logs.recover/v1"
+    and .applicable
+    and (.applied | not)
+    and .code == "recovery_available"
+    and .projected_state == "failed"' >/dev/null
+recovery_dir="$(as_tester heimdall logs recover --run "$abandoned_run_id" --apply --json \
+  | jq -er 'select(.applied and .state_after == "failed") | .recovery_dir')"
+test "$(stat -c '%a' "$recovery_dir")" = 700
+test "$(stat -c '%a' "$recovery_dir/manifest-before.json")" = 600
+jq -e '.contract == "heimdall.logs.recovery-record/v1" and .status == "applied"' \
+  "$recovery_dir/recovery.json" >/dev/null
+as_tester heimdall logs verify --run "$abandoned_run_id" --json \
+  | jq -e '.valid and .state == "failed"' >/dev/null
 
 tcp_capture=false
 udp_capture=false

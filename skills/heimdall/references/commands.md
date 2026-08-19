@@ -70,6 +70,7 @@ jq -r 'select(.kind == "flow.close") |
 rg '"kind":"run.error"|"kind":"tls.error"' "$run_dir"
 wc -l "$run_dir"/events-*.jsonl
 heimdall logs verify --run "$run_id" --json
+heimdall logs recover --run "$run_id" --json
 heimdall logs query --run "$run_id" --boundary tls_plaintext.relay --has-blob --jsonl
 heimdall logs prune --max-total-bytes 1073741824 --keep-last 20 --json
 ```
@@ -81,9 +82,10 @@ heimdall logs tail --run "$run_id" --follow --jsonl |
   jq --unbuffered -c 'select(.kind == "run.error" or .kind == "flow.close")'
 ```
 
-Do not rename, truncate, or `copytruncate` active segments.
-Prune is a dry run unless `--apply` is explicit. Verify candidate paths and
-reasons before applying it.
+Do not rename, truncate, or `copytruncate` active segments. Recover and prune
+are dry runs unless `--apply` is explicit. Recovery is only for an orphaned,
+non-final run; it preserves removed evidence and refuses complete corruption.
+Verify candidate paths and reasons before applying either operation.
 
 ## Relay TLS
 
@@ -118,12 +120,14 @@ implementations.
 
 ```bash
 heimdall logs rotate --run "$run_id" --json
+heimdall logs recover --run "$run_id" --json
+heimdall logs recover --run "$run_id" --apply --json
 heimdall logs prune --older-than 30d --keep-last 20 --json
 heimdall logs prune --older-than 30d --keep-last 20 --apply --json
 ```
 
-Rotation never deletes. Preview prune before `--apply`, and never prune an
-active run.
+Rotation never deletes. Preview recover and prune before `--apply`; neither
+operation mutates an active run.
 
 ## Diagnose failures
 

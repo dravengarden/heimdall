@@ -286,6 +286,7 @@ heimdall logs query --run RUN_ID [filters] --jsonl
 heimdall logs tail --run RUN_ID [--follow] --jsonl
 heimdall logs rotate --run RUN_ID --json
 heimdall logs verify --run RUN_ID --json
+heimdall logs recover --run RUN_ID [--apply] --json
 heimdall logs prune ... --json
 ```
 
@@ -371,8 +372,11 @@ to bridge rotation while preserving the same raw event objects.
 - Policy evidence is committed before the selected network action. Fake-DNS
   does not answer a query when its query/answer evidence cannot be committed,
   so a successful path never silently omits these decision records.
-- A crash may leave only the last segment unfinalized. Verification reports
-  the last complete line and `incomplete_tail`; it never invents a close event.
+- A crash may leave only the last segment unfinalized. `logs recover` previews
+  the last committed prefix and incomplete tail. With explicit `--apply`, it
+  preserves the original manifest and discarded bytes below `recovery/`,
+  finalizes that prefix as failed/incomplete, and never invents a close event.
+  Complete invalid records or changed finalized segments are not recoverable.
 - Payload boundary/direction allowlists are evaluated before capture. Exact
   secret values named through `capture.redact_env` are masked across observed
   read boundaries before hashing or blob creation. This literal mechanism does

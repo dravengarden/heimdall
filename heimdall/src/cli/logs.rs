@@ -2,8 +2,9 @@
 
 use std::{
     collections::BTreeMap,
-    fs::{self, File},
+    fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, Write},
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     thread,
     time::Duration,
@@ -18,8 +19,8 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
 use crate::event_log::{
-    EVENT_CONTRACT, EVENT_SCHEMA, Event, RUN_SCHEMA, RunManifest, read_manifest, request_rotation,
-    runs_root,
+    BlobSummary, EVENT_CONTRACT, EVENT_SCHEMA, Event, RUN_SCHEMA, RunManifest, RunResult,
+    SegmentManifest, persist_manifest, read_manifest, request_rotation, run_is_active, runs_root,
 };
 
 #[derive(Subcommand, Debug)]
@@ -38,6 +39,8 @@ pub enum LogsCmd {
     Rotate(RunJsonArgs),
     /// Verify event sequence, segment digests, and manifest consistency.
     Verify(RunJsonArgs),
+    /// Preview or recover an orphaned run's last committed JSONL prefix.
+    Recover(RecoverArgs),
     /// Preview or remove closed run directories according to retention limits.
     Prune(PruneArgs),
 }
@@ -144,6 +147,19 @@ pub struct PruneArgs {
     json: bool,
 }
 
+#[derive(Args, Debug)]
+pub struct RecoverArgs {
+    /// UUIDv7 run identifier.
+    #[arg(long)]
+    run: Uuid,
+    /// Finalize the recoverable prefix and preserve discarded evidence.
+    #[arg(long)]
+    apply: bool,
+    /// Emit one machine-readable JSON document.
+    #[arg(long)]
+    json: bool,
+}
+
 #[derive(Serialize)]
 struct RunSummary {
     run_id: Uuid,
@@ -164,6 +180,7 @@ pub fn run(command: LogsCmd) -> Result<()> {
         LogsCmd::Tail(args) => tail(args),
         LogsCmd::Rotate(args) => rotate(args),
         LogsCmd::Verify(args) => verify(args),
+        LogsCmd::Recover(args) => recover(args),
         LogsCmd::Prune(args) => prune(args),
     }
 }
@@ -305,6 +322,341 @@ fn verify(args: RunJsonArgs) -> Result<()> {
     print_document(&value, args.json)?;
     anyhow::ensure!(valid, "event log verification failed");
     Ok(())
+}
+
+#[derive(Debug)]
+struct RecoveryAnalysis {
+    segments: Vec<SegmentManifest>,
+    blobs: BlobSummary,
+    events: u64,
+    last_valid_seq: u64,
+    tail: Option<RecoveryTail>,
+    empty_segment: Option<PathBuf>,
+}
+
+#[derive(Debug)]
+struct RecoveryTail {
+    segment: PathBuf,
+    valid_bytes: u64,
+    bytes: Vec<u8>,
+}
+
+fn recover(args: RecoverArgs) -> Result<()> {
+    let (run_dir, mut manifest) = find_run(args.run)?;
+    if matches!(manifest.state.as_str(), "closed" | "failed") {
+        return recovery_failure(
+            &manifest,
+            args.apply,
+            args.json,
+            "run_already_finalized",
+            "closed and failed runs are immutable",
+        );
+    }
+    if run_is_active(args.run)? {
+        return recovery_failure(
+            &manifest,
+            args.apply,
+            args.json,
+            "run_active",
+            "the run still has an active foreground owner",
+        );
+    }
+    let analysis = match analyze_recovery(&run_dir, &manifest) {
+        Ok(analysis) => analysis,
+        Err(error) => {
+            return recovery_failure(
+                &manifest,
+                args.apply,
+                args.json,
+                "recovery_not_safe",
+                &error.to_string(),
+            );
+        }
+    };
+    let state_before = manifest.state.clone();
+    let discarded_tail_bytes = analysis
+        .tail
+        .as_ref()
+        .map_or(0, |tail| tail.bytes.len() as u64);
+    let discarded_tail_sha256 = analysis
+        .tail
+        .as_ref()
+        .map(|tail| hex::encode(Sha256::digest(&tail.bytes)));
+    let mut recovery_dir = None;
+    if args.apply {
+        recovery_dir = Some(apply_recovery(
+            &run_dir,
+            &mut manifest,
+            &analysis,
+            discarded_tail_sha256.as_deref(),
+        )?);
+    }
+    let value = json!({
+        "contract": "heimdall.logs.recover/v1",
+        "run_id": manifest.run_id,
+        "applicable": true,
+        "applied": args.apply,
+        "code": if args.apply { "recovered_incomplete_run" } else { "recovery_available" },
+        "state_before": state_before,
+        "state_after": if args.apply { "failed" } else { manifest.state.as_str() },
+        "projected_state": "failed",
+        "events": analysis.events,
+        "segments": analysis.segments.len(),
+        "last_valid_seq": analysis.last_valid_seq,
+        "discarded_tail_bytes": discarded_tail_bytes,
+        "discarded_tail_sha256": discarded_tail_sha256,
+        "removed_empty_segment": analysis.empty_segment.as_ref().and_then(|path| path.file_name()).and_then(|name| name.to_str()),
+        "recovery_dir": recovery_dir.map(|path| absolute(&path).display().to_string()),
+    });
+    print_document(&value, args.json)
+}
+
+fn recovery_failure(
+    manifest: &RunManifest,
+    apply: bool,
+    json_output: bool,
+    code: &str,
+    message: &str,
+) -> Result<()> {
+    let value = json!({
+        "contract": "heimdall.logs.recover/v1",
+        "run_id": manifest.run_id,
+        "applicable": false,
+        "applied": false,
+        "requested_apply": apply,
+        "code": code,
+        "message": message,
+        "state_before": manifest.state,
+    });
+    print_document(&value, json_output)?;
+    anyhow::bail!("{code}: {message}")
+}
+
+fn analyze_recovery(run_dir: &Path, manifest: &RunManifest) -> Result<RecoveryAnalysis> {
+    let event_schema: Value =
+        serde_json::from_str(EVENT_SCHEMA).context("decode bundled event schema")?;
+    let event_validator =
+        jsonschema::validator_for(&event_schema).context("compile bundled event schema")?;
+    let paths = segment_paths(run_dir)?;
+    anyhow::ensure!(!paths.is_empty(), "run has no event segments");
+    let mut segments = Vec::new();
+    let mut expected_seq = 1u64;
+    let mut events = 0u64;
+    let mut observed_blobs = BTreeMap::<String, (String, u64)>::new();
+    let mut tail = None;
+    let mut empty_segment = None;
+
+    for (index, path) in paths.iter().enumerate() {
+        let expected_name = format!("events-{:06}.jsonl", index + 1);
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .context("event segment filename is not UTF-8")?;
+        anyhow::ensure!(name == expected_name, "unexpected event segment `{name}`");
+        let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+        let mut offset = 0usize;
+        let mut first_seq = None;
+        let mut last_seq = None;
+        while offset < bytes.len() {
+            let remaining = &bytes[offset..];
+            let Some(newline) = remaining.iter().position(|byte| *byte == b'\n') else {
+                anyhow::ensure!(
+                    index + 1 == paths.len(),
+                    "non-final segment `{name}` has an incomplete tail"
+                );
+                tail = Some(RecoveryTail {
+                    segment: path.clone(),
+                    valid_bytes: offset as u64,
+                    bytes: remaining.to_vec(),
+                });
+                break;
+            };
+            let end = offset + newline + 1;
+            let event_value: Value = serde_json::from_slice(&bytes[offset..end])
+                .with_context(|| format!("complete record in `{name}` is not valid JSON"))?;
+            if let Some(error) = event_validator.iter_errors(&event_value).next() {
+                anyhow::bail!(
+                    "complete record in `{name}` fails schema {}: {error}",
+                    error.instance_path()
+                );
+            }
+            let event: Event = serde_json::from_value(event_value)
+                .with_context(|| format!("decode complete record in `{name}`"))?;
+            anyhow::ensure!(event.schema == EVENT_CONTRACT, "unsupported event contract");
+            anyhow::ensure!(event.run_id == manifest.run_id, "event run_id mismatch");
+            anyhow::ensure!(
+                event.seq == expected_seq,
+                "expected sequence {expected_seq}, found {}",
+                event.seq
+            );
+            if let Some(blob) = event.data.get("blob").filter(|blob| !blob.is_null()) {
+                let digest = blob
+                    .get("digest")
+                    .and_then(Value::as_str)
+                    .context("blob digest is absent")?;
+                let relative = blob
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .context("blob path is absent")?;
+                let blob_bytes = blob
+                    .get("bytes")
+                    .and_then(Value::as_u64)
+                    .context("blob byte count is absent")?;
+                verify_blob(run_dir, relative, digest, blob_bytes)
+                    .with_context(|| format!("sequence {} blob", event.seq))?;
+                observed_blobs.insert(digest.into(), (relative.into(), blob_bytes));
+            }
+            first_seq.get_or_insert(event.seq);
+            last_seq = Some(event.seq);
+            expected_seq += 1;
+            events += 1;
+            offset = end;
+        }
+        if let (Some(first_seq), Some(last_seq)) = (first_seq, last_seq) {
+            let committed = tail
+                .as_ref()
+                .filter(|item| item.segment == *path)
+                .map_or(bytes.len(), |item| item.valid_bytes as usize);
+            segments.push(SegmentManifest {
+                file: name.into(),
+                first_seq,
+                last_seq,
+                bytes: committed as u64,
+                sha256: hex::encode(Sha256::digest(&bytes[..committed])),
+                final_: true,
+            });
+        } else {
+            anyhow::ensure!(
+                index + 1 == paths.len(),
+                "non-final event segment `{name}` is empty"
+            );
+            if tail.is_none() {
+                empty_segment = Some(path.clone());
+            }
+        }
+    }
+
+    anyhow::ensure!(
+        manifest.segments.len() <= segments.len(),
+        "manifest references segments outside the recoverable prefix"
+    );
+    for (expected, observed) in manifest.segments.iter().zip(&segments) {
+        anyhow::ensure!(
+            serde_json::to_value(expected)? == serde_json::to_value(observed)?,
+            "finalized segment `{}` no longer matches its manifest",
+            expected.file
+        );
+    }
+    let blob_bytes = observed_blobs
+        .values()
+        .fold(0u64, |total, (_, bytes)| total.saturating_add(*bytes));
+    Ok(RecoveryAnalysis {
+        segments,
+        blobs: BlobSummary {
+            count: observed_blobs.len() as u64,
+            bytes: blob_bytes,
+        },
+        events,
+        last_valid_seq: expected_seq - 1,
+        tail,
+        empty_segment,
+    })
+}
+
+fn apply_recovery(
+    run_dir: &Path,
+    manifest: &mut RunManifest,
+    analysis: &RecoveryAnalysis,
+    discarded_tail_sha256: Option<&str>,
+) -> Result<PathBuf> {
+    let recovery_id = Uuid::now_v7();
+    let recovery_root = run_dir.join("recovery");
+    fs::create_dir_all(&recovery_root)
+        .with_context(|| format!("create {}", recovery_root.display()))?;
+    fs::set_permissions(&recovery_root, fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("secure {}", recovery_root.display()))?;
+    let recovery_dir = recovery_root.join(recovery_id.to_string());
+    fs::create_dir_all(&recovery_dir)
+        .with_context(|| format!("create {}", recovery_dir.display()))?;
+    fs::set_permissions(&recovery_dir, fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("secure {}", recovery_dir.display()))?;
+    let manifest_before =
+        fs::read(run_dir.join("run.json")).context("read original run manifest")?;
+    let manifest_before_sha256 = hex::encode(Sha256::digest(&manifest_before));
+    write_private_file(&recovery_dir.join("manifest-before.json"), &manifest_before)?;
+    if let Some(tail) = &analysis.tail {
+        write_private_file(&recovery_dir.join("discarded-tail.bin"), &tail.bytes)?;
+    }
+    let report_path = recovery_dir.join("recovery.json");
+    let run_id = manifest.run_id;
+    let original_state = manifest.state.clone();
+    let report = |status: &str| {
+        json!({
+            "contract": "heimdall.logs.recovery-record/v1",
+            "recovery_id": recovery_id,
+            "run_id": run_id,
+            "status": status,
+            "original_state": original_state,
+            "manifest_before_sha256": manifest_before_sha256,
+            "events": analysis.events,
+            "segments": analysis.segments.len(),
+            "last_valid_seq": analysis.last_valid_seq,
+            "discarded_tail_bytes": analysis.tail.as_ref().map_or(0, |tail| tail.bytes.len()),
+            "discarded_tail_sha256": discarded_tail_sha256,
+            "removed_empty_segment": analysis.empty_segment.as_ref().and_then(|path| path.file_name()).and_then(|name| name.to_str()),
+        })
+    };
+    write_private_file(&report_path, &serde_json::to_vec(&report("prepared"))?)?;
+
+    if let Some(tail) = &analysis.tail {
+        if tail.valid_bytes == 0 {
+            fs::remove_file(&tail.segment)
+                .with_context(|| format!("remove {}", tail.segment.display()))?;
+        } else {
+            let file = OpenOptions::new()
+                .write(true)
+                .open(&tail.segment)
+                .with_context(|| format!("open {}", tail.segment.display()))?;
+            file.set_len(tail.valid_bytes)
+                .with_context(|| format!("truncate {}", tail.segment.display()))?;
+            file.sync_all()
+                .with_context(|| format!("sync {}", tail.segment.display()))?;
+        }
+    } else if let Some(empty) = &analysis.empty_segment {
+        fs::remove_file(empty).with_context(|| format!("remove {}", empty.display()))?;
+    }
+
+    manifest.state = "failed".into();
+    manifest.closed_at = Some(
+        OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .context("format recovery timestamp")?,
+    );
+    manifest.segments = analysis.segments.clone();
+    manifest.blobs = analysis.blobs.clone();
+    manifest.result = Some(RunResult {
+        exit_code: None,
+        signal: None,
+        error_code: Some("recovered_incomplete_run".into()),
+        complete: false,
+    });
+    persist_manifest(run_dir, manifest)?;
+    write_private_file(&report_path, &serde_json::to_vec(&report("applied"))?)?;
+    Ok(recovery_dir)
+}
+
+fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)
+        .with_context(|| format!("open {}", path.display()))?;
+    file.write_all(bytes)
+        .with_context(|| format!("write {}", path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("sync {}", path.display()))
 }
 
 fn verify_run(run_dir: &Path, manifest: &RunManifest) -> Result<Value> {
@@ -878,6 +1230,81 @@ mod tests {
                 .as_str()
                 .is_some_and(|message| message.contains(" schema "))
         }));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recovery_preserves_tail_and_finalizes_only_committed_records() {
+        let root = test_root("recover-tail");
+        let log = RunLog::create_at(&root, &["true".into()], "default", "foreground").unwrap();
+        log.ready("heimdall-run", None, &["transport"]).unwrap();
+        log.emit(
+            "run.exec",
+            Some(42),
+            json!({"child_pid": 42, "executable": "true", "argv_count": 1}),
+        )
+        .unwrap();
+        let run_dir = log.run_dir().unwrap();
+        drop(log);
+        let segment = run_dir.join("events-000001.jsonl");
+        OpenOptions::new()
+            .append(true)
+            .open(&segment)
+            .unwrap()
+            .write_all(b"{\"schema\":\"heimdall.event/v1\"")
+            .unwrap();
+
+        let mut manifest = read_manifest(&run_dir.join("run.json")).unwrap();
+        let analysis = analyze_recovery(&run_dir, &manifest).unwrap();
+        assert_eq!(analysis.events, 3);
+        assert_eq!(analysis.last_valid_seq, 3);
+        assert_eq!(analysis.segments.len(), 1);
+        assert!(
+            analysis
+                .tail
+                .as_ref()
+                .is_some_and(|tail| !tail.bytes.is_empty())
+        );
+        let tail_digest = analysis
+            .tail
+            .as_ref()
+            .map(|tail| hex::encode(Sha256::digest(&tail.bytes)));
+        let recovery_dir =
+            apply_recovery(&run_dir, &mut manifest, &analysis, tail_digest.as_deref()).unwrap();
+
+        let recovered = read_manifest(&run_dir.join("run.json")).unwrap();
+        assert_eq!(recovered.state, "failed");
+        assert_eq!(
+            recovered.result.as_ref().unwrap().error_code.as_deref(),
+            Some("recovered_incomplete_run")
+        );
+        assert!(!recovered.result.as_ref().unwrap().complete);
+        assert_eq!(verify_run(&run_dir, &recovered).unwrap()["valid"], true);
+        assert!(recovery_dir.join("manifest-before.json").is_file());
+        assert!(recovery_dir.join("discarded-tail.bin").is_file());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(recovery_dir.join("recovery.json")).unwrap())
+                .unwrap()["status"],
+            "applied"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recovery_rejects_a_complete_invalid_record() {
+        let root = test_root("recover-invalid");
+        let log = RunLog::create_at(&root, &["true".into()], "default", "foreground").unwrap();
+        let run_dir = log.run_dir().unwrap();
+        drop(log);
+        OpenOptions::new()
+            .append(true)
+            .open(run_dir.join("events-000001.jsonl"))
+            .unwrap()
+            .write_all(b"{}\n")
+            .unwrap();
+        let manifest = read_manifest(&run_dir.join("run.json")).unwrap();
+        let error = analyze_recovery(&run_dir, &manifest).unwrap_err();
+        assert!(error.to_string().contains("fails schema"));
         fs::remove_dir_all(root).unwrap();
     }
 }

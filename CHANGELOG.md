@@ -37,6 +37,8 @@ migration guide.
   redaction that masks bytes before content hashing and blob publication.
 - Coalesce payload reads into size- and latency-bounded per-direction blocks
   with explicit block indexes and flush reasons in `flow.data`.
+- Add dry-run-first recovery for orphaned runs that preserves the original
+  manifest and incomplete tail without inventing a close event.
 - Add explicit `off`, `runtime`, and `relay` TLS modes. Runtime mode observes
   startup-discovered OpenSSL APIs without changing trust; relay mode validates
   upstream TLS and issues per-host leaves from invoking-user-owned CA material.

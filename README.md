@@ -62,7 +62,7 @@ need compatibility hardening.
 | Relay TLS decryption | Available daemonless with alpha limits | Local CA plus per-host leaves; client trust and protocol compatibility are required |
 | Static Linux packaging | Available | Reproducible x86_64 musl archive, checksum, atomic install, and one-level rollback |
 | Runtime and kernel compatibility | In development | Expanding the tested matrix and documenting unsupported edge cases |
-| Capture analysis | In development | Allowlists, exact-value redaction, and bounded block evidence are available; recovery and optional HTTP records remain active work |
+| Capture analysis | In development | Allowlists, redaction, bounded blocks, and orphan recovery are available; optional HTTP records remain active work |
 
 See [docs/product-contract.md](docs/product-contract.md) for the normative
 requirements and [ROADMAP.md](ROADMAP.md) for status and planned work.
@@ -146,6 +146,7 @@ Inspect the resulting run without a Web UI:
 heimdall logs list --json
 heimdall logs query --run RUN_ID --kind flow.close --jsonl
 heimdall logs verify --run RUN_ID --json
+heimdall logs recover --run RUN_ID --json # preview only
 ```
 
 No Heimdall service exists or is needed for proxying, capture, or either TLS

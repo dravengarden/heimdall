@@ -1097,7 +1097,7 @@ fn create_private_dir(path: &Path) -> Result<()> {
         .with_context(|| format!("secure {}", path.display()))
 }
 
-fn persist_manifest(run_dir: &Path, manifest: &RunManifest) -> Result<()> {
+pub(crate) fn persist_manifest(run_dir: &Path, manifest: &RunManifest) -> Result<()> {
     let target = run_dir.join("run.json");
     let temporary = run_dir.join(format!(".run.{}.tmp", std::process::id()));
     let bytes = serde_json::to_vec(manifest).context("encode run manifest")?;
@@ -1127,6 +1127,22 @@ pub fn read_manifest(path: &Path) -> Result<RunManifest> {
         serde_json::from_slice(&bytes).with_context(|| format!("decode {}", path.display()))?;
     anyhow::ensure!(manifest.schema == RUN_CONTRACT, "unsupported run contract");
     Ok(manifest)
+}
+
+pub fn run_is_active(run_id: Uuid) -> Result<bool> {
+    let socket_path = runtime_root()?.join(control_socket_filename(run_id));
+    match UnixStream::connect(&socket_path) {
+        Ok(_) => Ok(true),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            ) =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(error).with_context(|| format!("probe {}", socket_path.display())),
+    }
 }
 
 #[cfg(test)]

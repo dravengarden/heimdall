@@ -222,7 +222,18 @@ heimdall logs verify --run "$run_id" --json
 
 Require valid bundled run/event schemas, segment and blob digests, continuous
 committed sequence numbers, and a consistent final state. Preserve
-`incomplete_tail` as evidence of a crash; do not manufacture a close event.
+an incomplete tail as evidence of a crash; do not manufacture a close event.
+For a run orphaned in `starting`, `running`, or `closing`, preview and then
+explicitly apply recovery only when the report is safe:
+
+```bash
+heimdall logs recover --run "$run_id" --json
+heimdall logs recover --run "$run_id" --apply --json
+```
+
+Recovery refuses a live owner, immutable final states, complete invalid
+records, and changed finalized segments. Applied recovery stores the original
+manifest and discarded tail below the returned private `recovery_dir`.
 
 ## Retention safety
 

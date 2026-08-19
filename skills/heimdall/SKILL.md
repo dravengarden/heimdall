@@ -127,6 +127,7 @@ heimdall run --policy <policy> -- curl https://example.com
 heimdall logs list --json
 heimdall logs query --run RUN_ID --kind flow.close --jsonl
 heimdall logs verify --run RUN_ID --json
+heimdall logs recover --run RUN_ID --json
 ```
 
 Omit `--policy` to use `proxy.default_policy`. Keep argv after `--`. Heimdall

@@ -34,6 +34,8 @@ acceptance path are documented and tested.
   redaction before hashing or blob publication.
 - Per-flow/direction bounded payload block coalescing with explicit size,
   latency, index, and flush-reason evidence.
+- Dry-run-first recovery of orphaned runs that rejects active owners and
+  finalized-segment mutation while preserving discarded tail evidence.
 - Correlated fake-DNS query/answer evidence, ordered policy-decision evidence,
   and explicit OpenSSL runtime-observation metadata.
 - Relay TLS termination and startup-discovered OpenSSL runtime TLS probes in
@@ -77,8 +79,8 @@ normal cleanup, and fail-closed owner-death cleanup. See
 
 - Extend the available per-run event store beyond fake-DNS, policy, runtime
   TLS, ClientHello, and relay TLS evidence with optional HTTP records.
-- Add recovery tooling around the available bounded block coalescing, atomic
-  blob publication, and stable `event_store_full` diagnostics.
+- Keep stable `event_store_full` diagnostics around bounded block coalescing
+  and atomic blob publication.
 - Keep the available rotation writer-owned and loss-aware; do not support
   external `copytruncate` against active logs.
 - Publish exhaustive schema and Linux-tool recipes in the bundled Heimdall

@@ -121,6 +121,7 @@ pub mod agent {
         writer_owned_rotation: bool,
         content_addressed_blobs: bool,
         bounded_block_coalescing: bool,
+        incomplete_run_recovery: bool,
     }
 
     #[derive(Debug, Serialize)]
@@ -219,6 +220,7 @@ pub mod agent {
         logs_tail_prefix: Vec<String>,
         logs_rotate: Vec<String>,
         logs_verify: Vec<String>,
+        logs_recover_preview: Vec<String>,
         logs_prune_preview: Vec<String>,
     }
 
@@ -299,6 +301,7 @@ pub mod agent {
                     logs_tail_prefix: logs_argv(&["tail", "--run", "<RUN_ID>", "--jsonl"]),
                     logs_rotate: logs_argv(&["rotate", "--run", "<RUN_ID>", "--json"]),
                     logs_verify: logs_argv(&["verify", "--run", "<RUN_ID>", "--json"]),
+                    logs_recover_preview: logs_argv(&["recover", "--run", "<RUN_ID>", "--json"]),
                     logs_prune_preview: logs_argv(&[
                         "prune",
                         "--older-than",
@@ -446,6 +449,7 @@ pub mod agent {
                 logs_tail_prefix: logs_argv(&["tail", "--run", "<RUN_ID>", "--jsonl"]),
                 logs_rotate: logs_argv(&["rotate", "--run", "<RUN_ID>", "--json"]),
                 logs_verify: logs_argv(&["verify", "--run", "<RUN_ID>", "--json"]),
+                logs_recover_preview: logs_argv(&["recover", "--run", "<RUN_ID>", "--json"]),
                 logs_prune_preview: logs_argv(&[
                     "prune",
                     "--older-than",
@@ -637,6 +641,7 @@ pub mod agent {
                 writer_owned_rotation: true,
                 content_addressed_blobs: true,
                 bounded_block_coalescing: true,
+                incomplete_run_recovery: true,
             },
             decrypt: DecryptCapabilities {
                 modes: &["off", "runtime", "relay"],
@@ -806,6 +811,7 @@ pub mod agent {
             assert!(logs.writer_owned_rotation);
             assert!(logs.content_addressed_blobs);
             assert!(logs.bounded_block_coalescing);
+            assert!(logs.incomplete_run_recovery);
         }
 
         #[test]
