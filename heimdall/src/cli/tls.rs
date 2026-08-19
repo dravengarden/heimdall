@@ -3,12 +3,14 @@
 use std::{
     fs,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result};
 use rcgen::{BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
+use x509_parser::{parse_x509_certificate, pem::parse_x509_pem};
 
 #[derive(clap::Subcommand, Debug)]
 pub enum TlsCmd {
@@ -35,6 +37,7 @@ pub struct InitCaArgs {
 struct CaReport {
     contract: &'static str,
     ca_cert: String,
+    ca_cert_sha256: String,
     ca_key: String,
     config: ConfigSnippet,
 }
@@ -81,6 +84,7 @@ fn init_ca(args: InitCaArgs) -> Result<()> {
     let report = CaReport {
         contract: "heimdall.tls-ca/v2",
         ca_cert: cert_path.display().to_string(),
+        ca_cert_sha256: sha256_der(certificate.der().as_ref()),
         ca_key: key_path.display().to_string(),
         config: ConfigSnippet {
             mode: "relay",
@@ -92,12 +96,24 @@ fn init_ca(args: InitCaArgs) -> Result<()> {
         println!("{}", serde_json::to_string(&report)?);
     } else {
         println!("CA certificate: {}", report.ca_cert);
+        println!("CA certificate SHA-256: {}", report.ca_cert_sha256);
         println!("CA private key: {}", report.ca_key);
         println!(
             "Trust the certificate in the wrapped client, then configure decrypt.mode = relay."
         );
     }
     Ok(())
+}
+
+pub(crate) fn certificate_sha256(path: &Path) -> Option<String> {
+    let bytes = fs::read(path).ok()?;
+    let (_, pem) = parse_x509_pem(&bytes).ok()?;
+    parse_x509_certificate(&pem.contents).ok()?;
+    Some(sha256_der(&pem.contents))
+}
+
+fn sha256_der(der: &[u8]) -> String {
+    hex::encode(Sha256::digest(der))
 }
 
 fn write_private(path: &std::path::Path, content: &[u8]) -> Result<()> {
@@ -112,4 +128,17 @@ fn write_private(path: &std::path::Path, content: &[u8]) -> Result<()> {
     fs::set_permissions(path, fs::Permissions::from_mode(0o600))
         .with_context(|| format!("secure CA private key {}", path.display()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sha256_der;
+
+    #[test]
+    fn certificate_fingerprint_is_lowercase_sha256() {
+        assert_eq!(
+            sha256_der(b"heimdall-ca-fixture"),
+            "b155bce3a058aa66bb341f8e6aa0d42b79d37bff50cdc30670e45dc0a4825e95"
+        );
+    }
 }

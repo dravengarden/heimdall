@@ -53,7 +53,9 @@ Proxying, payload retention, and plaintext inspection are independent choices:
   libraries or images loaded later.
 - `decrypt.mode = "relay"` terminates TLS in the per-run relay using explicit
   invoking-user-owned CA material. Certificate pinning and client-certificate
-  mTLS are outside this boundary.
+  mTLS are outside this boundary. `tls init-ca` and `heimdall agent` expose the
+  same public-certificate DER SHA-256 so command-scoped trust can be verified
+  without exposing the signing key.
 - `capture.mode = "on"` writes bounded private content-addressed blobs and
   `flow.data` references in `heimdall.event/v1`. The recorded boundary states
   whether bytes are opaque transport or observed plaintext.

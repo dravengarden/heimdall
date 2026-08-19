@@ -114,7 +114,9 @@ Validate the bounded limit, then inspect the normalized values at
 at `agent.capabilities.capture`/`agent.capabilities.decrypt`. Use
 `heimdall tls init-ca --json` only after explicit relay trust authority. Never
 weaken file permissions or expose `ca_key`; it must remain readable by the same
-user that invokes relay mode. Heimdall never uploads captures; use
+user that invokes relay mode. Compare the returned `ca_cert_sha256` with
+`agent.config.decrypt.ca_cert_sha256` before granting command-scoped client
+trust. Heimdall never uploads captures; use
 `heimdall logs prune` for explicit retention.
 
 ## DNS invariants

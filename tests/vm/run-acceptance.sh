@@ -618,13 +618,20 @@ find /home/tester/.local/state/heimdall/runs -name 'events-*.jsonl' -type f -pri
 test "$(bpftool -j link show | jq 'length')" -eq "$foreground_link_baseline"
 
 install -d -o tester -g users -m 0700 /run/heimdall-test/relay
-as_tester heimdall tls init-ca --dir /run/heimdall-test/relay --json \
-  | jq -e '.contract == "heimdall.tls-ca/v2" and .config.mode == "relay"'
+ca_report="$(as_tester heimdall tls init-ca --dir /run/heimdall-test/relay --json)"
+ca_cert_sha256="$(printf '%s' "$ca_report" | jq -er '.ca_cert_sha256')"
+printf '%s' "$ca_report" \
+  | jq -e '.contract == "heimdall.tls-ca/v2"
+      and .config.mode == "relay"
+      and (.ca_cert_sha256 | test("^[0-9a-f]{64}$"))' >/dev/null
+test "$(openssl x509 -in /run/heimdall-test/relay/ca.pem -outform DER \
+  | sha256sum | cut -d ' ' -f 1)" = "$ca_cert_sha256"
 as_tester heimdall --config /etc/heimdall-test/relay.toml agent \
-  | jq -e '.ready
+  | jq -e --arg ca_cert_sha256 "$ca_cert_sha256" '.ready
     and .execution.backend == "linux-ebpf-foreground"
     and (.execution.daemon_required | not)
     and .config.decrypt.mode == "relay"
+    and .config.decrypt.ca_cert_sha256 == $ca_cert_sha256
     and .config.decrypt.ca_material_ready'
 as_tester heimdall --config /etc/heimdall-test/relay.toml run --policy fake -- \
   curl --cacert /run/heimdall-test/relay/ca.pem -H 'User-Agent:' \

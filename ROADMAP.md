@@ -133,9 +133,10 @@ test.
   long-lived stream acceptance, and stable client-authentication/trust-boundary
   failure diagnostics. Pinning and client-certificate mTLS remain explicit
   unsupported relay boundaries rather than compatibility claims.
-- Improve CA trust-store guidance while preserving the fact that some clients
-  close without an alert, so `tls_downstream_closed_without_close_notify`
-  still requires the wrapped command's stderr and exit status.
+- Expand CA integration beyond the available certificate fingerprint matching
+  and command-scoped curl, Git, Node.js, and Python trust guidance. Some clients
+  close without an alert, so `tls_downstream_closed_without_close_notify` still
+  requires the wrapped command's stderr and exit status.
 
 Acceptance target: runtime and relay modes report their actual coverage and
 never claim plaintext visibility when the selected boundary was not attached or

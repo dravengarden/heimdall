@@ -240,11 +240,25 @@ who invokes `heimdall run`. Generate relay trust material as that user:
 
 ```bash
 install -d -m 0700 "$HOME/.local/state/heimdall/tls"
+ca_cert="$HOME/.local/state/heimdall/tls/ca.pem"
 heimdall tls init-ca --dir "$HOME/.local/state/heimdall/tls" --json
 ```
 
-Trust only `ca.pem` in the wrapped client. Keep `ca-key.pem` mode 0600. Relay
-mode is library-independent but is incompatible with certificate pinning and
+Before trusting anything, compare `ca_cert_sha256` from `tls init-ca` with
+`agent.config.decrypt.ca_cert_sha256`. Trust only the reported `ca_cert` in the
+explicitly wrapped client, preferably without changing the machine trust store:
+
+```bash
+heimdall run -- curl --cacert "$ca_cert" https://example.com
+heimdall run -- git -c http.sslCAInfo="$ca_cert" ls-remote https://example.com/repo.git
+NODE_EXTRA_CA_CERTS="$ca_cert" heimdall run -- node client.js
+REQUESTS_CA_BUNDLE="$ca_cert" heimdall run -- python client.py
+```
+
+Client-specific variables and flags are not universal; preserve native roots
+when the client replaces rather than extends its trust bundle. Keep
+`ca-key.pem` mode 0600 and never give it to the wrapped client. Relay mode is
+library-independent but is incompatible with certificate pinning and
 client-certificate mTLS.
 
 Runtime mode changes no trust and currently observes only the reported OpenSSL

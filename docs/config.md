@@ -223,6 +223,13 @@ group or other permissions and must be readable by the user invoking
 `heimdall run`. Certificate pinning and client-certificate mTLS are
 intentionally unsupported in this mode.
 
+`heimdall tls init-ca --json` reports the public certificate's DER SHA-256 as
+`ca_cert_sha256`; relay-mode `heimdall agent` reports the same value at
+`config.decrypt.ca_cert_sha256`. Compare them before granting trust. Prefer
+command-scoped client options such as curl `--cacert`, Git
+`-c http.sslCAInfo=...`, `NODE_EXTRA_CA_CERTS`, or `REQUESTS_CA_BUNDLE` over a
+machine-wide trust-store change. Keep the signing key out of every client.
+
 `capture.mode` is `off` or `on`; event metadata remains available in either
 case. `max_bytes_per_flow` defaults to 1 MiB and must be between 1 byte and
 64 MiB. The limit is shared by both directions. `boundaries` and `directions`

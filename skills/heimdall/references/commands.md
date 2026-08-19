@@ -112,8 +112,12 @@ install -d -m 0700 "$HOME/.local/state/heimdall/tls"
 heimdall tls init-ca --dir "$HOME/.local/state/heimdall/tls" --json
 ```
 
-Trust only the reported `ca_cert`. Keep `ca_key` private, mode 0600, and owned
-by the same user that runs Heimdall. No daemon is required for relay TLS.
+Compare the returned `ca_cert_sha256` with
+`agent.config.decrypt.ca_cert_sha256`, then trust only the reported `ca_cert`
+in the explicitly wrapped client. Prefer curl `--cacert`, Git
+`-c http.sslCAInfo=...`, `NODE_EXTRA_CA_CERTS`, or `REQUESTS_CA_BUNDLE` over
+machine-wide trust. Keep `ca_key` private, mode 0600, and owned by the same user
+that runs Heimdall. No daemon is required for relay TLS.
 
 ## Runtime TLS
 

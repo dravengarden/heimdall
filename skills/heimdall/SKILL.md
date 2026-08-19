@@ -65,7 +65,8 @@ redacted and `body` is always null.
 Choose `relay` only with authority to install local trust. Require
 `ca_material_ready`, trust only the public `ca_cert`, keep `ca_key` mode 0600
 and readable only by the invoking user, and reject pinned or client-certificate
-mTLS workflows.
+mTLS workflows. Compare `tls init-ca` `ca_cert_sha256` with
+`agent.config.decrypt.ca_cert_sha256` before granting command-scoped trust.
 Branch on relay certificate errors: never repair
 `tls_upstream_certificate_invalid` by disabling remote verification; for
 `tls_upstream_client_auth_required`, switch to runtime mode or disable

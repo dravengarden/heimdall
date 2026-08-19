@@ -61,6 +61,7 @@ heimdall run -- curl -fsS https://example.com</code></pre>
 
         <h2 id="diagnose">Diagnose failures</h2>
         <ol><li>Run <code>heimdall agent</code> and preserve its JSON even when it exits 1.</li><li>Follow <code>actions.validate</code> as an argv array.</li><li>Check the exact sudoers path if foreground setup is denied.</li><li>Preview with <code>config explain</code>, then reproduce with a minimal command and the same policy.</li></ol>
+        <p>Before relay trust, compare the DER SHA-256 in <code>tls init-ca</code> <code>ca_cert_sha256</code> with <code>agent.config.decrypt.ca_cert_sha256</code>. Trust only that public certificate in the explicitly wrapped client; never expose the signing key.</p>
         <p>For relay TLS, <code>tls_upstream_certificate_invalid</code> means Heimdall rejected the remote peer and upstream verification must not be weakened. <code>tls_upstream_client_auth_required</code> means the verified upstream requires a client certificate relay mode cannot forward, so use runtime mode or disable decryption. <code>tls_downstream_certificate_rejected</code> is an explicit client certificate alert. <code>tls_downstream_closed_without_close_notify</code> is ambiguous; preserve the wrapped command's stderr and exit status before diagnosing trust.</p>
         <p>Do not equate config validity with connectivity. A real acceptance check must exercise the selected policy through <code>heimdall run</code>.</p>
 

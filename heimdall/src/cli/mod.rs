@@ -78,6 +78,7 @@ pub mod agent {
     struct DecryptConfigReport {
         mode: &'static str,
         ca_cert: Option<String>,
+        ca_cert_sha256: Option<String>,
         ca_key: Option<String>,
         ca_material_ready: bool,
     }
@@ -577,12 +578,14 @@ pub mod agent {
             heimdall_config::DecryptMode::Off => DecryptConfigReport {
                 mode: "off",
                 ca_cert: None,
+                ca_cert_sha256: None,
                 ca_key: None,
                 ca_material_ready: true,
             },
             heimdall_config::DecryptMode::Runtime => DecryptConfigReport {
                 mode: "runtime",
                 ca_cert: None,
+                ca_cert_sha256: None,
                 ca_key: None,
                 ca_material_ready: true,
             },
@@ -592,6 +595,10 @@ pub mod agent {
                     .ca_cert
                     .as_ref()
                     .map(|path| path.display().to_string()),
+                ca_cert_sha256: config
+                    .ca_cert
+                    .as_deref()
+                    .and_then(super::tls::certificate_sha256),
                 ca_key: config
                     .ca_key
                     .as_ref()

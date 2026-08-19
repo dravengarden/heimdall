@@ -67,6 +67,8 @@ migration guide.
   streams without claiming relay compatibility with client-certificate mTLS.
 - Prove retention apply removes exactly the dry-run candidates while preserving
   the newest run, and document that pruning is explicit and daemonless.
+- Report the relay CA's DER SHA-256 from both `tls init-ca` and `heimdall agent`
+  so agents can verify command-scoped client trust without exposing the key.
 - Add offline `heimdall config schema` and read-only `config example` commands,
   generated from the canonical Rust/Serde model and shared init templates.
 
