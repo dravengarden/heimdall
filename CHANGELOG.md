@@ -54,6 +54,10 @@ migration guide.
   `heimdall.logs.summary/v1` low-cardinality run-health contract, plus a
   repeatable real-eBPF VM benchmark for latency, RSS, 1/10/50 concurrent cold
   starts, and event-integrity checks.
+- Distinguish relay TLS upstream certificate verification failures,
+  downstream certificate alerts, and downstream closes without TLS
+  `close_notify`, with stable codes, phases, peer-verification state, and
+  matching flow-close evidence.
 
 ### Fixed
 

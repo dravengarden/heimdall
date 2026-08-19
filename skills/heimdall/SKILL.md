@@ -66,6 +66,12 @@ Choose `relay` only with authority to install local trust. Require
 `ca_material_ready`, trust only the public `ca_cert`, keep `ca_key` mode 0600
 and readable only by the invoking user, and reject pinned or client-certificate
 mTLS workflows.
+Branch on relay certificate errors: never repair
+`tls_upstream_certificate_invalid` by disabling remote verification; for
+`tls_downstream_certificate_rejected`, install only the configured public CA
+in the explicitly wrapped client when authorized.
+Treat `tls_downstream_closed_without_close_notify` as ambiguous until the
+wrapped command's stderr and exit status identify a trust failure.
 
 Choose `runtime` only when the client uses a reported OpenSSL API. Ensure a
 representative `libssl` image is already mapped when the run starts; the

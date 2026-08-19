@@ -48,6 +48,9 @@ acceptance path are documented and tested.
   and explicit OpenSSL runtime-observation metadata.
 - Relay TLS termination and startup-discovered OpenSSL runtime TLS probes in
   the foreground path.
+- Stable relay TLS failure evidence distinguishes invalid upstream
+  certificates, explicit downstream certificate alerts, and downstream closes
+  that reveal no certificate-specific reason.
 - No background service, machine-wide control plane, or persistent kernel
   state in the shipped CLI.
 - A real-eBPF NixOS acceptance VM covering dual-stack TCP/UDP, QUIC, common
@@ -117,10 +120,12 @@ test.
 
 - Expand runtime capture beyond the currently supported OpenSSL probe surface
   only when the library boundary can be made explicit and safe.
-- Harden relay TLS compatibility around ALPN, SNI, certificate errors,
-  client-authentication, pinning, and long-lived connections.
-- Improve CA initialization, trust-store guidance, and diagnostics for clients
-  that do not accept the relay certificate.
+- Harden relay TLS compatibility around ALPN, SNI, client-authentication,
+  pinning, and long-lived connections, building on the available
+  trust-boundary-specific certificate failure diagnostics.
+- Improve CA trust-store guidance while preserving the fact that some clients
+  close without an alert, so `tls_downstream_closed_without_close_notify`
+  still requires the wrapped command's stderr and exit status.
 
 Acceptance target: runtime and relay modes report their actual coverage and
 never claim plaintext visibility when the selected boundary was not attached or

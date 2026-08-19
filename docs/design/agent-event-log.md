@@ -167,6 +167,12 @@ still `transport`.
 - `tls.handshake`: mode, negotiated version/cipher/ALPN, peer identity result,
   trust boundary, and latency.
 - `tls.error`: mode, stable code, phase, and peer-verification evidence.
+  Relay certificate failures use `tls_upstream_certificate_invalid` during
+  `upstream_handshake` or `tls_downstream_certificate_rejected` during
+  `downstream_handshake`. Some clients send no certificate alert and close
+  without `close_notify`; that is reported separately as
+  `tls_downstream_closed_without_close_notify` and must not be presented as a
+  proven trust failure without the wrapped command's stderr/exit evidence.
 
 No key material, session secrets, or private CA content is ever logged.
 

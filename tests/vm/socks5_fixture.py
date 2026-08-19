@@ -64,7 +64,10 @@ class Handler(socketserver.BaseRequestHandler):
                 if not readable:
                     return
                 for source in readable:
-                    payload = source.recv(65536)
+                    try:
+                        payload = source.recv(65536)
+                    except ConnectionResetError:
+                        return
                     if not payload:
                         return
                     target = upstream if source is self.request else self.request

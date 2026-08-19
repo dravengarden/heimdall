@@ -1711,6 +1711,7 @@ async fn copy_tcp_transport(
         )?;
     }
 
+    let mut relay_error_code = None;
     let result = if let Some(relay_tls) = relay_tls {
         let manager = shared
             .capture
@@ -1753,21 +1754,25 @@ async fn copy_tcp_transport(
                 Ok((report.client_to_remote_bytes, report.remote_to_client_bytes))
             }
             Err(error) => {
+                relay_error_code = Some(error.code());
                 if let Some(events) = &event_client {
                     let _ = events.emit(
                         "tls.error",
                         flow_id,
                         serde_json::json!({
                             "mode": "relay",
-                            "code": "tls_relay_failed",
+                            "code": error.code(),
                             "message": error.to_string(),
-                            "phase": "handshake_or_stream",
+                            "phase": error.phase(),
                             "retryable": false,
-                            "peer_identity": {"server_name": fallback_name}
+                            "peer_identity": {
+                                "server_name": fallback_name,
+                                "verified": error.peer_verified()
+                            }
                         }),
                     );
                 }
-                Err(error)
+                Err(anyhow::Error::new(error))
             }
         }
     } else {
@@ -1783,7 +1788,7 @@ async fn copy_tcp_transport(
     if let Some(events) = event_client {
         let (client_to_remote_bytes, remote_to_client_bytes, status, error_code) = match &result {
             Ok((up, down)) => (*up, *down, "complete", None),
-            Err(_) => (0, 0, "error", Some("relay_failed")),
+            Err(_) => (0, 0, "error", relay_error_code.or(Some("relay_failed"))),
         };
         let close_result = events.emit(
             "flow.close",

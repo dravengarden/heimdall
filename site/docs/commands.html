@@ -51,6 +51,7 @@ heimdall run -- curl https://example.com
 heimdall agent --policy corp
 heimdall run --policy corp -- curl https://internal.example.com</code></pre>
         <p>The selected policy owns DNS, ordered rules, and final TCP/UDP actions. The wrapped process may re-enter through <code>systemd-run --user --scope</code>; the resolved global config path and exact argv are preserved. No decrypt mode uses a persistent Heimdall daemon.</p>
+        <p>Relay failures preserve the trust boundary: <code>tls_upstream_certificate_invalid</code> rejects the remote peer, <code>tls_downstream_certificate_rejected</code> records an explicit client certificate alert, and <code>tls_downstream_closed_without_close_notify</code> remains ambiguous until correlated with child stderr and exit status.</p>
 
         <h2 id="explain">Explain a decision</h2>
         <p>Preview one TCP or UDP destination without running it:</p>

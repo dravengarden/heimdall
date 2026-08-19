@@ -199,6 +199,19 @@ post-run event integrity. Treat every result as specific to the reported
 architecture, kernel, CPU count, and VM resources. It is not a universal
 throughput claim; sustained transport throughput remains a roadmap item.
 
+For relay TLS certificate failures, inspect `tls.error` before changing trust:
+
+- `tls_upstream_certificate_invalid` means Heimdall rejected the remote peer
+  during `upstream_handshake`; do not weaken upstream verification.
+- `tls_downstream_certificate_rejected` means the remote peer was verified,
+  but the wrapped client rejected Heimdall's CA during
+  `downstream_handshake`. Trust only the configured public `ca.pem` for that
+  explicit command workflow.
+- `tls_downstream_closed_without_close_notify` means the wrapped client closed
+  without a reason visible at the TLS boundary. Curl can do this after a trust
+  failure, but agents must preserve its stderr and exit status before drawing
+  that conclusion.
+
 ## Capture and TLS
 
 Run directories, payload blobs, and relay CA material are private to the user

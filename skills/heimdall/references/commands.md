@@ -150,7 +150,11 @@ operation mutates an active run.
    `heimdall __setup-worker` authorization.
 5. For runtime TLS setup failures, confirm a representative OpenSSL image was
    mapped before invocation and preserve the pre-exec error.
-6. Reproduce with the smallest command that uses the same protocol and policy.
+6. For relay TLS, distinguish `tls_upstream_certificate_invalid` from
+   `tls_downstream_certificate_rejected` and
+   `tls_downstream_closed_without_close_notify`; preserve child stderr for an
+   unclean close and never disable upstream verification.
+7. Reproduce with the smallest command that uses the same protocol and policy.
 
 Do not equate config validity with connectivity. A real acceptance check must
 exercise `heimdall run`.

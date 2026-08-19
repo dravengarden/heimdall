@@ -669,6 +669,49 @@ as_tester heimdall logs summary --run "$relay_run_id" --json \
       and .http.responses == 1
       and .error_events.total == 0' >/dev/null
 
+# Keep the two certificate trust boundaries distinguishable. An IP name fails
+# upstream identity verification before Heimdall presents a leaf, while the
+# second client reaches the verified upstream but rejects Heimdall's CA.
+if as_tester heimdall --config /etc/heimdall-test/relay.toml run --policy direct -- \
+  curl --cacert /etc/heimdall-test/upstream-ca.pem -fsS --max-time 5 \
+    https://127.0.0.1:18444/ >/dev/null 2>&1; then
+  echo "relay accepted an upstream certificate for the wrong identity" >&2
+  exit 1
+fi
+upstream_cert_run_id="$(as_tester heimdall logs list --json | jq -er '.runs[0].run_id')"
+upstream_cert_run_dir="$(as_tester heimdall logs path --run "$upstream_cert_run_id" --json | jq -er .run_dir)"
+jq -e -s 'any(.[]; .kind == "tls.error"
+      and .data.code == "tls_upstream_certificate_invalid"
+      and .data.phase == "upstream_handshake"
+      and (.data.peer_identity.verified | not))
+    and any(.[]; .kind == "flow.close"
+      and .data.error_code == "tls_upstream_certificate_invalid")' \
+  "$upstream_cert_run_dir"/events-*.jsonl >/dev/null
+
+if as_tester heimdall --config /etc/heimdall-test/relay.toml run --policy fake -- \
+  curl -fsS --max-time 5 https://fixture.test:18444/ >/dev/null 2>&1; then
+  echo "relay client unexpectedly trusted the unconfigured Heimdall CA" >&2
+  exit 1
+fi
+downstream_cert_run_id="$(as_tester heimdall logs list --json | jq -er '.runs[0].run_id')"
+downstream_cert_run_dir="$(as_tester heimdall logs path --run "$downstream_cert_run_id" --json | jq -er .run_dir)"
+if ! jq -e -s 'any(.[]; .kind == "tls.error"
+      and .data.code == "tls_downstream_closed_without_close_notify"
+      and .data.phase == "stream"
+      and .data.peer_identity.verified)
+    and any(.[]; .kind == "flow.close"
+      and .data.error_code == "tls_downstream_closed_without_close_notify")' \
+  "$downstream_cert_run_dir"/events-*.jsonl >/dev/null; then
+  jq -c 'select(.kind == "tls.error" or .kind == "flow.close")' \
+    "$downstream_cert_run_dir"/events-*.jsonl >&2
+  exit 1
+fi
+as_tester heimdall logs summary --run "$downstream_cert_run_id" --json \
+  | jq -e '.tls.errors == 1
+      and .error_events.by_code.tls_downstream_closed_without_close_notify == 1
+      and .flows.failures_by_code.tls_downstream_closed_without_close_notify == 1
+      and .flows.active == 0' >/dev/null
+
 run_count_before_prune="$(as_tester heimdall logs list --json | jq '.runs | length')"
 as_tester heimdall logs prune --keep-last 1 --max-total-bytes 1 --json \
   | jq -e '.contract == "heimdall.logs.prune/v1"

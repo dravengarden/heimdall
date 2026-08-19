@@ -11,7 +11,7 @@ use std::{
 use anyhow::{Context, Result};
 use rcgen::{Certificate, CertificateParams, ExtendedKeyUsagePurpose, KeyPair, KeyUsagePurpose};
 use rustls::{
-    ClientConfig, RootCertStore, ServerConfig,
+    AlertDescription, ClientConfig, RootCertStore, ServerConfig,
     pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName},
 };
 use tokio::net::TcpStream;
@@ -26,6 +26,18 @@ use crate::{
 
 const CLIENT_HELLO_TIMEOUT: Duration = Duration::from_secs(3);
 const CLASSIFY_TIMEOUT: Duration = Duration::from_millis(150);
+
+const fn is_certificate_alert(alert: AlertDescription) -> bool {
+    matches!(
+        alert,
+        AlertDescription::BadCertificate
+            | AlertDescription::UnsupportedCertificate
+            | AlertDescription::CertificateRevoked
+            | AlertDescription::CertificateExpired
+            | AlertDescription::CertificateUnknown
+            | AlertDescription::UnknownCA
+    )
+}
 
 pub struct RelayTls {
     ca: Certificate,
@@ -42,6 +54,125 @@ pub struct RelayCopyReport {
     pub alpn: Option<String>,
     pub latency_us: u64,
 }
+
+#[derive(Debug)]
+pub struct RelayCopyError {
+    code: &'static str,
+    phase: &'static str,
+    peer_verified: Option<bool>,
+    source: anyhow::Error,
+}
+
+impl RelayCopyError {
+    fn new(
+        code: &'static str,
+        phase: &'static str,
+        peer_verified: Option<bool>,
+        source: anyhow::Error,
+    ) -> Self {
+        Self {
+            code,
+            phase,
+            peer_verified,
+            source,
+        }
+    }
+
+    fn upstream(error: std::io::Error, server_name: &str) -> Self {
+        let certificate_invalid = matches!(
+            error
+                .get_ref()
+                .and_then(|source| source.downcast_ref::<rustls::Error>()),
+            Some(rustls::Error::InvalidCertificate(_))
+        );
+        let source = anyhow::Error::new(error)
+            .context(format!("verify upstream TLS certificate for {server_name}"));
+        let code = if certificate_invalid {
+            "tls_upstream_certificate_invalid"
+        } else {
+            "tls_upstream_handshake_failed"
+        };
+        Self::new(code, "upstream_handshake", Some(false), source)
+    }
+
+    fn downstream(error: std::io::Error, server_name: &str) -> Self {
+        let certificate_rejected = matches!(
+            error
+                .get_ref()
+                .and_then(|source| source.downcast_ref::<rustls::Error>()),
+            Some(rustls::Error::AlertReceived(alert)) if is_certificate_alert(*alert)
+        );
+        let source = anyhow::Error::new(error).context(format!(
+            "complete intercepted TLS handshake for {server_name}"
+        ));
+        let code = if certificate_rejected {
+            "tls_downstream_certificate_rejected"
+        } else {
+            "tls_downstream_handshake_failed"
+        };
+        Self::new(code, "downstream_handshake", Some(true), source)
+    }
+
+    fn stream(source: anyhow::Error) -> Self {
+        let certificate_rejected = source.chain().any(|cause| {
+            cause
+                .downcast_ref::<rustls::Error>()
+                .or_else(|| {
+                    cause
+                        .downcast_ref::<std::io::Error>()
+                        .and_then(std::io::Error::get_ref)
+                        .and_then(|inner| inner.downcast_ref::<rustls::Error>())
+                })
+                .is_some_and(|error| {
+                    matches!(
+                        error,
+                        rustls::Error::AlertReceived(alert) if is_certificate_alert(*alert)
+                    )
+                })
+        });
+        if certificate_rejected {
+            Self::new(
+                "tls_downstream_certificate_rejected",
+                "downstream_handshake",
+                Some(true),
+                source,
+            )
+        } else if source.chain().any(|cause| {
+            cause
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::UnexpectedEof)
+        }) {
+            Self::new(
+                "tls_downstream_closed_without_close_notify",
+                "stream",
+                Some(true),
+                source,
+            )
+        } else {
+            Self::new("tls_stream_failed", "stream", Some(true), source)
+        }
+    }
+
+    pub const fn code(&self) -> &'static str {
+        self.code
+    }
+
+    pub const fn phase(&self) -> &'static str {
+        self.phase
+    }
+
+    pub const fn peer_verified(&self) -> Option<bool> {
+        self.peer_verified
+    }
+}
+
+impl std::fmt::Display for RelayCopyError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{:#}", self.source)
+    }
+}
+
+impl std::error::Error for RelayCopyError {}
 
 impl RelayTls {
     pub fn load(ca_cert: &Path, ca_key: &Path) -> Result<Self> {
@@ -111,15 +242,29 @@ impl RelayTls {
         capture: &CaptureManager,
         events: Option<&FlowEventClient>,
         meta: FlowMeta<'_>,
-    ) -> Result<RelayCopyReport> {
+    ) -> std::result::Result<RelayCopyReport, RelayCopyError> {
         let handshake_started = Instant::now();
         let start = tokio::time::timeout(
             CLIENT_HELLO_TIMEOUT,
             LazyConfigAcceptor::new(rustls::server::Acceptor::default(), client),
         )
         .await
-        .context("timed out reading TLS ClientHello")?
-        .context("read TLS ClientHello")?;
+        .map_err(|error| {
+            RelayCopyError::new(
+                "tls_client_hello_timeout",
+                "client_hello",
+                None,
+                anyhow::Error::new(error).context("timed out reading TLS ClientHello"),
+            )
+        })?
+        .map_err(|error| {
+            RelayCopyError::new(
+                "tls_client_hello_invalid",
+                "client_hello",
+                None,
+                anyhow::Error::new(error).context("read TLS ClientHello"),
+            )
+        })?;
         let hello = start.client_hello();
         let server_name = hello.server_name().unwrap_or(fallback_name).to_owned();
         let offered_alpn = hello
@@ -127,33 +272,41 @@ impl RelayTls {
             .map(|items| items.map(<[u8]>::to_vec).collect::<Vec<_>>())
             .unwrap_or_default();
         if let Some(events) = events {
-            events.emit(
-                "tls.client_hello",
-                meta.flow_id,
-                serde_json::json!({
-                    "sni": hello.server_name(),
-                    "alpn_offered": offered_alpn
-                        .iter()
-                        .map(|protocol| match std::str::from_utf8(protocol) {
-                            Ok(protocol) => protocol.to_owned(),
-                            Err(_) => format!("hex:{}", hex::encode(protocol)),
-                        })
-                        .collect::<Vec<_>>(),
-                    "min_version": null,
-                    "max_version": null,
-                    "parser_status": "parsed_versions_unavailable"
-                }),
-            )?;
+            events
+                .emit(
+                    "tls.client_hello",
+                    meta.flow_id,
+                    serde_json::json!({
+                        "sni": hello.server_name(),
+                        "alpn_offered": offered_alpn
+                            .iter()
+                            .map(|protocol| match std::str::from_utf8(protocol) {
+                                Ok(protocol) => protocol.to_owned(),
+                                Err(_) => format!("hex:{}", hex::encode(protocol)),
+                            })
+                            .collect::<Vec<_>>(),
+                        "min_version": null,
+                        "max_version": null,
+                        "parser_status": "parsed_versions_unavailable"
+                    }),
+                )
+                .map_err(|error| {
+                    RelayCopyError::new("tls_evidence_failed", "client_hello", None, error)
+                })?;
         }
 
         let name = ServerName::try_from(server_name.clone())
-            .with_context(|| format!("invalid TLS server name `{server_name}`"))?;
+            .map_err(anyhow::Error::new)
+            .with_context(|| format!("invalid TLS server name `{server_name}`"))
+            .map_err(|error| {
+                RelayCopyError::new("tls_server_name_invalid", "client_hello", None, error)
+            })?;
         let connector = TlsConnector::from(self.client_config.clone());
         let mut upstream = connector
             .with_alpn(offered_alpn)
             .connect(name, remote)
             .await
-            .with_context(|| format!("verify upstream TLS certificate for {server_name}"))?;
+            .map_err(|error| RelayCopyError::upstream(error, &server_name))?;
         let selected_alpn = upstream.get_ref().1.alpn_protocol().map(<[u8]>::to_vec);
         let version = upstream
             .get_ref()
@@ -169,14 +322,28 @@ impl RelayTls {
             .as_deref()
             .map(|value| String::from_utf8_lossy(value).into_owned());
 
-        let server_config = self.server_config(&server_name, selected_alpn)?;
+        let server_config = self
+            .server_config(&server_name, selected_alpn)
+            .map_err(|error| {
+                RelayCopyError::new(
+                    "tls_leaf_generation_failed",
+                    "leaf_generation",
+                    Some(true),
+                    error,
+                )
+            })?;
         let mut downstream = start
             .into_stream(Arc::new(server_config))
             .await
-            .with_context(|| format!("complete intercepted TLS handshake for {server_name}"))?;
+            .map_err(|error| RelayCopyError::downstream(error, &server_name))?;
         let latency_us = u64::try_from(handshake_started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        let flow_capture = capture.open(meta).await.map_err(|error| {
+            RelayCopyError::new("tls_capture_open_failed", "stream", Some(true), error)
+        })?;
         let (client_to_remote_bytes, remote_to_client_bytes) =
-            capture::copy_tcp(&mut downstream, &mut upstream, capture.open(meta).await?).await?;
+            capture::copy_tcp(&mut downstream, &mut upstream, flow_capture)
+                .await
+                .map_err(RelayCopyError::stream)?;
         Ok(RelayCopyReport {
             client_to_remote_bytes,
             remote_to_client_bytes,
@@ -241,11 +408,60 @@ mod tests {
     use super::*;
     use heimdall_config::{CaptureConfig, CaptureMode};
     use rcgen::{BasicConstraints, IsCa};
+    use rustls::CertificateError;
     use tokio::{
         io::{AsyncReadExt as _, AsyncWriteExt as _},
         net::TcpListener,
     };
     use tokio_rustls::TlsAcceptor;
+
+    #[test]
+    fn classifies_certificate_failures_by_trust_boundary() {
+        let upstream = RelayCopyError::upstream(
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                rustls::Error::InvalidCertificate(CertificateError::UnknownIssuer),
+            ),
+            "fixture.test",
+        );
+        assert_eq!(upstream.code(), "tls_upstream_certificate_invalid");
+        assert_eq!(upstream.phase(), "upstream_handshake");
+        assert_eq!(upstream.peer_verified(), Some(false));
+
+        let downstream = RelayCopyError::downstream(
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                rustls::Error::AlertReceived(AlertDescription::UnknownCA),
+            ),
+            "fixture.test",
+        );
+        assert_eq!(downstream.code(), "tls_downstream_certificate_rejected");
+        assert_eq!(downstream.phase(), "downstream_handshake");
+        assert_eq!(downstream.peer_verified(), Some(true));
+
+        let delayed = RelayCopyError::stream(
+            anyhow::Error::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                rustls::Error::AlertReceived(AlertDescription::UnknownCA),
+            ))
+            .context("read relayed transport"),
+        );
+        assert_eq!(delayed.code(), "tls_downstream_certificate_rejected");
+        assert_eq!(delayed.phase(), "downstream_handshake");
+
+        let silent_close = RelayCopyError::stream(
+            anyhow::Error::new(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "peer closed without close_notify",
+            ))
+            .context("read relayed transport"),
+        );
+        assert_eq!(
+            silent_close.code(),
+            "tls_downstream_closed_without_close_notify"
+        );
+        assert_eq!(silent_close.phase(), "stream");
+    }
 
     #[tokio::test]
     async fn generated_leaf_is_trusted_and_preserves_alpn() {
