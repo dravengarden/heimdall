@@ -31,7 +31,7 @@
         <pre><code>nix develop .#ebpf -c bash -c \
   'cd heimdall-ebpf && cargo-nightly build --locked --release'
 nix develop -c just verify</code></pre>
-        <p>Run the disposable real-eBPF VM when changing cgroups, DNS, relay correlation, routing, or kernel programs:</p>
+        <p>Run the current and Linux 6.6 LTS disposable real-eBPF VMs when changing cgroups, DNS, relay correlation, routing, or kernel programs. Both execute the same static binary and full daemonless acceptance suite:</p>
         <pre><code>nix develop -c just test-vm</code></pre>
 
         <h2 id="install">Install</h2>

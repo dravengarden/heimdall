@@ -17,6 +17,12 @@ capture, TLS, setup privilege, or lifecycle behavior:
 nix develop -c just test-vm
 ```
 
+This runs the same static release binary and full cgroup v2/eBPF suite in
+disposable NixOS guests on the nixpkgs current kernel and Linux 6.6 LTS. Both
+cover dual-stack TCP/UDP, fake and system DNS, SOCKS5, QUIC, common runtime
+clients, concurrent runs, runtime and relay TLS, capture, rotation, recovery,
+signals, authorization failure, parent-death cleanup, and link cleanup.
+
 Build and exercise the generic static archive, including install, upgrade, and
 rollback:
 

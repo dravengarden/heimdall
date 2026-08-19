@@ -34,9 +34,10 @@ test:
 test-fast:
     cargo nextest run --workspace --all-features --locked
 
-# Boots a disposable NixOS guest and exercises the real cgroup/eBPF data path.
+# Boots current and LTS-kernel disposable NixOS guests and exercises the same
+# real cgroup/eBPF data-path acceptance suite in both.
 test-vm:
-    nix build .#checks.x86_64-linux.vm-proxy -L
+    nix build .#checks.x86_64-linux.vm-proxy .#checks.x86_64-linux.vm-proxy-lts -L
 
 # Runs environment-specific latency, memory, concurrency, sustained-throughput,
 # and event-integrity baselines in the same disposable real-eBPF NixOS guest.

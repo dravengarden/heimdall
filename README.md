@@ -61,7 +61,7 @@ need compatibility hardening.
 | Runtime TLS decryption | Available daemonless with alpha limits | Startup-discovered OpenSSL images; no CA injection; unsupported TLS libraries remain opaque |
 | Relay TLS decryption | Available daemonless with alpha limits | Local CA plus per-host leaves; upstream certificate failures and downstream alerts/unclean closes remain distinct evidence |
 | Static Linux packaging | Available | Reproducible x86_64 musl archive, checksum, atomic install, and one-level rollback |
-| Runtime and kernel compatibility | In development | Expanding the tested matrix and documenting unsupported edge cases |
+| Runtime and kernel compatibility | In development | The same real-eBPF suite covers current and Linux 6.6 LTS kernels; more distributions and runtime edge cases remain active work |
 | Capture analysis | In development | Allowlists, redaction, bounded blocks, orphan recovery, and provenance-linked HTTP/1 header evidence are available; broader analysis remains active work |
 | Performance and observability | In development | Repeatable real-eBPF VM latency, RSS, 1/10/50 concurrency, sustained TCP/UDP/capture throughput, and event-integrity baselines are available; the wider platform matrix remains active work |
 

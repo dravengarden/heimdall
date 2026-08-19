@@ -369,6 +369,31 @@
             sh ${./tests/package/run-acceptance.sh} ${releaseBundle} ${heimdallVersion}
             touch "$out"
           '';
+
+      vmProxyTest =
+        {
+          name,
+          kernelPackages ? null,
+        }:
+        pkgs.testers.runNixOSTest {
+          inherit name;
+          nodes.machine = {
+            imports = [
+              ./tests/vm/heimdall-proxy.nix
+            ]
+            ++ lib.optional (kernelPackages != null) { boot.kernelPackages = kernelPackages; };
+            _module.args.heimdallPackage = heimdall-static;
+            virtualisation = {
+              memorySize = 2048;
+              cores = 2;
+            };
+          };
+          testScript = ''
+            machine.start()
+            machine.wait_until_succeeds("test -e /run/heimdall-test/ready")
+            machine.succeed("/etc/heimdall-test/run-acceptance.sh")
+          '';
+        };
     in
     {
       packages.${system} = {
@@ -384,21 +409,10 @@
 
       checks.${system} = {
         release = releaseCheck;
-        vm-proxy = pkgs.testers.runNixOSTest {
-          name = "heimdall-proxy";
-          nodes.machine = {
-            imports = [ ./tests/vm/heimdall-proxy.nix ];
-            _module.args.heimdallPackage = heimdall-static;
-            virtualisation = {
-              memorySize = 2048;
-              cores = 2;
-            };
-          };
-          testScript = ''
-            machine.start()
-            machine.wait_until_succeeds("test -e /run/heimdall-test/ready")
-            machine.succeed("/etc/heimdall-test/run-acceptance.sh")
-          '';
+        vm-proxy = vmProxyTest { name = "heimdall-proxy"; };
+        vm-proxy-lts = vmProxyTest {
+          name = "heimdall-proxy-lts";
+          kernelPackages = pkgs.linuxPackages_6_6;
         };
         vm-benchmark = pkgs.testers.runNixOSTest {
           name = "heimdall-benchmark";

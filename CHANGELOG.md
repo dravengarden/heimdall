@@ -47,9 +47,10 @@ migration guide.
 - Add explicit `off`, `runtime`, and `relay` TLS modes. Runtime mode observes
   startup-discovered OpenSSL APIs without changing trust; relay mode validates
   upstream TLS and issues per-host leaves from invoking-user-owned CA material.
-- Add real-eBPF disposable NixOS VM acceptance for dual-stack TCP/UDP, fake and
-  system DNS, QUIC, common CLI/runtime clients, concurrent runs, both TLS paths,
-  log rotation, fail-closed errors, and complete cleanup.
+- Add real-eBPF disposable NixOS VM acceptance on current and Linux 6.6 LTS
+  kernels for dual-stack TCP/UDP, fake and system DNS, QUIC, common CLI/runtime
+  clients, concurrent runs, both TLS paths, log rotation, fail-closed errors,
+  and complete cleanup.
 - Add `heimdall logs summary` with the stable
   `heimdall.logs.summary/v1` low-cardinality run-health contract, plus a
   repeatable real-eBPF VM benchmark for latency, RSS, 1/10/50 concurrent cold

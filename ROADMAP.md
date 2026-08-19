@@ -55,8 +55,9 @@ acceptance path are documented and tested.
   that reveal no certificate-specific reason.
 - No background service, machine-wide control plane, or persistent kernel
   state in the shipped CLI.
-- A real-eBPF NixOS acceptance VM covering dual-stack TCP/UDP, QUIC, common
-  CLI/runtime clients, lifecycle behavior, and both TLS paths.
+- A real-eBPF NixOS acceptance matrix on the current and Linux 6.6 LTS kernels,
+  covering dual-stack TCP/UDP, QUIC, common CLI/runtime clients, lifecycle
+  behavior, and both TLS paths.
 - A machine-readable real-eBPF benchmark covering daemonless latency, RSS,
   1/10/50 concurrent starts, sustained TCP/UDP and capture throughput, and
   event integrity without requiring a metrics service.
@@ -110,8 +111,8 @@ integrity, and distinguish opaque transport from actual TLS plaintext. See
 
 ### 3. Proxy compatibility and diagnostics
 
-- Expand the runtime matrix across kernel versions, libc behaviors, socket API
-  variants, and process-tree edge cases.
+- Expand the available current/LTS kernel matrix across distributions, libc
+  behaviors, socket API variants, and process-tree edge cases.
 - Turn more rejected or unsupported network shapes into stable agent-readable
   diagnostics with a clear repair command or an explicit fail-closed reason.
 - Keep extending dual-stack, UDP, and HTTP/3 acceptance without weakening
@@ -159,7 +160,8 @@ runs. It also records sustained direct and proxied TCP, proxied UDP, transport
 capture, and relay TLS plaintext-capture throughput. Results are explicitly
 environment-specific rather than product-wide performance claims.
 
-- Repeat the baseline across the supported kernel and distribution matrix.
+- Repeat the performance baseline across the supported kernel and distribution
+  matrix; the functional acceptance suite already covers current and 6.6 LTS.
 - Keep operational health low-cardinality and derived from the same per-run
   evidence used by agents; do not add a required metrics daemon.
 

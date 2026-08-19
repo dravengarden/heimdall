@@ -33,7 +33,7 @@ stable contracts, planning, design material, and operational guidance.
 - [`architecture.md`](architecture.md) — CLI, eBPF, DNS, TCP/UDP relay, and TLS decrypt boundaries
 - [`config.md`](config.md) — Generated offline schema/examples, strict TOML/YAML/JSON policy rules, credentials, capture allowlists/redaction, decrypt modes, and UDP/QUIC limits
 - [`install.md`](install.md) — Reproducible x86_64 Linux artifact, install ownership, upgrade, and rollback
-- [`runbook.md`](runbook.md) — Build, narrow setup authorization, agent/log contracts, capture readiness, daemonless operation, TLS, VM acceptance, and performance baseline
+- [`runbook.md`](runbook.md) — Build, narrow setup authorization, agent/log contracts, capture readiness, daemonless operation, TLS, current/LTS kernel VM acceptance, and performance baseline
 
 ### Design documents
 
