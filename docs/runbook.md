@@ -31,6 +31,11 @@ install, upgrade, and rollback acceptance:
 nix develop -c just test-package
 ```
 
+The `Linux CI` workflow runs the same source, package, and per-kernel gates on
+every pull request and `main` push. The tagged release workflow reruns source,
+both real-eBPF kernels, and package checks before attestation or publication;
+Pages success alone is not release evidence.
+
 The disposable NixOS VM proves fake/system DNS, SOCKS5 and direct TCP/UDP,
 IPv4/IPv6, HTTP/3, static
 and dynamic clients, descendants, exit/signal status, two concurrent isolated

@@ -31,6 +31,16 @@ jobs:
             exit 1
           }
 
+      - name: Verify source
+        run: nix develop -c just verify
+
+      - name: Run real-eBPF acceptance
+        run: |
+          nix build \
+            .#checks.x86_64-linux.vm-proxy \
+            .#checks.x86_64-linux.vm-proxy-lts \
+            -L
+
       - name: Build and test release package
         run: |
           nix build \

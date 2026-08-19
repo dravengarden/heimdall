@@ -1,0 +1,53 @@
+name: Linux CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality-and-packaging:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Verify source
+        run: nix develop -c just verify
+
+      - name: Test release packages
+        run: nix develop -c just test-package
+
+  real-ebpf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - kernel: current
+            check: vm-proxy
+          - kernel: linux-6.6-lts
+            check: vm-proxy-lts
+    name: real eBPF (${{ matrix.kernel }})
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Run real-eBPF acceptance
+        run: nix build ".#checks.x86_64-linux.${{ matrix.check }}" -L
