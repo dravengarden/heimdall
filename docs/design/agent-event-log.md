@@ -1,10 +1,11 @@
 # Agent-first event log design
 
-Status: Phase 1 implemented for daemonless run lifecycle and TCP/UDP flow
-metadata. Payload blobs and TLS/HTTP events remain in progress.
+Status: lifecycle, TCP/UDP metadata, bounded content-addressed payload blobs,
+payload-aware queries, byte/age rotation, and integrity verification are
+implemented. Relay TLS handshake/error metadata is implemented; DNS/policy,
+ClientHello, runtime TLS metadata, and derived HTTP events remain in progress.
 
-This document defines the storage and CLI contract that replaces per-flow
-`heimdall.capture/v1` files. The goals are direct Linux-tool usability, strict
+This document defines the unified storage and CLI contract. The goals are direct Linux-tool usability, strict
 machine discovery, bounded storage, and loss-aware rotation. The event log is
 useful without a Web UI.
 
@@ -94,7 +95,7 @@ Required fields:
 | `command` | object | Executable, argv count, and optional redacted argv array |
 | `policy` | string | Selected policy name |
 | `backend` | string | Actual interception backend |
-| `capture` | object | Event profile, `heimdall.event/v1`, and the separate `heimdall.capture/v1` payload contract |
+| `capture` | object | Event profile, `heimdall.event/v1`, blob/flow limits, and segment rotation limits |
 | `segments` | object array | File, first/last sequence, bytes, SHA-256, final state |
 | `blobs` | object | Count and total stored bytes |
 | `result` | object or null | Exit status, signal, Heimdall error code, completeness |
@@ -110,8 +111,12 @@ feature, not part of v1.
 
 ## Event kinds
 
-The v1 enum is intentionally small. New meanings require a new schema version;
-optional fields cannot reinterpret an existing kind.
+The v1 schema reserves the kinds below. The current writer emits run lifecycle,
+TCP/UDP flow records, payload references, and relay `tls.handshake`/`tls.error`.
+DNS, policy-decision, ClientHello, runtime TLS metadata, and HTTP kinds are not
+yet emitted and must not be inferred from their presence in the schema. New
+meanings require a new schema version; optional fields cannot reinterpret an
+existing kind.
 
 ### Run lifecycle
 
@@ -135,7 +140,7 @@ optional fields cannot reinterpret an existing kind.
   truncation state, and optional blob reference.
 - `flow.close`: byte counters, duration, status, and error code when present.
 
-During Phase 1 shutdown, the foreground owner first prevents new flows, closes
+During shutdown, the foreground owner first prevents new flows, closes
 its UDP sessions, and waits up to two seconds for tracked event flows to drain
 through `flow.close`. Only then does `heimdall run` append `run.close` and
 finalize the manifest. A timeout is recorded as incomplete drain evidence,
@@ -209,11 +214,9 @@ Each run owns its writer. Rotation closes and fsyncs the current segment,
 records its sequence range and digest in `run.json`, then atomically creates the
 next numbered segment. A record is never split across segments.
 
-Phase 1 automatic rotation supports:
-
-- `segment_max_bytes`, measured before adding the next record;
-
-Age-based rotation is planned and will be measured with monotonic time.
+Automatic rotation supports `segment_max_bytes` and `segment_max_age_ms`.
+Age is measured with the run's monotonic clock. The limits are recorded in
+`run.json`; the next record starts a new segment when either limit is reached.
 
 One oversize event may exceed `segment_max_bytes`; it remains intact and the
 next event starts a new segment. Payload blobs have independent per-flow and
@@ -241,13 +244,15 @@ Rotation preserves data; pruning deletes it. They are separate commands.
 ```bash
 heimdall logs prune --older-than 30d --keep-last 20 --json
 heimdall logs prune --older-than 30d --keep-last 20 --apply --json
+heimdall logs prune --max-total-bytes 1073741824 --keep-last 20 --json
 ```
 
 Prune defaults to dry-run unless the explicit `--apply` option is present.
 It never removes active runs, follows no symlinks, and deletes a complete run
-directory as one unit. Phase 1 selection combines maximum age and minimum runs
-to keep; maximum-total-bytes retention is planned. The JSON result lists every
-candidate, reason, and byte count before deletion.
+directory as one unit. Selection combines maximum age, maximum total bytes,
+and minimum runs to keep. The JSON result lists every candidate, reason, byte
+count, projected total, and whether the requested limit can be satisfied
+without deleting active or protected runs.
 
 Automatic retention is off by default. If enabled, it runs only at the end or
 start of a foreground Heimdall command; it does not require a timer or daemon.
@@ -281,10 +286,10 @@ Contract rules:
 - filters use repeated flags, not a query-language string;
 - `--follow` follows new segments and stops after `run.close` or `run.error`.
 
-Phase 1 query filters are `--kind`, `--flow`, `--since-seq`, and `--until-seq`.
-Direction, boundary, error-code, and blob-presence filters arrive with payload
-events. This deliberately does not invent a second general-purpose query
-language; agents can use `jq` for arbitrary projection.
+Query filters are `--kind`, `--flow`, `--since-seq`, `--until-seq`, repeated
+`--direction`, repeated `--boundary`, repeated `--error-code`, and
+`--has-blob[=true|false]`. This deliberately does not invent a second
+general-purpose query language; agents can use `jq` for arbitrary projection.
 
 ## Standard Linux-tool recipes
 

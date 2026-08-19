@@ -12,7 +12,6 @@ proxy.policies.<name>.rules[] = ordered match + terminal action
 proxy.policies.<name>.final.tcp = route | direct | reject
 proxy.policies.<name>.final.udp = route | direct | reject
 capture.mode = off | on
-capture.directory = absolute path (default /var/lib/heimdall/captures)
 capture.max_bytes_per_flow = 1..67108864 (default 1048576)
 decrypt.mode = off | runtime | relay
 decrypt.ca_cert = absolute PEM path (relay only)
@@ -83,8 +82,9 @@ probe the actual command when its runtime is absent from that path's array.
 ## Capture and decrypt boundary
 
 Enable capture only when the user intends to retain traffic. It writes private,
-user-owned JSONL using `heimdall.capture/v1`. The byte limit is shared across
-both directions. With decrypt off, payload is opaque transport. Runtime
+content-addressed blobs below the run directory and references them from
+`heimdall.event/v1` JSONL. The byte limit is shared across both directions.
+With decrypt off, payload is opaque transport. Runtime
 mode is CA-free but currently covers only the TLS libraries listed by
 `agent.capabilities.decrypt.runtime_libraries`. Relay mode is TLS-library-independent
 but requires client trust and does not support pinning or client-certificate
@@ -95,13 +95,13 @@ the workload starts.
 `runtime_apis` and `runtime_max_bytes_per_event` define the exact
 probe boundary. Both decrypt modes require capture on.
 
-Validate the absolute directory and bounded limit, then inspect the normalized
-values at `agent.config.capture`/`agent.config.decrypt` and capability boundary
+Validate the bounded limit, then inspect the normalized values at
+`agent.config.capture`/`agent.config.decrypt` and capability boundary
 at `agent.capabilities.capture`/`agent.capabilities.decrypt`. Use
 `heimdall tls init-ca --json` only after explicit relay trust authority. Never
 weaken file permissions or expose `ca_key`; it must remain readable by the same
-user that invokes relay mode. Heimdall does not rotate or upload
-captures; retention is an operator decision.
+user that invokes relay mode. Heimdall never uploads captures; use
+`heimdall logs prune` for explicit retention.
 
 ## DNS invariants
 

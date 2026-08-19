@@ -17,6 +17,8 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use heimdall_config::{CaptureConfig, CaptureMode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -27,6 +29,7 @@ pub const EVENT_CONTRACT: &str = "heimdall.event/v1";
 pub const RUN_CONTRACT: &str = "heimdall.run/v1";
 pub const CONTROL_CONTRACT: &str = "heimdall.logs.control/v1";
 pub const DEFAULT_SEGMENT_BYTES: u64 = 16 * 1024 * 1024;
+pub const DEFAULT_SEGMENT_AGE: Duration = Duration::from_secs(15 * 60);
 
 pub const EVENT_SCHEMA: &str = include_str!("../schemas/heimdall.event.v1.schema.json");
 pub const RUN_SCHEMA: &str = include_str!("../schemas/heimdall.run.v1.schema.json");
@@ -122,7 +125,9 @@ struct RunWriter {
     segment: SegmentWriter,
     next_seq: u64,
     started: Instant,
+    segment_started: Instant,
     segment_max_bytes: u64,
+    segment_max_age: Duration,
 }
 
 struct SegmentWriter {
@@ -136,15 +141,43 @@ struct SegmentWriter {
 }
 
 impl RunLog {
-    pub fn create(command: &[String], policy: &str, backend: &str) -> Result<Self> {
-        Self::create_at(&runs_root()?, command, policy, backend)
+    pub fn create_with_capture(
+        command: &[String],
+        policy: &str,
+        backend: &str,
+        capture: &CaptureConfig,
+    ) -> Result<Self> {
+        let profile = match capture.mode {
+            CaptureMode::Off => "metadata",
+            CaptureMode::On => "payload",
+        };
+        Self::create_at_profile(
+            &runs_root()?,
+            command,
+            policy,
+            backend,
+            profile,
+            capture.max_bytes_per_flow,
+        )
     }
 
+    #[cfg(test)]
     pub(crate) fn create_at(
         runs: &Path,
         command: &[String],
         policy: &str,
         backend: &str,
+    ) -> Result<Self> {
+        Self::create_at_profile(runs, command, policy, backend, "metadata", 0)
+    }
+
+    fn create_at_profile(
+        runs: &Path,
+        command: &[String],
+        policy: &str,
+        backend: &str,
+        capture_profile: &str,
+        max_bytes_per_flow: u64,
     ) -> Result<Self> {
         anyhow::ensure!(!command.is_empty(), "event log command must not be empty");
         let now = OffsetDateTime::now_utc();
@@ -176,9 +209,12 @@ impl RunLog {
             policy: policy.into(),
             backend: backend.into(),
             capture: json!({
-                "profile": "metadata",
+                "profile": capture_profile,
                 "event_schema": EVENT_CONTRACT,
-                "payload_contract": "heimdall.capture/v1"
+                "payload_storage": "content_addressed",
+                "max_bytes_per_flow": max_bytes_per_flow,
+                "segment_max_bytes": DEFAULT_SEGMENT_BYTES,
+                "segment_max_age_ms": DEFAULT_SEGMENT_AGE.as_millis() as u64
             }),
             segments: Vec::new(),
             blobs: BlobSummary::default(),
@@ -191,7 +227,9 @@ impl RunLog {
             segment,
             next_seq: 1,
             started: Instant::now(),
+            segment_started: Instant::now(),
             segment_max_bytes: DEFAULT_SEGMENT_BYTES,
+            segment_max_age: DEFAULT_SEGMENT_AGE,
         })));
         writer.persist_manifest()?;
         writer.emit(
@@ -200,7 +238,7 @@ impl RunLog {
             json!({
                 "policy": policy,
                 "backend": backend,
-                "capture": {"profile": "metadata", "payload_contract": "heimdall.capture/v1"},
+                "capture": {"profile": capture_profile, "payload_storage": "content_addressed"},
                 "schemas": {"event": EVENT_CONTRACT, "run": RUN_CONTRACT}
             }),
         )?;
@@ -221,6 +259,28 @@ impl RunLog {
 
     fn emit_flow(&self, kind: &str, flow_id: Uuid, pid: Option<u32>, data: Value) -> Result<u64> {
         self.lock()?.emit(kind, Some(flow_id), pid, data)
+    }
+
+    fn emit_payload(
+        &self,
+        flow_id: Uuid,
+        pid: Option<u32>,
+        mut data: Value,
+        payload: &[u8],
+    ) -> Result<u64> {
+        let mut writer = self.lock()?;
+        let blob = writer.store_blob(payload)?;
+        let object = data
+            .as_object_mut()
+            .context("flow.data payload metadata must be an object")?;
+        anyhow::ensure!(
+            !object.contains_key("blob"),
+            "flow.data blob is writer-owned"
+        );
+        object.insert("blob".into(), blob);
+        let seq = writer.emit("flow.data", Some(flow_id), pid, data)?;
+        writer.persist_manifest()?;
+        Ok(seq)
     }
 
     pub fn ready(&self, owner: &str, control: Option<&str>, boundaries: &[&str]) -> Result<()> {
@@ -306,6 +366,59 @@ impl RunLog {
 }
 
 impl RunWriter {
+    fn store_blob(&mut self, payload: &[u8]) -> Result<Value> {
+        let digest = hex::encode(Sha256::digest(payload));
+        let relative = PathBuf::from("blobs/sha256")
+            .join(&digest[..2])
+            .join(&digest[2..4])
+            .join(&digest);
+        let path = self.run_dir.join(&relative);
+        let parent = path.parent().context("blob path has no parent")?;
+        create_private_dir(parent)?;
+        let created = match OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                file.write_all(payload)
+                    .with_context(|| format!("write blob {}", path.display()))?;
+                file.sync_all()
+                    .with_context(|| format!("sync blob {}", path.display()))?;
+                true
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let metadata = fs::symlink_metadata(&path)
+                    .with_context(|| format!("inspect existing blob {}", path.display()))?;
+                anyhow::ensure!(
+                    metadata.file_type().is_file() && metadata.len() == payload.len() as u64,
+                    "existing blob {} is not the expected regular file",
+                    path.display()
+                );
+                false
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("create blob {}", path.display()));
+            }
+        };
+        if created {
+            self.manifest.blobs.count += 1;
+            self.manifest.blobs.bytes = self
+                .manifest
+                .blobs
+                .bytes
+                .saturating_add(payload.len() as u64);
+        }
+        Ok(json!({
+            "algorithm": "sha256",
+            "digest": digest,
+            "path": relative.to_string_lossy(),
+            "bytes": payload.len(),
+            "media_type": "application/octet-stream"
+        }))
+    }
+
     fn emit(
         &mut self,
         kind: &str,
@@ -332,7 +445,8 @@ impl RunWriter {
         let mut encoded = serde_json::to_vec(&event).context("encode event record")?;
         encoded.push(b'\n');
         if self.segment.bytes > 0
-            && self.segment.bytes.saturating_add(encoded.len() as u64) > self.segment_max_bytes
+            && (self.segment.bytes.saturating_add(encoded.len() as u64) > self.segment_max_bytes
+                || self.segment_started.elapsed() >= self.segment_max_age)
         {
             self.rotate()?;
         }
@@ -351,6 +465,7 @@ impl RunWriter {
         anyhow::ensure!(self.segment.bytes > 0, "active event segment is empty");
         let finalized = self.finalize_segment()?;
         self.segment = SegmentWriter::create(&self.run_dir, self.segment.index + 1, self.next_seq)?;
+        self.segment_started = Instant::now();
         self.persist_manifest()?;
         Ok(finalized)
     }
@@ -422,6 +537,8 @@ struct EmitRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pid: Option<u32>,
     data: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    payload_base64: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -564,18 +681,38 @@ fn serve_control(log: &RunLog, stream: &mut UnixStream) -> Result<()> {
 fn serve_event(log: &RunLog, stream: &mut UnixStream) -> Result<()> {
     let mut request = Vec::new();
     stream
+        .take(96 * 1024 * 1024 + 1)
         .read_to_end(&mut request)
         .context("read event request")?;
+    anyhow::ensure!(
+        request.len() <= 96 * 1024 * 1024,
+        "event request is too large"
+    );
     let request: EmitRequest = serde_json::from_slice(&request).context("decode event request")?;
     anyhow::ensure!(
         request.contract == "heimdall.logs.emit/v1",
         "event contract mismatch"
     );
     anyhow::ensure!(
-        matches!(request.kind.as_str(), "flow.open" | "flow.close"),
+        matches!(
+            request.kind.as_str(),
+            "flow.open" | "flow.data" | "flow.close" | "tls.handshake" | "tls.error"
+        ),
         "unsupported external event kind"
     );
-    log.emit_flow(&request.kind, request.flow_id, request.pid, request.data)?;
+    match (request.kind.as_str(), request.payload_base64) {
+        ("flow.data", Some(encoded)) => {
+            let payload = STANDARD
+                .decode(encoded)
+                .context("decode flow.data payload")?;
+            log.emit_payload(request.flow_id, request.pid, request.data, &payload)?;
+        }
+        ("flow.data", None) => anyhow::bail!("flow.data requires payload_base64"),
+        (_, Some(_)) => anyhow::bail!("payload_base64 is only valid for flow.data"),
+        (_, None) => {
+            log.emit_flow(&request.kind, request.flow_id, request.pid, request.data)?;
+        }
+    }
     write_json_line(
         stream,
         &json!({"contract": "heimdall.logs.emit.result/v1", "ok": true}),
@@ -645,6 +782,7 @@ impl EventClient {
                 flow_id,
                 pid: None,
                 data,
+                payload_base64: None,
             },
         )?;
         stream
@@ -660,9 +798,75 @@ impl EventClient {
     }
 }
 
+impl EventClient {
+    pub fn emit_payload(
+        &self,
+        flow_id: Uuid,
+        direction: &str,
+        boundary: &str,
+        original_bytes: u64,
+        payload: &[u8],
+        truncated: bool,
+    ) -> Result<()> {
+        let mut stream = UnixStream::connect(self.socket_path.as_ref())
+            .with_context(|| format!("connect event socket {}", self.socket_path.display()))?;
+        configure_client_timeouts(&stream)?;
+        write_json_line(
+            &mut stream,
+            &EmitRequest {
+                contract: "heimdall.logs.emit/v1".into(),
+                kind: "flow.data".into(),
+                flow_id,
+                pid: None,
+                data: json!({
+                    "direction": direction,
+                    "boundary": boundary,
+                    "original_bytes": original_bytes,
+                    "stored_bytes": payload.len(),
+                    "truncated": truncated
+                }),
+                payload_base64: Some(STANDARD.encode(payload)),
+            },
+        )?;
+        stream
+            .shutdown(std::net::Shutdown::Write)
+            .context("finish payload event request")?;
+        let mut response = Vec::new();
+        stream
+            .read_to_end(&mut response)
+            .context("read payload event response")?;
+        let response: Value =
+            serde_json::from_slice(&response).context("decode payload event response")?;
+        anyhow::ensure!(
+            response["ok"] == true,
+            "event writer rejected payload record"
+        );
+        Ok(())
+    }
+}
+
 impl FlowEventClient {
     pub fn emit(&self, kind: &str, flow_id: Uuid, data: Value) -> Result<()> {
         self.client.emit(kind, flow_id, data)
+    }
+
+    pub fn emit_payload(
+        &self,
+        flow_id: Uuid,
+        direction: &str,
+        boundary: &str,
+        original_bytes: u64,
+        payload: &[u8],
+        truncated: bool,
+    ) -> Result<()> {
+        self.client.emit_payload(
+            flow_id,
+            direction,
+            boundary,
+            original_bytes,
+            payload,
+            truncated,
+        )
     }
 }
 
@@ -873,10 +1077,10 @@ mod tests {
         let manifest = read_manifest(&run_dir.join("run.json")).unwrap();
         assert_eq!(manifest.state, "closed");
         assert_eq!(manifest.segments.len(), 2);
-        assert_eq!(manifest.capture["payload_contract"], "heimdall.capture/v1");
+        assert_eq!(manifest.capture["payload_storage"], "content_addressed");
         assert_eq!(manifest.result.unwrap().exit_code, Some(0));
         let events = fs::read_to_string(run_dir.join("events-000001.jsonl")).unwrap();
-        assert!(events.contains(r#""payload_contract":"heimdall.capture/v1""#));
+        assert!(events.contains(r#""payload_storage":"content_addressed""#));
         fs::remove_dir_all(&root).unwrap();
         fs::remove_dir_all(&runtime).unwrap();
     }
@@ -899,6 +1103,25 @@ mod tests {
     }
 
     #[test]
+    fn rotates_an_old_nonempty_segment_before_the_next_record() {
+        let root = test_state("age-rotation");
+        let log = RunLog::create_at(&root, &["true".into()], "default", "foreground").unwrap();
+        {
+            let mut writer = log.lock().unwrap();
+            writer.segment_max_age = Duration::from_millis(1);
+            writer.segment_started = Instant::now() - Duration::from_millis(2);
+        }
+        log.ready("heimdall-run", None, &["transport"]).unwrap();
+        log.finish(0, true).unwrap();
+
+        let manifest = read_manifest(&log.run_dir().unwrap().join("run.json")).unwrap();
+        assert_eq!(manifest.segments.len(), 2);
+        assert_eq!(manifest.segments[0].last_seq, 1);
+        assert_eq!(manifest.segments[1].first_seq, 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn event_client_waits_for_active_flow_guards() {
         let root = test_state("flow-tracker");
         fs::create_dir_all(&root).unwrap();
@@ -913,5 +1136,47 @@ mod tests {
 
         drop(listener);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stores_payload_as_a_deduplicated_content_addressed_blob() {
+        let root = test_state("payload-blob");
+        let runtime = Path::new("/tmp").join(format!(
+            "hd-payload-{}-{}",
+            std::process::id(),
+            &Uuid::now_v7().simple().to_string()[..8]
+        ));
+        let log = RunLog::create_at(&root, &["true".into()], "default", "foreground").unwrap();
+        let server = RotationServer::start_at(log.clone(), &runtime).unwrap();
+        let client = EventClient::connect(server.event_socket_path().to_path_buf()).unwrap();
+        let flow_id = Uuid::now_v7();
+        for _ in 0..2 {
+            client
+                .emit_payload(flow_id, "client_to_remote", "transport", 4, b"ping", false)
+                .unwrap();
+        }
+        drop(server);
+        log.finish(0, true).unwrap();
+
+        let run_dir = log.run_dir().unwrap();
+        let manifest = read_manifest(&run_dir.join("run.json")).unwrap();
+        assert_eq!(manifest.blobs.count, 1);
+        assert_eq!(manifest.blobs.bytes, 4);
+        let events = fs::read_to_string(run_dir.join("events-000001.jsonl")).unwrap();
+        let payload_events = events
+            .lines()
+            .filter(|line| line.contains(r#""kind":"flow.data""#))
+            .collect::<Vec<_>>();
+        assert_eq!(payload_events.len(), 2);
+        assert!(!events.contains("cGluZw=="));
+        let digest = hex::encode(Sha256::digest(b"ping"));
+        let blob = run_dir
+            .join("blobs/sha256")
+            .join(&digest[..2])
+            .join(&digest[2..4])
+            .join(&digest);
+        assert_eq!(fs::read(blob).unwrap(), b"ping");
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(runtime).unwrap();
     }
 }

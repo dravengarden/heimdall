@@ -48,7 +48,8 @@
 
         <h2 id="capture">Capture and decrypt</h2>
         <p>Proxying decides where traffic goes. Capture decides whether bytes are retained. Decrypt decides what those retained bytes represent. These are separate opt-in choices.</p>
-        <pre><code>[capture]&#10;mode = "on"&#10;directory = "/var/lib/heimdall/captures"&#10;max_bytes_per_flow = 1048576&#10;&#10;[decrypt]&#10;mode = "runtime" # off | runtime | relay</code></pre>
+        <pre><code>[capture]&#10;mode = "on"&#10;max_bytes_per_flow = 1048576&#10;&#10;[decrypt]&#10;mode = "runtime" # off | runtime | relay</code></pre>
+        <p>Payload bytes are stored below the private run directory as SHA-256 blobs. <code>heimdall.event/v1</code> JSONL contains references and boundaries, never inline base64 or a second capture log.</p>
         <ul><li><code>runtime</code> observes supported OpenSSL APIs without changing trust; its setup helper attaches images already loaded at run startup, drops privilege, and exits with the run.</li><li><code>relay</code> runs in the foreground relay; clients must trust a private, invoking-user-owned Heimdall CA.</li><li>Both modes require capture, run without a persistent daemon, and report actual coverage through <code>heimdall agent</code>. No Web UI is required.</li></ul>
 
         <div class="doc-page-footer"><a href="architecture.html">← Architecture</a><a href="commands.html">Command workflows →</a></div>

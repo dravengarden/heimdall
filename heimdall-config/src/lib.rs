@@ -381,8 +381,6 @@ pub enum DecryptMode {
 #[serde(deny_unknown_fields)]
 pub struct CaptureConfig {
     pub mode: CaptureMode,
-    #[serde(default = "default_capture_directory")]
-    pub directory: PathBuf,
     #[serde(default = "default_capture_max_bytes")]
     pub max_bytes_per_flow: u64,
 }
@@ -391,7 +389,6 @@ impl Default for CaptureConfig {
     fn default() -> Self {
         Self {
             mode: CaptureMode::Off,
-            directory: default_capture_directory(),
             max_bytes_per_flow: default_capture_max_bytes(),
         }
     }
@@ -402,10 +399,6 @@ impl Default for CaptureConfig {
 pub enum CaptureMode {
     Off,
     On,
-}
-
-fn default_capture_directory() -> PathBuf {
-    "/var/lib/heimdall/captures".into()
 }
 
 const fn default_capture_max_bytes() -> u64 {
@@ -933,15 +926,6 @@ fn validate_action(
 }
 
 fn validate_capture(errors: &mut Vec<ConfigDiagnostic>, capture: &CaptureConfig) {
-    if !capture.directory.is_absolute() {
-        push(
-            errors,
-            "relative_capture_directory",
-            "$.capture.directory",
-            format!("`{}` is not absolute", capture.directory.display()),
-            "Use an absolute private directory writable by the invoking user, such as /var/lib/heimdall/captures.",
-        );
-    }
     if capture.max_bytes_per_flow == 0 || capture.max_bytes_per_flow > 67_108_864 {
         push(
             errors,
@@ -1275,13 +1259,13 @@ proxy:
       final:
         tcp: { type: route, outbound: default }
         udp: { type: reject, method: refused }
-capture: { mode: "on", directory: /var/lib/heimdall/captures, max_bytes_per_flow: 4096 }
+capture: { mode: "on", max_bytes_per_flow: 4096 }
 decrypt: { mode: "off" }
 "#,
             ),
             (
                 "json",
-                r#"{"version":1,"proxy":{"default_policy":"default","outbounds":{"default":{"type":"socks5","server":"127.0.0.1","server_port":1080,"network":["tcp"]}},"policies":{"default":{"dns":{"mode":"fake"},"rules":[],"final":{"tcp":{"type":"route","outbound":"default"},"udp":{"type":"reject","method":"refused"}}}}},"capture":{"mode":"on","directory":"/var/lib/heimdall/captures","max_bytes_per_flow":4096},"decrypt":{"mode":"off"}}"#,
+                r#"{"version":1,"proxy":{"default_policy":"default","outbounds":{"default":{"type":"socks5","server":"127.0.0.1","server_port":1080,"network":["tcp"]}},"policies":{"default":{"dns":{"mode":"fake"},"rules":[],"final":{"tcp":{"type":"route","outbound":"default"},"udp":{"type":"reject","method":"refused"}}}}},"capture":{"mode":"on","max_bytes_per_flow":4096},"decrypt":{"mode":"off"}}"#,
             ),
         ];
         for (extension, content) in cases {
@@ -1348,7 +1332,7 @@ action = { type = "direct" }
     fn accepts_enabled_capture_with_explicit_storage_limits() {
         let source = valid_toml().replace(
             "[capture]\n            mode = \"off\"",
-            "[capture]\n            mode = \"on\"\n            directory = \"/var/lib/heimdall/captures\"\n            max_bytes_per_flow = 4096",
+            "[capture]\n            mode = \"on\"\n            max_bytes_per_flow = 4096",
         );
         let cfg: HeimdallConfig = toml::from_str(&source).unwrap();
         cfg.validate().unwrap();
@@ -1360,13 +1344,10 @@ action = { type = "direct" }
     fn capture_diagnostics_are_machine_repairable() {
         let source = valid_toml().replace(
             "[capture]\n            mode = \"off\"",
-            "[capture]\n            mode = \"on\"\n            directory = \"relative\"\n            max_bytes_per_flow = 0",
+            "[capture]\n            mode = \"on\"\n            max_bytes_per_flow = 0",
         );
         let cfg: HeimdallConfig = toml::from_str(&source).unwrap();
         let diagnostics = cfg.validate().unwrap_err().diagnostics();
-        assert!(diagnostics.iter().any(|item| {
-            item.code == "relative_capture_directory" && item.path == "$.capture.directory"
-        }));
         assert!(diagnostics.iter().any(|item| {
             item.code == "invalid_capture_limit" && item.path == "$.capture.max_bytes_per_flow"
         }));

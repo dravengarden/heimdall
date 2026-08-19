@@ -55,10 +55,9 @@ need compatibility hardening.
 | --- | --- | --- |
 | Command-scoped TCP and UDP proxying | Available | IPv4/IPv6, SOCKS5 and direct egress, fake DNS, ordered policies |
 | macOS support | Planned | Wrapper fallback and Network Extension backend are roadmap items; not currently available |
-| Strict configuration and agent contract | Available | TOML, YAML, JSON; `heimdall.agent/v7` with execution ownership and repairable diagnostics |
+| Strict configuration and agent contract | Available | TOML, YAML, JSON; `heimdall.agent/v8` with execution ownership and repairable diagnostics |
 | Daemonless Linux execution | Available | All decrypt modes own per-run relay, DNS, maps, links, and logs; runtime TLS keeps one unprivileged session helper, never a service |
-| Opaque flow capture | Available | Explicit bounded JSONL capture under the invoking user's ownership with `heimdall.capture/v1` |
-| Agent event logs | Available, Phase 1 | Per-run lifecycle and TCP/UDP metadata in `heimdall.event/v1`; bounded payloads use the separate `heimdall.capture/v1` contract |
+| Agent event logs and capture | Available | Per-run `heimdall.event/v1` JSONL plus bounded content-addressed payload blobs; no second capture log |
 | Runtime TLS decryption | Available daemonless with alpha limits | Startup-discovered OpenSSL images; no CA injection; unsupported TLS libraries remain opaque |
 | Relay TLS decryption | Available daemonless with alpha limits | Local CA plus per-host leaves; client trust and protocol compatibility are required |
 | Static Linux packaging | Available | Reproducible x86_64 musl archive, checksum, atomic install, and one-level rollback |
@@ -202,7 +201,6 @@ analysis:
 ```toml
 [capture]
 mode = "on"
-directory = "/var/lib/heimdall/captures"
 max_bytes_per_flow = 1048576
 ```
 
@@ -217,7 +215,7 @@ Start automation with one side-effect-free preflight:
 heimdall agent
 ```
 
-It emits one `heimdall.agent/v7` JSON document containing config validity, the
+It emits one `heimdall.agent/v8` JSON document containing config validity, the
 selected foreground backend and owner, confirmation that no daemon or Web UI
 is required, selected policy, capability evidence, stable
 repair codes, and exact next commands as argv arrays. Exit `0` means ready,

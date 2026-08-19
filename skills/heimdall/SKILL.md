@@ -21,7 +21,7 @@ Run:
 heimdall agent
 ```
 
-Parse the single `heimdall.agent/v7` JSON object. Exit 0 means ready, exit 1
+Parse the single `heimdall.agent/v8` JSON object. Exit 0 means ready, exit 1
 means the document explains why, and exit 2 is invalid CLI usage. Read stable
 error `code` values before messages. Execute `actions` as argv arrays; never
 join or evaluate them as shell text.
@@ -39,10 +39,11 @@ Use `heimdall help -v` only when deeper command discovery is needed.
 ## Select evidence boundaries
 
 Read [references/events.md](references/events.md) before consuming run logs.
-Phase 1 `heimdall.event/v1` records lifecycle and TCP/UDP metadata in
-user-owned JSONL. Use `heimdall logs schema`, `list`, `path`, `query`, `tail`,
-`rotate`, and `verify`; standard `jq`, `rg`, `sed`, `sort`, and `wc` are valid
-consumers. Do not require or start a Web UI.
+`heimdall.event/v1` records lifecycle, TCP/UDP metadata, and bounded blob
+references in user-owned JSONL. Use `heimdall logs schema`, `list`, `path`,
+`query`, `tail`, `rotate`, `verify`, and `prune`; standard `jq`, `rg`, `sed`,
+`sort`, `sha256sum`, and `wc` are valid consumers. Do not require or start a
+Web UI.
 
 If capture is requested, inspect `config.capture`, `config.decrypt`,
 `capabilities.capture`, and `capabilities.decrypt`. Require capture `mode: on`

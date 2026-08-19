@@ -20,27 +20,26 @@ as_tester() {
 }
 
 capture_contains() {
-  local action="$1"
+  local boundary="$1"
   local needle="$2"
-  local capture_file
-  for capture_file in /run/heimdall-test/captures/*.jsonl; do
-    test -f "$capture_file" || continue
-    if jq -e --arg action "$action" \
-      'select(.event == "open" and .action == $action and .payload == "tls_plaintext")' \
-      "$capture_file" >/dev/null \
-      && jq -r 'select(.event == "data") | .payload_base64' "$capture_file" \
-        | base64 -d 2>/dev/null \
-        | grep -Fq "$needle"; then
-      return 0
-    fi
-  done
+  local event_file run_dir blob
+  while IFS= read -r event_file; do
+    run_dir="$(dirname "$event_file")"
+    while IFS= read -r blob; do
+      if grep -Fq "$needle" "$run_dir/$blob"; then
+        return 0
+      fi
+    done < <(jq -r --arg boundary "$boundary" \
+      'select(.kind == "flow.data" and .data.boundary == $boundary) | .data.blob.path' \
+      "$event_file")
+  done < <(find /home/tester/.local/state/heimdall/runs -name 'events-*.jsonl' -type f)
   return 1
 }
 
 as_tester heimdall config validate --json \
   | jq -e '.contract == "heimdall.config.validate/v2" and .valid'
 as_tester heimdall agent \
-  | jq -e '.contract == "heimdall.agent/v7"
+  | jq -e '.contract == "heimdall.agent/v8"
     and .ready
     and .execution.backend == "linux-ebpf-foreground"
     and .execution.owner == "heimdall-run"
@@ -48,10 +47,9 @@ as_tester heimdall agent \
     and (.execution.daemon_required | not)
     and (.execution.web_ui_required | not)
     and .config.capture.mode == "on"
-    and .config.capture.directory == "/run/heimdall-test/captures"
     and .config.capture.max_bytes_per_flow == 128
-    and .capabilities.capture.contract == "heimdall.capture/v1"
-    and .capabilities.capture.format == "jsonl"
+    and .capabilities.capture.contract == "heimdall.event/v1"
+    and .capabilities.capture.format == "content-addressed-blobs"
     and .capabilities.capture.tcp
     and .capabilities.capture.udp
     and .capabilities.capture.payload == "mode_dependent"
@@ -60,9 +58,9 @@ as_tester heimdall agent \
     and .capabilities.logs.run_contract == "heimdall.run/v1"
     and .capabilities.logs.format == "jsonl"
     and .capabilities.logs.lifecycle_events
-    and .capabilities.logs.flow_events == "tcp+udp_metadata"
+    and .capabilities.logs.flow_events == "tcp+udp+payload"
     and .capabilities.logs.writer_owned_rotation
-    and (.capabilities.logs.content_addressed_blobs | not)
+    and .capabilities.logs.content_addressed_blobs
     and .capabilities.decrypt.modes == ["off", "runtime", "relay"]
     and .capabilities.decrypt.runtime_libraries == ["openssl"]
     and .capabilities.decrypt.runtime_apis == ["SSL_read", "SSL_read_ex", "SSL_write", "SSL_write_ex"]
@@ -113,7 +111,6 @@ if heimdall help -v | grep -Eq '^  (daemon|status|ebpf)( |$)'; then
 fi
 test ! -e /sys/fs/bpf/heimdall
 foreground_link_baseline="$(bpftool -j link show | jq 'length')"
-install -d -o tester -g users -m 0700 /run/heimdall-test/captures
 as_tester heimdall agent \
   | jq -e '.ready
     and .execution.backend == "linux-ebpf-foreground"
@@ -173,13 +170,14 @@ if find "$tcp_run_dir" -maxdepth 1 -name 'events-*.jsonl' -printf '%m\n' \
 fi
 as_tester heimdall logs query --run "$tcp_run_id" --jsonl \
   | jq -s -e '
-    (map(.seq) == [1, 2, 3, 4, 5, 6])
+    (map(.seq) == [range(1; length + 1)])
     and any(.[]; .kind == "flow.open" and .data.network == "tcp")
+    and any(.[]; .kind == "flow.data" and .data.blob.algorithm == "sha256")
     and any(.[]; .kind == "flow.close" and .data.network == "tcp" and .data.status == "complete")
     and .[-1].kind == "run.close"
   ' >/dev/null
 as_tester heimdall logs verify --run "$tcp_run_id" --json \
-  | jq -e '.valid and .state == "closed" and .events == 6' >/dev/null
+  | jq -e '.valid and .state == "closed" and .events >= 8 and .blobs >= 1' >/dev/null
 as_tester heimdall logs schema --event v1 \
   | jq -e '."$schema" == "https://json-schema.org/draft/2020-12/schema" and (.oneOf | length) == 17' >/dev/null
 as_tester heimdall logs schema --run v1 \
@@ -412,43 +410,23 @@ for _ in $(seq 1 500); do
 done
 test "$abandoned_cleaned" = true
 
-test "$(stat -c '%a' /run/heimdall-test/captures)" = 700
-if find /run/heimdall-test/captures -type f ! -perm 600 -print -quit | grep -q .; then
-  echo "capture file permissions are not 0600" >&2
-  exit 1
-fi
-
 tcp_capture=false
 udp_capture=false
 truncated_capture=false
-for capture_file in /run/heimdall-test/captures/*.jsonl; do
-  test -f "$capture_file"
-  jq -e -s '
-    length >= 1
-    and all(.[]; .contract == "heimdall.capture/v1")
-    and (to_entries | all(.value.sequence == .key))
-    and .[0].event == "open"
-  ' "$capture_file" >/dev/null
+while IFS= read -r run_id; do
+  as_tester heimdall logs verify --run "$run_id" --json | jq -e '.valid'
+  run_dir="$(as_tester heimdall logs path --run "$run_id" --json | jq -er .run_dir)"
   if jq -e -s '
-    .[0].network == "tcp"
-    and any(.[]; .event == "data" and .direction == "client_to_remote")
-    and any(.[]; .event == "data" and .direction == "remote_to_client")
-    and any(.[]; .event == "close" and .status == "complete")
-  ' "$capture_file" >/dev/null; then
-    tcp_capture=true
-  fi
+    ([.[] | select(.kind == "flow.open" and .data.network == "tcp") | .flow_id] | unique) as $flows
+    | any(.[]; .kind == "flow.data" and (.flow_id as $id | $flows | index($id)))
+  ' "$run_dir"/events-*.jsonl >/dev/null; then tcp_capture=true; fi
   if jq -e -s '
-    .[0].network == "udp"
-    and any(.[]; .event == "data" and .direction == "client_to_remote")
-    and any(.[]; .event == "data" and .direction == "remote_to_client")
-    and any(.[]; .event == "close" and .status == "complete")
-  ' "$capture_file" >/dev/null; then
-    udp_capture=true
-  fi
-  if jq -e -s 'any(.[]; .event == "close" and .truncated)' "$capture_file" >/dev/null; then
-    truncated_capture=true
-  fi
-done
+    ([.[] | select(.kind == "flow.open" and .data.network == "udp") | .flow_id] | unique) as $flows
+    | any(.[]; .kind == "flow.data" and (.flow_id as $id | $flows | index($id)))
+  ' "$run_dir"/events-*.jsonl >/dev/null; then udp_capture=true; fi
+  if jq -e -s 'any(.[]; .kind == "flow.data" and .data.truncated)' \
+    "$run_dir"/events-*.jsonl >/dev/null; then truncated_capture=true; fi
+done < <(as_tester heimdall logs list --json | jq -r '.runs[].run_id')
 test "$tcp_capture" = true
 test "$udp_capture" = true
 test "$truncated_capture" = true
@@ -458,7 +436,6 @@ test "$truncated_capture" = true
 # matching the startup discovery boundary reported by `heimdall agent`.
 test "$(bpftool -j link show | jq 'length')" -eq "$foreground_link_baseline"
 curl -V | grep -q OpenSSL
-rm -f /run/heimdall-test/captures/*.jsonl
 as_tester heimdall --config /etc/heimdall-test/runtime.toml agent \
   | jq -e '.ready
     and .execution.backend == "linux-ebpf-foreground"
@@ -484,13 +461,12 @@ test "$(awk '/^Uid:/{print $2 ":" $3 ":" $4}' "/proc/$runtime_helper/status")" =
 test -z "$(pgrep -u root -x heimdall || true)"
 wait "$runtime_process"
 for _ in $(seq 1 100); do
-  capture_contains runtime 'GET / HTTP' && break
+  capture_contains tls_plaintext.runtime 'GET / HTTP' && break
   sleep 0.02
 done
-capture_contains runtime 'GET / HTTP'
+capture_contains tls_plaintext.runtime 'GET / HTTP'
 test "$(bpftool -j link show | jq 'length')" -eq "$foreground_link_baseline"
 
-rm -f /run/heimdall-test/captures/*.jsonl
 install -d -o tester -g users -m 0700 /run/heimdall-test/relay
 as_tester heimdall tls init-ca --dir /run/heimdall-test/relay --json \
   | jq -e '.contract == "heimdall.tls-ca/v2" and .config.mode == "relay"'
@@ -503,7 +479,24 @@ as_tester heimdall --config /etc/heimdall-test/relay.toml agent \
 as_tester heimdall --config /etc/heimdall-test/relay.toml run --policy fake -- \
   curl --cacert /run/heimdall-test/relay/ca.pem -fsS --max-time 5 \
     https://fixture.test:18444/ >/dev/null
-capture_contains route:default 'GET / HTTP'
+capture_contains tls_plaintext.relay 'GET / HTTP'
+find /home/tester/.local/state/heimdall/runs -name 'events-*.jsonl' -type f -print0 \
+  | xargs -0 jq -e -s 'any(.[]; .kind == "tls.handshake"
+      and .data.mode == "relay"
+      and .data.peer_identity.verified
+      and .data.version != "unknown"
+      and .data.cipher != "unknown")' >/dev/null
+
+run_count_before_prune="$(as_tester heimdall logs list --json | jq '.runs | length')"
+as_tester heimdall logs prune --keep-last 1 --max-total-bytes 1 --json \
+  | jq -e '.contract == "heimdall.logs.prune/v1"
+      and (.applied | not)
+      and .total_bytes_before >= .total_bytes_after
+      and (.limit_satisfied | not)
+      and (.candidates | length) > 0
+      and all(.candidates[]; .reason == "max_total_bytes")' >/dev/null
+test "$(as_tester heimdall logs list --json | jq '.runs | length')" \
+  -eq "$run_count_before_prune"
 test ! -e /sys/fs/bpf/heimdall
 
 if find /sys/fs/cgroup/user.slice -type d -name 'heimdall-cli-*' -print -quit \

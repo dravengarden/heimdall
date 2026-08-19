@@ -83,14 +83,14 @@ leaves the command cgroup.
 
 `heimdall agent [--policy NAME]` is read-only and prints exactly one JSON value.
 Exit 0 means ready, 1 means the document contains a repairable reason, and 2 is
-CLI usage failure. The current contract is `heimdall.agent/v7`.
+CLI usage failure. The current contract is `heimdall.agent/v8`.
 
 The execution section is the ownership decision that automation must use (the
 following is an excerpt):
 
 ```json
 {
-  "contract": "heimdall.agent/v7",
+  "contract": "heimdall.agent/v8",
   "ready": true,
   "execution": {
     "backend": "linux-ebpf-foreground",
@@ -107,7 +107,7 @@ helper to discover and attach already loaded OpenSSL images. A
 missing representative image fails before the wrapped command starts.
 
 Treat every `actions.*` command as an argv array; never concatenate or
-shell-evaluate it. Consumers may rely on existing v7 field semantics and must
+shell-evaluate it. Consumers may rely on existing v8 field semantics and must
 ignore additive unknown fields. Renaming or changing an existing semantic
 requires a new contract version.
 

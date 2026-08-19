@@ -1,10 +1,11 @@
 # Event and run schemas
 
-The daemonless Phase 1 event-store contract is available. It records run
-lifecycle and TCP/UDP flow metadata in `heimdall.event/v1`; payload blobs, TLS
-metadata, and derived HTTP records remain planned. Inspect
-`agent.capabilities.logs` and use the current `heimdall.capture/v1` workflow in
-[commands.md](commands.md) whenever the required evidence is not yet emitted.
+The daemonless event store records lifecycle, TCP/UDP flow metadata, and
+bounded content-addressed payload blobs and relay TLS handshake/error evidence
+in `heimdall.event/v1`. DNS/policy, ClientHello, runtime TLS metadata, and
+derived HTTP records remain planned. Inspect
+`agent.capabilities.logs` and use [commands.md](commands.md) whenever required
+evidence is not yet emitted.
 
 The complete lifecycle, rotation, retention, and security design is in
 [`../../../docs/design/agent-event-log.md`](../../../docs/design/agent-event-log.md).
@@ -102,13 +103,13 @@ producer version mismatch.
 `network` is `tcp` or `udp`. DNS `transport` is `udp` or `tcp`. DNS
 `boundary` is `fake` or `system`. TLS `mode` is `runtime` or `relay`.
 The `run.open.data.capture` object contains `profile` and
-`payload_contract = "heimdall.capture/v1"`; payload records are separate from
-the metadata event segments.
+`payload_storage = "content_addressed"`; payload references are ordinary
+`flow.data` records in the event segments.
 Destination identity uses exactly one of `host` or `ip`, plus `port`; agents
 must not infer a hostname from SNI when the destination is an IP. An action has
 `type` equal to `route`, `direct`, or `reject`; only `route` has an `outbound`.
 
-For a closed Phase 1 run, foreground shutdown drains tracked flows before
+For a closed run, foreground shutdown drains tracked flows before
 `run.close`. Treat a missing `flow.close`, a shutdown error, or a failed
 `logs verify` result as incomplete evidence.
 

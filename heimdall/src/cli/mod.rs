@@ -18,7 +18,7 @@ pub mod agent {
     };
     use serde::Serialize;
 
-    const CONTRACT_VERSION: &str = "heimdall.agent/v7";
+    const CONTRACT_VERSION: &str = "heimdall.agent/v8";
 
     #[derive(clap::Args, Debug)]
     pub struct AgentArgs {
@@ -64,7 +64,6 @@ pub mod agent {
     #[derive(Debug, Serialize)]
     struct CaptureConfigReport {
         mode: &'static str,
-        directory: String,
         max_bytes_per_flow: u64,
     }
 
@@ -199,6 +198,11 @@ pub mod agent {
         logs_schema_event: Vec<String>,
         logs_schema_run: Vec<String>,
         logs_list: Vec<String>,
+        logs_query_prefix: Vec<String>,
+        logs_tail_prefix: Vec<String>,
+        logs_rotate: Vec<String>,
+        logs_verify: Vec<String>,
+        logs_prune_preview: Vec<String>,
     }
 
     #[derive(Debug, Serialize)]
@@ -274,6 +278,18 @@ pub mod agent {
                         "list".into(),
                         "--json".into(),
                     ],
+                    logs_query_prefix: logs_argv(&["query", "--run", "<RUN_ID>", "--jsonl"]),
+                    logs_tail_prefix: logs_argv(&["tail", "--run", "<RUN_ID>", "--jsonl"]),
+                    logs_rotate: logs_argv(&["rotate", "--run", "<RUN_ID>", "--json"]),
+                    logs_verify: logs_argv(&["verify", "--run", "<RUN_ID>", "--json"]),
+                    logs_prune_preview: logs_argv(&[
+                        "prune",
+                        "--older-than",
+                        "30d",
+                        "--keep-last",
+                        "20",
+                        "--json",
+                    ]),
                 },
                 exit_codes: exit_codes(),
             },
@@ -345,7 +361,6 @@ pub mod agent {
                         CaptureMode::Off => "off",
                         CaptureMode::On => "on",
                     },
-                    directory: config.capture.directory.display().to_string(),
                     max_bytes_per_flow: config.capture.max_bytes_per_flow,
                 }),
                 decrypt: Some(decrypt_report(&config.decrypt)),
@@ -392,6 +407,18 @@ pub mod agent {
                     "list".into(),
                     "--json".into(),
                 ],
+                logs_query_prefix: logs_argv(&["query", "--run", "<RUN_ID>", "--jsonl"]),
+                logs_tail_prefix: logs_argv(&["tail", "--run", "<RUN_ID>", "--jsonl"]),
+                logs_rotate: logs_argv(&["rotate", "--run", "<RUN_ID>", "--json"]),
+                logs_verify: logs_argv(&["verify", "--run", "<RUN_ID>", "--json"]),
+                logs_prune_preview: logs_argv(&[
+                    "prune",
+                    "--older-than",
+                    "30d",
+                    "--keep-last",
+                    "20",
+                    "--json",
+                ]),
             },
             exit_codes: exit_codes(),
         }
@@ -403,6 +430,12 @@ pub mod agent {
             "--config".into(),
             path.display().to_string(),
         ];
+        argv.extend(suffix.iter().map(|value| (*value).to_string()));
+        argv
+    }
+
+    fn logs_argv(suffix: &[&str]) -> Vec<String> {
+        let mut argv = vec!["heimdall".into(), "logs".into()];
         argv.extend(suffix.iter().map(|value| (*value).to_string()));
         argv
     }
@@ -494,8 +527,8 @@ pub mod agent {
     const fn capabilities() -> Capabilities {
         Capabilities {
             capture: CaptureCapabilities {
-                contract: "heimdall.capture/v1",
-                format: "jsonl",
+                contract: crate::event_log::EVENT_CONTRACT,
+                format: "content-addressed-blobs",
                 tcp: true,
                 udp: true,
                 payload: "mode_dependent",
@@ -506,9 +539,9 @@ pub mod agent {
                 run_contract: crate::event_log::RUN_CONTRACT,
                 format: "jsonl",
                 lifecycle_events: true,
-                flow_events: "tcp+udp_metadata",
+                flow_events: "tcp+udp+payload",
                 writer_owned_rotation: true,
-                content_addressed_blobs: false,
+                content_addressed_blobs: true,
             },
             decrypt: DecryptCapabilities {
                 modes: &["off", "runtime", "relay"],
@@ -624,8 +657,8 @@ pub mod agent {
         #[test]
         fn capture_capabilities_expose_plaintext_boundary() {
             let capture = capabilities().capture;
-            assert_eq!(capture.contract, "heimdall.capture/v1");
-            assert_eq!(capture.format, "jsonl");
+            assert_eq!(capture.contract, "heimdall.event/v1");
+            assert_eq!(capture.format, "content-addressed-blobs");
             assert!(capture.tcp);
             assert!(capture.udp);
             assert_eq!(capture.payload, "mode_dependent");
@@ -653,9 +686,9 @@ pub mod agent {
             assert_eq!(logs.run_contract, "heimdall.run/v1");
             assert_eq!(logs.format, "jsonl");
             assert!(logs.lifecycle_events);
-            assert_eq!(logs.flow_events, "tcp+udp_metadata");
+            assert_eq!(logs.flow_events, "tcp+udp+payload");
             assert!(logs.writer_owned_rotation);
-            assert!(!logs.content_addressed_blobs);
+            assert!(logs.content_addressed_blobs);
         }
 
         #[test]

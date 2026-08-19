@@ -313,6 +313,8 @@ async fn record_event(capture: &CaptureManager, event: Event) -> Result<()> {
     let destination = format!("process:{}", event.tgid);
     let flow = capture
         .open(FlowMeta {
+            flow_id: uuid::Uuid::now_v7(),
+            boundary: "tls_plaintext.runtime",
             network: "tls",
             cgroup_id: event.cgroup_id,
             policy: "registered",

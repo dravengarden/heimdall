@@ -30,6 +30,16 @@ pub struct RelayTls {
     client_config: Arc<ClientConfig>,
 }
 
+pub struct RelayCopyReport {
+    pub client_to_remote_bytes: u64,
+    pub remote_to_client_bytes: u64,
+    pub server_name: String,
+    pub version: String,
+    pub cipher: String,
+    pub alpn: Option<String>,
+    pub latency_us: u64,
+}
+
 impl RelayTls {
     pub fn load(ca_cert: &Path, ca_key: &Path) -> Result<Self> {
         let key_metadata = fs::symlink_metadata(ca_key)
@@ -97,7 +107,8 @@ impl RelayTls {
         fallback_name: &str,
         capture: &CaptureManager,
         meta: FlowMeta<'_>,
-    ) -> Result<(u64, u64)> {
+    ) -> Result<RelayCopyReport> {
+        let handshake_started = Instant::now();
         let start = tokio::time::timeout(
             CLIENT_HELLO_TIMEOUT,
             LazyConfigAcceptor::new(rustls::server::Acceptor::default(), client),
@@ -121,13 +132,37 @@ impl RelayTls {
             .await
             .with_context(|| format!("verify upstream TLS certificate for {server_name}"))?;
         let selected_alpn = upstream.get_ref().1.alpn_protocol().map(<[u8]>::to_vec);
+        let version = upstream
+            .get_ref()
+            .1
+            .protocol_version()
+            .map_or_else(|| "unknown".into(), |value| format!("{value:?}"));
+        let cipher = upstream
+            .get_ref()
+            .1
+            .negotiated_cipher_suite()
+            .map_or_else(|| "unknown".into(), |value| format!("{:?}", value.suite()));
+        let alpn = selected_alpn
+            .as_deref()
+            .map(|value| String::from_utf8_lossy(value).into_owned());
 
         let server_config = self.server_config(&server_name, selected_alpn)?;
         let mut downstream = start
             .into_stream(Arc::new(server_config))
             .await
             .with_context(|| format!("complete intercepted TLS handshake for {server_name}"))?;
-        capture::copy_tcp(&mut downstream, &mut upstream, capture.open(meta).await?).await
+        let latency_us = u64::try_from(handshake_started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        let (client_to_remote_bytes, remote_to_client_bytes) =
+            capture::copy_tcp(&mut downstream, &mut upstream, capture.open(meta).await?).await?;
+        Ok(RelayCopyReport {
+            client_to_remote_bytes,
+            remote_to_client_bytes,
+            server_name,
+            version,
+            cipher,
+            alpn,
+            latency_us,
+        })
     }
 
     fn server_config(&self, server_name: &str, alpn: Option<Vec<u8>>) -> Result<ServerConfig> {
@@ -286,19 +321,13 @@ mod tests {
             ),
         };
 
-        let capture_directory = std::env::temp_dir().join(format!(
-            "heimdall-relay-tls-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let capture = CaptureManager::from_config(&CaptureConfig {
-            mode: CaptureMode::On,
-            directory: capture_directory.clone(),
-            max_bytes_per_flow: 1024,
-        })
+        let capture = CaptureManager::from_config(
+            &CaptureConfig {
+                mode: CaptureMode::On,
+                max_bytes_per_flow: 1024,
+            },
+            None,
+        )
         .await
         .unwrap()
         .unwrap();
@@ -330,6 +359,8 @@ mod tests {
                     "fixture.test",
                     &capture,
                     FlowMeta {
+                        flow_id: uuid::Uuid::now_v7(),
+                        boundary: "tls_plaintext.relay",
                         network: "tcp",
                         cgroup_id: 42,
                         policy: "test",
@@ -362,18 +393,13 @@ mod tests {
         drop(tls);
 
         upstream_task.await.unwrap();
-        let (uploaded, downloaded) = relay_task.await.unwrap();
-        assert_eq!((uploaded, downloaded), (4, 4));
-        let capture_path = fs::read_dir(&capture_directory)
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path();
-        let records = fs::read_to_string(capture_path).unwrap();
-        assert!(records.contains(r#""payload":"tls_plaintext""#));
-        assert!(records.contains(r#""payload_base64":"cGluZw==""#));
-        assert!(records.contains(r#""payload_base64":"cG9uZw==""#));
-        fs::remove_dir_all(capture_directory).unwrap();
+        let report = relay_task.await.unwrap();
+        assert_eq!(
+            (report.client_to_remote_bytes, report.remote_to_client_bytes),
+            (4, 4)
+        );
+        assert_eq!(report.server_name, "fixture.test");
+        assert_ne!(report.version, "unknown");
+        assert_ne!(report.cipher, "unknown");
     }
 }

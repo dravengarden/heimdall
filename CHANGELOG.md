@@ -19,14 +19,13 @@ migration guide.
 - Keep the unprivileged setup helper for the session as a parent-death guard.
   Unexpected owner exit kills and removes the command cgroup before surviving
   descendants can continue without interception.
-- Add `heimdall.agent/v7`, a read-only single-document JSON preflight with
+- Add `heimdall.agent/v8`, a read-only single-document JSON preflight with
   selected foreground ownership, capability evidence, stable diagnostics, and
   shell-safe argv actions.
 - Add per-run `heimdall.run/v1` manifests and ordered `heimdall.event/v1`
-  JSONL lifecycle/TCP/UDP evidence with bundled schemas, writer-owned rotation,
-  integrity verification, retention, and `heimdall logs` workflows.
-- Add bounded private payload capture under `heimdall.capture/v1` with an
-  explicit opaque-transport or TLS-plaintext boundary.
+  JSONL lifecycle/TCP/UDP evidence with bounded content-addressed payload
+  blobs, payload-aware filters, byte/age rotation, integrity verification,
+  retention, and `heimdall logs` workflows.
 - Add explicit `off`, `runtime`, and `relay` TLS modes. Runtime mode observes
   startup-discovered OpenSSL APIs without changing trust; relay mode validates
   upstream TLS and issues per-host leaves from invoking-user-owned CA material.
@@ -57,5 +56,5 @@ migration guide.
   network, TLS, agent evidence, optional UI, and platform boundaries.
 - Keep one strict format-independent configuration model across TOML, YAML,
   and JSON, with unknown fields and invalid enum values rejected directly.
-- Keep payload evidence explicitly separate from metadata events through the
-  `heimdall.capture/v1` contract.
+- Keep JSONL directly usable by Linux tools while storing binary payloads once
+  under the run's SHA-256 blob tree; remove the legacy per-flow capture files.

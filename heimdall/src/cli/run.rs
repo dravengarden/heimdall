@@ -103,7 +103,12 @@ pub async fn run(config_path: &Path, args: RunArgs) -> Result<()> {
     }
 
     let backend = "linux-ebpf-foreground";
-    let event_log = crate::event_log::RunLog::create(&args.command, &decision.policy, backend)?;
+    let event_log = crate::event_log::RunLog::create_with_capture(
+        &args.command,
+        &decision.policy,
+        backend,
+        &cfg.capture,
+    )?;
     let rotation_server = crate::event_log::RotationServer::start(event_log.clone())?;
     let outcome = run_registered(
         &cfg,

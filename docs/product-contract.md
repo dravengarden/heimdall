@@ -54,16 +54,16 @@ Proxying, payload retention, and plaintext inspection are independent choices:
 - `decrypt.mode = "relay"` terminates TLS in the per-run relay using explicit
   invoking-user-owned CA material. Certificate pinning and client-certificate
   mTLS are outside this boundary.
-- `capture.mode = "on"` writes bounded private payload records under
-  `heimdall.capture/v1`. The recorded boundary states whether bytes are opaque
-  transport or observed plaintext.
+- `capture.mode = "on"` writes bounded private content-addressed blobs and
+  `flow.data` references in `heimdall.event/v1`. The recorded boundary states
+  whether bytes are opaque transport or observed plaintext.
 
 Selecting a TLS mode is not proof that plaintext was observed. Agents must use
 the reported capability and event boundary.
 
 ## Agent evidence contract
 
-1. `heimdall agent` is read-only, emits exactly one `heimdall.agent/v7` JSON
+1. `heimdall agent` is read-only, emits exactly one `heimdall.agent/v8` JSON
    document, and represents executable actions as argv arrays.
 2. Each run writes one `heimdall.run/v1` manifest and ordered append-only
    `heimdall.event/v1` JSONL segments owned by the invoking user.

@@ -22,16 +22,14 @@ acceptance path are documented and tested.
   explicit reject actions.
 - Strict TOML, YAML, and JSON configuration with shared validation, stable
   diagnostic codes, JSON paths, and repair hints.
-- `heimdall agent` as a read-only `heimdall.agent/v7` preflight with argv-safe
+- `heimdall agent` as a read-only `heimdall.agent/v8` preflight with argv-safe
   actions, selected execution ownership, and capability evidence.
 - Daemonless foreground execution for all decrypt modes:
   each run owns isolated relay/DNS ports, maps, links, cgroup, event state, and
   a setup helper that drops privilege before the workload starts.
-- Phase 1 per-run `heimdall.event/v1` lifecycle and TCP/UDP flow metadata,
-  offline schemas, writer-owned rotation, integrity verification, and the
-  agent-first `heimdall logs` CLI.
-- Bounded private, invoking-user-owned capture under the
-  `heimdall.capture/v1` contract.
+- Per-run `heimdall.event/v1` lifecycle, TCP/UDP metadata, and bounded
+  content-addressed payload blobs, with offline schemas, byte/age rotation,
+  integrity verification, payload-aware filters, and `heimdall logs`.
 - Relay TLS termination and startup-discovered OpenSSL runtime TLS probes in
   the foreground path.
 - No background service, machine-wide control plane, or persistent kernel
@@ -71,12 +69,9 @@ normal cleanup, and fail-closed owner-death cleanup. See
 
 ### 2. Agent-first event store
 
-- Extend the available per-run `heimdall.event/v1` JSONL segments and
-  `heimdall.run/v1` manifest beyond lifecycle and TCP/UDP metadata.
-- Store large or binary payloads as content-addressed blobs instead of inline
-  base64, with metadata-only capture as the default.
-- Extend the available offline schemas and `logs` commands with payload-aware
-  filters and age-based rotation.
+- Extend the available per-run event store beyond relay TLS handshake/error
+  evidence with DNS/policy, ClientHello, runtime TLS, and optional HTTP records.
+- Harden content-addressed payload coalescing and out-of-space diagnostics.
 - Keep the available rotation writer-owned and loss-aware; do not support
   external `copytruncate` against active logs.
 - Publish exhaustive schema and Linux-tool recipes in the bundled Heimdall

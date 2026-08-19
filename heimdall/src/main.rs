@@ -322,9 +322,6 @@ impl ForegroundSession {
         }
 
         let upstreams = resolve_all(cfg)?;
-        let capture = capture::CaptureManager::from_config(&cfg.capture)
-            .await
-            .context("initialize foreground transport capture")?;
         let relay_tls = (cfg.decrypt.mode == heimdall_config::DecryptMode::Relay)
             .then(|| {
                 let ca_cert = cfg
@@ -357,6 +354,11 @@ impl ForegroundSession {
             .await
             .context("join setup worker launcher")??;
         let installed = runtime.install_setup_bundle(bundle)?;
+        let event_client = event_log::EventClient::connect(event_socket)?;
+        let capture =
+            capture::CaptureManager::from_config(&cfg.capture, Some(event_client.clone()))
+                .await
+                .context("initialize foreground payload capture")?;
         let runtime_tls = match installed.report {
             Some(report) => {
                 anyhow::ensure!(
@@ -390,7 +392,6 @@ impl ForegroundSession {
                 policy: policy_name.to_owned(),
             },
         )])));
-        let event_client = event_log::EventClient::connect(event_socket)?;
         let event_clients: EventClients = Arc::new(parking_lot::RwLock::new(StdHashMap::from([(
             cgroup_id,
             event_client.clone(),
@@ -1557,6 +1558,8 @@ async fn relay(mut client: TcpStream, key: u32, map: PortMap, shared: Arc<Shared
                     &mut up,
                     &shared,
                     capture::FlowMeta {
+                        flow_id: uuid::Uuid::now_v7(),
+                        boundary: "transport",
                         network: "tcp",
                         cgroup_id: orig.cgroup_id,
                         policy: &decision.policy,
@@ -1579,6 +1582,8 @@ async fn relay(mut client: TcpStream, key: u32, map: PortMap, shared: Arc<Shared
                     &mut direct,
                     &shared,
                     capture::FlowMeta {
+                        flow_id: uuid::Uuid::now_v7(),
+                        boundary: "transport",
                         network: "tcp",
                         cgroup_id: orig.cgroup_id,
                         policy: &decision.policy,
@@ -1617,6 +1622,7 @@ async fn copy_tcp_transport(
     };
     if relay_tls.is_some() {
         meta.payload = "tls_plaintext";
+        meta.boundary = "tls_plaintext.relay";
     }
 
     // Start tracking while the registration map is read-locked. Deregistration
@@ -1627,7 +1633,7 @@ async fn copy_tcp_transport(
         .read()
         .get(&meta.cgroup_id)
         .map(event_log::EventClient::start_flow);
-    let flow_id = uuid::Uuid::now_v7();
+    let flow_id = meta.flow_id;
     let flow_started = std::time::Instant::now();
     if let Some(events) = &event_client {
         let destination = meta.destination.parse::<std::net::IpAddr>().map_or_else(
@@ -1662,9 +1668,52 @@ async fn copy_tcp_transport(
             .as_ref()
             .context("strict config enabled relay decrypt without capture")?;
         let fallback_name = meta.destination.to_owned();
-        relay_tls
+        match relay_tls
             .copy(client, remote, &fallback_name, manager, meta)
             .await
+        {
+            Ok(report) => {
+                if let Some(events) = &event_client {
+                    events.emit(
+                        "tls.handshake",
+                        flow_id,
+                        serde_json::json!({
+                            "mode": "relay",
+                            "version": report.version,
+                            "cipher": report.cipher,
+                            "alpn": report.alpn,
+                            "peer_identity": {
+                                "server_name": report.server_name,
+                                "verified": true
+                            },
+                            "trust": {
+                                "upstream": "native_roots",
+                                "downstream": "heimdall_ca"
+                            },
+                            "latency_us": report.latency_us
+                        }),
+                    )?;
+                }
+                Ok((report.client_to_remote_bytes, report.remote_to_client_bytes))
+            }
+            Err(error) => {
+                if let Some(events) = &event_client {
+                    let _ = events.emit(
+                        "tls.error",
+                        flow_id,
+                        serde_json::json!({
+                            "mode": "relay",
+                            "code": "tls_relay_failed",
+                            "message": error.to_string(),
+                            "phase": "handshake_or_stream",
+                            "retryable": false,
+                            "peer_identity": {"server_name": fallback_name}
+                        }),
+                    );
+                }
+                Err(error)
+            }
+        }
     } else {
         match &shared.capture {
             Some(manager) => match manager.open(meta).await {
@@ -1942,10 +1991,13 @@ async fn open_udp_capture(
         Dst::Ip6(ip) => ip.to_string(),
         Dst::Domain(domain) => domain.clone(),
     };
+    let flow_id = uuid::Uuid::now_v7();
     let payload_capture = if let Some(manager) = &shared.capture {
         Some(
             manager
                 .open(capture::FlowMeta {
+                    flow_id,
+                    boundary: "transport",
                     network: "udp",
                     cgroup_id: spec.cgroup_id,
                     policy: &spec.policy,
@@ -1959,7 +2011,6 @@ async fn open_udp_capture(
     } else {
         None
     };
-    let flow_id = uuid::Uuid::now_v7();
     if let Some(events) = &event_client {
         let destination = destination.parse::<std::net::IpAddr>().map_or_else(
             |_| serde_json::json!({"host": destination, "port": spec.dst_port}),

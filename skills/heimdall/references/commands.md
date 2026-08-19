@@ -12,7 +12,7 @@ heimdall config explain --policy default --network udp --domain example.com --po
 heimdall logs list --json
 ```
 
-`agent` is the primary `heimdall.agent/v7` machine contract. Exit 0 means
+`agent` is the primary `heimdall.agent/v8` machine contract. Exit 0 means
 ready, 1 means not ready, and 2 is CLI usage error. It never mutates state.
 Require the foreground execution owner and `daemon_required = false`. There is
 no persistent service or health endpoint.
@@ -59,6 +59,8 @@ jq -r 'select(.kind == "flow.close") |
 rg '"kind":"run.error"|"kind":"tls.error"' "$run_dir"
 wc -l "$run_dir"/events-*.jsonl
 heimdall logs verify --run "$run_id" --json
+heimdall logs query --run "$run_id" --boundary tls_plaintext.relay --has-blob --jsonl
+heimdall logs prune --max-total-bytes 1073741824 --keep-last 20 --json
 ```
 
 For a live stream across writer-owned rotation:
@@ -69,6 +71,8 @@ heimdall logs tail --run "$run_id" --follow --jsonl |
 ```
 
 Do not rename, truncate, or `copytruncate` active segments.
+Prune is a dry run unless `--apply` is explicit. Verify candidate paths and
+reasons before applying it.
 
 ## Relay TLS
 

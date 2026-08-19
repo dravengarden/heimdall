@@ -206,7 +206,7 @@ UI has no effect on a run. Starting a run has no effect on the UI.
 ## Agent contract
 
 `heimdall agent` remains read-only and single-document JSON.
-`heimdall.agent/v7` reports:
+`heimdall.agent/v8` reports:
 
 - selected backend and whether per-run authorization is required;
 - the explicit `daemon_required = false` foreground ownership boundary;
@@ -243,20 +243,20 @@ Available now:
 
 - `heimdall.event/v1`, `heimdall.run/v1`, segment rotation, schema discovery,
   integrity verification, retention, and the `heimdall logs` commands;
-- lifecycle plus TCP/UDP metadata and the separate bounded
-  `heimdall.capture/v1` payload path;
+- lifecycle, TCP/UDP metadata, and bounded content-addressed payload blobs in
+  the unified per-run event store;
 - one foreground owner for relay, DNS, TLS, capture, event writing, and process
   lifecycle;
 - per-run ports, cgroup, maps, FD-owned links, and mutable policy state;
 - the narrow `heimdall.setup/v2` authorization path with privilege drop;
 - concurrent-session, descendant, normal-cleanup, and parent-death acceptance
   in the disposable real-eBPF VM;
-- `heimdall.agent/v7` reporting only the foreground execution owner and its
+- `heimdall.agent/v8` reporting only the foreground execution owner and its
   actual capability evidence.
 
 Planned work is limited to the acceptance and product boundaries in
-[ROADMAP.md](../../ROADMAP.md), including content-addressed payloads, derived
-TLS/HTTP events, broader runtime coverage, and an optional read-only viewer.
+[ROADMAP.md](../../ROADMAP.md), including derived TLS/HTTP events, broader
+runtime coverage, and an optional read-only viewer.
 
 ## Acceptance criteria
 

@@ -35,8 +35,7 @@ only for its inherited socket. A marked close is normal teardown; an unmarked
 EOF means the owner died, so the helper kills and removes that run's cgroup
 before exiting. Runtime TLS also relies on the helper retaining complete Aya
 probe state.
-It never parses proxy
-credentials, opens capture files, terminates TLS, executes the workload, or
+It never parses proxy credentials, opens event or blob files, terminates TLS, executes the workload, or
 listens on a persistent socket.
 
 The eBPF object is embedded in the single `heimdall` executable. Keeping the
@@ -67,8 +66,8 @@ an interception owner or a prerequisite for any run.
    System DNS remains explicit policy behavior.
 7. The relay recovers the original destination, evaluates ordered protocol
    rules, and routes through SOCKS5, connects directly, or rejects. Events are
-   appended to the run's JSONL segments; bounded payload capture remains an
-   explicit independent option.
+   appended to the run's JSONL segments; bounded payload blobs remain an
+   explicit independent option in the same run store.
 8. After the immediate child exits, Heimdall waits until `cgroup.events`
    reports `populated 0`, drains event delivery, closes listeners/maps/links,
    finalizes the run manifest, removes the cgroup, and returns the immediate
@@ -99,9 +98,9 @@ native IPv6 paths; address-family migration is not claimed.
 ## Capture and TLS boundaries
 
 Capture is a relay/application-boundary feature, not a kernel packet recorder.
-`heimdall.event/v1` contains run lifecycle and flow metadata. Optional bounded
-`heimdall.capture/v1` files contain relay-observed bytes and are owned by the
-invoking user; storage retention remains the operator's responsibility.
+`heimdall.event/v1` contains lifecycle, flow metadata, and references to
+bounded content-addressed blobs below the private run directory. JSONL never
+contains base64 payloads, and there is no separate capture log or upload path.
 
 TLS modes are explicit:
 

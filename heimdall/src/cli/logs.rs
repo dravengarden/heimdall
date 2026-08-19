@@ -96,6 +96,21 @@ pub struct QueryArgs {
     /// Include records at or before this sequence.
     #[arg(long)]
     until_seq: Option<u64>,
+    /// Match flow.data records with this direction. Repeat to select both.
+    #[arg(long, value_parser = ["client_to_remote", "remote_to_client"])]
+    direction: Vec<String>,
+    /// Match an explicit observation boundary. Repeat to select multiple boundaries.
+    #[arg(
+        long,
+        value_parser = ["transport", "tls_plaintext.runtime", "tls_plaintext.relay"]
+    )]
+    boundary: Vec<String>,
+    /// Match a stable error code in event data. Repeat to select multiple codes.
+    #[arg(long)]
+    error_code: Vec<String>,
+    /// Match records by whether data contains a content-addressed blob reference.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    has_blob: Option<bool>,
     /// Stream raw heimdall.event/v1 objects, one per line.
     #[arg(long)]
     jsonl: bool,
@@ -118,6 +133,9 @@ pub struct PruneArgs {
     /// Always retain this many newest runs.
     #[arg(long, default_value_t = 20)]
     keep_last: usize,
+    /// Reduce total run storage to this many bytes by selecting oldest closed runs.
+    #[arg(long)]
+    max_total_bytes: Option<u64>,
     /// Actually delete selected run directories. Without this flag, only preview.
     #[arg(long)]
     apply: bool,
@@ -264,6 +282,20 @@ fn matches_query(event: &Event, args: &QueryArgs) -> bool {
         && args.flow.is_none_or(|flow| event.flow_id == Some(flow))
         && args.since_seq.is_none_or(|seq| event.seq >= seq)
         && args.until_seq.is_none_or(|seq| event.seq <= seq)
+        && matches_data_string(&event.data, "direction", &args.direction)
+        && matches_data_string(&event.data, "boundary", &args.boundary)
+        && matches_data_string(&event.data, "error_code", &args.error_code)
+        && args
+            .has_blob
+            .is_none_or(|expected| event.data.get("blob").is_some() == expected)
+}
+
+fn matches_data_string(data: &Value, key: &str, selected: &[String]) -> bool {
+    selected.is_empty()
+        || data
+            .get(key)
+            .and_then(Value::as_str)
+            .is_some_and(|value| selected.iter().any(|selected| selected == value))
 }
 
 fn verify(args: RunJsonArgs) -> Result<()> {
@@ -281,6 +313,7 @@ fn verify_run(run_dir: &Path, manifest: &RunManifest) -> Result<Value> {
     let mut event_count = 0u64;
     let segment_paths = segment_paths(run_dir)?;
     let mut observed_ranges = BTreeMap::new();
+    let mut observed_blobs = BTreeMap::<String, (String, u64)>::new();
     for segment in &segment_paths {
         let segment_name = segment
             .file_name()
@@ -331,6 +364,22 @@ fn verify_run(run_dir: &Path, manifest: &RunManifest) -> Result<Value> {
                     event.seq
                 ));
                 expected_seq = event.seq;
+            }
+            if let Some(blob) = event.data.get("blob").filter(|blob| !blob.is_null()) {
+                let digest = blob
+                    .get("digest")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let relative = blob.get("path").and_then(Value::as_str).unwrap_or_default();
+                let bytes = blob
+                    .get("bytes")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(u64::MAX);
+                if let Err(error) = verify_blob(run_dir, relative, digest, bytes) {
+                    errors.push(format!("sequence {} blob: {error}", event.seq));
+                } else {
+                    observed_blobs.insert(digest.into(), (relative.into(), bytes));
+                }
             }
             first_seq.get_or_insert(event.seq);
             last_seq = Some(event.seq);
@@ -390,6 +439,20 @@ fn verify_run(run_dir: &Path, manifest: &RunManifest) -> Result<Value> {
     {
         errors.push("closed manifest does not finalize the last event".into());
     }
+    let observed_blob_bytes = observed_blobs
+        .values()
+        .fold(0u64, |total, (_, bytes)| total.saturating_add(*bytes));
+    if manifest.blobs.count != observed_blobs.len() as u64
+        || manifest.blobs.bytes != observed_blob_bytes
+    {
+        errors.push(format!(
+            "blob summary mismatch: manifest count/bytes {}/{}, observed {}/{}",
+            manifest.blobs.count,
+            manifest.blobs.bytes,
+            observed_blobs.len(),
+            observed_blob_bytes
+        ));
+    }
     Ok(json!({
         "contract": "heimdall.logs.verify/v1",
         "run_id": manifest.run_id,
@@ -397,8 +460,33 @@ fn verify_run(run_dir: &Path, manifest: &RunManifest) -> Result<Value> {
         "state": manifest.state,
         "events": event_count,
         "segments": manifest.segments.len(),
+        "blobs": observed_blobs.len(),
         "errors": errors
     }))
+}
+
+fn verify_blob(run_dir: &Path, relative: &str, digest: &str, bytes: u64) -> Result<()> {
+    let expected = format!(
+        "blobs/sha256/{}/{}/{}",
+        digest.get(..2).unwrap_or_default(),
+        digest.get(2..4).unwrap_or_default(),
+        digest
+    );
+    anyhow::ensure!(
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            && relative == expected,
+        "unsafe or inconsistent blob reference `{relative}`"
+    );
+    let path = run_dir.join(relative);
+    let metadata =
+        fs::symlink_metadata(&path).with_context(|| format!("inspect {}", path.display()))?;
+    anyhow::ensure!(metadata.file_type().is_file(), "blob is not a regular file");
+    anyhow::ensure!(metadata.len() == bytes, "blob byte count mismatch");
+    anyhow::ensure!(sha256_file(&path)? == digest, "blob digest mismatch");
+    Ok(())
 }
 
 fn prune(args: PruneArgs) -> Result<()> {
@@ -410,26 +498,49 @@ fn prune(args: PruneArgs) -> Result<()> {
         .map(|age| OffsetDateTime::now_utc() - age);
     let mut runs = discover_runs()?;
     runs.sort_by(|left, right| right.1.started_at.cmp(&left.1.started_at));
+    let run_sizes = runs
+        .iter()
+        .map(|(run_dir, _)| directory_bytes(run_dir))
+        .collect::<Result<Vec<_>>>()?;
+    let total_before = run_sizes
+        .iter()
+        .fold(0u64, |total, bytes| total.saturating_add(*bytes));
+    let mut total_after = total_before;
     let mut candidates = Vec::new();
-    for (index, (run_dir, manifest)) in runs.iter().enumerate() {
+    for index in (0..runs.len()).rev() {
+        let (run_dir, manifest) = &runs[index];
         if index < args.keep_last || !matches!(manifest.state.as_str(), "closed" | "failed") {
             continue;
         }
-        if let Some(cutoff) = cutoff {
+        let age_match = if let Some(cutoff) = cutoff {
             let closed = manifest
                 .closed_at
                 .as_deref()
                 .context("closed run is missing closed_at")?;
             let closed = OffsetDateTime::parse(closed, &Rfc3339)
                 .with_context(|| format!("parse closed_at for {}", manifest.run_id))?;
-            if closed >= cutoff {
-                continue;
-            }
+            closed < cutoff
+        } else {
+            args.max_total_bytes.is_none()
+        };
+        let size_match = args
+            .max_total_bytes
+            .is_some_and(|maximum| total_after > maximum);
+        if !age_match && !size_match {
+            continue;
         }
-        candidates.push((run_dir.clone(), manifest.run_id, directory_bytes(run_dir)?));
+        let bytes = run_sizes[index];
+        total_after = total_after.saturating_sub(bytes);
+        let reason = match (age_match, size_match) {
+            (true, true) => "age_and_max_total_bytes",
+            (true, false) => "age",
+            (false, true) => "max_total_bytes",
+            (false, false) => unreachable!(),
+        };
+        candidates.push((run_dir.clone(), manifest.run_id, bytes, reason));
     }
     if args.apply {
-        for (run_dir, _, _) in &candidates {
+        for (run_dir, _, _, _) in &candidates {
             fs::remove_dir_all(run_dir)
                 .with_context(|| format!("remove run directory {}", run_dir.display()))?;
         }
@@ -437,11 +548,14 @@ fn prune(args: PruneArgs) -> Result<()> {
     let value = json!({
         "contract": "heimdall.logs.prune/v1",
         "applied": args.apply,
-        "candidates": candidates.iter().map(|(path, run_id, bytes)| json!({
+        "total_bytes_before": total_before,
+        "total_bytes_after": total_after,
+        "limit_satisfied": args.max_total_bytes.is_none_or(|maximum| total_after <= maximum),
+        "candidates": candidates.iter().map(|(path, run_id, bytes, reason)| json!({
             "run_id": run_id,
             "run_dir": absolute(path).display().to_string(),
             "bytes": bytes,
-            "reason": "retention"
+            "reason": reason
         })).collect::<Vec<_>>()
     });
     print_document(&value, args.json)
@@ -613,6 +727,46 @@ mod tests {
     fn segment_paths_reject_traversal() {
         assert!(safe_segment_path(Path::new("/tmp/run"), "../events-1.jsonl").is_err());
         assert!(safe_segment_path(Path::new("/tmp/run"), "events-000001.jsonl").is_ok());
+    }
+
+    #[test]
+    fn payload_filters_use_explicit_event_evidence() {
+        let flow_id = Uuid::now_v7();
+        let event = Event {
+            schema: EVENT_CONTRACT.into(),
+            run_id: Uuid::now_v7(),
+            seq: 3,
+            ts: "2026-08-19T00:00:00.000000Z".into(),
+            monotonic_ns: 1,
+            kind: "flow.data".into(),
+            flow_id: Some(flow_id),
+            pid: None,
+            data: json!({
+                "direction": "client_to_remote",
+                "boundary": "tls_plaintext.relay",
+                "error_code": "capture_truncated",
+                "blob": {"digest": "abc"}
+            }),
+        };
+        let mut args = QueryArgs {
+            run: event.run_id,
+            kind: vec!["flow.data".into()],
+            flow: Some(flow_id),
+            since_seq: Some(3),
+            until_seq: Some(3),
+            direction: vec!["client_to_remote".into()],
+            boundary: vec!["tls_plaintext.relay".into()],
+            error_code: vec!["capture_truncated".into()],
+            has_blob: Some(true),
+            jsonl: true,
+        };
+        assert!(matches_query(&event, &args));
+
+        args.boundary = vec!["transport".into()];
+        assert!(!matches_query(&event, &args));
+        args.boundary.clear();
+        args.has_blob = Some(false);
+        assert!(!matches_query(&event, &args));
     }
 
     #[test]

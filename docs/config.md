@@ -149,7 +149,6 @@ retained. Decrypt chooses what those retained bytes represent:
 ```toml
 [capture]
 mode = "on"
-directory = "/var/lib/heimdall/captures"
 max_bytes_per_flow = 1048576
 
 [decrypt]
@@ -198,26 +197,18 @@ group or other permissions and must be readable by the user invoking
 `heimdall run`. Certificate pinning and client-certificate mTLS are
 intentionally unsupported in this mode.
 
-`capture.mode` is `off` or `on`. The directory must be absolute; it defaults to
-`/var/lib/heimdall/captures`. `max_bytes_per_flow` defaults to 1 MiB and must be
-between 1 byte and 64 MiB. The limit is shared by both directions. Heimdall
-continues counting relayed bytes after the limit and marks the close record as
-truncated, but stores no further payload for that flow.
+`capture.mode` is `off` or `on`; event metadata remains available in either
+case. `max_bytes_per_flow` defaults to 1 MiB and must be between 1 byte and
+64 MiB. The limit is shared by both directions. When enabled, retained bytes
+are stored once below the run's private `blobs/sha256/` tree and referenced by
+`flow.data` records. JSONL contains lengths, truncation, boundary, digest, and
+relative path—never inline base64. `heimdall logs verify` checks every referenced
+blob and the manifest's count/byte summary.
 
-When capture is on, the foreground session creates the directory as `0700`, or
-rejects an existing directory that grants group/other access, and proves it is
-writable before privileged setup. Every flow gets one new `0600`
-JSONL file. Each line is one `heimdall.capture/v1` `open`, `data`, or `close`
-record. Data payloads are base64, directions are `client_to_remote` and
-`remote_to_client`, and sequence numbers start at zero. A capture write failure
-fails the affected relay instead of silently producing an incomplete accepted
-capture.
-
-Capture contains sensitive application bytes and has no automatic retention or
-upload. Operators own deletion and capacity policy. An `open` record's
-`payload` is `opaque_transport` for decrypt-off traffic and non-TLS passthrough,
-or `tls_plaintext` for decrypted events. Never infer plaintext from the port or
-filename.
+Capture contains sensitive application bytes and has no upload path. Use
+`heimdall logs prune` for explicit retention. Only a `flow.data.data.boundary`
+of `tls_plaintext.runtime` or `tls_plaintext.relay` proves plaintext; never
+infer it from a port, file name, SNI, or byte shape.
 
 ## Machine-readable validation
 
