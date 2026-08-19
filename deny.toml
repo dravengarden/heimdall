@@ -14,6 +14,7 @@ allow = [
   "CDLA-Permissive-2.0",
   "ISC",
   "MIT",
+  "MIT-0",
   "Unicode-3.0",
   "Unlicense",
   "Zlib",
@@ -28,11 +29,13 @@ multiple-versions = "deny"
 wildcards = "deny"
 allow-wildcard-paths = true
 highlight = "all"
-# Kernel instrumentation and DNS are independently versioned stacks.
-# Keep their advisories strict while excluding their internal version bridges.
+# Kernel instrumentation, DNS, and offline JSON Schema validation are
+# independently versioned stacks. Keep advisories strict while excluding only
+# their internal duplicate-version bridges.
 skip-tree = [
   { name = "aya" },
   { name = "hickory-proto" },
+  { name = "jsonschema" },
 ]
 
 [sources]

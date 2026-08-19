@@ -31,6 +31,8 @@ migration guide.
   ClientHello records, and negotiated relay TLS evidence.
 - Publish blobs atomically, verify an existing digest before reuse, and return
   stable `event_store_full` or `event_store_permission_denied` failures.
+- Validate every run manifest and event record against the bundled offline
+  Draft 2020-12 schemas during `heimdall logs verify`.
 - Add explicit `off`, `runtime`, and `relay` TLS modes. Runtime mode observes
   startup-discovered OpenSSL APIs without changing trust; relay mode validates
   upstream TLS and issues per-host leaves from invoking-user-owned CA material.

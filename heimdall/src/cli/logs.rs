@@ -309,6 +309,21 @@ fn verify(args: RunJsonArgs) -> Result<()> {
 
 fn verify_run(run_dir: &Path, manifest: &RunManifest) -> Result<Value> {
     let mut errors = Vec::new();
+    let event_schema: Value =
+        serde_json::from_str(EVENT_SCHEMA).context("decode bundled event schema")?;
+    let event_validator =
+        jsonschema::validator_for(&event_schema).context("compile bundled event schema")?;
+    let run_schema: Value =
+        serde_json::from_str(RUN_SCHEMA).context("decode bundled run schema")?;
+    let run_validator =
+        jsonschema::validator_for(&run_schema).context("compile bundled run schema")?;
+    let manifest_value = serde_json::to_value(manifest).context("encode run manifest")?;
+    for error in run_validator.iter_errors(&manifest_value) {
+        errors.push(format!(
+            "run.json schema {}: {error}",
+            error.instance_path()
+        ));
+    }
     let mut expected_seq = 1u64;
     let mut event_count = 0u64;
     let segment_paths = segment_paths(run_dir)?;
@@ -341,7 +356,26 @@ fn verify_run(run_dir: &Path, manifest: &RunManifest) -> Result<Value> {
                     break;
                 }
             };
-            let event: Event = match serde_json::from_str(&line) {
+            let event_value: Value = match serde_json::from_str(&line) {
+                Ok(event) => event,
+                Err(error) => {
+                    errors.push(format!(
+                        "decode {} line {}: {error}",
+                        segment.display(),
+                        line_number + 1
+                    ));
+                    break;
+                }
+            };
+            for error in event_validator.iter_errors(&event_value) {
+                errors.push(format!(
+                    "{} line {} schema {}: {error}",
+                    segment.display(),
+                    line_number + 1,
+                    error.instance_path()
+                ));
+            }
+            let event: Event = match serde_json::from_value(event_value) {
                 Ok(event) => event,
                 Err(error) => {
                     errors.push(format!(
@@ -799,6 +833,50 @@ mod tests {
             error
                 .as_str()
                 .is_some_and(|message| message.contains("digest mismatch"))
+        }));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn verification_detects_schema_invalid_event_data() {
+        let root = test_root("verify-schema");
+        let log = RunLog::create_at(&root, &["true".into()], "default", "foreground").unwrap();
+        log.ready("heimdall-run", None, &["transport"]).unwrap();
+        log.emit(
+            "run.exec",
+            Some(42),
+            json!({"child_pid": 42, "executable": "true", "argv_count": 1}),
+        )
+        .unwrap();
+        log.finish(0, true).unwrap();
+        let run_dir = log.run_dir().unwrap();
+        let mut manifest = read_manifest(&run_dir.join("run.json")).unwrap();
+        let segment = safe_segment_path(&run_dir, &manifest.segments[0].file).unwrap();
+        let mut events = BufReader::new(File::open(&segment).unwrap())
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(&line.unwrap()).unwrap())
+            .collect::<Vec<_>>();
+        let event = events
+            .iter_mut()
+            .find(|event| event["kind"] == "run.exec")
+            .unwrap();
+        event["data"]["argv_count"] = json!("one");
+        let replacement = events
+            .into_iter()
+            .map(|event| serde_json::to_string(&event).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        fs::write(&segment, replacement).unwrap();
+        manifest.segments[0].bytes = fs::metadata(&segment).unwrap().len();
+        manifest.segments[0].sha256 = sha256_file(&segment).unwrap();
+
+        let invalid = verify_run(&run_dir, &manifest).unwrap();
+        assert_eq!(invalid["valid"], false);
+        assert!(invalid["errors"].as_array().unwrap().iter().any(|error| {
+            error
+                .as_str()
+                .is_some_and(|message| message.contains(" schema "))
         }));
         fs::remove_dir_all(root).unwrap();
     }

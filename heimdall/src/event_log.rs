@@ -1207,6 +1207,9 @@ mod tests {
             writer.segment_started = Instant::now() - Duration::from_millis(2);
         }
         log.ready("heimdall-run", None, &["transport"]).unwrap();
+        // Why: this test targets the forced rotation before run.ready. Do not
+        // let scheduler latency independently rotate run.close as well.
+        log.lock().unwrap().segment_max_age = Duration::from_secs(60);
         log.finish(0, true).unwrap();
 
         let manifest = read_manifest(&log.run_dir().unwrap().join("run.json")).unwrap();

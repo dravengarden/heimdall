@@ -107,6 +107,7 @@ pub mod agent {
         policy_decision_events: bool,
         tls_events: &'static str,
         client_hello_events: bool,
+        offline_schema_validation: bool,
         writer_owned_rotation: bool,
         content_addressed_blobs: bool,
     }
@@ -549,6 +550,7 @@ pub mod agent {
                 policy_decision_events: true,
                 tls_events: "runtime+relay",
                 client_hello_events: true,
+                offline_schema_validation: true,
                 writer_owned_rotation: true,
                 content_addressed_blobs: true,
             },
@@ -705,6 +707,7 @@ pub mod agent {
             assert!(logs.policy_decision_events);
             assert_eq!(logs.tls_events, "runtime+relay");
             assert!(logs.client_hello_events);
+            assert!(logs.offline_schema_validation);
             assert!(logs.writer_owned_rotation);
             assert!(logs.content_addressed_blobs);
         }

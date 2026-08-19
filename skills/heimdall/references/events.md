@@ -220,9 +220,9 @@ Before trusting a closed run, execute:
 heimdall logs verify --run "$run_id" --json
 ```
 
-Require valid segment and blob digests, continuous committed sequence numbers,
-and a consistent final state. Preserve `incomplete_tail` as evidence of a
-crash; do not manufacture a close event.
+Require valid bundled run/event schemas, segment and blob digests, continuous
+committed sequence numbers, and a consistent final state. Preserve
+`incomplete_tail` as evidence of a crash; do not manufacture a close event.
 
 ## Retention safety
 

@@ -63,6 +63,7 @@ as_tester heimdall agent \
     and .capabilities.logs.policy_decision_events
     and .capabilities.logs.tls_events == "runtime+relay"
     and .capabilities.logs.client_hello_events
+    and .capabilities.logs.offline_schema_validation
     and .capabilities.logs.writer_owned_rotation
     and .capabilities.logs.content_addressed_blobs
     and .capabilities.decrypt.modes == ["off", "runtime", "relay"]
