@@ -42,8 +42,8 @@ Read [references/events.md](references/events.md) before consuming run logs.
 `heimdall.event/v1` records lifecycle, fake-DNS exchanges, policy decisions,
 TCP/UDP and TLS metadata, bounded blob references, and provenance-linked
 HTTP/1 header evidence in user-owned JSONL.
-Use `heimdall logs schema`, `list`, `path`,
-`query`, `tail`, `rotate`, `verify`, and `prune`; standard `jq`, `rg`, `sed`,
+Use `heimdall logs schema`, `list`, `path`, `summary`,
+`query`, `tail`, `rotate`, `verify`, `recover`, and `prune`; standard `jq`, `rg`, `sed`,
 `sort`, `sha256sum`, and `wc` are valid consumers. Do not require or start a
 Web UI.
 
@@ -132,6 +132,7 @@ Require lifecycle fields appropriate to the workflow:
 ```bash
 heimdall run --policy <policy> -- curl https://example.com
 heimdall logs list --json
+heimdall logs summary --run RUN_ID --json
 heimdall logs query --run RUN_ID --kind flow.close --jsonl
 heimdall logs verify --run RUN_ID --json
 heimdall logs recover --run RUN_ID --json
@@ -141,6 +142,12 @@ Omit `--policy` to use `proxy.default_policy`. Keep argv after `--`. Heimdall
 may re-enter through `systemd-run --user --scope`; the resolved global config
 path and argv are preserved. It returns the immediate child's status but keeps
 interception alive until every descendant leaves the cgroup.
+
+Read the `heimdall.logs.summary/v1` document before scanning payload evidence.
+Use its missing/out-of-order sequence counts, active flows, failure codes,
+capture truncation, and protocol counters to choose a bounded query. Summary
+is operational aggregation; require `logs verify` before making an integrity
+claim.
 
 Read [references/commands.md](references/commands.md) for diagnosis and
 [references/events.md](references/events.md) for direct Linux-tool recipes.

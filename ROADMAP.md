@@ -30,6 +30,9 @@ acceptance path are documented and tested.
 - Per-run `heimdall.event/v1` lifecycle, TCP/UDP metadata, and bounded
   content-addressed payload blobs, with offline schemas, byte/age rotation,
   integrity verification, payload-aware filters, and `heimdall logs`.
+- Low-cardinality `heimdall.logs.summary/v1` run health derived from the
+  append-only evidence, including sequence loss, active flows, failures,
+  capture truncation, and protocol-boundary counters.
 - Payload boundary/direction allowlists and environment-backed exact-value
   redaction before hashing or blob publication.
 - Per-flow/direction bounded payload block coalescing with explicit size,
@@ -137,6 +140,24 @@ Acceptance target: an operator or agent can identify the capture boundary,
 select a flow, and explain why bytes are opaque or plaintext without guessing
 from file names or process names.
 
+### 6. Performance and observability
+
+The disposable real-eBPF VM now emits a machine-readable
+`heimdall.benchmark/v1` baseline for daemonless cold start, direct TCP, proxied
+TCP/UDP, relay TLS, maximum process RSS, event integrity, and 1/10/50 concurrent
+runs. Results are explicitly environment-specific rather than product-wide
+performance claims.
+
+- Add sustained transport and capture throughput workloads instead of
+  extrapolating from command-completion latency.
+- Repeat the baseline across the supported kernel and distribution matrix.
+- Keep operational health low-cardinality and derived from the same per-run
+  evidence used by agents; do not add a required metrics daemon.
+
+Acceptance target: a repeatable environment records latency, memory,
+concurrency, sustained transport throughput, and event loss for TCP, UDP,
+capture, and TLS without changing the daemonless product boundary.
+
 ## Planned
 
 ### Packaging and distribution expansion
@@ -145,15 +166,6 @@ from file names or process names.
   x86_64 release path has enough field coverage.
 - Keep release installation, transient setup privilege, and user-owned
   session/log state separate on every supported package format.
-
-### Performance and observability
-
-- Establish repeatable throughput, latency, memory, and event-loss baselines
-  for TCP, UDP, capture, and TLS modes.
-- Measure daemonless cold start, per-run authorization, teardown, and 1/10/50
-  concurrent runs before considering an opt-in acceleration service.
-- Expose enough low-cardinality health data for operators to distinguish policy,
-  relay, DNS, eBPF, and TLS-boundary failures.
 
 ### Configuration ergonomics
 

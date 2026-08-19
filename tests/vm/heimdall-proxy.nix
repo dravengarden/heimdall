@@ -166,6 +166,7 @@ in
     pkgs.openssl
     pkgs.bpftools
     pkgs.rustc
+    pkgs.time
   ];
 
   systemd.tmpfiles.rules = [ "d /run/heimdall-test 0755 root root -" ];
@@ -266,6 +267,10 @@ in
   };
   environment.etc."heimdall-test/run-acceptance.sh" = {
     source = ./run-acceptance.sh;
+    mode = "0755";
+  };
+  environment.etc."heimdall-test/run-benchmark.py" = {
+    source = ../perf/vm-baseline.py;
     mode = "0755";
   };
   environment.etc."heimdall/config.toml".source = heimdallConfig;

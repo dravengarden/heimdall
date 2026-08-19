@@ -110,6 +110,7 @@ pub mod agent {
     struct LogsCapabilities {
         event_contract: &'static str,
         run_contract: &'static str,
+        summary_contract: &'static str,
         format: &'static str,
         lifecycle_events: bool,
         flow_events: &'static str,
@@ -218,6 +219,7 @@ pub mod agent {
         logs_schema_event: Vec<String>,
         logs_schema_run: Vec<String>,
         logs_list: Vec<String>,
+        logs_summary: Vec<String>,
         logs_query_prefix: Vec<String>,
         logs_tail_prefix: Vec<String>,
         logs_rotate: Vec<String>,
@@ -299,6 +301,7 @@ pub mod agent {
                         "list".into(),
                         "--json".into(),
                     ],
+                    logs_summary: logs_argv(&["summary", "--run", "<RUN_ID>", "--json"]),
                     logs_query_prefix: logs_argv(&["query", "--run", "<RUN_ID>", "--jsonl"]),
                     logs_tail_prefix: logs_argv(&["tail", "--run", "<RUN_ID>", "--jsonl"]),
                     logs_rotate: logs_argv(&["rotate", "--run", "<RUN_ID>", "--json"]),
@@ -447,6 +450,7 @@ pub mod agent {
                     "list".into(),
                     "--json".into(),
                 ],
+                logs_summary: logs_argv(&["summary", "--run", "<RUN_ID>", "--json"]),
                 logs_query_prefix: logs_argv(&["query", "--run", "<RUN_ID>", "--jsonl"]),
                 logs_tail_prefix: logs_argv(&["tail", "--run", "<RUN_ID>", "--jsonl"]),
                 logs_rotate: logs_argv(&["rotate", "--run", "<RUN_ID>", "--json"]),
@@ -632,6 +636,7 @@ pub mod agent {
             logs: LogsCapabilities {
                 event_contract: crate::event_log::EVENT_CONTRACT,
                 run_contract: crate::event_log::RUN_CONTRACT,
+                summary_contract: "heimdall.logs.summary/v1",
                 format: "jsonl",
                 lifecycle_events: true,
                 flow_events: "tcp+udp+payload",
@@ -804,6 +809,7 @@ pub mod agent {
             let logs = capabilities().logs;
             assert_eq!(logs.event_contract, "heimdall.event/v1");
             assert_eq!(logs.run_contract, "heimdall.run/v1");
+            assert_eq!(logs.summary_contract, "heimdall.logs.summary/v1");
             assert_eq!(logs.format, "jsonl");
             assert!(logs.lifecycle_events);
             assert_eq!(logs.flow_events, "tcp+udp+payload");

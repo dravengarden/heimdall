@@ -1,7 +1,7 @@
 //! Agent-first access to per-run event logs.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, Write},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
@@ -31,6 +31,8 @@ pub enum LogsCmd {
     List(JsonArgs),
     /// Resolve one run ID to its absolute directory.
     Path(RunJsonArgs),
+    /// Summarize low-cardinality health and evidence counters for one run.
+    Summary(RunJsonArgs),
     /// Stream matching event objects as JSONL.
     Query(QueryArgs),
     /// Read a run and optionally follow it across segment rotation.
@@ -176,6 +178,7 @@ pub fn run(command: LogsCmd) -> Result<()> {
         LogsCmd::Schema(args) => schema(args),
         LogsCmd::List(args) => list(args),
         LogsCmd::Path(args) => path(args),
+        LogsCmd::Summary(args) => summary(args),
         LogsCmd::Query(args) => query(&args, 0).map(|_| ()),
         LogsCmd::Tail(args) => tail(args),
         LogsCmd::Rotate(args) => rotate(args),
@@ -230,6 +233,204 @@ fn path(args: RunJsonArgs) -> Result<()> {
         "manifest": absolute(&run_dir.join("run.json")).display().to_string()
     });
     print_document(&value, args.json)
+}
+
+fn summary(args: RunJsonArgs) -> Result<()> {
+    let (run_dir, manifest) = find_run(args.run)?;
+    let value = summarize_run(&run_dir, &manifest)?;
+    print_document(&value, args.json)
+}
+
+#[derive(Default)]
+struct RunCounters {
+    records: u64,
+    first_seq: Option<u64>,
+    last_seq: u64,
+    next_seq: u64,
+    missing_records: u64,
+    out_of_order_records: u64,
+    duration_ns: u64,
+    by_kind: BTreeMap<String, u64>,
+    open_flows: BTreeSet<Uuid>,
+    closed_flows: BTreeSet<Uuid>,
+    flows_by_network: BTreeMap<String, u64>,
+    flows_by_status: BTreeMap<String, u64>,
+    flow_failures_by_code: BTreeMap<String, u64>,
+    flow_duration_us_total: u64,
+    flow_duration_us_max: u64,
+    client_to_remote_bytes: u64,
+    remote_to_client_bytes: u64,
+    capture_records: u64,
+    captured_original_bytes: u64,
+    captured_stored_bytes: u64,
+    truncated_capture_records: u64,
+    capture_by_boundary: BTreeMap<String, u64>,
+    error_events_by_code: BTreeMap<String, u64>,
+}
+
+impl RunCounters {
+    fn observe(&mut self, event: &Event) {
+        self.records = self.records.saturating_add(1);
+        self.first_seq.get_or_insert(event.seq);
+        if self.next_seq == 0 {
+            self.next_seq = 1;
+        }
+        if event.seq > self.next_seq {
+            self.missing_records = self
+                .missing_records
+                .saturating_add(event.seq - self.next_seq);
+        } else if event.seq < self.next_seq {
+            self.out_of_order_records = self.out_of_order_records.saturating_add(1);
+        }
+        self.next_seq = self.next_seq.max(event.seq.saturating_add(1));
+        self.last_seq = self.last_seq.max(event.seq);
+        self.duration_ns = self.duration_ns.max(event.monotonic_ns);
+        increment(&mut self.by_kind, &event.kind);
+
+        match event.kind.as_str() {
+            "flow.open" => {
+                if let Some(flow_id) = event.flow_id {
+                    self.open_flows.insert(flow_id);
+                }
+                increment_value(&mut self.flows_by_network, &event.data, "network");
+            }
+            "flow.close" => {
+                if let Some(flow_id) = event.flow_id {
+                    self.closed_flows.insert(flow_id);
+                }
+                increment_value(&mut self.flows_by_status, &event.data, "status");
+                if let Some(code) = event.data.get("error_code").and_then(Value::as_str) {
+                    increment(&mut self.flow_failures_by_code, code);
+                }
+                let duration = value_u64(&event.data, "duration_us");
+                self.flow_duration_us_total = self.flow_duration_us_total.saturating_add(duration);
+                self.flow_duration_us_max = self.flow_duration_us_max.max(duration);
+                self.client_to_remote_bytes = self
+                    .client_to_remote_bytes
+                    .saturating_add(value_u64(&event.data, "client_to_remote_bytes"));
+                self.remote_to_client_bytes = self
+                    .remote_to_client_bytes
+                    .saturating_add(value_u64(&event.data, "remote_to_client_bytes"));
+            }
+            "flow.data" => {
+                self.capture_records = self.capture_records.saturating_add(1);
+                self.captured_original_bytes = self
+                    .captured_original_bytes
+                    .saturating_add(value_u64(&event.data, "original_bytes"));
+                self.captured_stored_bytes = self
+                    .captured_stored_bytes
+                    .saturating_add(value_u64(&event.data, "stored_bytes"));
+                if event.data.get("truncated").and_then(Value::as_bool) == Some(true) {
+                    self.truncated_capture_records =
+                        self.truncated_capture_records.saturating_add(1);
+                }
+                increment_value(&mut self.capture_by_boundary, &event.data, "boundary");
+            }
+            "run.error" | "tls.error" => {
+                increment_value(&mut self.error_events_by_code, &event.data, "code");
+            }
+            _ => {}
+        }
+    }
+}
+
+fn summarize_run(run_dir: &Path, manifest: &RunManifest) -> Result<Value> {
+    let mut counters = RunCounters::default();
+    for segment in segment_paths(run_dir)? {
+        let file = File::open(&segment).with_context(|| format!("open {}", segment.display()))?;
+        for (line_number, line) in BufReader::new(file).lines().enumerate() {
+            let line = line
+                .with_context(|| format!("read {} line {}", segment.display(), line_number + 1))?;
+            let event: Event = serde_json::from_str(&line).with_context(|| {
+                format!("decode {} line {}", segment.display(), line_number + 1)
+            })?;
+            counters.observe(&event);
+        }
+    }
+    let active_flows = counters
+        .open_flows
+        .difference(&counters.closed_flows)
+        .count() as u64;
+    let dns_queries = counters.by_kind.get("dns.query").copied().unwrap_or(0);
+    let dns_answers = counters.by_kind.get("dns.answer").copied().unwrap_or(0);
+    let policy_decisions = counters
+        .by_kind
+        .get("policy.decision")
+        .copied()
+        .unwrap_or(0);
+    let tls_runtime = counters.by_kind.get("tls.runtime").copied().unwrap_or(0);
+    let tls_client_hellos = counters
+        .by_kind
+        .get("tls.client_hello")
+        .copied()
+        .unwrap_or(0);
+    let tls_handshakes = counters.by_kind.get("tls.handshake").copied().unwrap_or(0);
+    let tls_errors = counters.by_kind.get("tls.error").copied().unwrap_or(0);
+    let http_requests = counters.by_kind.get("http.request").copied().unwrap_or(0);
+    let http_responses = counters.by_kind.get("http.response").copied().unwrap_or(0);
+    let run_errors = counters.by_kind.get("run.error").copied().unwrap_or(0);
+    Ok(json!({
+        "contract": "heimdall.logs.summary/v1",
+        "run_id": manifest.run_id,
+        "state": manifest.state,
+        "complete": manifest.result.as_ref().is_some_and(|result| result.complete),
+        "duration_ns": counters.duration_ns,
+        "sequence": {
+            "first": counters.first_seq,
+            "last": counters.last_seq,
+            "records": counters.records,
+            "missing_records": counters.missing_records,
+            "out_of_order_records": counters.out_of_order_records,
+            "contiguous": counters.missing_records == 0 && counters.out_of_order_records == 0
+        },
+        "events": {"by_kind": counters.by_kind},
+        "flows": {
+            "opened": counters.open_flows.len(),
+            "closed": counters.closed_flows.len(),
+            "active": active_flows,
+            "by_network": counters.flows_by_network,
+            "by_status": counters.flows_by_status,
+            "failures_by_code": counters.flow_failures_by_code,
+            "duration_us": {"total": counters.flow_duration_us_total, "max": counters.flow_duration_us_max},
+            "bytes": {
+                "client_to_remote": counters.client_to_remote_bytes,
+                "remote_to_client": counters.remote_to_client_bytes
+            }
+        },
+        "capture": {
+            "records": counters.capture_records,
+            "original_bytes": counters.captured_original_bytes,
+            "stored_bytes": counters.captured_stored_bytes,
+            "truncated_records": counters.truncated_capture_records,
+            "by_boundary": counters.capture_by_boundary
+        },
+        "dns": {"queries": dns_queries, "answers": dns_answers},
+        "policy": {"decisions": policy_decisions},
+        "tls": {
+            "runtime_records": tls_runtime,
+            "client_hellos": tls_client_hellos,
+            "handshakes": tls_handshakes,
+            "errors": tls_errors
+        },
+        "http": {"requests": http_requests, "responses": http_responses},
+        "error_events": {"total": run_errors + tls_errors, "by_code": counters.error_events_by_code},
+        "storage": {"segments": manifest.segments.len(), "blobs": manifest.blobs.count, "blob_bytes": manifest.blobs.bytes}
+    }))
+}
+
+fn increment(counts: &mut BTreeMap<String, u64>, key: &str) {
+    let value = counts.entry(key.to_owned()).or_default();
+    *value = value.saturating_add(1);
+}
+
+fn increment_value(counts: &mut BTreeMap<String, u64>, data: &Value, key: &str) {
+    if let Some(value) = data.get(key).and_then(Value::as_str) {
+        increment(counts, value);
+    }
+}
+
+fn value_u64(data: &Value, key: &str) -> u64 {
+    data.get(key).and_then(Value::as_u64).unwrap_or(0)
 }
 
 fn rotate(args: RunJsonArgs) -> Result<()> {
@@ -1153,6 +1354,60 @@ mod tests {
         args.boundary.clear();
         args.has_blob = Some(false);
         assert!(!matches_query(&event, &args));
+    }
+
+    #[test]
+    fn summary_counters_are_low_cardinality_and_loss_aware() {
+        let run_id = Uuid::now_v7();
+        let flow_id = Uuid::now_v7();
+        let event = |seq, kind: &str, flow_id, data| Event {
+            schema: EVENT_CONTRACT.into(),
+            run_id,
+            seq,
+            ts: "2026-08-20T00:00:00.000000Z".into(),
+            monotonic_ns: seq * 100,
+            kind: kind.into(),
+            flow_id,
+            pid: None,
+            data,
+        };
+        let mut counters = RunCounters::default();
+        counters.observe(&event(
+            1,
+            "flow.open",
+            Some(flow_id),
+            json!({"network": "tcp"}),
+        ));
+        counters.observe(&event(
+            3,
+            "flow.data",
+            Some(flow_id),
+            json!({
+                "boundary": "tls_plaintext.relay",
+                "original_bytes": 12,
+                "stored_bytes": 8,
+                "truncated": true
+            }),
+        ));
+        counters.observe(&event(
+            4,
+            "flow.close",
+            Some(flow_id),
+            json!({
+                "status": "error",
+                "error_code": "relay_failed",
+                "duration_us": 20,
+                "client_to_remote_bytes": 12,
+                "remote_to_client_bytes": 4
+            }),
+        ));
+        assert_eq!(counters.records, 3);
+        assert_eq!(counters.missing_records, 1);
+        assert_eq!(counters.capture_records, 1);
+        assert_eq!(counters.truncated_capture_records, 1);
+        assert_eq!(counters.flow_failures_by_code["relay_failed"], 1);
+        assert!(counters.open_flows.contains(&flow_id));
+        assert!(counters.closed_flows.contains(&flow_id));
     }
 
     #[test]

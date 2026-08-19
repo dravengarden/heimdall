@@ -84,6 +84,7 @@ as_tester heimdall agent \
     and .capabilities.capture.direction_allowlist
     and .capabilities.capture.environment_redaction
     and .capabilities.logs.event_contract == "heimdall.event/v1"
+    and .capabilities.logs.summary_contract == "heimdall.logs.summary/v1"
     and .capabilities.logs.run_contract == "heimdall.run/v1"
     and .capabilities.logs.format == "jsonl"
     and .capabilities.logs.lifecycle_events
@@ -131,6 +132,7 @@ as_tester heimdall agent \
     and .capabilities.lifecycle.descendant_cgroup_lifetime
     and .capabilities.lifecycle.exit_code_passthrough
     and .actions.logs_schema_event == ["heimdall", "logs", "schema", "--event", "v1"]
+    and .actions.logs_summary == ["heimdall", "logs", "summary", "--run", "<RUN_ID>", "--json"]
     and .actions.logs_schema_run == ["heimdall", "logs", "schema", "--run", "v1"]
     and .actions.logs_list == ["heimdall", "logs", "list", "--json"]
     and .actions.logs_recover_preview == ["heimdall", "logs", "recover", "--run", "<RUN_ID>", "--json"]
@@ -649,6 +651,23 @@ jq -e -s '
       and all(.[] | select(.kind == "http.request" or .kind == "http.response");
           all(.data.source_seq[]; . as $seq | $plaintext | index($seq)))' \
   "$relay_run_dir"/events-*.jsonl >/dev/null
+as_tester heimdall logs summary --run "$relay_run_id" --json \
+  | jq -e '
+      .contract == "heimdall.logs.summary/v1"
+      and .state == "closed"
+      and .complete
+      and .sequence.contiguous
+      and .sequence.missing_records == 0
+      and .flows.opened >= 1
+      and .flows.opened == .flows.closed
+      and .flows.active == 0
+      and .capture.by_boundary["tls_plaintext.relay"] >= 2
+      and .tls.client_hellos >= 1
+      and .tls.handshakes >= 1
+      and .tls.errors == 0
+      and .http.requests == 1
+      and .http.responses == 1
+      and .error_events.total == 0' >/dev/null
 
 run_count_before_prune="$(as_tester heimdall logs list --json | jq '.runs | length')"
 as_tester heimdall logs prune --keep-last 1 --max-total-bytes 1 --json \

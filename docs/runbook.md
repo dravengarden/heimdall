@@ -137,6 +137,7 @@ Discover schemas and paths instead of hard-coding fields:
 heimdall logs schema --event v1
 heimdall logs schema --run v1
 heimdall logs list --json
+heimdall logs summary --run RUN_ID --json
 heimdall logs path --run RUN_ID --json
 ```
 
@@ -153,6 +154,12 @@ jq -c 'select(.kind == "http.request" or .kind == "http.response") |
   ~/.local/state/heimdall/runs/RUN_ID/events-*.jsonl
 rg '"kind":"run.error"' ~/.local/state/heimdall/runs/RUN_ID
 ```
+
+`logs summary` emits one `heimdall.logs.summary/v1` document with sequence
+continuity, active/closed flow counts, low-cardinality failure codes, byte and
+capture-truncation totals, and DNS/policy/TLS/HTTP counters. It is an
+operational aggregation, not a substitute for `logs verify`, which validates
+schemas, segment digests, sequences, and referenced blobs.
 
 Derived HTTP records contain only the first bounded HTTP/1 header per
 direction from explicit TLS plaintext. Resolve `source_seq` before trusting
@@ -175,6 +182,22 @@ an orphaned run failed/incomplete without adding a synthetic close event. Do
 not use `copytruncate` on an active segment.
 See [the bundled event reference](../skills/heimdall/references/events.md) for
 the complete schema and `jq` recipes.
+
+## Performance baseline
+
+Run the repeatable disposable-VM baseline after changes that can affect setup,
+relay, capture, TLS, event writing, or teardown:
+
+```bash
+nix develop -c just benchmark-vm
+```
+
+The check emits one `HEIMDALL_BENCHMARK_JSON=` line containing the
+`heimdall.benchmark/v1` document. It covers cold start, direct TCP, proxied
+TCP/UDP, relay TLS, maximum process RSS, 1/10/50 concurrent cold starts, and
+post-run event integrity. Treat every result as specific to the reported
+architecture, kernel, CPU count, and VM resources. It is not a universal
+throughput claim; sustained transport throughput remains a roadmap item.
 
 ## Capture and TLS
 

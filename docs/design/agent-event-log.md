@@ -290,6 +290,7 @@ stream.
 heimdall logs schema --event v1
 heimdall logs schema --run v1
 heimdall logs list --json
+heimdall logs summary --run RUN_ID --json
 heimdall logs path --run RUN_ID --json
 heimdall logs query --run RUN_ID [filters] --jsonl
 heimdall logs tail --run RUN_ID [--follow] --jsonl
@@ -298,6 +299,14 @@ heimdall logs verify --run RUN_ID --json
 heimdall logs recover --run RUN_ID [--apply] --json
 heimdall logs prune ... --json
 ```
+
+`summary` returns exactly one `heimdall.logs.summary/v1` document. Its
+low-cardinality fields aggregate sequence continuity, event kinds, unique
+opened/closed/active flows, network/status/failure-code counts, durations,
+bytes, capture truncation and boundaries, DNS, policy, TLS, HTTP, run errors,
+segments, and blobs. It may summarize a live incomplete run. It does not
+authenticate evidence; use `verify` for schema, digest, sequence, and blob
+integrity.
 
 Contract rules:
 

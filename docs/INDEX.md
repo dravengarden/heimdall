@@ -1,14 +1,14 @@
 ---
 type: docs_index
-description: Heimdall CLI proxy, daemonless runtime and agent event-log designs including derived HTTP evidence, strict configuration, roadmap, and operations documentation.
+description: Heimdall CLI proxy, daemonless runtime, agent event-log and performance baseline designs including derived HTTP evidence, strict configuration, roadmap, and operations documentation.
 ---
 
 # Documentation index
 
 ## Scope
 
-Heimdall CLI proxy, daemonless runtime and agent event-log designs including
-derived HTTP evidence, strict configuration, roadmap, and operations
+Heimdall CLI proxy, daemonless runtime, agent event-log and performance
+baseline designs including derived HTTP evidence, strict configuration, roadmap, and operations
 documentation. The index distinguishes stable contracts, planning, design
 material, and operational guidance.
 
@@ -33,7 +33,7 @@ material, and operational guidance.
 - [`architecture.md`](architecture.md) — CLI, eBPF, DNS, TCP/UDP relay, and TLS decrypt boundaries
 - [`config.md`](config.md) — Strict TOML/YAML/JSON policy rules, credentials, capture allowlists/redaction, decrypt modes, and UDP/QUIC limits
 - [`install.md`](install.md) — Reproducible x86_64 Linux artifact, install ownership, upgrade, and rollback
-- [`runbook.md`](runbook.md) — Build, narrow setup authorization, agent/log contracts, capture readiness, daemonless operation, TLS, and VM acceptance
+- [`runbook.md`](runbook.md) — Build, narrow setup authorization, agent/log contracts, capture readiness, daemonless operation, TLS, VM acceptance, and performance baseline
 
 ### Design documents
 

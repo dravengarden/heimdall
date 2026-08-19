@@ -10,6 +10,7 @@ heimdall config validate --json
 heimdall config explain --policy default --domain example.com --port 443 --json
 heimdall config explain --policy default --network udp --domain example.com --port 443 --json
 heimdall logs list --json
+heimdall logs summary --run RUN_ID --json
 ```
 
 `agent` is the primary `heimdall.agent/v8` machine contract. Exit 0 means
@@ -79,6 +80,12 @@ heimdall logs recover --run "$run_id" --json
 heimdall logs query --run "$run_id" --boundary tls_plaintext.relay --has-blob --jsonl
 heimdall logs prune --max-total-bytes 1073741824 --keep-last 20 --json
 ```
+
+Start with `logs summary` when choosing what to inspect. Its single
+`heimdall.logs.summary/v1` document reports sequence loss/order, unique
+opened/closed/active flows, network/status/failure-code counts, durations,
+bytes, capture truncation/boundaries, protocol counters, segments, and blobs.
+It can describe a live incomplete run and does not replace `logs verify`.
 
 For a live stream across writer-owned rotation:
 

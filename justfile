@@ -38,6 +38,11 @@ test-fast:
 test-vm:
     nix build .#checks.x86_64-linux.vm-proxy -L
 
+# Runs environment-specific latency, memory, concurrency, and event-integrity
+# baselines in the same disposable real-eBPF NixOS guest.
+benchmark-vm:
+    nix build .#checks.x86_64-linux.vm-benchmark -L
+
 # Verifies the static archive, checksum, install, upgrade, and rollback paths.
 test-package:
     nix build .#checks.x86_64-linux.release -L

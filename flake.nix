@@ -400,6 +400,49 @@
             machine.succeed("/etc/heimdall-test/run-acceptance.sh")
           '';
         };
+        vm-benchmark = pkgs.testers.runNixOSTest {
+          name = "heimdall-benchmark";
+          nodes.machine = {
+            imports = [ ./tests/vm/heimdall-proxy.nix ];
+            _module.args.heimdallPackage = heimdall-static;
+            virtualisation = {
+              memorySize = 8192;
+              cores = 2;
+            };
+          };
+          testScript = ''
+            import json
+
+            machine.start()
+            machine.wait_until_succeeds("test -e /run/heimdall-test/ready")
+            machine.succeed("systemctl start user@1000.service")
+            machine.succeed("install -d -o tester -g users -m 0700 /run/heimdall-test/relay")
+            output = machine.succeed(
+              "runuser -u tester -- env "
+              "HOME=/home/tester "
+              "XDG_RUNTIME_DIR=/run/user/1000 "
+              "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus "
+              "PATH=/run/wrappers/bin:/run/current-system/sw/bin "
+              "HEIMDALL_CAPTURE_SECRET=redaction-secret "
+              "/etc/heimdall-test/run-benchmark.py"
+            )
+            report = json.loads(output)
+            assert report["contract"] == "heimdall.benchmark/v1"
+            assert report["event_integrity"] == {
+              "runs": 81,
+              "incomplete_runs": 0,
+              "missing_records": 0,
+              "out_of_order_records": 0,
+              "active_flows_after_close": 0,
+            }
+            assert {
+              item["concurrency"]
+              for item in report["aggregates"]
+              if item["scenario"] == "concurrent_cold_start"
+            } == {1, 10, 50}
+            print("HEIMDALL_BENCHMARK_JSON=" + output.strip())
+          '';
+        };
       };
 
       # `nix develop` shell with everything needed to iterate locally —

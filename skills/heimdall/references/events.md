@@ -20,11 +20,14 @@ Never hard-code an XDG path. Discover the active contracts and paths from
 ```text
 heimdall logs schema --event v1
 heimdall logs schema --run v1
+heimdall logs summary --run RUN_ID --json
 heimdall logs path --run RUN_ID --json
 ```
 
 The two schema commands each print one JSON Schema Draft 2020-12 document.
-`logs path` prints one result document containing an absolute `run_dir`.
+`logs summary` prints one `heimdall.logs.summary/v1` operational aggregation;
+it does not replace integrity verification. `logs path` prints one result
+document containing an absolute `run_dir`.
 
 ## `heimdall.event/v1`
 
