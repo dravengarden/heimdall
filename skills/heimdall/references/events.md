@@ -155,6 +155,10 @@ verify SHA-256 before consuming payload bytes. Never shell-evaluate a path.
 Messages are explanatory only. Error data always includes `phase` and
 `retryable`; context remains structured. Do not branch on English text.
 
+Relay TLS uses `tls_upstream_client_auth_required` when a verified upstream
+requires a client certificate. Relay mode cannot forward the wrapped client's
+identity; select runtime mode or disable decryption instead of weakening TLS.
+
 ### Derived HTTP
 
 `http.request` and `http.response` are optional. The

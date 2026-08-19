@@ -85,14 +85,24 @@ impl RelayCopyError {
                 .and_then(|source| source.downcast_ref::<rustls::Error>()),
             Some(rustls::Error::InvalidCertificate(_))
         );
+        let client_auth_required = matches!(
+            error
+                .get_ref()
+                .and_then(|source| source.downcast_ref::<rustls::Error>()),
+            Some(rustls::Error::AlertReceived(
+                AlertDescription::CertificateRequired
+            ))
+        );
         let source = anyhow::Error::new(error)
-            .context(format!("verify upstream TLS certificate for {server_name}"));
-        let code = if certificate_invalid {
-            "tls_upstream_certificate_invalid"
+            .context(format!("complete upstream TLS handshake for {server_name}"));
+        let (code, peer_verified) = if certificate_invalid {
+            ("tls_upstream_certificate_invalid", Some(false))
+        } else if client_auth_required {
+            ("tls_upstream_client_auth_required", Some(true))
         } else {
-            "tls_upstream_handshake_failed"
+            ("tls_upstream_handshake_failed", Some(false))
         };
-        Self::new(code, "upstream_handshake", Some(false), source)
+        Self::new(code, "upstream_handshake", peer_verified, source)
     }
 
     fn downstream(error: std::io::Error, server_name: &str) -> Self {
@@ -114,6 +124,22 @@ impl RelayCopyError {
     }
 
     fn stream(source: anyhow::Error) -> Self {
+        let client_auth_required = source.chain().any(|cause| {
+            cause
+                .downcast_ref::<rustls::Error>()
+                .or_else(|| {
+                    cause
+                        .downcast_ref::<std::io::Error>()
+                        .and_then(std::io::Error::get_ref)
+                        .and_then(|inner| inner.downcast_ref::<rustls::Error>())
+                })
+                .is_some_and(|error| {
+                    matches!(
+                        error,
+                        rustls::Error::AlertReceived(AlertDescription::CertificateRequired)
+                    )
+                })
+        });
         let certificate_rejected = source.chain().any(|cause| {
             cause
                 .downcast_ref::<rustls::Error>()
@@ -130,7 +156,14 @@ impl RelayCopyError {
                     )
                 })
         });
-        if certificate_rejected {
+        if client_auth_required {
+            Self::new(
+                "tls_upstream_client_auth_required",
+                "upstream_handshake",
+                Some(true),
+                source,
+            )
+        } else if certificate_rejected {
             Self::new(
                 "tls_downstream_certificate_rejected",
                 "downstream_handshake",
@@ -408,7 +441,7 @@ mod tests {
     use super::*;
     use heimdall_config::{CaptureConfig, CaptureMode};
     use rcgen::{BasicConstraints, IsCa};
-    use rustls::CertificateError;
+    use rustls::{CertificateError, server::WebPkiClientVerifier};
     use tokio::{
         io::{AsyncReadExt as _, AsyncWriteExt as _},
         net::TcpListener,
@@ -427,6 +460,17 @@ mod tests {
         assert_eq!(upstream.code(), "tls_upstream_certificate_invalid");
         assert_eq!(upstream.phase(), "upstream_handshake");
         assert_eq!(upstream.peer_verified(), Some(false));
+
+        let client_auth = RelayCopyError::upstream(
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                rustls::Error::AlertReceived(AlertDescription::CertificateRequired),
+            ),
+            "fixture.test",
+        );
+        assert_eq!(client_auth.code(), "tls_upstream_client_auth_required");
+        assert_eq!(client_auth.phase(), "upstream_handshake");
+        assert_eq!(client_auth.peer_verified(), Some(true));
 
         let downstream = RelayCopyError::downstream(
             std::io::Error::new(
@@ -523,7 +567,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn intercepts_verified_upstream_and_captures_plaintext() {
+    async fn intercepts_long_lived_upstream_and_captures_plaintext() {
         let upstream_ca_key = KeyPair::generate().unwrap();
         let mut upstream_ca_params = CertificateParams::default();
         upstream_ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
@@ -580,10 +624,12 @@ mod tests {
                 .accept(stream)
                 .await
                 .unwrap();
-            let mut request = [0u8; 4];
-            tls.read_exact(&mut request).await.unwrap();
-            assert_eq!(&request, b"ping");
-            tls.write_all(b"pong").await.unwrap();
+            for _ in 0..3 {
+                let mut request = [0u8; 4];
+                tls.read_exact(&mut request).await.unwrap();
+                assert_eq!(&request, b"ping");
+                tls.write_all(b"pong").await.unwrap();
+            }
             tls.shutdown().await.unwrap();
         });
 
@@ -626,10 +672,13 @@ mod tests {
         .connect(ServerName::try_from("fixture.test").unwrap(), client)
         .await
         .unwrap();
-        tls.write_all(b"ping").await.unwrap();
-        let mut response = [0u8; 4];
-        tls.read_exact(&mut response).await.unwrap();
-        assert_eq!(&response, b"pong");
+        for _ in 0..3 {
+            tls.write_all(b"ping").await.unwrap();
+            let mut response = [0u8; 4];
+            tls.read_exact(&mut response).await.unwrap();
+            assert_eq!(&response, b"pong");
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
         tls.shutdown().await.unwrap();
         drop(tls);
 
@@ -637,10 +686,128 @@ mod tests {
         let report = relay_task.await.unwrap();
         assert_eq!(
             (report.client_to_remote_bytes, report.remote_to_client_bytes),
-            (4, 4)
+            (12, 12)
         );
         assert_eq!(report.server_name, "fixture.test");
         assert_ne!(report.version, "unknown");
         assert_ne!(report.cipher, "unknown");
+    }
+
+    #[tokio::test]
+    async fn reports_upstream_client_certificate_requirement() {
+        let upstream_ca_key = KeyPair::generate().unwrap();
+        let mut upstream_ca_params = CertificateParams::default();
+        upstream_ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let upstream_ca = upstream_ca_params.self_signed(&upstream_ca_key).unwrap();
+        let upstream_key = KeyPair::generate().unwrap();
+        let upstream_cert = CertificateParams::new(vec!["fixture.test".to_owned()])
+            .unwrap()
+            .signed_by(&upstream_key, &upstream_ca, &upstream_ca_key)
+            .unwrap();
+        let mut client_roots = RootCertStore::empty();
+        client_roots
+            .add(CertificateDer::from(upstream_ca.der().to_vec()))
+            .unwrap();
+        let client_verifier = WebPkiClientVerifier::builder(Arc::new(client_roots))
+            .build()
+            .unwrap();
+        let upstream_server = ServerConfig::builder()
+            .with_client_cert_verifier(client_verifier)
+            .with_single_cert(
+                vec![CertificateDer::from(upstream_cert.der().to_vec())],
+                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(upstream_key.serialize_der())),
+            )
+            .unwrap();
+
+        let relay_ca_key = KeyPair::generate().unwrap();
+        let mut relay_ca_params = CertificateParams::default();
+        relay_ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let relay_ca = relay_ca_params.self_signed(&relay_ca_key).unwrap();
+        let relay_ca_der = CertificateDer::from(relay_ca.der().to_vec());
+        let mut upstream_roots = RootCertStore::empty();
+        upstream_roots
+            .add(CertificateDer::from(upstream_ca.der().to_vec()))
+            .unwrap();
+        let relay_tls = RelayTls {
+            ca: relay_ca,
+            ca_key: relay_ca_key,
+            client_config: Arc::new(
+                ClientConfig::builder()
+                    .with_root_certificates(upstream_roots)
+                    .with_no_client_auth(),
+            ),
+        };
+        let capture = CaptureManager::from_config(
+            &CaptureConfig {
+                mode: CaptureMode::On,
+                max_bytes_per_flow: 1024,
+                ..CaptureConfig::default()
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let upstream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_address = upstream_listener.local_addr().unwrap();
+        let upstream_task = tokio::spawn(async move {
+            let (stream, _) = upstream_listener.accept().await.unwrap();
+            TlsAcceptor::from(Arc::new(upstream_server))
+                .accept(stream)
+                .await
+                .unwrap_err()
+        });
+        let relay_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let relay_address = relay_listener.local_addr().unwrap();
+        let relay_task = tokio::spawn(async move {
+            let (mut downstream, _) = relay_listener.accept().await.unwrap();
+            let mut upstream = TcpStream::connect(upstream_address).await.unwrap();
+            match relay_tls
+                .copy(
+                    &mut downstream,
+                    &mut upstream,
+                    "fixture.test",
+                    &capture,
+                    None,
+                    FlowMeta {
+                        flow_id: uuid::Uuid::now_v7(),
+                        boundary: "tls_plaintext.relay",
+                        network: "tcp",
+                        cgroup_id: 42,
+                        policy: "test",
+                        destination: "fixture.test",
+                        destination_port: 443,
+                        action: "direct",
+                        payload: "tls_plaintext",
+                    },
+                )
+                .await
+            {
+                Ok(_) => panic!("relay unexpectedly completed upstream client-auth handshake"),
+                Err(error) => error,
+            }
+        });
+
+        let mut roots = RootCertStore::empty();
+        roots.add(relay_ca_der).unwrap();
+        let client = TcpStream::connect(relay_address).await.unwrap();
+        let downstream = TlsConnector::from(Arc::new(
+            ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        ))
+        .connect(ServerName::try_from("fixture.test").unwrap(), client)
+        .await;
+        if let Ok(mut tls) = downstream {
+            let mut byte = [0u8; 1];
+            let _ = tls.read(&mut byte).await;
+        }
+
+        upstream_task.await.unwrap();
+        let error = relay_task.await.unwrap();
+        assert_eq!(error.code(), "tls_upstream_client_auth_required");
+        assert_eq!(error.phase(), "upstream_handshake");
+        assert_eq!(error.peer_verified(), Some(true));
     }
 }

@@ -217,6 +217,9 @@ For relay TLS certificate failures, inspect `tls.error` before changing trust:
 
 - `tls_upstream_certificate_invalid` means Heimdall rejected the remote peer
   during `upstream_handshake`; do not weaken upstream verification.
+- `tls_upstream_client_auth_required` means the verified upstream requires a
+  client certificate that relay mode cannot forward. Use runtime mode or turn
+  decryption off; do not configure client key material in Heimdall.
 - `tls_downstream_certificate_rejected` means the remote peer was verified,
   but the wrapped client rejected Heimdall's CA during
   `downstream_handshake`. Trust only the configured public `ca.pem` for that

@@ -68,6 +68,8 @@ and readable only by the invoking user, and reject pinned or client-certificate
 mTLS workflows.
 Branch on relay certificate errors: never repair
 `tls_upstream_certificate_invalid` by disabling remote verification; for
+`tls_upstream_client_auth_required`, switch to runtime mode or disable
+decryption because relay mode cannot forward the client's certificate; for
 `tls_downstream_certificate_rejected`, install only the configured public CA
 in the explicitly wrapped client when authorized.
 Treat `tls_downstream_closed_without_close_notify` as ambiguous until the

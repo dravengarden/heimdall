@@ -129,9 +129,10 @@ test.
 
 - Expand runtime capture beyond the currently supported OpenSSL probe surface
   only when the library boundary can be made explicit and safe.
-- Harden relay TLS compatibility around ALPN, SNI, client-authentication,
-  pinning, and long-lived connections, building on the available
-  trust-boundary-specific certificate failure diagnostics.
+- Expand relay TLS compatibility beyond the available ALPN/SNI preservation,
+  long-lived stream acceptance, and stable client-authentication/trust-boundary
+  failure diagnostics. Pinning and client-certificate mTLS remain explicit
+  unsupported relay boundaries rather than compatibility claims.
 - Improve CA trust-store guidance while preserving the fact that some clients
   close without an alert, so `tls_downstream_closed_without_close_notify`
   still requires the wrapped command's stderr and exit status.

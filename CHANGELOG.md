@@ -62,6 +62,9 @@ migration guide.
   downstream certificate alerts, and downstream closes without TLS
   `close_notify`, with stable codes, phases, peer-verification state, and
   matching flow-close evidence.
+- Report a verified upstream's client-certificate requirement as
+  `tls_upstream_client_auth_required`, and cover long-lived multi-exchange relay
+  streams without claiming relay compatibility with client-certificate mTLS.
 - Add offline `heimdall config schema` and read-only `config example` commands,
   generated from the canonical Rust/Serde model and shared init templates.
 
