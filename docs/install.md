@@ -1,18 +1,22 @@
 # Install and upgrade
 
-Heimdall ships one public executable: `heimdall`. The Linux release archive is
-a reproducible x86_64 musl build with the eBPF object embedded in that
-executable. It does not install or start a daemon.
+Heimdall ships one public executable: `heimdall`. Linux release archives are
+reproducible x86_64 and aarch64 musl builds with the eBPF object embedded in
+that executable. They do not install or start a daemon.
 
 ## Requirements
 
-- x86_64 Linux 5.10 or newer;
+- x86_64 or aarch64 Linux 5.10 or newer;
 - cgroup v2 and a running systemd user manager;
 - `sudo` for the narrow per-run setup worker;
 - a reachable SOCKS5 server for proxied policies.
 
 The release binary has no dynamic libc dependency. Kernel, cgroup, privilege,
-and TLS-library compatibility requirements still apply.
+and TLS-library compatibility requirements still apply. The x86_64 package is
+covered by native install and real-eBPF VM acceptance. The aarch64 package is
+checked for static linkage and architecture and executes CLI acceptance under
+emulation; native aarch64 real-eBPF acceptance remains active compatibility
+work.
 
 ## Install a tagged release
 
@@ -21,11 +25,15 @@ GitHub CLI:
 
 ```bash
 version=0.1.0
+architecture=$(uname -m)
+case "$architecture" in x86_64|aarch64) ;; *) exit 1 ;; esac
 gh release download "v$version" --repo dravengarden/heimdall \
-  --pattern "heimdall-$version-x86_64-linux-musl.tar.gz*"
-sha256sum -c "heimdall-$version-x86_64-linux-musl.tar.gz.sha256"
-tar -xzf "heimdall-$version-x86_64-linux-musl.tar.gz"
-cd "heimdall-$version-x86_64-linux-musl"
+  --pattern "heimdall-$version-$architecture-linux-musl.tar.gz*"
+archive="heimdall-$version-$architecture-linux-musl.tar.gz"
+sha256sum -c "$archive.sha256"
+gh attestation verify "$archive" --repo dravengarden/heimdall
+tar -xzf "$archive"
+cd "heimdall-$version-$architecture-linux-musl"
 sudo ./heimdall-install install
 heimdall --version
 ```

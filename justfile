@@ -44,9 +44,10 @@ test-vm:
 benchmark-vm:
     nix build .#checks.x86_64-linux.vm-benchmark -L
 
-# Verifies the static archive, checksum, install, upgrade, and rollback paths.
+# Verifies both static archives, architecture/checksum integrity, aarch64 CLI
+# emulation, and native x86_64 install, upgrade, and rollback paths.
 test-package:
-    nix build .#checks.x86_64-linux.release -L
+    nix build .#checks.x86_64-linux.release .#checks.x86_64-linux.release-aarch64 -L
 
 # Explicitly opt in after confirming a representative workload benefits from
 # compiler caching. On 2026-07-18, a same-path clean rebuild took 7.24s with

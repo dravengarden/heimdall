@@ -3,7 +3,10 @@ set -eu
 
 release_dir=${1:?usage: run-acceptance.sh RELEASE_DIRECTORY}
 version=${2:?usage: run-acceptance.sh RELEASE_DIRECTORY VERSION}
-archive_name=heimdall-$version-x86_64-linux-musl.tar.gz
+architecture=${3:?usage: run-acceptance.sh RELEASE_DIRECTORY VERSION ARCHITECTURE ELF_MACHINE [RUNNER]}
+elf_machine=${4:?usage: run-acceptance.sh RELEASE_DIRECTORY VERSION ARCHITECTURE ELF_MACHINE [RUNNER]}
+runner=${5:-}
+archive_name=heimdall-$version-$architecture-linux-musl.tar.gz
 archive=$release_dir/$archive_name
 
 (cd "$release_dir" && sha256sum -c "$archive_name.sha256")
@@ -11,7 +14,7 @@ archive=$release_dir/$archive_name
 work_dir=$(mktemp -d)
 trap 'rm -rf "$work_dir"' 0 HUP INT TERM
 tar -xzf "$archive" -C "$work_dir"
-bundle=$work_dir/heimdall-$version-x86_64-linux-musl
+bundle=$work_dir/heimdall-$version-$architecture-linux-musl
 
 expected_entries='LICENSE
 README.md
@@ -32,6 +35,18 @@ if readelf -d "$bundle/heimdall" | grep -q 'NEEDED'; then
   echo "release binary has dynamic library dependencies" >&2
   exit 1
 fi
+readelf -h "$bundle/heimdall" | grep -F "Machine:" | grep -Fq "$elf_machine" || {
+  echo "release binary has the wrong ELF architecture" >&2
+  exit 1
+}
+
+if [ -n "$runner" ]; then
+  [ "$("$runner" "$bundle/heimdall" --version)" = "heimdall $version" ]
+  "$runner" "$bundle/heimdall" --help >/dev/null
+  echo "release package structural and emulated CLI acceptance OK"
+  exit 0
+fi
+
 [ "$("$bundle/heimdall" --version)" = "heimdall $version" ]
 
 prefix=$work_dir/prefix

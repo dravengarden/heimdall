@@ -61,8 +61,11 @@ acceptance path are documented and tested.
 - A machine-readable real-eBPF benchmark covering daemonless latency, RSS,
   1/10/50 concurrent starts, sustained TCP/UDP and capture throughput, and
   event integrity without requiring a metrics service.
-- Reproducible static x86_64 Linux archives with checksum verification,
-  atomic installation, and one-level executable rollback.
+- Reproducible static x86_64 and aarch64 Linux archives with checksum and
+  signed GitHub build-provenance verification, atomic installation, and
+  one-level executable rollback. The aarch64 package has structural and
+  emulated CLI acceptance; native aarch64 real-eBPF acceptance remains in the
+  compatibility track.
 
 The current available implementation is Linux-only. macOS support is planned
 below and is not part of the available contract yet.
@@ -170,13 +173,6 @@ concurrency, sustained transport throughput, and event loss for TCP, UDP,
 capture, and TLS without changing the daemonless product boundary.
 
 ## Planned
-
-### Packaging and distribution expansion
-
-- Add signed release provenance and an aarch64 Linux artifact after the
-  x86_64 release path has enough field coverage.
-- Keep release installation, transient setup privilege, and user-owned
-  session/log state separate on every supported package format.
 
 ### macOS backend and fallback
 

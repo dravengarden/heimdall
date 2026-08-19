@@ -84,6 +84,11 @@
         cargo = rustStable;
         rustc = rustStable;
       };
+      aarch64MuslPkgs = pkgs.pkgsCross.aarch64-multiplatform-musl;
+      aarch64StaticRustPlatform = aarch64MuslPkgs.pkgsStatic.makeRustPlatform {
+        cargo = rustStable;
+        rustc = rustStable;
+      };
 
       # Cargo's `+toolchain` syntax is implemented by rustup, which is not part
       # of this Nix shell. Keep the exceptional eBPF compiler explicit while
@@ -329,6 +334,33 @@
         };
       };
 
+      heimdall-static-aarch64 = aarch64StaticRustPlatform.buildRustPackage {
+        pname = "heimdall-static-aarch64";
+        version = heimdallVersion;
+        src = heimdallSrc;
+
+        cargoLock.lockFile = ./Cargo.lock;
+        preBuild = ''
+          mkdir -p heimdall-ebpf/target/bpfel-unknown-none/release
+          cp ${heimdall-ebpf}/heimdall-ebpf \
+             heimdall-ebpf/target/bpfel-unknown-none/release/heimdall-ebpf
+        '';
+        cargoBuildFlags = [
+          "--bin"
+          "heimdall"
+          "--package"
+          "heimdall"
+        ];
+        doCheck = false;
+
+        meta = with lib; {
+          description = "Static aarch64 Heimdall Linux CLI with embedded eBPF";
+          mainProgram = "heimdall";
+          platforms = [ "aarch64-linux" ];
+          license = licenses.asl20;
+        };
+      };
+
       releaseBundle =
         pkgs.runCommand "heimdall-${heimdallVersion}-x86_64-linux-musl"
           {
@@ -353,6 +385,30 @@
             (cd "$out" && sha256sum "$archive_root.tar.gz" > "$archive_root.tar.gz.sha256")
           '';
 
+      releaseBundleAarch64 =
+        pkgs.runCommand "heimdall-${heimdallVersion}-aarch64-linux-musl"
+          {
+            version = heimdallVersion;
+            nativeBuildInputs = [
+              pkgs.coreutils
+              pkgs.gnutar
+              pkgs.gzip
+            ];
+          }
+          ''
+            archive_root=heimdall-${heimdallVersion}-aarch64-linux-musl
+            mkdir -p "$out" "$archive_root"
+            install -m 0755 ${heimdall-static-aarch64}/bin/heimdall "$archive_root/heimdall"
+            substitute ${./packaging/heimdall-install} "$archive_root/heimdall-install" \
+              --replace-fail '@VERSION@' '${heimdallVersion}'
+            chmod 0755 "$archive_root/heimdall-install"
+            install -m 0644 ${./LICENSE} "$archive_root/LICENSE"
+            install -m 0644 ${./README.md} "$archive_root/README.md"
+            tar --sort=name --mtime='@1' --owner=0 --group=0 --numeric-owner \
+              -czf "$out/$archive_root.tar.gz" "$archive_root"
+            (cd "$out" && sha256sum "$archive_root.tar.gz" > "$archive_root.tar.gz.sha256")
+          '';
+
       releaseCheck =
         pkgs.runCommand "heimdall-release-check-${heimdallVersion}"
           {
@@ -366,7 +422,27 @@
             ];
           }
           ''
-            sh ${./tests/package/run-acceptance.sh} ${releaseBundle} ${heimdallVersion}
+            sh ${./tests/package/run-acceptance.sh} ${releaseBundle} ${heimdallVersion} x86_64 'Advanced Micro Devices X86-64'
+            touch "$out"
+          '';
+
+      releaseCheckAarch64 =
+        pkgs.runCommand "heimdall-release-check-aarch64-${heimdallVersion}"
+          {
+            nativeBuildInputs = [
+              pkgs.binutils
+              pkgs.coreutils
+              pkgs.findutils
+              pkgs.gnugrep
+              pkgs.gnutar
+              pkgs.gzip
+              pkgs.qemu
+            ];
+          }
+          ''
+            sh ${./tests/package/run-acceptance.sh} \
+              ${releaseBundleAarch64} ${heimdallVersion} aarch64 AArch64 \
+              ${pkgs.qemu}/bin/qemu-aarch64
             touch "$out"
           '';
 
@@ -400,15 +476,18 @@
         inherit
           heimdall
           heimdall-static
+          heimdall-static-aarch64
           heimdall-ebpf
           bpf-linker
           ;
         default = heimdall;
         release = releaseBundle;
+        release-aarch64 = releaseBundleAarch64;
       };
 
       checks.${system} = {
         release = releaseCheck;
+        release-aarch64 = releaseCheckAarch64;
         vm-proxy = vmProxyTest { name = "heimdall-proxy"; };
         vm-proxy-lts = vmProxyTest {
           name = "heimdall-proxy-lts";

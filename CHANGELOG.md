@@ -8,10 +8,11 @@ migration guide.
 
 ### Added
 
-- Add reproducible static x86_64 Linux release archives, SHA-256 checksums,
-  atomic installation, one-level rollback, and tagged GitHub release
-  automation. Packaging acceptance rejects dynamic dependencies and exercises
-  install, upgrade, and rollback.
+- Add reproducible static x86_64 and aarch64 Linux release archives, SHA-256
+  checksums, signed GitHub build provenance, atomic installation, one-level
+  rollback, and tagged GitHub release automation. Packaging acceptance rejects
+  dynamic dependencies on both architectures, exercises the aarch64 CLI under
+  emulation, and exercises native install, upgrade, and rollback on x86_64.
 - Add one foreground Linux execution path for every decrypt mode. Each run
   owns isolated relay and DNS listeners, cgroup, unpinned maps, FD-owned links,
   event state, and a strict `heimdall.setup/v2` helper that drops privilege

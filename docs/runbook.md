@@ -23,8 +23,9 @@ cover dual-stack TCP/UDP, fake and system DNS, SOCKS5, QUIC, common runtime
 clients, concurrent runs, runtime and relay TLS, capture, rotation, recovery,
 signals, authorization failure, parent-death cleanup, and link cleanup.
 
-Build and exercise the generic static archive, including install, upgrade, and
-rollback:
+Build both generic static archives, reject incorrect architecture or dynamic
+linkage, exercise the aarch64 CLI under emulation, and run native x86_64
+install, upgrade, and rollback acceptance:
 
 ```bash
 nix develop -c just test-package
