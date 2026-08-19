@@ -156,15 +156,15 @@ from file names or process names.
 
 ### 6. Performance and observability
 
-The disposable real-eBPF VM now emits a machine-readable
+The current and Linux 6.6 LTS real-eBPF VMs emit machine-readable
 `heimdall.benchmark/v1` baseline for daemonless cold start, direct TCP, proxied
 TCP/UDP, relay TLS, maximum process RSS, event integrity, and 1/10/50 concurrent
 runs. It also records sustained direct and proxied TCP, proxied UDP, transport
 capture, and relay TLS plaintext-capture throughput. Results are explicitly
 environment-specific rather than product-wide performance claims.
 
-- Repeat the performance baseline across the supported kernel and distribution
-  matrix; the functional acceptance suite already covers current and 6.6 LTS.
+- Repeat the functional and performance baselines across supported
+  distributions beyond the available current/6.6 LTS NixOS matrix.
 - Keep operational health low-cardinality and derived from the same per-run
   evidence used by agents; do not add a required metrics daemon.
 

@@ -194,15 +194,15 @@ the complete schema and `jq` recipes.
 
 ## Performance baseline
 
-Run the repeatable disposable-VM baseline after changes that can affect setup,
-relay, capture, TLS, event writing, or teardown:
+Run the repeatable current and Linux 6.6 LTS disposable-VM baselines after
+changes that can affect setup, relay, capture, TLS, event writing, or teardown:
 
 ```bash
 nix develop -c just benchmark-vm
 ```
 
-The check emits one `HEIMDALL_BENCHMARK_JSON=` line containing the
-`heimdall.benchmark/v1` document. It covers cold start, direct TCP, proxied
+Each VM emits one `HEIMDALL_BENCHMARK_JSON=` line containing its
+`heimdall.benchmark/v1` document. Each covers cold start, direct TCP, proxied
 TCP/UDP, relay TLS, maximum process RSS, 1/10/50 concurrent cold starts, and
 post-run event integrity. Its `throughput` records measure sustained direct and
 proxied TCP, proxied UDP, full transport capture, and relay TLS plaintext

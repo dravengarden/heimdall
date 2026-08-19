@@ -470,33 +470,19 @@
             machine.succeed("/etc/heimdall-test/run-acceptance.sh")
           '';
         };
-    in
-    {
-      packages.${system} = {
-        inherit
-          heimdall
-          heimdall-static
-          heimdall-static-aarch64
-          heimdall-ebpf
-          bpf-linker
-          ;
-        default = heimdall;
-        release = releaseBundle;
-        release-aarch64 = releaseBundleAarch64;
-      };
 
-      checks.${system} = {
-        release = releaseCheck;
-        release-aarch64 = releaseCheckAarch64;
-        vm-proxy = vmProxyTest { name = "heimdall-proxy"; };
-        vm-proxy-lts = vmProxyTest {
-          name = "heimdall-proxy-lts";
-          kernelPackages = pkgs.linuxPackages_6_6;
-        };
-        vm-benchmark = pkgs.testers.runNixOSTest {
-          name = "heimdall-benchmark";
+      vmBenchmarkTest =
+        {
+          name,
+          kernelPackages ? null,
+        }:
+        pkgs.testers.runNixOSTest {
+          inherit name;
           nodes.machine = {
-            imports = [ ./tests/vm/heimdall-proxy.nix ];
+            imports = [
+              ./tests/vm/heimdall-proxy.nix
+            ]
+            ++ lib.optional (kernelPackages != null) { boot.kernelPackages = kernelPackages; };
             _module.args.heimdallPackage = heimdall-static;
             virtualisation = {
               memorySize = 8192;
@@ -546,6 +532,34 @@
             assert all(item["bytes_per_second"] > 0 for item in report["throughput"])
             print("HEIMDALL_BENCHMARK_JSON=" + output.strip())
           '';
+        };
+    in
+    {
+      packages.${system} = {
+        inherit
+          heimdall
+          heimdall-static
+          heimdall-static-aarch64
+          heimdall-ebpf
+          bpf-linker
+          ;
+        default = heimdall;
+        release = releaseBundle;
+        release-aarch64 = releaseBundleAarch64;
+      };
+
+      checks.${system} = {
+        release = releaseCheck;
+        release-aarch64 = releaseCheckAarch64;
+        vm-proxy = vmProxyTest { name = "heimdall-proxy"; };
+        vm-proxy-lts = vmProxyTest {
+          name = "heimdall-proxy-lts";
+          kernelPackages = pkgs.linuxPackages_6_6;
+        };
+        vm-benchmark = vmBenchmarkTest { name = "heimdall-benchmark"; };
+        vm-benchmark-lts = vmBenchmarkTest {
+          name = "heimdall-benchmark-lts";
+          kernelPackages = pkgs.linuxPackages_6_6;
         };
       };
 

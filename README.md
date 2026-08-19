@@ -63,7 +63,7 @@ need compatibility hardening.
 | Static Linux packaging | Available | Reproducible x86_64/aarch64 musl archives, checksums, signed GitHub build provenance, atomic install, and one-level rollback |
 | Runtime and kernel compatibility | In development | The same real-eBPF suite covers current and Linux 6.6 LTS kernels on x86_64; native aarch64 data-path, more distributions, and runtime edge cases remain active work |
 | Capture analysis | In development | Allowlists, redaction, bounded blocks, orphan recovery, and provenance-linked HTTP/1 header evidence are available; broader analysis remains active work |
-| Performance and observability | In development | Repeatable real-eBPF VM latency, RSS, 1/10/50 concurrency, sustained TCP/UDP/capture throughput, and event-integrity baselines are available; the wider platform matrix remains active work |
+| Performance and observability | In development | Repeatable current/6.6 LTS real-eBPF latency, RSS, 1/10/50 concurrency, sustained TCP/UDP/capture throughput, and event-integrity baselines are available; the distribution matrix remains active work |
 
 See [docs/product-contract.md](docs/product-contract.md) for the normative
 requirements and [ROADMAP.md](ROADMAP.md) for status and planned work.
