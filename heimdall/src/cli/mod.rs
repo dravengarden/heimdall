@@ -161,6 +161,7 @@ pub mod agent {
         descendant_cgroup_lifetime: bool,
         exit_code_passthrough: bool,
         signal_exit_code: &'static str,
+        foreground_signal_forwarding: &'static [&'static str],
         upstream_unreachable_fail_closed: bool,
         foreground_modes: &'static [&'static str],
         foreground_owned_resources: bool,
@@ -692,6 +693,7 @@ pub mod agent {
                 descendant_cgroup_lifetime: true,
                 exit_code_passthrough: true,
                 signal_exit_code: "128+signal",
+                foreground_signal_forwarding: &["SIGHUP", "SIGINT", "SIGQUIT", "SIGTERM"],
                 upstream_unreachable_fail_closed: true,
                 foreground_modes: &["off", "runtime", "relay"],
                 foreground_owned_resources: true,
@@ -818,6 +820,10 @@ pub mod agent {
         fn lifecycle_capabilities_expose_restart_boundary() {
             let lifecycle = capabilities().lifecycle;
             assert!(lifecycle.descendant_cgroup_lifetime);
+            assert_eq!(
+                lifecycle.foreground_signal_forwarding,
+                ["SIGHUP", "SIGINT", "SIGQUIT", "SIGTERM"]
+            );
             assert!(lifecycle.upstream_unreachable_fail_closed);
             assert_eq!(lifecycle.foreground_modes, ["off", "runtime", "relay"]);
             assert!(lifecycle.foreground_owned_resources);

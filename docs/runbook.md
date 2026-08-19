@@ -75,9 +75,12 @@ heimdall run -- curl -fsS https://example.com
 heimdall logs list --json
 ```
 
-The wrapped command's immediate exit or signal status
-is Heimdall's status, while interception remains active until every descendant
-leaves the command cgroup.
+The wrapped command's immediate exit or signal status is Heimdall's status.
+SIGHUP, SIGINT, SIGQUIT, and SIGTERM addressed to the foreground owner are
+forwarded to the immediate child; Heimdall remains alive to finalize evidence
+and keeps interception active until every descendant leaves the command cgroup.
+Setup authorization is non-interactive and fails before child execution when
+the exact sudoers rule is absent.
 
 ## Agent contract
 

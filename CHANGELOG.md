@@ -39,6 +39,8 @@ migration guide.
   with explicit block indexes and flush reasons in `flow.data`.
 - Add dry-run-first recovery for orphaned runs that preserves the original
   manifest and incomplete tail without inventing a close event.
+- Forward foreground-owner signals to the wrapped command while retaining the
+  owner for cleanup, and make setup authorization explicitly non-interactive.
 - Add explicit `off`, `runtime`, and `relay` TLS modes. Runtime mode observes
   startup-discovered OpenSSL APIs without changing trust; relay mode validates
   upstream TLS and issues per-host leaves from invoking-user-owned CA material.

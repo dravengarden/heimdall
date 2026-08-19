@@ -9,6 +9,7 @@ systemctl is-active --quiet heimdall-test-git.service
 
 python3 /etc/heimdall-test/setup_worker_client.py "$(command -v heimdall)"
 systemctl start user@1000.service
+systemctl start user@1001.service
 
 as_tester() {
   runuser -u tester -- env \
@@ -19,6 +20,23 @@ as_tester() {
     HEIMDALL_CAPTURE_SECRET=redaction-secret \
     "$@"
 }
+
+as_unauthorized() {
+  runuser -u unauthorized -- env \
+    HOME=/home/unauthorized \
+    XDG_RUNTIME_DIR=/run/user/1001 \
+    DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1001/bus \
+    PATH=/run/wrappers/bin:/run/current-system/sw/bin \
+    "$@"
+}
+
+set +e
+authorization_failure="$(as_unauthorized heimdall run --policy direct -- true 2>&1)"
+authorization_status=$?
+set -e
+test "$authorization_status" -ne 0
+printf '%s' "$authorization_failure" \
+  | grep -F 'non-interactive setup authorization must allow exactly' >/dev/null
 
 capture_contains() {
   local boundary="$1"
@@ -116,6 +134,7 @@ as_tester heimdall agent \
     and .actions.logs_list == ["heimdall", "logs", "list", "--json"]
     and .actions.logs_recover_preview == ["heimdall", "logs", "recover", "--run", "<RUN_ID>", "--json"]
     and .capabilities.lifecycle.signal_exit_code == "128+signal"
+    and .capabilities.lifecycle.foreground_signal_forwarding == ["SIGHUP", "SIGINT", "SIGQUIT", "SIGTERM"]
     and .capabilities.lifecycle.upstream_unreachable_fail_closed
     and .capabilities.lifecycle.foreground_modes == ["off", "runtime", "relay"]
     and .capabilities.lifecycle.foreground_owned_resources
@@ -274,6 +293,41 @@ signal_status=$?
 set -e
 test "$exit_status" -eq 42
 test "$signal_status" -eq 143
+
+# A signal addressed to the foreground owner is forwarded to the immediate
+# child. The owner stays alive long enough to finalize logs and release links.
+as_tester heimdall run --policy direct -- sleep 30 &
+forward_wrapper=$!
+forward_owner=""
+forward_run_id=""
+for _ in $(seq 1 200); do
+  for candidate in $(pgrep -u tester -x heimdall || true); do
+    if tr '\0' ' ' < "/proc/$candidate/cmdline" \
+      | grep -q ' run .*--no-reentry .*sleep 30'; then
+      forward_owner="$candidate"
+      break
+    fi
+  done
+  forward_run_id="$(as_tester heimdall logs list --json \
+    | jq -r 'first(.runs[] | select(.state == "running" and .policy == "direct")) | .run_id // empty')"
+  test -n "$forward_owner" && test -n "$forward_run_id" && break
+  sleep 0.02
+done
+test -n "$forward_owner"
+test -n "$forward_run_id"
+kill -TERM "$forward_owner"
+set +e
+wait "$forward_wrapper"
+forward_status=$?
+set -e
+test "$forward_status" -eq 143
+as_tester heimdall logs verify --run "$forward_run_id" --json \
+  | jq -e '.valid and .state == "closed"' >/dev/null
+forward_run_dir="$(as_tester heimdall logs path --run "$forward_run_id" --json | jq -er .run_dir)"
+jq -e -s '.[-1].kind == "run.close"
+  and .[-1].data.exit_code == 143
+  and .[-1].data.signal == 15
+  and .[-1].data.complete' "$forward_run_dir"/events-*.jsonl >/dev/null
 
 rm -f /tmp/heimdall-descendant.out
 : > /run/heimdall-test/socks.log

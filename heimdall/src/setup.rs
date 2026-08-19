@@ -366,7 +366,7 @@ pub(crate) fn launch_worker(request: &SetupRequest) -> Result<SetupBundle> {
         Command::new(&executable)
     } else {
         let mut command = Command::new("sudo");
-        command.arg("--").arg(&executable);
+        command.args(["--non-interactive", "--"]).arg(&executable);
         command
     };
     command
@@ -375,6 +375,10 @@ pub(crate) fn launch_worker(request: &SetupRequest) -> Result<SetupBundle> {
         .stdout(Stdio::null())
         .stderr(Stdio::inherit());
     let mut child = command.spawn().context("start privileged setup worker")?;
+    // Why: Command remains reusable after spawn and therefore retains its
+    // configured stdin FD. Close that duplicate now so an authorization or
+    // exec failure is observed as immediate EOF instead of the read timeout.
+    drop(command);
 
     let exchange = send_request(&mut parent, request).and_then(|()| receive_reply(&mut parent));
     let mut bundle = match exchange {
@@ -383,7 +387,12 @@ pub(crate) fn launch_worker(request: &SetupRequest) -> Result<SetupBundle> {
             drop(parent);
             let _ = child.kill();
             let _ = child.wait();
-            return Err(error).context("setup worker did not return a session bundle");
+            return Err(error).with_context(|| {
+                format!(
+                    "setup worker did not return a session bundle; non-interactive setup authorization must allow exactly `{} __setup-worker`",
+                    executable.display()
+                )
+            });
         }
     };
     parent

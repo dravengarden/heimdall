@@ -49,7 +49,7 @@ sudo visudo -cf /etc/sudoers.d/heimdall</code></pre>
         <pre><code>heimdall agent | jq .
 heimdall config validate
 heimdall run -- curl -fsS https://example.com</code></pre>
-        <div class="callout"><strong>Exit status is part of the contract.</strong>The wrapped command's exit status is Heimdall's exit status. A setup failure happens before execution, and the foreground owner remains until all descendants exit.</div>
+        <div class="callout"><strong>Exit status is part of the contract.</strong> The wrapped command's exit status is Heimdall's exit status. Owner-addressed SIGHUP, SIGINT, SIGQUIT, and SIGTERM are forwarded to the child while Heimdall remains alive to finalize evidence. Setup authorization is non-interactive and fails before execution.</div>
 
         <h2 id="acceptance">Acceptance coverage</h2>
         <p>The VM exercises real eBPF attachment, fake/system DNS, SOCKS5 TCP/UDP, QUIC, descendants, signals, concurrent isolated runs, runtime and relay TLS, log rotation, orphan recovery, fail-closed errors, parent-death cgroup cleanup, and link cleanup.</p>

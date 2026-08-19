@@ -172,6 +172,13 @@ The session owner MUST:
 `heimdall run` may detach only through a future explicit command and explicit
 contract. It must never detach as an optimization.
 
+The foreground owner blocks SIGHUP, SIGINT, SIGQUIT, and SIGTERM around fork,
+installs an async-signal-safe forwarding handler, restores default dispositions
+in the child, and forwards owner-addressed signals to the immediate child. It
+then remains alive to drain descendants, finalize `run.close`, and release the
+session. Setup authorization is non-interactive: a missing exact sudoers rule
+fails before child execution instead of prompting or starting a daemon.
+
 ## TLS inspection
 
 TLS remains an explicit run mode, not a daemon feature.
@@ -249,8 +256,8 @@ Available now:
   lifecycle;
 - per-run ports, cgroup, maps, FD-owned links, and mutable policy state;
 - the narrow `heimdall.setup/v2` authorization path with privilege drop;
-- concurrent-session, descendant, normal-cleanup, and parent-death acceptance
-  in the disposable real-eBPF VM;
+- concurrent-session, descendant, foreground-signal, authorization-denial,
+  normal-cleanup, and parent-death acceptance in the disposable real-eBPF VM;
 - `heimdall.agent/v8` reporting only the foreground execution owner and its
   actual capability evidence.
 

@@ -36,6 +36,8 @@ acceptance path are documented and tested.
   latency, index, and flush-reason evidence.
 - Dry-run-first recovery of orphaned runs that rejects active owners and
   finalized-segment mutation while preserving discarded tail evidence.
+- Foreground SIGHUP/SIGINT/SIGQUIT/SIGTERM forwarding with finalized exit and
+  signal evidence, plus deterministic non-interactive setup authorization.
 - Correlated fake-DNS query/answer evidence, ordered policy-decision evidence,
   and explicit OpenSSL runtime-observation metadata.
 - Relay TLS termination and startup-discovered OpenSSL runtime TLS probes in
@@ -61,12 +63,13 @@ The foreground data plane is now the default for every decrypt mode. It binds
 kernel-assigned per-run relay and DNS ports, creates fresh unpinned maps,
 attaches FD-owned links through `heimdall.setup/v2`, and closes every resource
 when the command tree exits. The real-eBPF VM proves concurrent isolated runs,
-runtime and relay TLS, normal cleanup, and parent-death cgroup teardown.
+runtime and relay TLS, owner signal forwarding, normal cleanup, deterministic
+authorization denial, and parent-death cgroup teardown.
 
 - Evaluate run-scoped dynamic attachment for `libssl` images loaded only after
   child exec without introducing a persistent broker.
-- Measure setup-worker authorization UX across supported distributions and
-  extend abnormal-exit coverage beyond the current SIGKILL acceptance.
+- Measure setup-worker authorization UX and signal behavior across supported
+  distributions beyond the available NixOS acceptance.
 - Keep any persistent acceleration mode explicit and opt-in; never start it
   implicitly.
 

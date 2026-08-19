@@ -34,6 +34,7 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Duration;
 
 use nix::mount::{MsFlags, mount};
@@ -42,7 +43,7 @@ use nix::sched::{CloneFlags, unshare};
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
 use heimdall_config::HeimdallConfig;
-use nix::sys::signal::{self, SigHandler, Signal};
+use nix::sys::signal::{self, SaFlags, SigAction, SigHandler, SigSet, SigmaskHow, Signal};
 use nix::sys::wait::{WaitStatus, waitpid};
 use nix::unistd::{ForkResult, Pid, fork};
 use serde::Serialize;
@@ -77,6 +78,97 @@ pub struct RunArgs {
 struct RunDecision {
     policy: String,
     dns: String,
+}
+
+static FORWARDED_CHILD_PID: AtomicI32 = AtomicI32::new(0);
+
+#[allow(
+    unsafe_code,
+    reason = "libc kill is async-signal-safe and has no memory-safety preconditions for an integer pid"
+)]
+extern "C" fn forward_signal_to_child(signal: libc::c_int) {
+    let child = FORWARDED_CHILD_PID.load(Ordering::Relaxed);
+    if child > 0 {
+        // Why: kill(2) is async-signal-safe. The foreground owner must remain
+        // alive to finalize evidence and release its session-owned resources.
+        unsafe {
+            libc::kill(child, signal);
+        }
+    }
+}
+
+struct SignalForwarding {
+    previous_mask: SigSet,
+}
+
+impl SignalForwarding {
+    #[allow(
+        unsafe_code,
+        reason = "sigaction installs one async-signal-safe forwarding handler before fork"
+    )]
+    fn prepare() -> Result<Self> {
+        let mut forwarded = SigSet::empty();
+        for signal in [
+            Signal::SIGHUP,
+            Signal::SIGINT,
+            Signal::SIGQUIT,
+            Signal::SIGTERM,
+        ] {
+            forwarded.add(signal);
+        }
+        let mut previous_mask = SigSet::empty();
+        signal::pthread_sigmask(
+            SigmaskHow::SIG_BLOCK,
+            Some(&forwarded),
+            Some(&mut previous_mask),
+        )
+        .context("block foreground signals before fork")?;
+        let action = SigAction::new(
+            SigHandler::Handler(forward_signal_to_child),
+            SaFlags::SA_RESTART,
+            SigSet::empty(),
+        );
+        for signal in [
+            Signal::SIGHUP,
+            Signal::SIGINT,
+            Signal::SIGQUIT,
+            Signal::SIGTERM,
+        ] {
+            unsafe { signal::sigaction(signal, &action) }
+                .with_context(|| format!("install {signal:?} forwarding handler"))?;
+        }
+        Ok(Self { previous_mask })
+    }
+
+    fn activate_parent(&self, child: Pid) -> Result<()> {
+        FORWARDED_CHILD_PID.store(child.as_raw(), Ordering::Release);
+        signal::pthread_sigmask(SigmaskHow::SIG_SETMASK, Some(&self.previous_mask), None)
+            .context("unblock foreground signals in session owner")
+    }
+
+    #[allow(
+        unsafe_code,
+        reason = "the post-fork child restores default signal dispositions before exec"
+    )]
+    fn restore_child(&self) -> Result<()> {
+        for signal in [
+            Signal::SIGHUP,
+            Signal::SIGINT,
+            Signal::SIGQUIT,
+            Signal::SIGTERM,
+        ] {
+            unsafe {
+                signal::signal(signal, SigHandler::SigDfl)
+                    .with_context(|| format!("restore {signal:?} in child"))?;
+            }
+        }
+        signal::pthread_sigmask(SigmaskHow::SIG_SETMASK, Some(&self.previous_mask), None)
+            .context("restore child signal mask")
+    }
+
+    fn disarm(&self) {
+        FORWARDED_CHILD_PID.store(0, Ordering::Release);
+    }
 }
 
 pub async fn run(config_path: &Path, args: RunArgs) -> Result<()> {
@@ -446,6 +538,13 @@ fn fork_into_cgroup_and_exec(
     dns_shim: Option<&DnsShim>,
     event_log: &crate::event_log::RunLog,
 ) -> i32 {
+    let forwarding = match SignalForwarding::prepare() {
+        Ok(forwarding) => forwarding,
+        Err(error) => {
+            eprintln!("heimdall run: prepare signal forwarding failed: {error:#}");
+            return 127;
+        }
+    };
     match unsafe { fork() } {
         Ok(ForkResult::Child) => {
             // Move ourselves into the new cgroup before exec. Errors
@@ -471,11 +570,9 @@ fn fork_into_cgroup_and_exec(
                 std::process::exit(127);
             }
 
-            // Restore default SIGINT/SIGTERM so Ctrl+C reaches the
-            // wrapped command, not the parent only.
-            unsafe {
-                let _ = signal::signal(Signal::SIGINT, SigHandler::SigDfl);
-                let _ = signal::signal(Signal::SIGTERM, SigHandler::SigDfl);
+            if let Err(error) = forwarding.restore_child() {
+                eprintln!("heimdall run: restore child signals failed: {error:#}");
+                std::process::exit(127);
             }
 
             // Strip every "use this HTTP proxy" env var. Without this,
@@ -518,6 +615,13 @@ fn fork_into_cgroup_and_exec(
             std::process::exit(127);
         }
         Ok(ForkResult::Parent { child }) => {
+            if let Err(error) = forwarding.activate_parent(child) {
+                eprintln!("heimdall run: activate signal forwarding failed: {error:#}");
+                let _ = signal::kill(child, Signal::SIGKILL);
+                let _ = waitpid(child, None);
+                forwarding.disarm();
+                return 127;
+            }
             if let Err(error) = event_log.emit(
                 "run.exec",
                 Some(child.as_raw().try_into().unwrap_or(u32::MAX)),
@@ -529,9 +633,12 @@ fn fork_into_cgroup_and_exec(
             ) {
                 warn!(%error, "cannot record run.exec event");
             }
-            wait_for_child(child)
+            let exit_code = wait_for_child(child);
+            forwarding.disarm();
+            exit_code
         }
         Err(e) => {
+            forwarding.disarm();
             eprintln!("heimdall run: fork failed: {e}");
             127
         }

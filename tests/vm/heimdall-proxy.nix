@@ -135,6 +135,11 @@ in
     uid = 1000;
     linger = true;
   };
+  users.users.unauthorized = {
+    isNormalUser = true;
+    uid = 1001;
+    linger = true;
+  };
 
   security.sudo.extraRules = [
     {
