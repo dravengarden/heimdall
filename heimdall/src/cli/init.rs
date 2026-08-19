@@ -71,6 +71,8 @@ udp = { type = "reject", method = "refused" }
 
 [capture]
 mode = "off"
+block_max_bytes = 65536
+flush_interval_ms = 100
 boundaries = ["transport", "tls_plaintext.runtime", "tls_plaintext.relay"]
 directions = ["client_to_remote", "remote_to_client"]
 redact_env = []
@@ -100,6 +102,8 @@ proxy:
         udp: { type: reject, method: refused }
 capture:
   mode: "off"
+  block_max_bytes: 65536
+  flush_interval_ms: 100
   boundaries: [transport, tls_plaintext.runtime, tls_plaintext.relay]
   directions: [client_to_remote, remote_to_client]
   redact_env: []
@@ -131,6 +135,8 @@ const HEIMDALL_JSON: &str = r#"{
   },
   "capture": {
     "mode": "off",
+    "block_max_bytes": 65536,
+    "flush_interval_ms": 100,
     "boundaries": ["transport", "tls_plaintext.runtime", "tls_plaintext.relay"],
     "directions": ["client_to_remote", "remote_to_client"],
     "redact_env": []

@@ -200,11 +200,13 @@ canonicalization. Identical bytes in one run share a blob. Publication uses a
 private temporary file and an atomic same-filesystem link, so a failed write
 never publishes a partial digest path. Readers verify the digest before
 trusting content. Compression, if later added, gets explicit stored/content
-sizes and encoding fields; it never changes digest semantics. Each persisted
-chunk is currently one blob reference. Literal redaction may retain at most
-the longest configured value minus one byte per direction so matches split
-across observed reads are masked. General bounded block coalescing remains
-planned and will require explicit size and flush-latency fields.
+sizes and encoding fields; it never changes digest semantics. Observed reads
+are coalesced per flow and direction into blocks bounded by the configured
+`block_max_bytes`. Literal redaction may retain at most the longest configured
+value minus one byte per direction so split matches are masked. A block flushes
+when it reaches the size bound, after `flush_interval_ms`, or when the flow
+closes. `flow.data.data.block` records a one-based per-direction index, both
+configured bounds, and `flush_reason=size|interval|close`.
 
 Capture profiles:
 
@@ -218,7 +220,8 @@ The current default is `metadata`. Plaintext payload capture requires explicit
 configuration because it may contain credentials or personal data.
 The run manifest records `allowed_boundaries`, `allowed_directions`, and only
 the redaction source/value count/replacement method. It never records secret
-values.
+values. It also records the block size and flush interval required to interpret
+capture latency.
 
 ## Rotation
 

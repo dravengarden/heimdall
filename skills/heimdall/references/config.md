@@ -13,6 +13,8 @@ proxy.policies.<name>.final.tcp = route | direct | reject
 proxy.policies.<name>.final.udp = route | direct | reject
 capture.mode = off | on
 capture.max_bytes_per_flow = 1..67108864 (default 1048576)
+capture.block_max_bytes = 1..1048576 (default 65536)
+capture.flush_interval_ms = 10..5000 (default 100)
 capture.boundaries[] = transport | tls_plaintext.runtime | tls_plaintext.relay
 capture.directions[] = client_to_remote | remote_to_client
 capture.redact_env[] = portable environment variable name (maximum 32)
@@ -87,6 +89,9 @@ probe the actual command when its runtime is absent from that path's array.
 Enable capture only when the user intends to retain traffic. It writes private,
 content-addressed blobs below the run directory and references them from
 `heimdall.event/v1` JSONL. The byte limit is shared across both directions.
+Blocks are coalesced per flow/direction, bounded by `block_max_bytes`, and
+flushed on size, `flush_interval_ms`, or close. Read
+`flow.data.data.block.flush_reason`; do not infer timing from file order.
 Treat `boundaries` and `directions` as payload allowlists; metadata remains
 available for excluded paths. Before execution, require
 `agent.config.capture.redaction_values_ready = true`. `redact_env` names exact

@@ -35,6 +35,8 @@ migration guide.
   Draft 2020-12 schemas during `heimdall logs verify`.
 - Add payload boundary/direction allowlists and environment-backed exact-value
   redaction that masks bytes before content hashing and blob publication.
+- Coalesce payload reads into size- and latency-bounded per-direction blocks
+  with explicit block indexes and flush reasons in `flow.data`.
 - Add explicit `off`, `runtime`, and `relay` TLS modes. Runtime mode observes
   startup-discovered OpenSSL APIs without changing trust; relay mode validates
   upstream TLS and issues per-host leaves from invoking-user-owned CA material.

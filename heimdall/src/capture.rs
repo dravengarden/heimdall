@@ -1,6 +1,11 @@
 //! Bounded payload capture backed by the per-run event store.
 
-use std::{collections::BTreeSet, os::unix::ffi::OsStrExt, sync::Arc};
+use std::{
+    collections::BTreeSet,
+    os::unix::ffi::OsStrExt,
+    sync::{Arc, Weak},
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
 use heimdall_config::{CaptureBoundary, CaptureConfig, CaptureDirection, CaptureMode};
@@ -10,13 +15,15 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use crate::event_log::EventClient;
+use crate::event_log::{EventClient, PayloadMetadata};
 
 const COPY_BUFFER: usize = 16 * 1024;
 
 #[derive(Clone)]
 pub struct CaptureManager {
     max_bytes_per_flow: u64,
+    block_max_bytes: usize,
+    flush_interval: Duration,
     boundaries: BTreeSet<CaptureBoundary>,
     directions: BTreeSet<CaptureDirection>,
     redactions: Arc<Vec<Vec<u8>>>,
@@ -28,6 +35,8 @@ impl std::fmt::Debug for CaptureManager {
         formatter
             .debug_struct("CaptureManager")
             .field("max_bytes_per_flow", &self.max_bytes_per_flow)
+            .field("block_max_bytes", &self.block_max_bytes)
+            .field("flush_interval", &self.flush_interval)
             .field("boundaries", &self.boundaries)
             .field("directions", &self.directions)
             .field("redaction_count", &self.redactions.len())
@@ -80,9 +89,12 @@ struct FlowWriter {
     enabled: bool,
     directions: BTreeSet<CaptureDirection>,
     redactions: Arc<Vec<Vec<u8>>>,
+    block_max_bytes: usize,
+    flush_interval_ms: u64,
     client_to_remote: PendingBytes,
     remote_to_client: PendingBytes,
     closed: bool,
+    failure: Option<String>,
     events: Option<EventClient>,
 }
 
@@ -91,6 +103,7 @@ struct PendingBytes {
     bytes: Vec<u8>,
     redacted: Vec<bool>,
     truncated: bool,
+    next_block_index: u64,
 }
 
 impl CaptureManager {
@@ -128,6 +141,9 @@ impl CaptureManager {
         redactions.sort_by_key(|value| std::cmp::Reverse(value.len()));
         Ok(Some(Self {
             max_bytes_per_flow: config.max_bytes_per_flow,
+            block_max_bytes: usize::try_from(config.block_max_bytes)
+                .context("capture block limit does not fit usize")?,
+            flush_interval: Duration::from_millis(config.flush_interval_ms),
             boundaries: config.boundaries.iter().copied().collect(),
             directions: config.directions.iter().copied().collect(),
             redactions: Arc::new(redactions),
@@ -149,18 +165,28 @@ impl CaptureManager {
             .boundaries
             .iter()
             .any(|boundary| boundary.name() == meta.boundary);
-        Ok(CaptureFlow(Arc::new(Mutex::new(FlowWriter {
+        let state = Arc::new(Mutex::new(FlowWriter {
             flow_id: meta.flow_id,
             boundary: meta.boundary,
             remaining: self.max_bytes_per_flow,
             enabled,
             directions: self.directions.clone(),
             redactions: self.redactions.clone(),
+            block_max_bytes: self.block_max_bytes,
+            flush_interval_ms: self.flush_interval.as_millis() as u64,
             client_to_remote: PendingBytes::default(),
             remote_to_client: PendingBytes::default(),
             closed: false,
+            failure: None,
             events: self.events.clone(),
-        }))))
+        }));
+        if enabled {
+            tokio::spawn(flush_on_interval(
+                Arc::downgrade(&state),
+                self.flush_interval,
+            ));
+        }
+        Ok(CaptureFlow(state))
     }
 
     pub(crate) fn event_client(&self) -> Option<EventClient> {
@@ -172,6 +198,9 @@ impl CaptureFlow {
     pub async fn data(&self, direction: Direction, payload: &[u8]) -> Result<()> {
         let mut writer = self.0.lock().await;
         anyhow::ensure!(!writer.closed, "capture flow is already closed");
+        if let Some(error) = &writer.failure {
+            anyhow::bail!("capture writer failed: {error}");
+        }
         if !writer.enabled || !writer.directions.contains(&direction.config_value()) {
             return Ok(());
         }
@@ -194,8 +223,12 @@ impl CaptureFlow {
         if writer.closed {
             return Ok(());
         }
-        writer.flush(Direction::ClientToRemote, true)?;
-        writer.flush(Direction::RemoteToClient, true)?;
+        if let Some(error) = writer.failure.take() {
+            writer.closed = true;
+            anyhow::bail!("capture writer failed: {error}");
+        }
+        writer.flush(Direction::ClientToRemote, FlushReason::Close, true)?;
+        writer.flush(Direction::RemoteToClient, FlushReason::Close, true)?;
         writer.closed = true;
         Ok(())
     }
@@ -207,27 +240,44 @@ impl FlowWriter {
         pending.bytes.extend_from_slice(payload);
         pending.redacted.resize(pending.bytes.len(), false);
         pending.truncated |= truncated;
-        self.flush(direction, false)
+        self.flush(direction, FlushReason::Size, false)
     }
 
-    fn flush(&mut self, direction: Direction, final_flush: bool) -> Result<()> {
+    fn flush(
+        &mut self,
+        direction: Direction,
+        reason: FlushReason,
+        final_flush: bool,
+    ) -> Result<()> {
         let redactions = self.redactions.clone();
         let max_pattern_len = redactions.first().map_or(0, Vec::len);
-        let (payload, truncated) =
-            self.pending(direction)
-                .take_ready(&redactions, max_pattern_len, final_flush);
-        if payload.is_empty() {
-            return Ok(());
-        }
-        if let Some(events) = &self.events {
-            events.emit_payload(
-                self.flow_id,
-                direction.name(),
-                self.boundary,
-                payload.len() as u64,
-                &payload,
-                truncated,
-            )?;
+        loop {
+            let block_max_bytes = self.block_max_bytes;
+            let Some((payload, truncated, block_index)) = self.pending(direction).take_block(
+                &redactions,
+                max_pattern_len,
+                block_max_bytes,
+                final_flush,
+                reason != FlushReason::Size,
+            ) else {
+                break;
+            };
+            if let Some(events) = &self.events {
+                events.emit_payload(
+                    self.flow_id,
+                    direction.name(),
+                    self.boundary,
+                    &payload,
+                    PayloadMetadata {
+                        original_bytes: payload.len() as u64,
+                        truncated,
+                        index: block_index,
+                        max_bytes: self.block_max_bytes as u64,
+                        flush_interval_ms: self.flush_interval_ms,
+                        flush_reason: reason.name(),
+                    },
+                )?;
+            }
         }
         Ok(())
     }
@@ -240,13 +290,52 @@ impl FlowWriter {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FlushReason {
+    Size,
+    Interval,
+    Close,
+}
+
+impl FlushReason {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Size => "size",
+            Self::Interval => "interval",
+            Self::Close => "close",
+        }
+    }
+}
+
+async fn flush_on_interval(state: Weak<Mutex<FlowWriter>>, interval: Duration) {
+    loop {
+        tokio::time::sleep(interval).await;
+        let Some(state) = state.upgrade() else {
+            return;
+        };
+        let mut writer = state.lock().await;
+        if writer.closed || writer.failure.is_some() {
+            return;
+        }
+        let result = writer
+            .flush(Direction::ClientToRemote, FlushReason::Interval, false)
+            .and_then(|()| writer.flush(Direction::RemoteToClient, FlushReason::Interval, false));
+        if let Err(error) = result {
+            writer.failure = Some(error.to_string());
+            return;
+        }
+    }
+}
+
 impl PendingBytes {
-    fn take_ready(
+    fn take_block(
         &mut self,
         patterns: &[Vec<u8>],
         max_pattern_len: usize,
+        block_max_bytes: usize,
         final_flush: bool,
-    ) -> (Vec<u8>, bool) {
+        force: bool,
+    ) -> Option<(Vec<u8>, bool, u64)> {
         for pattern in patterns {
             if pattern.len() > self.bytes.len() {
                 continue;
@@ -257,16 +346,17 @@ impl PendingBytes {
                 }
             }
         }
-        let ready = if final_flush {
+        let safe = if final_flush {
             self.bytes.len()
         } else {
             self.bytes
                 .len()
                 .saturating_sub(max_pattern_len.saturating_sub(1))
         };
-        if ready == 0 {
-            return (Vec::new(), false);
+        if safe == 0 || (!force && safe < block_max_bytes) {
+            return None;
         }
+        let ready = safe.min(block_max_bytes);
         let payload = self
             .bytes
             .iter()
@@ -280,7 +370,8 @@ impl PendingBytes {
         if truncated {
             self.truncated = false;
         }
-        (payload, truncated)
+        self.next_block_index += 1;
+        Some((payload, truncated, self.next_block_index))
     }
 }
 
@@ -376,10 +467,12 @@ mod tests {
         let mut pending = PendingBytes::default();
         pending.bytes.extend_from_slice(b"prefix secret-");
         pending.redacted.resize(pending.bytes.len(), false);
-        let (first, _) = pending.take_ready(&patterns, 12, false);
+        let (first, _, _) = pending
+            .take_block(&patterns, 12, 1024, false, true)
+            .unwrap();
         pending.bytes.extend_from_slice(b"token suffix");
         pending.redacted.resize(pending.bytes.len(), false);
-        let (second, _) = pending.take_ready(&patterns, 12, true);
+        let (second, _, _) = pending.take_block(&patterns, 12, 1024, true, true).unwrap();
         let output = [first, second].concat();
         assert_eq!(output, b"prefix ************ suffix");
         assert!(!output.windows(12).any(|window| window == b"secret-token"));
@@ -391,10 +484,14 @@ mod tests {
         let mut pending = PendingBytes::default();
         pending.bytes.extend_from_slice(b"abc");
         pending.redacted.resize(pending.bytes.len(), false);
-        assert!(pending.take_ready(&patterns, 6, false).0.is_empty());
+        assert!(
+            pending
+                .take_block(&patterns, 6, 1024, false, true)
+                .is_none()
+        );
         pending.bytes.extend_from_slice(b"def");
         pending.redacted.resize(pending.bytes.len(), false);
-        let (output, _) = pending.take_ready(&patterns, 6, true);
+        let (output, _, _) = pending.take_block(&patterns, 6, 1024, true, true).unwrap();
         assert_eq!(output, b"******");
     }
 
@@ -408,6 +505,8 @@ mod tests {
         let events = EventClient::connect(server.event_socket_path().to_path_buf()).unwrap();
         let manager = CaptureManager {
             max_bytes_per_flow: 1024,
+            block_max_bytes: 8,
+            flush_interval: Duration::from_millis(10),
             boundaries: [CaptureBoundary::TlsPlaintextRuntime].into_iter().collect(),
             directions: [CaptureDirection::ClientToRemote].into_iter().collect(),
             redactions: Arc::new(vec![b"secret-token".to_vec()]),
@@ -436,18 +535,21 @@ mod tests {
         flow.data(Direction::RemoteToClient, b"must-not-be-stored")
             .await
             .unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
         flow.close("complete").await.unwrap();
         drop(server);
         log.finish(0, true).unwrap();
 
         let run_dir = log.run_dir().unwrap();
         let mut stored = Vec::new();
+        let mut blocks = Vec::new();
         for line in fs::read_to_string(run_dir.join("events-000001.jsonl"))
             .unwrap()
             .lines()
         {
             let event: serde_json::Value = serde_json::from_str(line).unwrap();
             if event["kind"] == "flow.data" {
+                blocks.push(event["data"]["block"].clone());
                 stored.extend(
                     fs::read(run_dir.join(event["data"]["blob"]["path"].as_str().unwrap()))
                         .unwrap(),
@@ -461,6 +563,20 @@ mod tests {
                 .any(|bytes| bytes == b"must-not-be-stored")
         );
         assert_eq!(stored, b"prefix ************ suffix");
+        assert!(blocks.iter().all(|block| block["max_bytes"] == 8));
+        assert!(blocks.iter().all(|block| block["flush_interval_ms"] == 10));
+        assert!(
+            blocks
+                .iter()
+                .all(|block| block["index"].as_u64().unwrap() > 0)
+        );
+        assert!(blocks.iter().any(|block| block["flush_reason"] == "size"));
+        assert!(
+            blocks
+                .iter()
+                .any(|block| block["flush_reason"] == "interval")
+        );
+        assert!(blocks.iter().any(|block| block["flush_reason"] == "close"));
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(runtime).unwrap();
     }

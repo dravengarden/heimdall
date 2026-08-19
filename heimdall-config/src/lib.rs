@@ -383,6 +383,10 @@ pub struct CaptureConfig {
     pub mode: CaptureMode,
     #[serde(default = "default_capture_max_bytes")]
     pub max_bytes_per_flow: u64,
+    #[serde(default = "default_capture_block_max_bytes")]
+    pub block_max_bytes: u64,
+    #[serde(default = "default_capture_flush_interval_ms")]
+    pub flush_interval_ms: u64,
     #[serde(default = "default_capture_boundaries")]
     pub boundaries: Vec<CaptureBoundary>,
     #[serde(default = "default_capture_directions")]
@@ -396,6 +400,8 @@ impl Default for CaptureConfig {
         Self {
             mode: CaptureMode::Off,
             max_bytes_per_flow: default_capture_max_bytes(),
+            block_max_bytes: default_capture_block_max_bytes(),
+            flush_interval_ms: default_capture_flush_interval_ms(),
             boundaries: default_capture_boundaries(),
             directions: default_capture_directions(),
             redact_env: Vec::new(),
@@ -450,6 +456,14 @@ impl CaptureDirection {
 
 const fn default_capture_max_bytes() -> u64 {
     1_048_576
+}
+
+const fn default_capture_block_max_bytes() -> u64 {
+    65_536
+}
+
+const fn default_capture_flush_interval_ms() -> u64 {
+    100
 }
 
 fn default_capture_boundaries() -> Vec<CaptureBoundary> {
@@ -1017,6 +1031,30 @@ fn validate_capture(errors: &mut Vec<ConfigDiagnostic>, capture: &CaptureConfig)
             "Choose a per-flow limit between 1 byte and 64 MiB.",
         );
     }
+    if capture.block_max_bytes == 0 || capture.block_max_bytes > 1_048_576 {
+        push(
+            errors,
+            "invalid_capture_block_limit",
+            "$.capture.block_max_bytes",
+            format!(
+                "{} is outside the supported 1..=1048576 byte range",
+                capture.block_max_bytes
+            ),
+            "Choose a block limit between 1 byte and 1 MiB.",
+        );
+    }
+    if !(10..=5000).contains(&capture.flush_interval_ms) {
+        push(
+            errors,
+            "invalid_capture_flush_interval",
+            "$.capture.flush_interval_ms",
+            format!(
+                "{} is outside the supported 10..=5000 millisecond range",
+                capture.flush_interval_ms
+            ),
+            "Choose a flush interval between 10 and 5000 milliseconds.",
+        );
+    }
     validate_unique(
         errors,
         "$.capture.boundaries",
@@ -1543,12 +1581,19 @@ action = { type = "direct" }
     fn capture_diagnostics_are_machine_repairable() {
         let source = valid_toml().replace(
             "[capture]\n            mode = \"off\"",
-            "[capture]\n            mode = \"on\"\n            max_bytes_per_flow = 0",
+            "[capture]\n            mode = \"on\"\n            max_bytes_per_flow = 0\n            block_max_bytes = 0\n            flush_interval_ms = 9",
         );
         let cfg: HeimdallConfig = toml::from_str(&source).unwrap();
         let diagnostics = cfg.validate().unwrap_err().diagnostics();
         assert!(diagnostics.iter().any(|item| {
             item.code == "invalid_capture_limit" && item.path == "$.capture.max_bytes_per_flow"
+        }));
+        assert!(diagnostics.iter().any(|item| {
+            item.code == "invalid_capture_block_limit" && item.path == "$.capture.block_max_bytes"
+        }));
+        assert!(diagnostics.iter().any(|item| {
+            item.code == "invalid_capture_flush_interval"
+                && item.path == "$.capture.flush_interval_ms"
         }));
     }
 

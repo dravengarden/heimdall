@@ -65,6 +65,8 @@ pub mod agent {
     struct CaptureConfigReport {
         mode: &'static str,
         max_bytes_per_flow: u64,
+        block_max_bytes: u64,
+        flush_interval_ms: u64,
         boundaries: Vec<&'static str>,
         directions: Vec<&'static str>,
         redact_env: Vec<String>,
@@ -118,6 +120,7 @@ pub mod agent {
         offline_schema_validation: bool,
         writer_owned_rotation: bool,
         content_addressed_blobs: bool,
+        bounded_block_coalescing: bool,
     }
 
     #[derive(Debug, Serialize)]
@@ -377,6 +380,8 @@ pub mod agent {
                         CaptureMode::On => "on",
                     },
                     max_bytes_per_flow: config.capture.max_bytes_per_flow,
+                    block_max_bytes: config.capture.block_max_bytes,
+                    flush_interval_ms: config.capture.flush_interval_ms,
                     boundaries: config
                         .capture
                         .boundaries
@@ -631,6 +636,7 @@ pub mod agent {
                 offline_schema_validation: true,
                 writer_owned_rotation: true,
                 content_addressed_blobs: true,
+                bounded_block_coalescing: true,
             },
             decrypt: DecryptCapabilities {
                 modes: &["off", "runtime", "relay"],
@@ -799,6 +805,7 @@ pub mod agent {
             assert!(logs.offline_schema_validation);
             assert!(logs.writer_owned_rotation);
             assert!(logs.content_addressed_blobs);
+            assert!(logs.bounded_block_coalescing);
         }
 
         #[test]

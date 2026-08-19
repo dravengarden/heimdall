@@ -32,6 +32,8 @@ acceptance path are documented and tested.
   integrity verification, payload-aware filters, and `heimdall logs`.
 - Payload boundary/direction allowlists and environment-backed exact-value
   redaction before hashing or blob publication.
+- Per-flow/direction bounded payload block coalescing with explicit size,
+  latency, index, and flush-reason evidence.
 - Correlated fake-DNS query/answer evidence, ordered policy-decision evidence,
   and explicit OpenSSL runtime-observation metadata.
 - Relay TLS termination and startup-discovered OpenSSL runtime TLS probes in
@@ -75,8 +77,8 @@ normal cleanup, and fail-closed owner-death cleanup. See
 
 - Extend the available per-run event store beyond fake-DNS, policy, runtime
   TLS, ClientHello, and relay TLS evidence with optional HTTP records.
-- Add bounded block coalescing and recovery tooling around the available
-  atomic blob publication and stable `event_store_full` diagnostics.
+- Add recovery tooling around the available bounded block coalescing, atomic
+  blob publication, and stable `event_store_full` diagnostics.
 - Keep the available rotation writer-owned and loss-aware; do not support
   external `copytruncate` against active logs.
 - Publish exhaustive schema and Linux-tool recipes in the bundled Heimdall

@@ -48,9 +48,10 @@
 
         <h2 id="capture">Capture and decrypt</h2>
         <p>Proxying decides where traffic goes. Capture decides whether bytes are retained. Decrypt decides what those retained bytes represent. These are separate opt-in choices.</p>
-        <pre><code>[capture]&#10;mode = "on"&#10;max_bytes_per_flow = 1048576&#10;boundaries = ["tls_plaintext.runtime"]&#10;directions = ["client_to_remote", "remote_to_client"]&#10;redact_env = ["API_TOKEN"]&#10;&#10;[decrypt]&#10;mode = "runtime" # off | runtime | relay</code></pre>
+        <pre><code>[capture]&#10;mode = "on"&#10;max_bytes_per_flow = 1048576&#10;block_max_bytes = 65536&#10;flush_interval_ms = 100&#10;boundaries = ["tls_plaintext.runtime"]&#10;directions = ["client_to_remote", "remote_to_client"]&#10;redact_env = ["API_TOKEN"]&#10;&#10;[decrypt]&#10;mode = "runtime" # off | runtime | relay</code></pre>
         <p>Payload bytes are stored below the private run directory as SHA-256 blobs. <code>heimdall.event/v1</code> JSONL contains references and boundaries, never inline base64 or a second capture log.</p>
         <p>Boundary and direction lists are payload allowlists. Values named by <code>redact_env</code> are read from the inherited environment and masked before hashing or publication, including matches split across observed reads. <code>heimdall agent</code> fails readiness when a named value is unavailable. Exact matching does not cover encoded or transformed variants.</p>
+        <p>Reads are coalesced per flow and direction into bounded blocks. Every payload event reports its block index, configured size/latency limits, and whether size, interval, or close caused the flush.</p>
         <ul><li><code>runtime</code> observes supported OpenSSL APIs without changing trust; its setup helper attaches images already loaded at run startup, drops privilege, and exits with the run.</li><li><code>relay</code> runs in the foreground relay; clients must trust a private, invoking-user-owned Heimdall CA.</li><li>Both modes require capture, run without a persistent daemon, and report actual coverage through <code>heimdall agent</code>. No Web UI is required.</li></ul>
 
         <div class="doc-page-footer"><a href="architecture.html">← Architecture</a><a href="commands.html">Command workflows →</a></div>

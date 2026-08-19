@@ -224,6 +224,8 @@ impl RunLog {
                 "event_schema": EVENT_CONTRACT,
                 "payload_storage": "content_addressed",
                 "max_bytes_per_flow": capture.max_bytes_per_flow,
+                "block_max_bytes": capture.block_max_bytes,
+                "flush_interval_ms": capture.flush_interval_ms,
                 "allowed_boundaries": allowed_boundaries.clone(),
                 "allowed_directions": allowed_directions.clone(),
                 "redaction": redaction.clone(),
@@ -257,7 +259,9 @@ impl RunLog {
                     "payload_storage": "content_addressed",
                     "allowed_boundaries": allowed_boundaries,
                     "allowed_directions": allowed_directions,
-                    "redaction": redaction
+                    "redaction": redaction,
+                    "block_max_bytes": capture.block_max_bytes,
+                    "flush_interval_ms": capture.flush_interval_ms
                 },
                 "schemas": {"event": EVENT_CONTRACT, "run": RUN_CONTRACT}
             }),
@@ -796,6 +800,16 @@ pub struct FlowEventClient {
     client: EventClient,
 }
 
+#[derive(Clone, Copy)]
+pub struct PayloadMetadata {
+    pub original_bytes: u64,
+    pub truncated: bool,
+    pub index: u64,
+    pub max_bytes: u64,
+    pub flush_interval_ms: u64,
+    pub flush_reason: &'static str,
+}
+
 impl EventClient {
     pub fn connect(socket_path: PathBuf) -> Result<Self> {
         anyhow::ensure!(
@@ -898,9 +912,8 @@ impl EventClient {
         flow_id: Uuid,
         direction: &str,
         boundary: &str,
-        original_bytes: u64,
         payload: &[u8],
-        truncated: bool,
+        metadata: PayloadMetadata,
     ) -> Result<()> {
         let mut stream = UnixStream::connect(self.socket_path.as_ref())
             .with_context(|| format!("connect event socket {}", self.socket_path.display()))?;
@@ -915,9 +928,15 @@ impl EventClient {
                 data: json!({
                     "direction": direction,
                     "boundary": boundary,
-                    "original_bytes": original_bytes,
+                    "original_bytes": metadata.original_bytes,
                     "stored_bytes": payload.len(),
-                    "truncated": truncated
+                    "truncated": metadata.truncated,
+                    "block": {
+                        "index": metadata.index,
+                        "max_bytes": metadata.max_bytes,
+                        "flush_interval_ms": metadata.flush_interval_ms,
+                        "flush_reason": metadata.flush_reason
+                    }
                 }),
                 payload_base64: Some(STANDARD.encode(payload)),
             },
@@ -943,18 +962,11 @@ impl FlowEventClient {
         flow_id: Uuid,
         direction: &str,
         boundary: &str,
-        original_bytes: u64,
         payload: &[u8],
-        truncated: bool,
+        metadata: PayloadMetadata,
     ) -> Result<()> {
-        self.client.emit_payload(
-            flow_id,
-            direction,
-            boundary,
-            original_bytes,
-            payload,
-            truncated,
-        )
+        self.client
+            .emit_payload(flow_id, direction, boundary, payload, metadata)
     }
 }
 
@@ -1270,7 +1282,20 @@ mod tests {
         let flow_id = Uuid::now_v7();
         for _ in 0..2 {
             client
-                .emit_payload(flow_id, "client_to_remote", "transport", 4, b"ping", false)
+                .emit_payload(
+                    flow_id,
+                    "client_to_remote",
+                    "transport",
+                    b"ping",
+                    PayloadMetadata {
+                        original_bytes: 4,
+                        truncated: false,
+                        index: 1,
+                        max_bytes: 65_536,
+                        flush_interval_ms: 100,
+                        flush_reason: "close",
+                    },
+                )
                 .unwrap();
         }
         drop(server);

@@ -28,6 +28,8 @@ udp = { type = "reject", method = "refused" }
 
 [capture]
 mode = "off"
+block_max_bytes = 65536
+flush_interval_ms = 100
 boundaries = ["transport", "tls_plaintext.runtime", "tls_plaintext.relay"]
 directions = ["client_to_remote", "remote_to_client"]
 redact_env = []
@@ -153,6 +155,8 @@ retained. Decrypt chooses what those retained bytes represent:
 [capture]
 mode = "on"
 max_bytes_per_flow = 1048576
+block_max_bytes = 65536
+flush_interval_ms = 100
 boundaries = ["tls_plaintext.runtime"]
 directions = ["client_to_remote", "remote_to_client"]
 redact_env = ["API_TOKEN"]
@@ -210,6 +214,12 @@ case. `max_bytes_per_flow` defaults to 1 MiB and must be between 1 byte and
 are payload allowlists; they never suppress lifecycle, policy, DNS, TLS, or
 flow metadata. Runtime and relay decrypt modes require their corresponding
 `tls_plaintext.*` boundary to be allowed.
+
+`block_max_bytes` defaults to 64 KiB and bounds each published blob to at most
+1 MiB. `flush_interval_ms` defaults to 100 ms and must be between 10 and 5000
+ms. Per-flow, per-direction buffers flush on size, interval, or close; each
+`flow.data.data.block` reports its one-based index and actual flush reason.
+The effective block size is also bounded by the remaining per-flow byte limit.
 
 `redact_env` accepts up to 32 portable environment variable names. The secret
 values must be present and non-empty in the environment inherited by

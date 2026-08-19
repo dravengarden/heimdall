@@ -109,7 +109,9 @@
                     "replacement": { "const": "same_length_asterisk" }
                   },
                   "additionalProperties": false
-                }
+                },
+                "block_max_bytes": { "type": "integer", "minimum": 1, "maximum": 1048576 },
+                "flush_interval_ms": { "type": "integer", "minimum": 10, "maximum": 5000 }
               },
               "additionalProperties": false
             },
@@ -298,6 +300,17 @@
             "original_bytes": { "$ref": "#/$defs/uint_zero" },
             "stored_bytes": { "$ref": "#/$defs/uint_zero" },
             "truncated": { "type": "boolean" },
+            "block": {
+              "type": "object",
+              "required": ["index", "max_bytes", "flush_interval_ms", "flush_reason"],
+              "properties": {
+                "index": { "$ref": "#/$defs/uint" },
+                "max_bytes": { "type": "integer", "minimum": 1, "maximum": 1048576 },
+                "flush_interval_ms": { "type": "integer", "minimum": 10, "maximum": 5000 },
+                "flush_reason": { "enum": ["size", "interval", "close"] }
+              },
+              "additionalProperties": false
+            },
             "blob": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/blob" }] }
           },
           "additionalProperties": false

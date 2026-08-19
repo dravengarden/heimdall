@@ -94,6 +94,8 @@ let
     [capture]
     mode = "on"
     max_bytes_per_flow = 128
+    block_max_bytes = 32
+    flush_interval_ms = 20
     boundaries = ["transport", "tls_plaintext.runtime", "tls_plaintext.relay"]
     directions = ["client_to_remote", "remote_to_client"]
     redact_env = ["HEIMDALL_CAPTURE_SECRET"]

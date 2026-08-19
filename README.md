@@ -57,12 +57,12 @@ need compatibility hardening.
 | macOS support | Planned | Wrapper fallback and Network Extension backend are roadmap items; not currently available |
 | Strict configuration and agent contract | Available | TOML, YAML, JSON; `heimdall.agent/v8` with execution ownership and repairable diagnostics |
 | Daemonless Linux execution | Available | All decrypt modes own per-run relay, DNS, maps, links, and logs; runtime TLS keeps one unprivileged session helper, never a service |
-| Agent event logs and capture | Available | Per-run lifecycle, fake-DNS, policy, TCP/UDP and TLS evidence plus bounded content-addressed blobs with pre-storage allowlists/redaction |
+| Agent event logs and capture | Available | Per-run lifecycle, fake-DNS, policy, TCP/UDP and TLS evidence plus coalesced bounded blobs with pre-storage allowlists/redaction |
 | Runtime TLS decryption | Available daemonless with alpha limits | Startup-discovered OpenSSL images; no CA injection; unsupported TLS libraries remain opaque |
 | Relay TLS decryption | Available daemonless with alpha limits | Local CA plus per-host leaves; client trust and protocol compatibility are required |
 | Static Linux packaging | Available | Reproducible x86_64 musl archive, checksum, atomic install, and one-level rollback |
 | Runtime and kernel compatibility | In development | Expanding the tested matrix and documenting unsupported edge cases |
-| Capture analysis | In development | Boundary/direction allowlists and exact-value redaction are available; bounded block inspection remains active work |
+| Capture analysis | In development | Allowlists, exact-value redaction, and bounded block evidence are available; recovery and optional HTTP records remain active work |
 
 See [docs/product-contract.md](docs/product-contract.md) for the normative
 requirements and [ROADMAP.md](ROADMAP.md) for status and planned work.
@@ -202,6 +202,8 @@ analysis:
 [capture]
 mode = "on"
 max_bytes_per_flow = 1048576
+block_max_bytes = 65536
+flush_interval_ms = 100
 boundaries = ["transport"]
 directions = ["client_to_remote", "remote_to_client"]
 redact_env = ["API_TOKEN"]

@@ -49,6 +49,8 @@ as_tester heimdall agent \
     and (.execution.web_ui_required | not)
     and .config.capture.mode == "on"
     and .config.capture.max_bytes_per_flow == 128
+    and .config.capture.block_max_bytes == 32
+    and .config.capture.flush_interval_ms == 20
     and .config.capture.boundaries == ["transport", "tls_plaintext.runtime", "tls_plaintext.relay"]
     and .config.capture.directions == ["client_to_remote", "remote_to_client"]
     and .config.capture.redact_env == ["HEIMDALL_CAPTURE_SECRET"]
@@ -75,6 +77,7 @@ as_tester heimdall agent \
     and .capabilities.logs.offline_schema_validation
     and .capabilities.logs.writer_owned_rotation
     and .capabilities.logs.content_addressed_blobs
+    and .capabilities.logs.bounded_block_coalescing
     and .capabilities.decrypt.modes == ["off", "runtime", "relay"]
     and .capabilities.decrypt.runtime_libraries == ["openssl"]
     and .capabilities.decrypt.runtime_apis == ["SSL_read", "SSL_read_ex", "SSL_write", "SSL_write_ex"]
@@ -178,8 +181,19 @@ tcp_run_id="$(as_tester heimdall logs list --json | jq -er '.runs[0].run_id')"
 tcp_run_dir="$(as_tester heimdall logs path --run "$tcp_run_id" --json | jq -er '.run_dir')"
 test "$(stat -c '%a' "$tcp_run_dir")" = 700
 test "$(stat -c '%a' "$tcp_run_dir/run.json")" = 600
-grep -R -Fq '****************' "$tcp_run_dir/blobs"
-if grep -R -Fq 'redaction-secret' "$tcp_run_dir/blobs"; then
+captured_payload="$(
+  jq -r 'select(.kind == "flow.data" and .data.direction == "client_to_remote") | .data.blob.path' \
+    "$tcp_run_dir"/events-*.jsonl \
+    | while IFS= read -r blob; do cat "$tcp_run_dir/$blob"; done
+)"
+case "$captured_payload" in
+  *'****************'*) ;;
+  *)
+    echo "capture did not preserve a redacted marker across blocks" >&2
+    exit 1
+    ;;
+esac
+if [[ "$captured_payload" == *redaction-secret* ]]; then
   echo "capture persisted a configured redaction value" >&2
   exit 1
 fi
@@ -199,7 +213,14 @@ as_tester heimdall logs query --run "$tcp_run_id" --jsonl \
       and .data.destination.host == "fixture.test"
       and .data.action.type == "route")
     and any(.[]; .kind == "flow.open" and .data.network == "tcp")
-    and any(.[]; .kind == "flow.data" and .data.blob.algorithm == "sha256")
+    and any(.[]; .kind == "flow.data"
+      and .data.blob.algorithm == "sha256"
+      and .data.block.max_bytes == 32
+      and .data.block.flush_interval_ms == 20
+      and (.data.block.flush_reason == "size"
+        or .data.block.flush_reason == "interval"
+        or .data.block.flush_reason == "close"))
+    and all(.[] | select(.kind == "flow.data"); .data.stored_bytes <= 32)
     and any(.[]; .kind == "flow.close" and .data.network == "tcp" and .data.status == "complete")
     and .[-1].kind == "run.close"
   ' >/dev/null
