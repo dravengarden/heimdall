@@ -143,7 +143,9 @@ heimdall logs prune --older-than 30d --keep-last 20 --apply --json
 ```
 
 Rotation never deletes. Preview recover and prune before `--apply`; neither
-operation mutates an active run.
+operation mutates an active run. Run prune as the invoking user, preserve its
+JSON result as deletion evidence, and verify the retained runs. A false
+`limit_satisfied` means protected runs alone exceed the requested byte limit.
 
 ## Diagnose failures
 

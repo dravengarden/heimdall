@@ -148,8 +148,9 @@ trusted.
   ownership.
 - Expand the available pre-storage allowlist and exact-value redaction model
   only where the failure boundary remains deterministic and agent-readable.
-- Keep documenting retention and failure behavior for production-like private
-  run stores.
+- Expand production-like private run-store retention beyond the available
+  explicit preview/apply, active-run protection, protected-limit reporting,
+  deletion evidence, and retained-run verification acceptance.
 
 Acceptance target: an operator or agent can identify the capture boundary,
 select a flow, and explain why bytes are opaque or plaintext without guessing

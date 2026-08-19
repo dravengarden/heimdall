@@ -284,8 +284,11 @@ and minimum runs to keep. The JSON result lists every candidate, reason, byte
 count, projected total, and whether the requested limit can be satisfied
 without deleting active or protected runs.
 
-Automatic retention is off by default. If enabled, it runs only at the end or
-start of a foreground Heimdall command; it does not require a timer or daemon.
+Retention is never automatic. An operator or agent explicitly runs preview and
+apply as the invoking user at a workflow boundary. Heimdall starts no timer or
+daemon. Preserve the machine-readable result as deletion evidence and verify
+the runs that remain. `limit_satisfied=false` is expected when active or
+`--keep-last`-protected runs alone exceed the requested byte limit.
 
 ## Agent-first CLI
 

@@ -263,3 +263,7 @@ heimdall logs prune --older-than 30d --keep-last 20 --apply --json
 
 Never prune an active run. Capture can contain credentials and personal data,
 so do not upload, print, or retain payload blobs without explicit authority.
+Retention is never automatic and starts no timer or daemon. Run preview and
+apply as the invoking user, preserve the JSON deletion evidence, and verify the
+retained runs. `limit_satisfied=false` means protected runs prevented the
+requested storage target; it is not permission to delete them manually.

@@ -188,7 +188,11 @@ heimdall logs prune --older-than 30d --keep-last 20 --apply --json
 Preview recover and prune before `--apply`. Recovery rejects active and already
 finalized runs, preserves the original manifest and discarded tail, and marks
 an orphaned run failed/incomplete without adding a synthetic close event. Do
-not use `copytruncate` on an active segment.
+not use `copytruncate` on an active segment. Retention is explicit: run preview
+and apply as the same invoking user at a workflow boundary. Heimdall starts no
+timer or daemon, never selects active runs, and may report
+`limit_satisfied=false` when `--keep-last` protects more data than the byte
+limit. Preserve the JSON result as deletion evidence and verify retained runs.
 See [the bundled event reference](../skills/heimdall/references/events.md) for
 the complete schema and `jq` recipes.
 

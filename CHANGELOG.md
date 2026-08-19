@@ -65,6 +65,8 @@ migration guide.
 - Report a verified upstream's client-certificate requirement as
   `tls_upstream_client_auth_required`, and cover long-lived multi-exchange relay
   streams without claiming relay compatibility with client-certificate mTLS.
+- Prove retention apply removes exactly the dry-run candidates while preserving
+  the newest run, and document that pruning is explicit and daemonless.
 - Add offline `heimdall config schema` and read-only `config example` commands,
   generated from the canonical Rust/Serde model and shared init templates.
 

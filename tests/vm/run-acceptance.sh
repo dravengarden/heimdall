@@ -722,8 +722,9 @@ as_tester heimdall logs summary --run "$downstream_cert_run_id" --json \
       and .flows.active == 0' >/dev/null
 
 run_count_before_prune="$(as_tester heimdall logs list --json | jq '.runs | length')"
-as_tester heimdall logs prune --keep-last 1 --max-total-bytes 1 --json \
-  | jq -e '.contract == "heimdall.logs.prune/v1"
+protected_run_id="$(as_tester heimdall logs list --json | jq -er '.runs[0].run_id')"
+prune_preview="$(as_tester heimdall logs prune --keep-last 1 --max-total-bytes 1 --json)"
+printf '%s' "$prune_preview" | jq -e '.contract == "heimdall.logs.prune/v1"
       and (.applied | not)
       and .total_bytes_before >= .total_bytes_after
       and (.limit_satisfied | not)
@@ -731,6 +732,20 @@ as_tester heimdall logs prune --keep-last 1 --max-total-bytes 1 --json \
       and all(.candidates[]; .reason == "max_total_bytes")' >/dev/null
 test "$(as_tester heimdall logs list --json | jq '.runs | length')" \
   -eq "$run_count_before_prune"
+prune_apply="$(as_tester heimdall logs prune --keep-last 1 --max-total-bytes 1 --apply --json)"
+printf '%s' "$prune_apply" | jq -e --argjson preview "$prune_preview" '
+    .contract == "heimdall.logs.prune/v1"
+    and .applied
+    and .candidates == $preview.candidates
+    and .total_bytes_before == $preview.total_bytes_before
+    and .total_bytes_after == $preview.total_bytes_after
+    and (.limit_satisfied | not)' >/dev/null
+while IFS= read -r candidate; do
+  test ! -e "$candidate"
+done < <(printf '%s' "$prune_apply" | jq -r '.candidates[].run_dir')
+as_tester heimdall logs list --json \
+  | jq -e --arg run_id "$protected_run_id" '
+      (.runs | length) == 1 and .runs[0].run_id == $run_id' >/dev/null
 test ! -e /sys/fs/bpf/heimdall
 
 if find /sys/fs/cgroup/user.slice -type d -name 'heimdall-cli-*' -print -quit \
