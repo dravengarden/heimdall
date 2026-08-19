@@ -113,7 +113,8 @@ requires a new contract version.
 
 Before execution, inspect:
 
-- `config.valid`, normalized capture/decrypt values, and stable diagnostics;
+- `config.valid`, normalized capture/decrypt values, capture allowlists,
+  redaction-value readiness, and stable diagnostics;
 - `execution.backend`, `daemon_required`, and `privilege_setup`;
 - `decision` for the selected policy and terminal TCP/UDP actions;
 - per-family `capabilities.udp` instead of aggregate booleans;

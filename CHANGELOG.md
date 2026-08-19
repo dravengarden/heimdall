@@ -33,6 +33,8 @@ migration guide.
   stable `event_store_full` or `event_store_permission_denied` failures.
 - Validate every run manifest and event record against the bundled offline
   Draft 2020-12 schemas during `heimdall logs verify`.
+- Add payload boundary/direction allowlists and environment-backed exact-value
+  redaction that masks bytes before content hashing and blob publication.
 - Add explicit `off`, `runtime`, and `relay` TLS modes. Runtime mode observes
   startup-discovered OpenSSL APIs without changing trust; relay mode validates
   upstream TLS and issues per-host leaves from invoking-user-owned CA material.

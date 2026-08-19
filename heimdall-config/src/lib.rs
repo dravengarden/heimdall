@@ -383,6 +383,12 @@ pub struct CaptureConfig {
     pub mode: CaptureMode,
     #[serde(default = "default_capture_max_bytes")]
     pub max_bytes_per_flow: u64,
+    #[serde(default = "default_capture_boundaries")]
+    pub boundaries: Vec<CaptureBoundary>,
+    #[serde(default = "default_capture_directions")]
+    pub directions: Vec<CaptureDirection>,
+    #[serde(default)]
+    pub redact_env: Vec<String>,
 }
 
 impl Default for CaptureConfig {
@@ -390,6 +396,9 @@ impl Default for CaptureConfig {
         Self {
             mode: CaptureMode::Off,
             max_bytes_per_flow: default_capture_max_bytes(),
+            boundaries: default_capture_boundaries(),
+            directions: default_capture_directions(),
+            redact_env: Vec::new(),
         }
     }
 }
@@ -401,8 +410,61 @@ pub enum CaptureMode {
     On,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CaptureBoundary {
+    #[serde(rename = "transport")]
+    Transport,
+    #[serde(rename = "tls_plaintext.runtime")]
+    TlsPlaintextRuntime,
+    #[serde(rename = "tls_plaintext.relay")]
+    TlsPlaintextRelay,
+}
+
+impl CaptureBoundary {
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Transport => "transport",
+            Self::TlsPlaintextRuntime => "tls_plaintext.runtime",
+            Self::TlsPlaintextRelay => "tls_plaintext.relay",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureDirection {
+    ClientToRemote,
+    RemoteToClient,
+}
+
+impl CaptureDirection {
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::ClientToRemote => "client_to_remote",
+            Self::RemoteToClient => "remote_to_client",
+        }
+    }
+}
+
 const fn default_capture_max_bytes() -> u64 {
     1_048_576
+}
+
+fn default_capture_boundaries() -> Vec<CaptureBoundary> {
+    vec![
+        CaptureBoundary::Transport,
+        CaptureBoundary::TlsPlaintextRuntime,
+        CaptureBoundary::TlsPlaintextRelay,
+    ]
+}
+
+fn default_capture_directions() -> Vec<CaptureDirection> {
+    vec![
+        CaptureDirection::ClientToRemote,
+        CaptureDirection::RemoteToClient,
+    ]
 }
 
 /// Policy selected for an active CLI cgroup.
@@ -886,6 +948,23 @@ fn validate_unique_match_values<T: Ord>(
     }
 }
 
+fn validate_unique<T: Ord>(
+    errors: &mut Vec<ConfigDiagnostic>,
+    path: &str,
+    values: &[T],
+    code: &str,
+) {
+    if values.iter().collect::<BTreeSet<_>>().len() != values.len() {
+        push(
+            errors,
+            code,
+            path,
+            "allowlist contains duplicate values",
+            "Remove duplicate values; each capture allowlist is a set.",
+        );
+    }
+}
+
 fn validate_action(
     errors: &mut Vec<ConfigDiagnostic>,
     path: &str,
@@ -938,6 +1017,76 @@ fn validate_capture(errors: &mut Vec<ConfigDiagnostic>, capture: &CaptureConfig)
             "Choose a per-flow limit between 1 byte and 64 MiB.",
         );
     }
+    validate_unique(
+        errors,
+        "$.capture.boundaries",
+        &capture.boundaries,
+        "duplicate_capture_boundary",
+    );
+    validate_unique(
+        errors,
+        "$.capture.directions",
+        &capture.directions,
+        "duplicate_capture_direction",
+    );
+    if capture.mode == CaptureMode::On && capture.boundaries.is_empty() {
+        push(
+            errors,
+            "empty_capture_boundary_allowlist",
+            "$.capture.boundaries",
+            "capture is on but no observation boundary is allowed",
+            "Allow at least one boundary, or set capture.mode to `off`.",
+        );
+    }
+    if capture.mode == CaptureMode::On && capture.directions.is_empty() {
+        push(
+            errors,
+            "empty_capture_direction_allowlist",
+            "$.capture.directions",
+            "capture is on but no traffic direction is allowed",
+            "Allow at least one direction, or set capture.mode to `off`.",
+        );
+    }
+    if capture.redact_env.len() > 32 {
+        push(
+            errors,
+            "too_many_capture_redactions",
+            "$.capture.redact_env",
+            format!(
+                "{} environment variables exceed the supported limit of 32",
+                capture.redact_env.len()
+            ),
+            "Keep at most 32 secret-bearing environment variable names.",
+        );
+    }
+    let mut seen = BTreeSet::new();
+    for (index, name) in capture.redact_env.iter().enumerate() {
+        let valid = name.len() <= 64
+            && name.bytes().enumerate().all(|(offset, byte)| {
+                matches!(
+                    (offset, byte),
+                    (0, b'A'..=b'Z' | b'a'..=b'z' | b'_')
+                        | (_, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_')
+                )
+            });
+        if !valid {
+            push(
+                errors,
+                "invalid_capture_redaction_env",
+                format!("$.capture.redact_env[{index}]"),
+                format!("`{name}` is not a portable environment variable name"),
+                "Use 1..=64 ASCII letters, digits, and underscores, starting with a letter or underscore.",
+            );
+        } else if !seen.insert(name) {
+            push(
+                errors,
+                "duplicate_capture_redaction_env",
+                format!("$.capture.redact_env[{index}]"),
+                format!("environment variable `{name}` is listed more than once"),
+                "Keep each redaction environment variable once.",
+            );
+        }
+    }
 }
 
 fn validate_decrypt(
@@ -956,6 +1105,23 @@ fn validate_decrypt(
             )
             .to_ascii_lowercase(),
             "Set capture.mode to `on`, or set decrypt.mode to `off`.",
+        );
+    }
+    let required_boundary = match decrypt.mode {
+        DecryptMode::Off => None,
+        DecryptMode::Runtime => Some(CaptureBoundary::TlsPlaintextRuntime),
+        DecryptMode::Relay => Some(CaptureBoundary::TlsPlaintextRelay),
+    };
+    if capture.mode == CaptureMode::On
+        && required_boundary.is_some_and(|boundary| !capture.boundaries.contains(&boundary))
+    {
+        let boundary = required_boundary.expect("checked above").name();
+        push(
+            errors,
+            "decrypt_capture_boundary_disabled",
+            "$.capture.boundaries",
+            format!("decrypt mode requires the `{boundary}` capture boundary"),
+            format!("Add `{boundary}` to capture.boundaries, or disable decrypt."),
         );
     }
 
@@ -1338,6 +1504,39 @@ action = { type = "direct" }
         cfg.validate().unwrap();
         assert_eq!(cfg.capture.mode, CaptureMode::On);
         assert_eq!(cfg.capture.max_bytes_per_flow, 4096);
+        assert_eq!(cfg.capture.boundaries.len(), 3);
+        assert_eq!(cfg.capture.directions.len(), 2);
+    }
+
+    #[test]
+    fn accepts_capture_allowlists_and_redaction_environment_names() {
+        let source = valid_toml().replace(
+            "[capture]\n            mode = \"off\"",
+            "[capture]\n            mode = \"on\"\n            boundaries = [\"transport\"]\n            directions = [\"client_to_remote\"]\n            redact_env = [\"API_TOKEN\"]",
+        );
+        let cfg: HeimdallConfig = toml::from_str(&source).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(cfg.capture.boundaries, [CaptureBoundary::Transport]);
+        assert_eq!(cfg.capture.directions, [CaptureDirection::ClientToRemote]);
+        assert_eq!(cfg.capture.redact_env, ["API_TOKEN"]);
+    }
+
+    #[test]
+    fn capture_allowlist_diagnostics_are_machine_repairable() {
+        let source = valid_toml().replace(
+            "[capture]\n            mode = \"off\"",
+            "[capture]\n            mode = \"on\"\n            boundaries = []\n            directions = []\n            redact_env = [\"BAD-NAME\", \"TOKEN\", \"TOKEN\"]",
+        );
+        let cfg: HeimdallConfig = toml::from_str(&source).unwrap();
+        let diagnostics = cfg.validate().unwrap_err().diagnostics();
+        for code in [
+            "empty_capture_boundary_allowlist",
+            "empty_capture_direction_allowlist",
+            "invalid_capture_redaction_env",
+            "duplicate_capture_redaction_env",
+        ] {
+            assert!(diagnostics.iter().any(|item| item.code == code), "{code}");
+        }
     }
 
     #[test]

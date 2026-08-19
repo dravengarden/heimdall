@@ -102,6 +102,10 @@ Capture is a relay/application-boundary feature, not a kernel packet recorder.
 decisions, flow/TLS metadata, and references to bounded content-addressed blobs
 below the private run directory. JSONL never contains base64 payloads, and
 there is no separate capture log or upload path.
+Before publication, capture applies the configured observation-boundary and
+direction allowlists. Exact secret values sourced by name from the inherited
+environment are masked across observed read boundaries before content hashing;
+their names and count may be reported, but their values are never metadata.
 
 TLS modes are explicit:
 

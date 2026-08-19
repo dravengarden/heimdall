@@ -16,6 +16,9 @@ heimdall logs list --json
 ready, 1 means not ready, and 2 is CLI usage error. It never mutates state.
 Require the foreground execution owner and `daemon_required = false`. There is
 no persistent service or health endpoint.
+When capture is on, require
+`config.capture.redaction_values_ready = true`, then inspect its explicit
+boundary/direction allowlists before using `actions.execute_prefix`.
 
 `config show` prints source text. `config validate` applies the shared strict
 schema. `config explain` evaluates one destination and returns the first rule

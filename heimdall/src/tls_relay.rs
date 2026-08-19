@@ -348,6 +348,7 @@ mod tests {
             &CaptureConfig {
                 mode: CaptureMode::On,
                 max_bytes_per_flow: 1024,
+                ..CaptureConfig::default()
             },
             None,
         )

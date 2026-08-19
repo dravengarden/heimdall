@@ -13,6 +13,9 @@ proxy.policies.<name>.final.tcp = route | direct | reject
 proxy.policies.<name>.final.udp = route | direct | reject
 capture.mode = off | on
 capture.max_bytes_per_flow = 1..67108864 (default 1048576)
+capture.boundaries[] = transport | tls_plaintext.runtime | tls_plaintext.relay
+capture.directions[] = client_to_remote | remote_to_client
+capture.redact_env[] = portable environment variable name (maximum 32)
 decrypt.mode = off | runtime | relay
 decrypt.ca_cert = absolute PEM path (relay only)
 decrypt.ca_key = absolute protected PEM path (relay only)
@@ -84,6 +87,12 @@ probe the actual command when its runtime is absent from that path's array.
 Enable capture only when the user intends to retain traffic. It writes private,
 content-addressed blobs below the run directory and references them from
 `heimdall.event/v1` JSONL. The byte limit is shared across both directions.
+Treat `boundaries` and `directions` as payload allowlists; metadata remains
+available for excluded paths. Before execution, require
+`agent.config.capture.redaction_values_ready = true`. `redact_env` names exact
+secret values supplied through the inherited environment; Heimdall masks them
+across observed read boundaries before hashing or blob publication. It does not
+redact encoded or transformed variants unless their exact value is also named.
 With decrypt off, payload is opaque transport. Runtime
 mode is CA-free but currently covers only the TLS libraries listed by
 `agent.capabilities.decrypt.runtime_libraries`. Relay mode is TLS-library-independent

@@ -16,6 +16,7 @@ as_tester() {
     XDG_RUNTIME_DIR=/run/user/1000 \
     DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
     PATH=/run/wrappers/bin:/run/current-system/sw/bin \
+    HEIMDALL_CAPTURE_SECRET=redaction-secret \
     "$@"
 }
 
@@ -48,12 +49,20 @@ as_tester heimdall agent \
     and (.execution.web_ui_required | not)
     and .config.capture.mode == "on"
     and .config.capture.max_bytes_per_flow == 128
+    and .config.capture.boundaries == ["transport", "tls_plaintext.runtime", "tls_plaintext.relay"]
+    and .config.capture.directions == ["client_to_remote", "remote_to_client"]
+    and .config.capture.redact_env == ["HEIMDALL_CAPTURE_SECRET"]
+    and .config.capture.redaction_values_ready
+    and .config.capture.redaction_error == null
     and .capabilities.capture.contract == "heimdall.event/v1"
     and .capabilities.capture.format == "content-addressed-blobs"
     and .capabilities.capture.tcp
     and .capabilities.capture.udp
     and .capabilities.capture.payload == "mode_dependent"
     and .capabilities.capture.tls_plaintext
+    and .capabilities.capture.boundary_allowlist
+    and .capabilities.capture.direction_allowlist
+    and .capabilities.capture.environment_redaction
     and .capabilities.logs.event_contract == "heimdall.event/v1"
     and .capabilities.logs.run_contract == "heimdall.run/v1"
     and .capabilities.logs.format == "jsonl"
@@ -161,7 +170,7 @@ test "$(grep -c '"udp": true, "atyp": 4, "host": "::1", "port": 18083' \
 
 : > /run/heimdall-test/socks.log
 test "$(as_tester heimdall run --policy fake -- \
-  curl -4fsS --max-time 5 http://fixture.test:18080/)" = "fixture-v4"
+  curl -4fsS --max-time 5 http://fixture.test:18080/redaction-secret)" = "fixture-v4"
 grep -q '"atyp": 3, "host": "fixture.test", "port": 18080' \
   /run/heimdall-test/socks.log
 
@@ -169,6 +178,11 @@ tcp_run_id="$(as_tester heimdall logs list --json | jq -er '.runs[0].run_id')"
 tcp_run_dir="$(as_tester heimdall logs path --run "$tcp_run_id" --json | jq -er '.run_dir')"
 test "$(stat -c '%a' "$tcp_run_dir")" = 700
 test "$(stat -c '%a' "$tcp_run_dir/run.json")" = 600
+grep -R -Fq '****************' "$tcp_run_dir/blobs"
+if grep -R -Fq 'redaction-secret' "$tcp_run_dir/blobs"; then
+  echo "capture persisted a configured redaction value" >&2
+  exit 1
+fi
 if find "$tcp_run_dir" -maxdepth 1 -name 'events-*.jsonl' -printf '%m\n' \
   | grep -qv '^600$'; then
   echo "event segment permissions are not 0600" >&2

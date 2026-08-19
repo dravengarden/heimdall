@@ -28,6 +28,9 @@ udp = { type = "reject", method = "refused" }
 
 [capture]
 mode = "off"
+boundaries = ["transport", "tls_plaintext.runtime", "tls_plaintext.relay"]
+directions = ["client_to_remote", "remote_to_client"]
+redact_env = []
 
 [decrypt]
 mode = "off"
@@ -150,6 +153,9 @@ retained. Decrypt chooses what those retained bytes represent:
 [capture]
 mode = "on"
 max_bytes_per_flow = 1048576
+boundaries = ["tls_plaintext.runtime"]
+directions = ["client_to_remote", "remote_to_client"]
+redact_env = ["API_TOKEN"]
 
 [decrypt]
 mode = "off"
@@ -200,13 +206,28 @@ intentionally unsupported in this mode.
 
 `capture.mode` is `off` or `on`; event metadata remains available in either
 case. `max_bytes_per_flow` defaults to 1 MiB and must be between 1 byte and
-64 MiB. The limit is shared by both directions. When enabled, retained bytes
+64 MiB. The limit is shared by both directions. `boundaries` and `directions`
+are payload allowlists; they never suppress lifecycle, policy, DNS, TLS, or
+flow metadata. Runtime and relay decrypt modes require their corresponding
+`tls_plaintext.*` boundary to be allowed.
+
+`redact_env` accepts up to 32 portable environment variable names. The secret
+values must be present and non-empty in the environment inherited by
+`heimdall run`; `heimdall agent` reports `redaction_values_ready=false` and
+withholds `actions.execute_prefix` otherwise. Values are matched as exact
+bytes across read boundaries and replaced with the same number of `*` bytes
+before hashing or blob publication. Names and a value count may appear in
+agent/run metadata; values never do. Each value is limited to 4096 bytes and
+all values together to 65536 bytes. This is literal redaction, not a parser:
+encoded, transformed, or otherwise unlisted secrets remain visible.
+
+When enabled, retained bytes
 are stored once below the run's private `blobs/sha256/` tree and referenced by
 `flow.data` records. JSONL contains lengths, truncation, boundary, digest, and
 relative path—never inline base64. `heimdall logs verify` checks every referenced
 blob and the manifest's count/byte summary.
 
-Capture contains sensitive application bytes and has no upload path. Use
+Capture can still contain sensitive application bytes and has no upload path. Use
 `heimdall logs prune` for explicit retention. Only a `flow.data.data.boundary`
 of `tls_plaintext.runtime` or `tls_plaintext.relay` proves plaintext; never
 infer it from a port, file name, SNI, or byte shape.

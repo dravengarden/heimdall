@@ -71,6 +71,9 @@ udp = { type = "reject", method = "refused" }
 
 [capture]
 mode = "off"
+boundaries = ["transport", "tls_plaintext.runtime", "tls_plaintext.relay"]
+directions = ["client_to_remote", "remote_to_client"]
+redact_env = []
 
 [decrypt]
 mode = "off"
@@ -95,7 +98,11 @@ proxy:
       final:
         tcp: { type: route, outbound: default }
         udp: { type: reject, method: refused }
-capture: { mode: "off" }
+capture:
+  mode: "off"
+  boundaries: [transport, tls_plaintext.runtime, tls_plaintext.relay]
+  directions: [client_to_remote, remote_to_client]
+  redact_env: []
 decrypt: { mode: "off" }
 "#;
 
@@ -122,7 +129,12 @@ const HEIMDALL_JSON: &str = r#"{
       }
     }
   },
-  "capture": { "mode": "off" },
+  "capture": {
+    "mode": "off",
+    "boundaries": ["transport", "tls_plaintext.runtime", "tls_plaintext.relay"],
+    "directions": ["client_to_remote", "remote_to_client"],
+    "redact_env": []
+  },
   "decrypt": { "mode": "off" }
 }
 "#;

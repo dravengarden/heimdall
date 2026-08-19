@@ -48,7 +48,10 @@ Web UI.
 
 If capture is requested, inspect `config.capture`, `config.decrypt`,
 `capabilities.capture`, and `capabilities.decrypt`. Require capture `mode: on`
-and a suitable byte limit before either decrypt mode. Only an explicit
+and a suitable byte limit, allowed boundary/direction, and
+`redaction_values_ready: true` before execution. Treat `redact_env` as exact
+byte-value masking, not evidence that encoded or transformed secrets are safe.
+Only an explicit
 `tls_plaintext.*` boundary is plaintext evidence; never infer it from port,
 SNI, process, or byte shape.
 
@@ -142,5 +145,8 @@ Read [references/commands.md](references/commands.md) for diagnosis and
   the exact `heimdall __setup-worker` command.
 - Do not upload or print capture bytes without explicit authority; they can
   contain credentials and personal data.
+- Confirm the selected payload boundary and direction are allowlisted. Never
+  infer that environment-backed literal redaction covers encodings or derived
+  credentials.
 - Treat the unprivileged setup helper as part of one run. On unexpected owner
   exit it kills and removes that run's cgroup to prevent direct-egress fallback.

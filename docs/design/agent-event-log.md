@@ -96,7 +96,7 @@ Required fields:
 | `command` | object | Executable, argv count, and optional redacted argv array |
 | `policy` | string | Selected policy name |
 | `backend` | string | Actual interception backend |
-| `capture` | object | Event profile, `heimdall.event/v1`, blob/flow limits, and segment rotation limits |
+| `capture` | object | Event profile, payload allowlists/redaction summary, `heimdall.event/v1`, blob/flow limits, and segment rotation limits |
 | `segments` | object array | File, first/last sequence, bytes, SHA-256, final state |
 | `blobs` | object | Count and total stored bytes |
 | `result` | object or null | Exit status, signal, Heimdall error code, completeness |
@@ -104,11 +104,9 @@ Required fields:
 Full argv is not stored by default because credentials and signed URLs often
 appear in command arguments. The default command object contains `executable`,
 `argv_count`, and a null `argv`. A digest of unredacted argv is also forbidden
-because it can disclose low-entropy secrets through guessing. If explicit argv
-capture is enabled, `argv` remains an array rather than shell text and
-configured redaction runs before persistence. Environment values are not
-stored by default. Optional environment capture is a separate redacted
-feature, not part of v1.
+because it can disclose low-entropy secrets through guessing. V1 does not
+support argv or environment capture. `capture.redact_env` reads values only to
+mask matching payload bytes; it never persists those values as metadata.
 
 ## Event kinds
 
@@ -202,9 +200,11 @@ canonicalization. Identical bytes in one run share a blob. Publication uses a
 private temporary file and an atomic same-filesystem link, so a failed write
 never publishes a partial digest path. Readers verify the digest before
 trusting content. Compression, if later added, gets explicit stored/content
-sizes and encoding fields; it never changes digest semantics. Each observed
-chunk is currently one blob reference; bounded cross-read block coalescing
-remains planned and will require explicit size and flush-latency fields.
+sizes and encoding fields; it never changes digest semantics. Each persisted
+chunk is currently one blob reference. Literal redaction may retain at most
+the longest configured value minus one byte per direction so matches split
+across observed reads are masked. General bounded block coalescing remains
+planned and will require explicit size and flush-latency fields.
 
 Capture profiles:
 
@@ -216,6 +216,9 @@ Capture profiles:
 
 The current default is `metadata`. Plaintext payload capture requires explicit
 configuration because it may contain credentials or personal data.
+The run manifest records `allowed_boundaries`, `allowed_directions`, and only
+the redaction source/value count/replacement method. It never records secret
+values.
 
 ## Rotation
 
@@ -367,9 +370,11 @@ to bridge rotation while preserving the same raw event objects.
   so a successful path never silently omits these decision records.
 - A crash may leave only the last segment unfinalized. Verification reports
   the last complete line and `incomplete_tail`; it never invents a close event.
-- The current writer does not redact payloads. Do not enable capture without
-  authority to retain the bytes. Future redaction or allowlists must run before
-  blob creation so forbidden bytes never reach disk.
+- Payload boundary/direction allowlists are evaluated before capture. Exact
+  secret values named through `capture.redact_env` are masked across observed
+  read boundaries before hashing or blob creation. This literal mechanism does
+  not cover encoded or transformed variants, so capture still requires
+  authority to retain all remaining bytes.
 
 ## External standards
 

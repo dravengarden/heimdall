@@ -57,6 +57,10 @@ Proxying, payload retention, and plaintext inspection are independent choices:
 - `capture.mode = "on"` writes bounded private content-addressed blobs and
   `flow.data` references in `heimdall.event/v1`. The recorded boundary states
   whether bytes are opaque transport or observed plaintext.
+- Capture boundary/direction allowlists run before payload retention. Exact
+  values named by `capture.redact_env` are read from the inherited environment
+  and masked before hashing or blob publication; unavailable values make the
+  agent preflight not ready.
 
 Selecting a TLS mode is not proof that plaintext was observed. Agents must use
 the reported capability and event boundary.

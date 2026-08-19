@@ -147,18 +147,7 @@ impl RunLog {
         backend: &str,
         capture: &CaptureConfig,
     ) -> Result<Self> {
-        let profile = match capture.mode {
-            CaptureMode::Off => "metadata",
-            CaptureMode::On => "payload",
-        };
-        Self::create_at_profile(
-            &runs_root()?,
-            command,
-            policy,
-            backend,
-            profile,
-            capture.max_bytes_per_flow,
-        )
+        Self::create_at_profile(&runs_root()?, command, policy, backend, capture)
     }
 
     #[cfg(test)]
@@ -168,7 +157,11 @@ impl RunLog {
         policy: &str,
         backend: &str,
     ) -> Result<Self> {
-        Self::create_at_profile(runs, command, policy, backend, "metadata", 0)
+        let capture = CaptureConfig {
+            max_bytes_per_flow: 0,
+            ..CaptureConfig::default()
+        };
+        Self::create_at_profile(runs, command, policy, backend, &capture)
     }
 
     fn create_at_profile(
@@ -176,10 +169,28 @@ impl RunLog {
         command: &[String],
         policy: &str,
         backend: &str,
-        capture_profile: &str,
-        max_bytes_per_flow: u64,
+        capture: &CaptureConfig,
     ) -> Result<Self> {
         anyhow::ensure!(!command.is_empty(), "event log command must not be empty");
+        let capture_profile = match capture.mode {
+            CaptureMode::Off => "metadata",
+            CaptureMode::On => "payload",
+        };
+        let allowed_boundaries = capture
+            .boundaries
+            .iter()
+            .map(|boundary| boundary.name())
+            .collect::<Vec<_>>();
+        let allowed_directions = capture
+            .directions
+            .iter()
+            .map(|direction| direction.name())
+            .collect::<Vec<_>>();
+        let redaction = json!({
+            "source": "environment",
+            "value_count": capture.redact_env.len(),
+            "replacement": "same_length_asterisk"
+        });
         let now = OffsetDateTime::now_utc();
         let run_id = Uuid::now_v7();
         let date = now
@@ -212,7 +223,10 @@ impl RunLog {
                 "profile": capture_profile,
                 "event_schema": EVENT_CONTRACT,
                 "payload_storage": "content_addressed",
-                "max_bytes_per_flow": max_bytes_per_flow,
+                "max_bytes_per_flow": capture.max_bytes_per_flow,
+                "allowed_boundaries": allowed_boundaries.clone(),
+                "allowed_directions": allowed_directions.clone(),
+                "redaction": redaction.clone(),
                 "segment_max_bytes": DEFAULT_SEGMENT_BYTES,
                 "segment_max_age_ms": DEFAULT_SEGMENT_AGE.as_millis() as u64
             }),
@@ -238,7 +252,13 @@ impl RunLog {
             json!({
                 "policy": policy,
                 "backend": backend,
-                "capture": {"profile": capture_profile, "payload_storage": "content_addressed"},
+                "capture": {
+                    "profile": capture_profile,
+                    "payload_storage": "content_addressed",
+                    "allowed_boundaries": allowed_boundaries,
+                    "allowed_directions": allowed_directions,
+                    "redaction": redaction
+                },
                 "schemas": {"event": EVENT_CONTRACT, "run": RUN_CONTRACT}
             }),
         )?;
@@ -585,7 +605,7 @@ impl RotationServer {
         Self::start_at(log, &runtime)
     }
 
-    fn start_at(log: RunLog, runtime: &Path) -> Result<Self> {
+    pub(crate) fn start_at(log: RunLog, runtime: &Path) -> Result<Self> {
         create_private_dir(runtime)?;
         let run_id = log.run_id()?;
         let socket_path = runtime.join(control_socket_filename(run_id));

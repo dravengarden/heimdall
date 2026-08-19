@@ -65,6 +65,11 @@ pub mod agent {
     struct CaptureConfigReport {
         mode: &'static str,
         max_bytes_per_flow: u64,
+        boundaries: Vec<&'static str>,
+        directions: Vec<&'static str>,
+        redact_env: Vec<String>,
+        redaction_values_ready: bool,
+        redaction_error: Option<MachineError>,
     }
 
     #[derive(Debug, Serialize)]
@@ -94,6 +99,9 @@ pub mod agent {
         udp: bool,
         payload: &'static str,
         tls_plaintext: bool,
+        boundary_allowlist: bool,
+        direction_allowlist: bool,
+        environment_redaction: bool,
     }
 
     #[derive(Debug, Serialize)]
@@ -335,8 +343,9 @@ pub mod agent {
             }],
         });
         let daemon_required = false;
-        let ready = decision_error.is_none();
-        let execute_prefix = decision_error.is_none().then(|| {
+        let redaction_error = capture_redaction_error(&config.capture.redact_env);
+        let ready = decision_error.is_none() && redaction_error.is_none();
+        let execute_prefix = ready.then(|| {
             let mut argv = argv_for(&path, &["run", "--policy", &policy]);
             argv.push("--".into());
             argv
@@ -368,6 +377,21 @@ pub mod agent {
                         CaptureMode::On => "on",
                     },
                     max_bytes_per_flow: config.capture.max_bytes_per_flow,
+                    boundaries: config
+                        .capture
+                        .boundaries
+                        .iter()
+                        .map(|boundary| boundary.name())
+                        .collect(),
+                    directions: config
+                        .capture
+                        .directions
+                        .iter()
+                        .map(|direction| direction.name())
+                        .collect(),
+                    redact_env: config.capture.redact_env.clone(),
+                    redaction_values_ready: redaction_error.is_none(),
+                    redaction_error,
                 }),
                 decrypt: Some(decrypt_report(&config.decrypt)),
                 error: None,
@@ -470,6 +494,57 @@ pub mod agent {
         }
     }
 
+    fn capture_redaction_error(names: &[String]) -> Option<MachineError> {
+        let mut diagnostics = Vec::new();
+        let mut total = 0usize;
+        for (index, name) in names.iter().enumerate() {
+            match std::env::var_os(name) {
+                None => diagnostics.push(ConfigDiagnostic {
+                    code: "capture_redaction_env_unset".into(),
+                    path: format!("$.capture.redact_env[{index}]"),
+                    message: format!("environment variable `{name}` is unset"),
+                    hint: format!("Export `{name}` with the secret value before running Heimdall."),
+                }),
+                Some(value) if value.is_empty() => diagnostics.push(ConfigDiagnostic {
+                    code: "capture_redaction_env_empty".into(),
+                    path: format!("$.capture.redact_env[{index}]"),
+                    message: format!("environment variable `{name}` is empty"),
+                    hint: format!(
+                        "Set `{name}` to a non-empty value or remove it from redact_env."
+                    ),
+                }),
+                Some(value) => {
+                    let length = value.as_encoded_bytes().len();
+                    total = total.saturating_add(length);
+                    if length > 4096 {
+                        diagnostics.push(ConfigDiagnostic {
+                            code: "capture_redaction_env_too_large".into(),
+                            path: format!("$.capture.redact_env[{index}]"),
+                            message: format!(
+                                "environment variable `{name}` exceeds the 4096-byte redaction limit"
+                            ),
+                            hint: "Use a bounded secret value of 4096 bytes or fewer.".into(),
+                        });
+                    }
+                }
+            }
+        }
+        if total > 65_536 {
+            diagnostics.push(ConfigDiagnostic {
+                code: "capture_redaction_values_too_large".into(),
+                path: "$.capture.redact_env".into(),
+                message: "capture redaction values exceed the 65536-byte aggregate limit".into(),
+                hint: "Reduce the number or size of secret values used for capture redaction."
+                    .into(),
+            });
+        }
+        (!diagnostics.is_empty()).then(|| MachineError {
+            code: "capture_redaction_not_ready",
+            message: "capture redaction values are not ready".into(),
+            diagnostics,
+        })
+    }
+
     fn decrypt_report(config: &DecryptConfig) -> DecryptConfigReport {
         match config.mode {
             heimdall_config::DecryptMode::Off => DecryptConfigReport {
@@ -539,6 +614,9 @@ pub mod agent {
                 udp: true,
                 payload: "mode_dependent",
                 tls_plaintext: true,
+                boundary_allowlist: true,
+                direction_allowlist: true,
+                environment_redaction: true,
             },
             logs: LogsCapabilities {
                 event_contract: crate::event_log::EVENT_CONTRACT,
@@ -675,6 +753,9 @@ pub mod agent {
             assert!(capture.udp);
             assert_eq!(capture.payload, "mode_dependent");
             assert!(capture.tls_plaintext);
+            assert!(capture.boundary_allowlist);
+            assert!(capture.direction_allowlist);
+            assert!(capture.environment_redaction);
             assert_eq!(capabilities().decrypt.modes, ["off", "runtime", "relay"]);
             assert_eq!(
                 capabilities().decrypt.runtime_discovery,
@@ -693,6 +774,14 @@ pub mod agent {
                 heimdall_common::TAP_DATA_LEN
             );
             assert!(capabilities().decrypt.runtime_requires_attached_image);
+        }
+
+        #[test]
+        fn missing_capture_redaction_environment_is_not_ready() {
+            let names = vec!["HEIMDALL_TEST_VALUE_THAT_MUST_NOT_EXIST_7E1B".into()];
+            let error = capture_redaction_error(&names).unwrap();
+            assert_eq!(error.code, "capture_redaction_not_ready");
+            assert_eq!(error.diagnostics[0].code, "capture_redaction_env_unset");
         }
 
         #[test]

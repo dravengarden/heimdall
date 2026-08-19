@@ -95,7 +95,22 @@
             "capture": {
               "type": "object",
               "required": ["profile", "payload_storage"],
-              "properties": { "profile": { "enum": ["off", "metadata", "payload"] }, "payload_storage": { "const": "content_addressed" } },
+              "properties": {
+                "profile": { "enum": ["off", "metadata", "payload"] },
+                "payload_storage": { "const": "content_addressed" },
+                "allowed_boundaries": { "type": "array", "items": { "$ref": "#/$defs/boundary" }, "uniqueItems": true },
+                "allowed_directions": { "type": "array", "items": { "enum": ["client_to_remote", "remote_to_client"] }, "uniqueItems": true },
+                "redaction": {
+                  "type": "object",
+                  "required": ["source", "value_count", "replacement"],
+                  "properties": {
+                    "source": { "const": "environment" },
+                    "value_count": { "type": "integer", "minimum": 0, "maximum": 32 },
+                    "replacement": { "const": "same_length_asterisk" }
+                  },
+                  "additionalProperties": false
+                }
+              },
               "additionalProperties": false
             },
             "schemas": {

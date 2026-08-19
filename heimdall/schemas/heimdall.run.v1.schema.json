@@ -38,6 +38,26 @@
         "event_schema": { "const": "heimdall.event/v1" },
         "payload_storage": { "const": "content_addressed" },
         "max_bytes_per_flow": { "type": "integer", "minimum": 0 },
+        "allowed_boundaries": {
+          "type": "array",
+          "items": { "enum": ["transport", "tls_plaintext.runtime", "tls_plaintext.relay"] },
+          "uniqueItems": true
+        },
+        "allowed_directions": {
+          "type": "array",
+          "items": { "enum": ["client_to_remote", "remote_to_client"] },
+          "uniqueItems": true
+        },
+        "redaction": {
+          "type": "object",
+          "required": ["source", "value_count", "replacement"],
+          "properties": {
+            "source": { "const": "environment" },
+            "value_count": { "type": "integer", "minimum": 0, "maximum": 32 },
+            "replacement": { "const": "same_length_asterisk" }
+          },
+          "additionalProperties": false
+        },
         "segment_max_bytes": { "type": "integer", "minimum": 1 },
         "segment_max_age_ms": { "type": "integer", "minimum": 1 }
       },

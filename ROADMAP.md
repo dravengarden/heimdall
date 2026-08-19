@@ -30,6 +30,8 @@ acceptance path are documented and tested.
 - Per-run `heimdall.event/v1` lifecycle, TCP/UDP metadata, and bounded
   content-addressed payload blobs, with offline schemas, byte/age rotation,
   integrity verification, payload-aware filters, and `heimdall logs`.
+- Payload boundary/direction allowlists and environment-backed exact-value
+  redaction before hashing or blob publication.
 - Correlated fake-DNS query/answer evidence, ordered policy-decision evidence,
   and explicit OpenSSL runtime-observation metadata.
 - Relay TLS termination and startup-discovered OpenSSL runtime TLS probes in
@@ -115,8 +117,8 @@ trusted.
 
 - Extend the available boundary/direction/blob filters with bounded block
   inspection that does not weaken strict private ownership.
-- Add explicit redaction and allowlist controls before sensitive bytes reach
-  the content-addressed store.
+- Expand the available pre-storage allowlist and exact-value redaction model
+  only where the failure boundary remains deterministic and agent-readable.
 - Keep documenting retention and failure behavior for production-like private
   run stores.
 
