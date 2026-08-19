@@ -1273,7 +1273,13 @@ mod tests {
 
     #[test]
     fn event_client_waits_for_active_flow_guards() {
-        let root = test_state("flow-tracker");
+        // Why: CI providers often set TMPDIR to a deeply nested checkout path,
+        // while Linux Unix-domain socket paths are limited to SUN_LEN bytes.
+        let root = Path::new("/tmp").join(format!(
+            "hd-flow-{}-{}",
+            std::process::id(),
+            &Uuid::now_v7().simple().to_string()[..8]
+        ));
         fs::create_dir_all(&root).unwrap();
         let socket = root.join("events.sock");
         let listener = UnixListener::bind(&socket).unwrap();

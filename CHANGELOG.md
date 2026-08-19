@@ -76,6 +76,8 @@ migration guide.
 
 ### Fixed
 
+- Keep Unix-socket tests below Linux `SUN_LEN` even when CI supplies a deeply
+  nested `TMPDIR`.
 - Keep policy enforcement active until every descendant leaves the command
   cgroup, and preserve command exit and signal status.
 - Preserve the resolved global configuration and exact argv across delegated
