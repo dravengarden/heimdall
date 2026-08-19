@@ -61,8 +61,9 @@ need compatibility hardening.
 | Agent event logs | Available, Phase 1 | Per-run lifecycle and TCP/UDP metadata in `heimdall.event/v1`; bounded payloads use the separate `heimdall.capture/v1` contract |
 | Runtime TLS decryption | Available daemonless with alpha limits | Startup-discovered OpenSSL images; no CA injection; unsupported TLS libraries remain opaque |
 | Relay TLS decryption | Available daemonless with alpha limits | Local CA plus per-host leaves; client trust and protocol compatibility are required |
+| Static Linux packaging | Available | Reproducible x86_64 musl archive, checksum, atomic install, and one-level rollback |
 | Runtime and kernel compatibility | In development | Expanding the tested matrix and documenting unsupported edge cases |
-| Capture analysis and release packaging | Planned | Better inspection workflows and reproducible distribution artifacts |
+| Capture analysis | Planned | Better inspection and payload-aware agent workflows |
 
 See [docs/product-contract.md](docs/product-contract.md) for the normative
 requirements and [ROADMAP.md](ROADMAP.md) for status and planned work.
@@ -98,6 +99,10 @@ semantics.
 
 ## Quick start
 
+Tagged releases provide a static x86_64 Linux archive. Follow
+[docs/install.md](docs/install.md) to verify its checksum, install or upgrade
+atomically, and retain one rollback executable. To build from source instead:
+
 ### Requirements
 
 - Linux 5.10 or newer
@@ -122,7 +127,7 @@ only its setup entry point (replace `USERNAME` with the invoking user):
 
 ```bash
 sudo install -Dm755 target/release/heimdall /usr/local/bin/heimdall
-sudo /usr/local/bin/heimdall init
+/usr/local/bin/heimdall init
 echo 'USERNAME ALL=(root) NOPASSWD: /usr/local/bin/heimdall __setup-worker' \
   | sudo tee /etc/sudoers.d/heimdall >/dev/null
 sudo chmod 0440 /etc/sudoers.d/heimdall
@@ -132,16 +137,16 @@ sudo visudo -cf /etc/sudoers.d/heimdall
 Run a command through the default policy:
 
 ```bash
-./target/release/heimdall run -- curl https://example.com
-./target/release/heimdall run --policy corp -- ssh internal.example.com
+heimdall run -- curl https://example.com
+heimdall run --policy corp -- ssh internal.example.com
 ```
 
 Inspect the resulting run without a Web UI:
 
 ```bash
-./target/release/heimdall logs list --json
-./target/release/heimdall logs query --run RUN_ID --kind flow.close --jsonl
-./target/release/heimdall logs verify --run RUN_ID --json
+heimdall logs list --json
+heimdall logs query --run RUN_ID --kind flow.close --jsonl
+heimdall logs verify --run RUN_ID --json
 ```
 
 No Heimdall service exists or is needed for proxying, capture, or either TLS

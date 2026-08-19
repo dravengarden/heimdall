@@ -38,6 +38,8 @@ acceptance path are documented and tested.
   state in the shipped CLI.
 - A real-eBPF NixOS acceptance VM covering dual-stack TCP/UDP, QUIC, common
   CLI/runtime clients, lifecycle behavior, and both TLS paths.
+- Reproducible static x86_64 Linux archives with checksum verification,
+  atomic installation, and one-level executable rollback.
 
 The current available implementation is Linux-only. macOS support is planned
 below and is not part of the available contract yet.
@@ -126,12 +128,12 @@ from file names or process names.
 
 ## Planned
 
-### Packaging and distribution
+### Packaging and distribution expansion
 
-- Publish reproducible Linux artifacts with an installation path that keeps
-  transient setup privilege and user-owned session/log state separate.
-- Document upgrade and rollback boundaries for the embedded eBPF object,
-  daemonless runtime, and machine-readable contracts.
+- Add signed release provenance and an aarch64 Linux artifact after the
+  x86_64 release path has enough field coverage.
+- Keep release installation, transient setup privilege, and user-owned
+  session/log state separate on every supported package format.
 
 ### Performance and observability
 

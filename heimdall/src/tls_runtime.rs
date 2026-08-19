@@ -146,8 +146,11 @@ const PERF_DATA_HEAD_OFFSET: usize = 1024;
 const PERF_DATA_TAIL_OFFSET: usize = PERF_DATA_HEAD_OFFSET + std::mem::size_of::<u64>();
 const PERF_RECORD_LOST: u32 = 2;
 const PERF_RECORD_SAMPLE: u32 = 9;
-const PERF_EVENT_IOC_ENABLE: libc::c_ulong = 0x2400;
-const PERF_EVENT_IOC_DISABLE: libc::c_ulong = 0x2401;
+// Why: libc follows each Linux libc ABI here: ioctl requests are c_ulong on
+// glibc but c_int on musl. Keeping the constants in libc's target-specific
+// type lets the exact same source back both Nix and static release builds.
+const PERF_EVENT_IOC_ENABLE: libc::Ioctl = 0x2400;
+const PERF_EVENT_IOC_DISABLE: libc::Ioctl = 0x2401;
 
 #[derive(Clone, Copy)]
 #[repr(C)]

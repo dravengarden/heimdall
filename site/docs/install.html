@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#F7F4ED">
+    <meta name="description" content="Install, upgrade, verify, and roll back the static Heimdall Linux CLI without a daemon.">
+    <link rel="icon" href="../assets/heimdall-mark.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="../assets/apple-touch-icon.png">
+    <link rel="stylesheet" href="../styles.css">
+    <title>Install — Heimdall docs</title>
+  </head>
+  <body class="docs-page" data-page="install">
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <header class="site-header"><div class="container nav-shell">
+      <a class="brand" href="../index.html"><img class="brand-mark" src="../assets/heimdall-mark.svg" alt=""><span class="brand-copy"><span class="brand-name">Heimdall</span><span class="brand-tagline">docs / guarded path</span></span></a>
+      <button class="menu-toggle" type="button" data-menu-toggle aria-expanded="false" aria-controls="site-nav" aria-label="Open navigation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke-linecap="round" /></svg></button>
+      <nav class="nav-links" id="site-nav" data-site-nav aria-label="Primary navigation"><a href="product-contract.html" data-page="product-contract">Contract</a><a href="install.html" data-page="install">Install</a><a href="architecture.html" data-page="architecture">Architecture</a><a href="configuration.html" data-page="configuration">Configuration</a><a href="commands.html" data-page="commands">Commands</a><a href="runbook.html" data-page="runbook">Runbook</a><a href="roadmap.html" data-page="roadmap">Roadmap</a><a class="nav-github" href="https://github.com/dravengarden/heimdall">GitHub <span aria-hidden="true">↗</span></a></nav>
+    </div></header>
+
+    <main id="main-content" class="container docs-shell">
+      <aside class="docs-sidebar" aria-label="Documentation navigation"><div class="sidebar-label">Documentation</div><nav class="sidebar-nav"><a href="product-contract.html" data-page="product-contract">Product contract</a><a href="install.html" data-page="install">Install and upgrade</a><a href="architecture.html" data-page="architecture">Architecture</a><a href="configuration.html" data-page="configuration">Configuration</a><a href="commands.html" data-page="commands">Command workflows</a><a href="runbook.html" data-page="runbook">Runbook</a><a href="roadmap.html" data-page="roadmap">Roadmap</a></nav><div class="sidebar-meta"><strong>Source document</strong><a href="https://github.com/dravengarden/heimdall/blob/main/docs/install.md">docs/install.md ↗</a></div></aside>
+      <article class="doc-content">
+        <details class="mobile-toc"><summary>In this section</summary><nav><a href="#download">Download</a><a href="#authorize">Authorize setup</a><a href="#upgrade">Upgrade and rollback</a><a href="#ownership">Ownership</a></nav></details>
+        <span class="doc-kicker">One binary / no daemon</span>
+        <h1>Install Heimdall</h1>
+        <p class="doc-lead">Install one static x86_64 Linux CLI with its eBPF object embedded. Verify the archive, authorize only the setup worker, and keep all runtime state under the invoking user.</p>
+
+        <h2 id="download">Download and install</h2>
+        <pre><code>version=0.1.0
+gh release download "v$version" --repo dravengarden/heimdall \
+  --pattern "heimdall-$version-x86_64-linux-musl.tar.gz*"
+sha256sum -c "heimdall-$version-x86_64-linux-musl.tar.gz.sha256"
+tar -xzf "heimdall-$version-x86_64-linux-musl.tar.gz"
+cd "heimdall-$version-x86_64-linux-musl"
+sudo ./heimdall-install install
+heimdall --version
+heimdall init</code></pre>
+        <div class="callout"><strong>No service is installed.</strong>The installer atomically writes a regular <code>/usr/local/bin/heimdall</code> and keeps one prior executable for rollback. It never edits sudoers.</div>
+
+        <h2 id="authorize">Authorize only setup</h2>
+        <p>Create this entry with <code>visudo</code>, replacing <code>USERNAME</code>:</p>
+        <pre><code>USERNAME ALL=(root) NOPASSWD: /usr/local/bin/heimdall __setup-worker</code></pre>
+        <pre><code>sudo chmod 0440 /etc/sudoers.d/heimdall
+sudo visudo -cf /etc/sudoers.d/heimdall</code></pre>
+        <p>Do not grant arbitrary Heimdall arguments, add file capabilities, or make the complete binary setuid.</p>
+
+        <h2 id="upgrade">Upgrade and rollback</h2>
+        <pre><code>sudo ./heimdall-install install
+sudo /usr/local/lib/heimdall/heimdall-install verify
+
+# Restore the previous complete executable.
+sudo /usr/local/lib/heimdall/heimdall-install rollback
+heimdall --version</code></pre>
+        <p>The rollback unit includes userspace, embedded eBPF, and machine-readable contracts. It does not rewrite configuration or logs.</p>
+
+        <h2 id="ownership">Keep user state unprivileged</h2>
+        <p>Run <code>heimdall init</code>, <code>heimdall run</code>, and <code>heimdall logs</code> as the invoking user. Configuration, JSONL events, captures, and TLS CA material are user-owned. Root is used only by the hidden session setup worker.</p>
+
+        <div class="doc-page-footer"><a href="product-contract.html">← Product contract</a><a href="commands.html">Command workflows →</a></div>
+      </article>
+    </main>
+    <footer class="site-footer"><div class="container footer-inner"><a class="footer-brand" href="../index.html"><img src="../assets/heimdall-mark.svg" alt="">Heimdall</a><span class="footer-copy">One binary. No daemon.</span><nav class="footer-links" aria-label="Footer navigation"><a href="https://github.com/dravengarden/heimdall">GitHub</a><a href="https://github.com/dravengarden/heimdall/blob/main/SECURITY.md">Security</a></nav></div></footer>
+    <script src="../app.js" defer></script>
+  </body>
+</html>

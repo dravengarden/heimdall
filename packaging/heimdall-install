@@ -1,0 +1,150 @@
+#!/bin/sh
+set -eu
+
+VERSION='@VERSION@'
+command_name=install
+prefix=${HEIMDALL_PREFIX:-/usr/local}
+
+usage() {
+  cat <<'EOF'
+Usage: ./heimdall-install [install|rollback|verify] [--prefix ABSOLUTE_PATH]
+
+Commands:
+  install   Validate and atomically install the bundled Heimdall binary.
+  rollback  Swap the active binary with the one-level rollback copy.
+  verify    Check the active binary and print its version.
+
+The default prefix is /usr/local. Set HEIMDALL_PREFIX or pass --prefix for an
+unprivileged test installation. This tool never writes sudoers configuration.
+EOF
+}
+
+if [ "$#" -gt 0 ]; then
+  case "$1" in
+    install|rollback|verify)
+      command_name=$1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+  esac
+fi
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --prefix)
+      [ "$#" -ge 2 ] || { echo "--prefix requires a path" >&2; exit 2; }
+      prefix=$2
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+case "$prefix" in
+  /*) ;;
+  *) echo "install prefix must be absolute: $prefix" >&2; exit 2 ;;
+esac
+[ "$prefix" != / ] || { echo "refusing to use / as the install prefix" >&2; exit 2; }
+
+bin_dir=$prefix/bin
+state_dir=$prefix/lib/heimdall
+versions_dir=$state_dir/versions
+active=$bin_dir/heimdall
+active_version=$state_dir/active-version
+rollback=$state_dir/rollback/heimdall
+rollback_version=$state_dir/rollback/version
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+validate_binary() {
+  candidate=$1
+  [ -f "$candidate" ] && [ ! -L "$candidate" ] || {
+    echo "Heimdall binary must be a regular non-symlink file: $candidate" >&2
+    exit 1
+  }
+  [ -x "$candidate" ] || { echo "Heimdall binary is not executable: $candidate" >&2; exit 1; }
+  "$candidate" --help >/dev/null
+}
+
+acquire_lock() {
+  mkdir -p "$state_dir"
+  lock_dir=$state_dir/install.lock
+  if ! mkdir "$lock_dir" 2>/dev/null; then
+    echo "another Heimdall install operation is active: $lock_dir" >&2
+    exit 1
+  fi
+  trap 'rmdir "$lock_dir" 2>/dev/null || true' 0
+  trap 'rmdir "$lock_dir" 2>/dev/null || true; exit 1' HUP INT TERM
+}
+
+case "$command_name" in
+  install)
+    source_binary=$script_dir/heimdall
+    validate_binary "$source_binary"
+    acquire_lock
+    mkdir -p "$bin_dir" "$versions_dir/$VERSION" "$state_dir/rollback"
+    install -m 0755 "$source_binary" "$versions_dir/$VERSION/heimdall"
+
+    if [ -e "$active" ]; then
+      validate_binary "$active"
+      if ! cmp -s "$active" "$source_binary"; then
+        install -m 0755 "$active" "$rollback.tmp.$$"
+        mv -f "$rollback.tmp.$$" "$rollback"
+        if [ -f "$active_version" ]; then
+          install -m 0644 "$active_version" "$rollback_version.tmp.$$"
+          mv -f "$rollback_version.tmp.$$" "$rollback_version"
+        else
+          printf '%s\n' unknown > "$rollback_version"
+        fi
+      fi
+    fi
+
+    install -m 0755 "$source_binary" "$active.tmp.$$"
+    mv -f "$active.tmp.$$" "$active"
+    printf '%s\n' "$VERSION" > "$active_version.tmp.$$"
+    mv -f "$active_version.tmp.$$" "$active_version"
+    install -m 0755 "$0" "$state_dir/heimdall-install"
+    validate_binary "$active"
+    printf 'installed Heimdall %s at %s\n' "$VERSION" "$active"
+    printf 'authorize only: %s __setup-worker\n' "$active"
+    ;;
+  rollback)
+    acquire_lock
+    [ -f "$rollback" ] || { echo "no rollback binary is available" >&2; exit 1; }
+    validate_binary "$rollback"
+    [ -f "$active" ] || { echo "active Heimdall binary is missing: $active" >&2; exit 1; }
+    validate_binary "$active"
+
+    install -m 0755 "$active" "$state_dir/rollback/current.tmp.$$"
+    install -m 0755 "$rollback" "$active.tmp.$$"
+    mv -f "$active.tmp.$$" "$active"
+    mv -f "$state_dir/rollback/current.tmp.$$" "$rollback"
+
+    current_label=unknown
+    [ -f "$active_version" ] && current_label=$(cat "$active_version")
+    target_label=unknown
+    [ -f "$rollback_version" ] && target_label=$(cat "$rollback_version")
+    printf '%s\n' "$target_label" > "$active_version.tmp.$$"
+    mv -f "$active_version.tmp.$$" "$active_version"
+    printf '%s\n' "$current_label" > "$rollback_version.tmp.$$"
+    mv -f "$rollback_version.tmp.$$" "$rollback_version"
+    validate_binary "$active"
+    printf 'rolled back Heimdall to %s at %s\n' "$target_label" "$active"
+    ;;
+  verify)
+    validate_binary "$active"
+    installed_version=unknown
+    [ -f "$active_version" ] && installed_version=$(cat "$active_version")
+    printf 'Heimdall %s is active at %s\n' "$installed_version" "$active"
+    ;;
+esac

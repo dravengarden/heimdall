@@ -17,6 +17,13 @@ capture, TLS, setup privilege, or lifecycle behavior:
 nix develop -c just test-vm
 ```
 
+Build and exercise the generic static archive, including install, upgrade, and
+rollback:
+
+```bash
+nix develop -c just test-package
+```
+
 The disposable NixOS VM proves fake/system DNS, SOCKS5 and direct TCP/UDP,
 IPv4/IPv6, HTTP/3, static
 and dynamic clients, descendants, exit/signal status, two concurrent isolated
@@ -26,11 +33,12 @@ unprivileged helper removes the workload cgroup and BPF links.
 
 ## Install the daemonless path
 
-Install one executable:
+For a tagged release, follow [install.md](install.md). For a source build,
+install one executable:
 
 ```bash
 sudo install -Dm755 target/release/heimdall /usr/local/bin/heimdall
-sudo /usr/local/bin/heimdall init
+/usr/local/bin/heimdall init
 ```
 
 The normal Linux backend needs root only while attaching per-run eBPF. Grant

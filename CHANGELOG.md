@@ -8,6 +8,10 @@ migration guide.
 
 ### Added
 
+- Add reproducible static x86_64 Linux release archives, SHA-256 checksums,
+  atomic installation, one-level rollback, and tagged GitHub release
+  automation. Packaging acceptance rejects dynamic dependencies and exercises
+  install, upgrade, and rollback.
 - Add one foreground Linux execution path for every decrypt mode. Each run
   owns isolated relay and DNS listeners, cgroup, unpinned maps, FD-owned links,
   event state, and a strict `heimdall.setup/v2` helper that drops privilege

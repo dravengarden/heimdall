@@ -1,10 +1,11 @@
 # Heimdall flake — pure-Nix build of the eBPF object and foreground CLI.
 #
-# Two derivations:
+# Principal derivations:
 #
 #   • heimdall-ebpf    — nightly Rust + bpfel-unknown-none + build-std,
 #                        produces an ELF with embedded BTF.
 #   • heimdall         — stable Rust workspace build, embeds the eBPF ELF.
+#   • heimdall-static  — generic musl-linked Linux CLI for release archives.
 #
 # Inputs:
 #   • nixpkgs unstable for bpf-linker.
@@ -43,6 +44,21 @@
         overlays = [ fenix.overlays.default ];
       };
       lib = pkgs.lib;
+      heimdallVersion = "0.1.0";
+      heimdallSrc = lib.cleanSourceWith {
+        src = ./.;
+        filter =
+          path: type:
+          let
+            base = baseNameOf (toString path);
+          in
+          !(builtins.elem base [
+            "target"
+            "result"
+            "node_modules"
+            "dist"
+          ]);
+      };
 
       # Nightly pinned via heimdall-ebpf/rust-toolchain.toml. The
       # fakeHash gets replaced on first `nix build` — fenix prints the
@@ -61,6 +77,10 @@
         sha256 = "sha256-gh/xTkxKHL4eiRXzWv8KP7vfjSk61Iq48x47BEDFgfk=";
       };
       rustPlatform = pkgs.makeRustPlatform {
+        cargo = rustStable;
+        rustc = rustStable;
+      };
+      staticRustPlatform = pkgs.pkgsStatic.makeRustPlatform {
         cargo = rustStable;
         rustc = rustStable;
       };
@@ -248,22 +268,8 @@
       # ── heimdall: foreground CLI, embeds the eBPF artifact ─────────
       heimdall = rustPlatform.buildRustPackage {
         pname = "heimdall";
-        version = "0.1.0";
-
-        src = lib.cleanSourceWith {
-          src = ./.;
-          filter =
-            path: type:
-            let
-              base = baseNameOf (toString path);
-            in
-            !(builtins.elem base [
-              "target"
-              "result"
-              "node_modules"
-              "dist"
-            ]);
-        };
+        version = heimdallVersion;
+        src = heimdallSrc;
 
         cargoLock.lockFile = ./Cargo.lock;
 
@@ -292,32 +298,108 @@
           license = licenses.asl20;
         };
       };
+
+      # Generic Linux release artifact. The userspace executable is linked
+      # against musl while retaining the same embedded, separately built eBPF
+      # object as the ordinary Nix package.
+      heimdall-static = staticRustPlatform.buildRustPackage {
+        pname = "heimdall-static";
+        version = heimdallVersion;
+        src = heimdallSrc;
+
+        cargoLock.lockFile = ./Cargo.lock;
+        preBuild = ''
+          mkdir -p heimdall-ebpf/target/bpfel-unknown-none/release
+          cp ${heimdall-ebpf}/heimdall-ebpf \
+             heimdall-ebpf/target/bpfel-unknown-none/release/heimdall-ebpf
+        '';
+        cargoBuildFlags = [
+          "--bin"
+          "heimdall"
+          "--package"
+          "heimdall"
+        ];
+        doCheck = false;
+
+        meta = with lib; {
+          description = "Static Heimdall Linux CLI with embedded eBPF";
+          mainProgram = "heimdall";
+          platforms = [ "x86_64-linux" ];
+          license = licenses.asl20;
+        };
+      };
+
+      releaseBundle =
+        pkgs.runCommand "heimdall-${heimdallVersion}-x86_64-linux-musl"
+          {
+            version = heimdallVersion;
+            nativeBuildInputs = [
+              pkgs.coreutils
+              pkgs.gnutar
+              pkgs.gzip
+            ];
+          }
+          ''
+            archive_root=heimdall-${heimdallVersion}-x86_64-linux-musl
+            mkdir -p "$out" "$archive_root"
+            install -m 0755 ${heimdall-static}/bin/heimdall "$archive_root/heimdall"
+            substitute ${./packaging/heimdall-install} "$archive_root/heimdall-install" \
+              --replace-fail '@VERSION@' '${heimdallVersion}'
+            chmod 0755 "$archive_root/heimdall-install"
+            install -m 0644 ${./LICENSE} "$archive_root/LICENSE"
+            install -m 0644 ${./README.md} "$archive_root/README.md"
+            tar --sort=name --mtime='@1' --owner=0 --group=0 --numeric-owner \
+              -czf "$out/$archive_root.tar.gz" "$archive_root"
+            (cd "$out" && sha256sum "$archive_root.tar.gz" > "$archive_root.tar.gz.sha256")
+          '';
+
+      releaseCheck =
+        pkgs.runCommand "heimdall-release-check-${heimdallVersion}"
+          {
+            nativeBuildInputs = [
+              pkgs.binutils
+              pkgs.coreutils
+              pkgs.findutils
+              pkgs.gnugrep
+              pkgs.gnutar
+              pkgs.gzip
+            ];
+          }
+          ''
+            sh ${./tests/package/run-acceptance.sh} ${releaseBundle} ${heimdallVersion}
+            touch "$out"
+          '';
     in
     {
       packages.${system} = {
         inherit
           heimdall
+          heimdall-static
           heimdall-ebpf
           bpf-linker
           ;
         default = heimdall;
+        release = releaseBundle;
       };
 
-      checks.${system}.vm-proxy = pkgs.testers.runNixOSTest {
-        name = "heimdall-proxy";
-        nodes.machine = {
-          imports = [ ./tests/vm/heimdall-proxy.nix ];
-          _module.args.heimdallPackage = heimdall;
-          virtualisation = {
-            memorySize = 2048;
-            cores = 2;
+      checks.${system} = {
+        release = releaseCheck;
+        vm-proxy = pkgs.testers.runNixOSTest {
+          name = "heimdall-proxy";
+          nodes.machine = {
+            imports = [ ./tests/vm/heimdall-proxy.nix ];
+            _module.args.heimdallPackage = heimdall-static;
+            virtualisation = {
+              memorySize = 2048;
+              cores = 2;
+            };
           };
+          testScript = ''
+            machine.start()
+            machine.wait_until_succeeds("test -e /run/heimdall-test/ready")
+            machine.succeed("/etc/heimdall-test/run-acceptance.sh")
+          '';
         };
-        testScript = ''
-          machine.start()
-          machine.wait_until_succeeds("test -e /run/heimdall-test/ready")
-          machine.succeed("/etc/heimdall-test/run-acceptance.sh")
-        '';
       };
 
       # `nix develop` shell with everything needed to iterate locally —

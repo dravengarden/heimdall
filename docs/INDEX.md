@@ -19,6 +19,7 @@ stable contracts, planning, design material, and operational guidance.
 - [`architecture.md`](architecture.md) — Foreground CLI ownership, setup privilege drop, per-run eBPF/relay/DNS lifecycle, fail-closed UDP correlation, capture, and TLS boundaries
 - [`design/daemonless-runtime.md`](design/daemonless-runtime.md) — Foreground per-run architecture and implementation status for session-owned data-plane and kernel resources
 - [`design/agent-event-log.md`](design/agent-event-log.md) — Daemonless Phase 1 JSONL/run schemas and CLI plus planned blobs
+- [`install.md`](install.md) — Static Linux release installation, narrow setup authorization, upgrade, and one-level rollback
 - [`runbook.md`](runbook.md) — Runbook
 
 ## Documents
@@ -30,6 +31,7 @@ stable contracts, planning, design material, and operational guidance.
 - [`ROADMAP.md`](../ROADMAP.md) — Public status, planned macOS wrapper/Network Extension backends, and roadmap
 - [`architecture.md`](architecture.md) — CLI, eBPF, DNS, TCP/UDP relay, and TLS decrypt boundaries
 - [`config.md`](config.md) — Strict TOML/YAML/JSON policy rules, credentials, capture/decrypt modes, and UDP/QUIC limits
+- [`install.md`](install.md) — Reproducible x86_64 Linux artifact, install ownership, upgrade, and rollback
 - [`runbook.md`](runbook.md) — Build, narrow setup authorization, agent/log contracts, daemonless operation, TLS capture, and VM acceptance
 
 ### Design documents

@@ -15,13 +15,13 @@
     <header class="site-header"><div class="container nav-shell">
       <a class="brand" href="../index.html"><img class="brand-mark" src="../assets/heimdall-mark.svg" alt=""><span class="brand-copy"><span class="brand-name">Heimdall</span><span class="brand-tagline">docs / guarded path</span></span></a>
       <button class="menu-toggle" type="button" data-menu-toggle aria-expanded="false" aria-controls="site-nav" aria-label="Open navigation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke-linecap="round" /></svg></button>
-      <nav class="nav-links" id="site-nav" data-site-nav aria-label="Primary navigation"><a href="product-contract.html" data-page="product-contract">Contract</a><a href="architecture.html" data-page="architecture">Architecture</a><a href="configuration.html" data-page="configuration">Configuration</a><a href="commands.html" data-page="commands">Commands</a><a href="runbook.html" data-page="runbook">Runbook</a><a href="roadmap.html" data-page="roadmap">Roadmap</a><a class="nav-github" href="https://github.com/dravengarden/heimdall">GitHub <span aria-hidden="true">↗</span></a></nav>
+      <nav class="nav-links" id="site-nav" data-site-nav aria-label="Primary navigation"><a href="product-contract.html" data-page="product-contract">Contract</a><a href="install.html" data-page="install">Install</a><a href="architecture.html" data-page="architecture">Architecture</a><a href="configuration.html" data-page="configuration">Configuration</a><a href="commands.html" data-page="commands">Commands</a><a href="runbook.html" data-page="runbook">Runbook</a><a href="roadmap.html" data-page="roadmap">Roadmap</a><a class="nav-github" href="https://github.com/dravengarden/heimdall">GitHub <span aria-hidden="true">↗</span></a></nav>
     </div></header>
 
     <main id="main-content" class="container docs-shell">
-      <aside class="docs-sidebar" aria-label="Documentation navigation"><div class="sidebar-label">Documentation</div><nav class="sidebar-nav"><a href="product-contract.html" data-page="product-contract">Product contract</a><a href="architecture.html" data-page="architecture">Architecture</a><a href="configuration.html" data-page="configuration">Configuration</a><a href="commands.html" data-page="commands">Command workflows</a><a href="runbook.html" data-page="runbook">Runbook</a><a href="roadmap.html" data-page="roadmap">Roadmap</a></nav><div class="sidebar-meta"><strong>Source document</strong><a href="https://github.com/dravengarden/heimdall/blob/main/docs/runbook.md">docs/runbook.md ↗</a></div></aside>
+      <aside class="docs-sidebar" aria-label="Documentation navigation"><div class="sidebar-label">Documentation</div><nav class="sidebar-nav"><a href="product-contract.html" data-page="product-contract">Product contract</a><a href="install.html" data-page="install">Install and upgrade</a><a href="architecture.html" data-page="architecture">Architecture</a><a href="configuration.html" data-page="configuration">Configuration</a><a href="commands.html" data-page="commands">Command workflows</a><a href="runbook.html" data-page="runbook">Runbook</a><a href="roadmap.html" data-page="roadmap">Roadmap</a></nav><div class="sidebar-meta"><strong>Source document</strong><a href="https://github.com/dravengarden/heimdall/blob/main/docs/runbook.md">docs/runbook.md ↗</a></div></aside>
       <article class="doc-content">
-        <details class="mobile-toc"><summary>In this section</summary><nav><a href="product-contract.html">Product contract</a><a href="architecture.html">Architecture</a><a href="configuration.html">Configuration</a><a href="commands.html">Command workflows</a><a href="runbook.html">Runbook</a><a href="roadmap.html">Roadmap</a></nav></details>
+        <details class="mobile-toc"><summary>In this section</summary><nav><a href="product-contract.html">Product contract</a><a href="install.html">Install and upgrade</a><a href="architecture.html">Architecture</a><a href="configuration.html">Configuration</a><a href="commands.html">Command workflows</a><a href="runbook.html">Runbook</a><a href="roadmap.html">Roadmap</a></nav></details>
         <span class="doc-kicker">Operations / evidence first</span>
         <h1>Runbook</h1>
         <p class="doc-lead">Build eBPF before userspace, install one binary, authorize only its setup worker, and verify the foreground contract rather than trusting a successful compile.</p>
@@ -35,10 +35,12 @@ nix develop -c just verify</code></pre>
         <pre><code>nix develop -c just test-vm</code></pre>
 
         <h2 id="install">Install</h2>
+        <p>For a tagged static release, verify the checksum and use the bundled atomic installer. See <a href="install.html">Install and upgrade</a> for download and rollback commands. For a source build:</p>
         <pre><code>sudo install -Dm755 target/release/heimdall /usr/local/bin/heimdall
-sudo /usr/local/bin/heimdall init
-echo 'USERNAME ALL=(root) NOPASSWD: /usr/local/bin/heimdall __setup-worker' \
-  | sudo tee /etc/sudoers.d/heimdall
+heimdall init
+
+# Add with visudo after replacing USERNAME:
+# USERNAME ALL=(root) NOPASSWD: /usr/local/bin/heimdall __setup-worker
 sudo chmod 0440 /etc/sudoers.d/heimdall
 sudo visudo -cf /etc/sudoers.d/heimdall</code></pre>
         <p>Replace <code>USERNAME</code>. The worker receives one strict request over stdin, transfers map/link FDs, and drops privilege before the command starts. Runtime TLS retains that unprivileged helper only for the run lifetime. No service is required.</p>
@@ -51,7 +53,7 @@ heimdall run -- curl -fsS https://example.com</code></pre>
 
         <h2 id="acceptance">Acceptance coverage</h2>
         <p>The VM exercises real eBPF attachment, fake/system DNS, SOCKS5 TCP/UDP, QUIC, descendants, signals, concurrent isolated runs, runtime and relay TLS, log rotation, fail-closed errors, parent-death cgroup cleanup, and link cleanup.</p>
-        <table><thead><tr><th>Evidence</th><th>What it proves</th></tr></thead><tbody><tr><td><code>just verify</code></td><td>Build, format, lint, dependency, unit, and userspace gates.</td></tr><tr><td><code>just test-vm</code></td><td>Real kernel daemonless data path and compatibility matrix.</td></tr><tr><td><code>heimdall agent</code></td><td>Config, execution ownership, capabilities, and repair actions.</td></tr><tr><td><code>heimdall logs verify</code></td><td>Per-run JSONL sequence and segment integrity.</td></tr></tbody></table>
+        <table><thead><tr><th>Evidence</th><th>What it proves</th></tr></thead><tbody><tr><td><code>just verify</code></td><td>Build, format, lint, dependency, unit, and userspace gates.</td></tr><tr><td><code>just test-package</code></td><td>Static linking, checksum, install, upgrade, and rollback.</td></tr><tr><td><code>just test-vm</code></td><td>The static release binary on the real kernel daemonless data path.</td></tr><tr><td><code>heimdall agent</code></td><td>Config, execution ownership, capabilities, and repair actions.</td></tr><tr><td><code>heimdall logs verify</code></td><td>Per-run JSONL sequence and segment integrity.</td></tr></tbody></table>
 
         <h2 id="diagnose">Diagnose failures</h2>
         <ol><li>Run <code>heimdall agent</code> and preserve its JSON even when it exits 1.</li><li>Follow <code>actions.validate</code> as an argv array.</li><li>Check the exact sudoers path if foreground setup is denied.</li><li>Preview with <code>config explain</code>, then reproduce with a minimal command and the same policy.</li></ol>
