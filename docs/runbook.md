@@ -113,6 +113,8 @@ Treat every `actions.*` command as an argv array; never concatenate or
 shell-evaluate it. Consumers may rely on existing v8 field semantics and must
 ignore additive unknown fields. Renaming or changing an existing semantic
 requires a new contract version.
+`actions.config_schema` and `actions.config_example_toml` are read-only and do
+not require a valid or discoverable config file.
 
 Before execution, inspect:
 

@@ -8,6 +8,7 @@ use std::{
     time::Duration,
 };
 
+use schemars::JsonSchema;
 use serde::{
     Deserialize, Deserializer, Serialize,
     de::{DeserializeOwned, Error as _, MapAccess, Visitor},
@@ -191,7 +192,7 @@ impl ConfigError {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HeimdallConfig {
     pub version: u32,
@@ -202,7 +203,7 @@ pub struct HeimdallConfig {
     pub decrypt: DecryptConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ProxyConfig {
     pub default_policy: String,
@@ -212,13 +213,13 @@ pub struct ProxyConfig {
     pub policies: BTreeMap<String, ProxyPolicy>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Outbound {
     Socks5(Socks5Outbound),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Socks5Outbound {
     pub server: String,
@@ -234,7 +235,7 @@ fn default_connect_timeout() -> String {
     "10s".into()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Socks5Auth {
     pub username: String,
@@ -259,7 +260,7 @@ impl Socks5Auth {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ProxyPolicy {
     pub dns: DnsConfig,
@@ -269,27 +270,27 @@ pub struct ProxyPolicy {
     pub final_: FinalActions,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DnsConfig {
     pub mode: DnsMode,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum DnsMode {
     Fake,
     System,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FinalActions {
     pub tcp: Action,
     pub udp: Action,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RouteRule {
     pub name: String,
@@ -298,7 +299,7 @@ pub struct RouteRule {
     pub action: Action,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RuleMatch {
     #[serde(default)]
@@ -315,21 +316,25 @@ pub struct RuleMatch {
     pub port_range: Vec<PortRange>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Network {
     Tcp,
     Udp,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord,
+)]
 #[serde(deny_unknown_fields)]
 pub struct PortRange {
     pub start: u16,
     pub end: u16,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum Action {
     Route {
@@ -342,14 +347,14 @@ pub enum Action {
     },
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum RejectMethod {
     #[default]
     Refused,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DecryptConfig {
     pub mode: DecryptMode,
@@ -369,7 +374,7 @@ impl Default for DecryptConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum DecryptMode {
     Off,
@@ -377,7 +382,7 @@ pub enum DecryptMode {
     Relay,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CaptureConfig {
     pub mode: CaptureMode,
@@ -409,14 +414,16 @@ impl Default for CaptureConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum CaptureMode {
     Off,
     On,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord,
+)]
 pub enum CaptureBoundary {
     #[serde(rename = "transport")]
     Transport,
@@ -437,7 +444,9 @@ impl CaptureBoundary {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureDirection {
     ClientToRemote,
@@ -479,6 +488,34 @@ fn default_capture_directions() -> Vec<CaptureDirection> {
         CaptureDirection::ClientToRemote,
         CaptureDirection::RemoteToClient,
     ]
+}
+
+/// Generate the current format-independent configuration schema.
+///
+/// The schema describes the structural JSON representation accepted through
+/// TOML, YAML, or JSON. Cross-reference and capability checks remain the
+/// responsibility of [`HeimdallConfig::validate`].
+#[must_use]
+pub fn json_schema() -> serde_json::Value {
+    let mut schema = serde_json::to_value(schemars::schema_for!(HeimdallConfig))
+        .expect("generated configuration schema is serializable");
+    let root = schema
+        .as_object_mut()
+        .expect("generated configuration schema is an object");
+    root.insert("$id".into(), "urn:heimdall:schema:config:v1".into());
+    root.insert("title".into(), "heimdall.config/v1".into());
+    root.insert(
+        "description".into(),
+        "Structural Heimdall configuration schema; run `heimdall config validate --json` for semantic diagnostics."
+            .into(),
+    );
+    root.get_mut("properties")
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|properties| properties.get_mut("version"))
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("generated schema contains the config version")
+        .insert("const".into(), 1.into());
+    schema
 }
 
 /// Policy selected for an active CLI cgroup.

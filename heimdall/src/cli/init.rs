@@ -40,7 +40,7 @@ impl InitFormat {
         }
     }
 
-    fn template(self) -> &'static str {
+    pub(crate) fn template(self) -> &'static str {
         match self {
             Self::Toml => HEIMDALL_TOML,
             Self::Yaml => HEIMDALL_YAML,

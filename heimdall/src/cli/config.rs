@@ -1,7 +1,9 @@
 //! `heimdall config <subcmd>` — inspect and validate the resolved
 //! config file.
 //!
-//! Four verbs:
+//! Six verbs:
+//! - `schema`: print the generated current JSON Schema without reading config.
+//! - `example`: print the same starter used by `heimdall init` without writing.
 //! - `validate`: parse + run schema checks; exit 0/1. CI-friendly.
 //! - `explain`: evaluate one TCP or UDP destination against the ordered rules.
 //! - `show`: print the file content (auto-discovered) so you can
@@ -20,8 +22,16 @@ use anyhow::{Context, Result};
 use heimdall_config::{Action, DnsMode, HeimdallConfig};
 use serde::Serialize;
 
+use super::init::InitFormat;
+
 #[derive(clap::Subcommand, Debug)]
 pub enum ConfigCmd {
+    /// Print the generated current JSON Schema without network access.
+    Schema(SchemaArgs),
+
+    /// Print a complete starter configuration without writing a file.
+    Example(ExampleArgs),
+
     /// Parse the config file and run schema validation. Exit 0 on
     /// success, 1 on parse or schema error.
     Validate(ValidateArgs),
@@ -37,6 +47,26 @@ pub enum ConfigCmd {
     Path,
 }
 
+impl ConfigCmd {
+    pub const fn reads_config(&self) -> bool {
+        !matches!(self, Self::Schema(_) | Self::Example(_))
+    }
+}
+
+#[derive(clap::Args, Debug)]
+pub struct SchemaArgs {
+    /// Schema version to print (currently v1).
+    #[arg(long, default_value = "v1")]
+    version: String,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct ExampleArgs {
+    /// Starter syntax; every format enters the same schema.
+    #[arg(long, value_enum, default_value_t = InitFormat::Toml)]
+    format: InitFormat,
+}
+
 #[derive(clap::Args, Debug)]
 pub struct ValidateArgs {
     /// Emit stable codes, JSON paths, messages, and repair hints.
@@ -46,7 +76,7 @@ pub struct ValidateArgs {
 
 #[derive(clap::Args, Debug)]
 pub struct ShowArgs {
-    /// JSON envelope: `{"path": "...", "format": "ncl"|..., "content": "..."}`.
+    /// JSON envelope with path, toml|yaml|json format, and source content.
     #[arg(long)]
     json: bool,
 }
@@ -95,6 +125,8 @@ impl ExplainNetwork {
 
 pub async fn run(config_path: &Path, cmd: ConfigCmd) -> Result<()> {
     match cmd {
+        ConfigCmd::Schema(args) => schema(args),
+        ConfigCmd::Example(args) => example(args),
         ConfigCmd::Validate(args) => validate(config_path, args).await,
         ConfigCmd::Explain(args) => explain(config_path, args),
         ConfigCmd::Show(args) => show(config_path, args),
@@ -103,6 +135,22 @@ pub async fn run(config_path: &Path, cmd: ConfigCmd) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn schema(args: SchemaArgs) -> Result<()> {
+    if args.version != "v1" {
+        anyhow::bail!("unsupported config schema `{}`", args.version);
+    }
+    println!(
+        "{}",
+        serde_json::to_string(&heimdall_config::json_schema())?
+    );
+    Ok(())
+}
+
+fn example(args: ExampleArgs) -> Result<()> {
+    print!("{}", args.format.template());
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -260,4 +308,29 @@ fn show(config_path: &Path, args: ShowArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_schema_accepts_the_bundled_json_example() {
+        let schema = heimdall_config::json_schema();
+        assert_eq!(
+            schema["$schema"],
+            "https://json-schema.org/draft/2020-12/schema"
+        );
+        assert_eq!(schema["title"], "heimdall.config/v1");
+        assert_eq!(schema["properties"]["version"]["const"], 1);
+        assert_eq!(schema["additionalProperties"], false);
+
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let example: serde_json::Value = serde_json::from_str(InitFormat::Json.template()).unwrap();
+        assert!(validator.is_valid(&example));
+
+        let mut unknown = example;
+        unknown["unknown"] = true.into();
+        assert!(!validator.is_valid(&unknown));
+    }
 }

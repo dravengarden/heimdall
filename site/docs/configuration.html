@@ -30,6 +30,13 @@
         <p>Heimdall reads exactly one <code>/etc/heimdall/config.&lt;format&gt;</code> file. The extension selects the parser; it does not select a different product model.</p>
         <div class="callout warning"><strong>Do not put passwords in config.</strong> Use an absolute <code>password_file</code> readable only by the invoking user. The foreground session removes one trailing newline and enforces the SOCKS5 length limit.</div>
 
+        <h2 id="schema">Offline schema and examples</h2>
+        <pre><code>heimdall config schema --version v1
+heimdall config example --format toml
+heimdall config example --format yaml
+heimdall config example --format json</code></pre>
+        <p>The JSON Schema is generated from the canonical Rust/Serde model, and each example is the same complete starter used by <code>heimdall init</code>. Both commands are read-only and work without a config file. Schema validation covers structure; finish with <code>heimdall config validate --json</code> for references and runtime capability checks.</p>
+
         <h2 id="minimal">Minimal configuration</h2>
         <div class="code-card"><div class="code-card-head"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>config.toml</span><button class="copy-button" type="button" data-copy="#minimal-config">Copy</button></div><pre id="minimal-config"><code>version = 1&#10;&#10;[proxy]&#10;default_policy = "default"&#10;&#10;[proxy.outbounds.default]&#10;type = "socks5"&#10;server = "127.0.0.1"&#10;server_port = 1080&#10;network = ["tcp"]&#10;&#10;[proxy.policies.default.dns]&#10;mode = "fake"&#10;&#10;[proxy.policies.default.final]&#10;tcp = { type = "route", outbound = "default" }&#10;udp = { type = "reject", method = "refused" }&#10;&#10;[capture]&#10;mode = "off"&#10;&#10;[decrypt]&#10;mode = "off"</code></pre></div>
 

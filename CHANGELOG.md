@@ -58,6 +58,8 @@ migration guide.
   downstream certificate alerts, and downstream closes without TLS
   `close_notify`, with stable codes, phases, peer-verification state, and
   matching flow-close evidence.
+- Add offline `heimdall config schema` and read-only `config example` commands,
+  generated from the canonical Rust/Serde model and shared init templates.
 
 ### Fixed
 

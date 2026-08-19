@@ -930,7 +930,13 @@ async fn main() -> Result<()> {
         }
         Cmd::SetupWorker => setup_worker_entry(),
         Cmd::Config(sub) => {
-            let config_path = resolve_config_path(cli.config.as_deref())?;
+            let config_path = if sub.reads_config() {
+                resolve_config_path(cli.config.as_deref())?
+            } else {
+                cli.config.unwrap_or_else(|| {
+                    PathBuf::from(heimdall_config::DEFAULT_DIR).join("config.toml")
+                })
+            };
             cli::config::run(&config_path, sub).await
         }
         Cmd::Tls(sub) => cli::tls::run(sub),

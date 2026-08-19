@@ -5,6 +5,21 @@ and JSON enter the same strict schema. Unknown fields, duplicate named
 objects, invalid enums, bad references, unsupported protocol capabilities, and
 contradictory DNS/routing choices are rejected before a command is started.
 
+Inspect the current structural contract or print a complete starter without
+reading or writing configuration:
+
+```bash
+heimdall config schema --version v1
+heimdall config example --format toml
+heimdall config example --format yaml
+heimdall config example --format json
+```
+
+The bundled JSON Schema is generated from the canonical Rust/Serde model and
+works offline. It catches field shape, enum, required-field, unknown-field, and
+config-version errors. It cannot prove references or runtime capabilities, so
+always finish with `heimdall config validate --json`.
+
 ## Minimal configuration
 
 ```toml

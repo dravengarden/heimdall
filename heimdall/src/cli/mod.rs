@@ -214,6 +214,8 @@ pub mod agent {
     #[derive(Debug, Serialize)]
     struct Actions {
         validate: Vec<String>,
+        config_schema: Vec<String>,
+        config_example_toml: Vec<String>,
         execute_prefix: Option<Vec<String>>,
         tls_ca_init: Option<Vec<String>>,
         logs_schema_event: Vec<String>,
@@ -279,6 +281,8 @@ pub mod agent {
                 outbounds: Vec::new(),
                 actions: Actions {
                     validate: validate_argv,
+                    config_schema: config_argv(&["schema", "--version", "v1"]),
+                    config_example_toml: config_argv(&["example", "--format", "toml"]),
                     execute_prefix: None,
                     tls_ca_init: None,
                     logs_schema_event: vec![
@@ -428,6 +432,8 @@ pub mod agent {
             outbounds,
             actions: Actions {
                 validate: argv_for(&path, &["config", "validate", "--json"]),
+                config_schema: config_argv(&["schema", "--version", "v1"]),
+                config_example_toml: config_argv(&["example", "--format", "toml"]),
                 execute_prefix,
                 tls_ca_init: relay_ca_init_argv(&config.decrypt),
                 logs_schema_event: vec![
@@ -481,6 +487,12 @@ pub mod agent {
 
     fn logs_argv(suffix: &[&str]) -> Vec<String> {
         let mut argv = vec!["heimdall".into(), "logs".into()];
+        argv.extend(suffix.iter().map(|value| (*value).to_string()));
+        argv
+    }
+
+    fn config_argv(suffix: &[&str]) -> Vec<String> {
+        let mut argv = vec!["heimdall".into(), "config".into()];
         argv.extend(suffix.iter().map(|value| (*value).to_string()));
         argv
     }

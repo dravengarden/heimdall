@@ -86,6 +86,10 @@ Read [references/config.md](references/config.md) before creating or changing a
 config. Keep exactly one discovered
 `/etc/heimdall/config.{toml,yaml,yml,json}` unless global `--config` is
 explicit.
+Use `heimdall config schema --version v1` for the offline structural contract
+and `heimdall config example --format <toml|yaml|json>` for a complete starter.
+Still run `heimdall config validate --json`; schema validation cannot resolve
+named policies/outbounds or prove runtime capabilities.
 
 After every edit, run:
 

@@ -31,7 +31,7 @@ material, and operational guidance.
 - [`product-contract.md`](product-contract.md) — Single normative statement of the current product contract
 - [`ROADMAP.md`](../ROADMAP.md) — Public status, planned macOS wrapper/Network Extension backends, and roadmap
 - [`architecture.md`](architecture.md) — CLI, eBPF, DNS, TCP/UDP relay, and TLS decrypt boundaries
-- [`config.md`](config.md) — Strict TOML/YAML/JSON policy rules, credentials, capture allowlists/redaction, decrypt modes, and UDP/QUIC limits
+- [`config.md`](config.md) — Generated offline schema/examples, strict TOML/YAML/JSON policy rules, credentials, capture allowlists/redaction, decrypt modes, and UDP/QUIC limits
 - [`install.md`](install.md) — Reproducible x86_64 Linux artifact, install ownership, upgrade, and rollback
 - [`runbook.md`](runbook.md) — Build, narrow setup authorization, agent/log contracts, capture readiness, daemonless operation, TLS, VM acceptance, and performance baseline
 

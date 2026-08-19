@@ -126,7 +126,13 @@ user that invokes relay mode. Heimdall never uploads captures; use
 
 ## Repair protocol
 
-Run `heimdall config validate --json`. Iterate over every `diagnostics` item:
+Start with `heimdall config schema --version v1` when an editor or agent needs
+the offline structural contract. Use `heimdall config example --format
+<toml|yaml|json>` for a complete starter; it is read-only and shares the exact
+templates used by `heimdall init`.
+
+Then run `heimdall config validate --json`. JSON Schema cannot resolve named
+references or protocol capabilities. Iterate over every `diagnostics` item:
 
 1. Locate the field using `path`.
 2. Branch on stable `code`, not message text.

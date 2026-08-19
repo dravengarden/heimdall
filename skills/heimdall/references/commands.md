@@ -4,6 +4,8 @@
 
 ```bash
 heimdall agent
+heimdall config schema --version v1
+heimdall config example --format toml
 heimdall config path
 heimdall config show
 heimdall config validate --json
@@ -21,10 +23,12 @@ When capture is on, require
 `config.capture.redaction_values_ready = true`, then inspect its explicit
 boundary/direction allowlists before using `actions.execute_prefix`.
 
-`config show` prints source text. `config validate` applies the shared strict
-schema. `config explain` evaluates one destination and returns the first rule
-plus structured action; use `--network udp` and either `--domain` or `--ip` as
-appropriate.
+`config schema` prints the generated structural contract offline. `config
+example` prints the same complete starter used by `init` without writing.
+`config show` prints source text. `config validate` adds cross-reference and
+capability checks. `config explain` evaluates one destination and returns the
+first rule plus structured action; use `--network udp` and either `--domain`
+or `--ip` as appropriate.
 
 ## Run through a policy
 

@@ -22,6 +22,8 @@ acceptance path are documented and tested.
   explicit reject actions.
 - Strict TOML, YAML, and JSON configuration with shared validation, stable
   diagnostic codes, JSON paths, and repair hints.
+- An offline JSON Schema generated from that model, plus complete read-only
+  starter examples in every supported syntax.
 - `heimdall agent` as a read-only `heimdall.agent/v8` preflight with argv-safe
   actions, selected execution ownership, and capability evidence.
 - Daemonless foreground execution for all decrypt modes:
@@ -171,13 +173,6 @@ capture, and TLS without changing the daemonless product boundary.
   x86_64 release path has enough field coverage.
 - Keep release installation, transient setup privilege, and user-owned
   session/log state separate on every supported package format.
-
-### Configuration ergonomics
-
-- Improve schema discoverability and generated examples while keeping one
-  format-independent model and strict cross-format semantics.
-- Publish each future pre-1.0 schema change as one complete current contract;
-  do not add aliases or hidden compatibility parsing.
 
 ### macOS backend and fallback
 

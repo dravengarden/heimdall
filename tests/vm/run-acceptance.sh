@@ -57,6 +57,13 @@ capture_contains() {
 
 as_tester heimdall config validate --json \
   | jq -e '.contract == "heimdall.config.validate/v2" and .valid'
+as_tester heimdall config schema --version v1 \
+  | jq -e '."$schema" == "https://json-schema.org/draft/2020-12/schema"
+    and .title == "heimdall.config/v1"
+    and .properties.version.const == 1
+    and .additionalProperties == false' >/dev/null
+as_tester heimdall config example --format toml > /tmp/heimdall-example.toml
+as_tester heimdall --config /tmp/heimdall-example.toml config validate
 as_tester heimdall agent \
   | jq -e '.contract == "heimdall.agent/v8"
     and .ready
@@ -132,6 +139,8 @@ as_tester heimdall agent \
     and .capabilities.lifecycle.descendant_cgroup_lifetime
     and .capabilities.lifecycle.exit_code_passthrough
     and .actions.logs_schema_event == ["heimdall", "logs", "schema", "--event", "v1"]
+    and .actions.config_schema == ["heimdall", "config", "schema", "--version", "v1"]
+    and .actions.config_example_toml == ["heimdall", "config", "example", "--format", "toml"]
     and .actions.logs_summary == ["heimdall", "logs", "summary", "--run", "<RUN_ID>", "--json"]
     and .actions.logs_schema_run == ["heimdall", "logs", "schema", "--run", "v1"]
     and .actions.logs_list == ["heimdall", "logs", "list", "--json"]

@@ -29,7 +29,7 @@
         <h2 id="surface">The command surface</h2>
         <pre><code>heimdall run [--policy NAME] -- COMMAND [ARGS...]
 heimdall agent [--policy NAME]
-heimdall config validate|explain|show|path
+heimdall config schema|example|validate|explain|show|path
 heimdall tls init-ca [--json]
 heimdall logs schema|list|path|summary|query|tail|rotate|verify|recover|prune
 heimdall init [--dir PATH] [--format toml|yaml|json] [--force]</code></pre>
@@ -37,6 +37,8 @@ heimdall init [--dir PATH] [--format toml|yaml|json] [--force]</code></pre>
 
         <h2 id="inspect">Inspect without mutation</h2>
         <pre><code>heimdall agent
+heimdall config schema --version v1
+heimdall config example --format toml
 heimdall config path
 heimdall config show
 heimdall config validate --json
