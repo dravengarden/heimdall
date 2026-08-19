@@ -57,6 +57,9 @@ acceptance path are documented and tested.
   state in the shipped CLI.
 - A real-eBPF NixOS acceptance VM covering dual-stack TCP/UDP, QUIC, common
   CLI/runtime clients, lifecycle behavior, and both TLS paths.
+- A machine-readable real-eBPF benchmark covering daemonless latency, RSS,
+  1/10/50 concurrent starts, sustained TCP/UDP and capture throughput, and
+  event integrity without requiring a metrics service.
 - Reproducible static x86_64 Linux archives with checksum verification,
   atomic installation, and one-level executable rollback.
 
@@ -152,11 +155,10 @@ from file names or process names.
 The disposable real-eBPF VM now emits a machine-readable
 `heimdall.benchmark/v1` baseline for daemonless cold start, direct TCP, proxied
 TCP/UDP, relay TLS, maximum process RSS, event integrity, and 1/10/50 concurrent
-runs. Results are explicitly environment-specific rather than product-wide
-performance claims.
+runs. It also records sustained direct and proxied TCP, proxied UDP, transport
+capture, and relay TLS plaintext-capture throughput. Results are explicitly
+environment-specific rather than product-wide performance claims.
 
-- Add sustained transport and capture throughput workloads instead of
-  extrapolating from command-completion latency.
 - Repeat the baseline across the supported kernel and distribution matrix.
 - Keep operational health low-cardinality and derived from the same per-run
   evidence used by agents; do not add a required metrics daemon.

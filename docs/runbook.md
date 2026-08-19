@@ -197,9 +197,14 @@ nix develop -c just benchmark-vm
 The check emits one `HEIMDALL_BENCHMARK_JSON=` line containing the
 `heimdall.benchmark/v1` document. It covers cold start, direct TCP, proxied
 TCP/UDP, relay TLS, maximum process RSS, 1/10/50 concurrent cold starts, and
-post-run event integrity. Treat every result as specific to the reported
-architecture, kernel, CPU count, and VM resources. It is not a universal
-throughput claim; sustained transport throughput remains a roadmap item.
+post-run event integrity. Its `throughput` records measure sustained direct and
+proxied TCP, proxied UDP, full transport capture, and relay TLS plaintext
+capture, with transferred bytes, elapsed nanoseconds, bytes per second, and
+the active capture/decrypt boundary. Event integrity requires zero incomplete
+runs, sequence gaps, out-of-order records, active or failed flows, and error
+events. Treat every result as specific to the reported architecture, kernel,
+CPU count, and VM resources; it is a repeatable environment baseline, not a
+universal throughput claim.
 
 For relay TLS certificate failures, inspect `tls.error` before changing trust:
 

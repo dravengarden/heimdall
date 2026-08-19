@@ -118,6 +118,35 @@ let
       ]
       heimdallConfigText
   );
+  benchmarkNoCaptureConfig = pkgs.writeText "heimdall-benchmark-no-capture.toml" (
+    builtins.replaceStrings [ ''mode = "on"'' ] [ ''mode = "off"'' ] heimdallConfigText
+  );
+  benchmarkCaptureText =
+    builtins.replaceStrings
+      [
+        "max_bytes_per_flow = 512"
+        "block_max_bytes = 32"
+        "flush_interval_ms = 20"
+      ]
+      [
+        "max_bytes_per_flow = 33554432"
+        "block_max_bytes = 65536"
+        "flush_interval_ms = 100"
+      ]
+      heimdallConfigText;
+  benchmarkCaptureConfig = pkgs.writeText "heimdall-benchmark-capture.toml" benchmarkCaptureText;
+  benchmarkRelayCaptureConfig = pkgs.writeText "heimdall-benchmark-relay-capture.toml" (
+    builtins.replaceStrings
+      [ ''mode = "off"'' ]
+      [
+        ''
+          mode = "relay"
+          ca_cert = "/run/heimdall-test/relay/ca.pem"
+          ca_key = "/run/heimdall-test/relay/ca-key.pem"
+        ''
+      ]
+      benchmarkCaptureText
+  );
 in
 {
   networking.hostName = "heimdall-test";
@@ -207,7 +236,7 @@ in
   systemd.services.heimdall-test-tls = {
     wantedBy = [ "multi-user.target" ];
     serviceConfig = {
-      ExecStart = "${pkgs.openssl}/bin/openssl s_server -quiet -www -accept 127.0.0.1:18444 -cert ${tlsFixture}/server.pem -key ${tlsFixture}/server-key.pem";
+      ExecStart = "${pkgs.python3}/bin/python3 ${./http_fixture.py} ${tlsFixture}/server.pem ${tlsFixture}/server-key.pem";
       Restart = "on-failure";
     };
   };
@@ -273,9 +302,16 @@ in
     source = ../perf/vm-baseline.py;
     mode = "0755";
   };
+  environment.etc."heimdall-test/udp-throughput.py" = {
+    source = ../perf/udp-throughput.py;
+    mode = "0755";
+  };
   environment.etc."heimdall/config.toml".source = heimdallConfig;
   environment.etc."heimdall-test/runtime.toml".source = runtimeConfig;
   environment.etc."heimdall-test/relay.toml".source = relayConfig;
+  environment.etc."heimdall-test/benchmark-no-capture.toml".source = benchmarkNoCaptureConfig;
+  environment.etc."heimdall-test/benchmark-capture.toml".source = benchmarkCaptureConfig;
+  environment.etc."heimdall-test/benchmark-relay-capture.toml".source = benchmarkRelayCaptureConfig;
   environment.etc."heimdall-test/upstream-ca.pem".source = "${tlsFixture}/ca.pem";
 
   assertions = [

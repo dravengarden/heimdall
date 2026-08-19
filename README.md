@@ -63,7 +63,7 @@ need compatibility hardening.
 | Static Linux packaging | Available | Reproducible x86_64 musl archive, checksum, atomic install, and one-level rollback |
 | Runtime and kernel compatibility | In development | Expanding the tested matrix and documenting unsupported edge cases |
 | Capture analysis | In development | Allowlists, redaction, bounded blocks, orphan recovery, and provenance-linked HTTP/1 header evidence are available; broader analysis remains active work |
-| Performance and observability | In development | Repeatable real-eBPF VM latency, RSS, 1/10/50 concurrency, and event-integrity baselines are available; sustained transport throughput remains to be measured |
+| Performance and observability | In development | Repeatable real-eBPF VM latency, RSS, 1/10/50 concurrency, sustained TCP/UDP/capture throughput, and event-integrity baselines are available; the wider platform matrix remains active work |
 
 See [docs/product-contract.md](docs/product-contract.md) for the normative
 requirements and [ROADMAP.md](ROADMAP.md) for status and planned work.

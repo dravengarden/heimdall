@@ -1,16 +1,16 @@
 ---
 type: docs_index
-description: Heimdall CLI proxy, daemonless runtime, agent event-log and performance baseline designs including derived HTTP evidence, strict configuration, roadmap, and operations documentation.
+description: Heimdall CLI proxy, daemonless runtime, agent event-log and sustained performance baseline designs including derived HTTP evidence, strict configuration, roadmap, and operations documentation.
 ---
 
 # Documentation index
 
 ## Scope
 
-Heimdall CLI proxy, daemonless runtime, agent event-log and performance
-baseline designs including derived HTTP evidence, strict configuration, roadmap, and operations
-documentation. The index distinguishes stable contracts, planning, design
-material, and operational guidance.
+Heimdall CLI proxy, daemonless runtime, agent event-log and sustained
+performance baseline designs including derived HTTP evidence, strict
+configuration, roadmap, and operations documentation. The index distinguishes
+stable contracts, planning, design material, and operational guidance.
 
 ## Reading order
 

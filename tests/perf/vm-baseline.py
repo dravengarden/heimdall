@@ -101,6 +101,37 @@ def timed_batch(time_bin, argv, concurrency, scenario, iteration):
     }
 
 
+def timed_transfer(argv, scenario, expected_bytes, capture, decrypt):
+    start = time.monotonic_ns()
+    completed = subprocess.run(argv, capture_output=True, text=True, check=False)
+    wall_ns = time.monotonic_ns() - start
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"{scenario} failed with {completed.returncode}: {completed.stderr[-400:]}"
+        )
+    try:
+        transferred_bytes = int(float(completed.stdout.strip()))
+    except ValueError as error:
+        raise RuntimeError(
+            f"{scenario} returned invalid byte count: {completed.stdout[-200:]!r}"
+        ) from error
+    if transferred_bytes != expected_bytes:
+        raise RuntimeError(
+            f"{scenario} transferred {transferred_bytes}, expected {expected_bytes} bytes"
+        )
+    return {
+        "scenario": scenario,
+        "transferred_bytes": transferred_bytes,
+        "wall_ns": wall_ns,
+        "bytes_per_second": round(
+            transferred_bytes / (wall_ns / 1_000_000_000),
+            3,
+        ),
+        "capture": capture,
+        "decrypt": decrypt,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--iterations", type=int, default=3)
@@ -114,6 +145,9 @@ def main():
         raise RuntimeError("heimdall and GNU time must be on PATH")
     config = "/etc/heimdall/config.toml"
     relay_config = "/etc/heimdall-test/relay.toml"
+    no_capture_config = "/etc/heimdall-test/benchmark-no-capture.toml"
+    capture_config = "/etc/heimdall-test/benchmark-capture.toml"
+    relay_capture_config = "/etc/heimdall-test/benchmark-relay-capture.toml"
     subprocess.check_call(
         [heimdall, "tls", "init-ca", "--dir", "/run/heimdall-test/relay", "--json"],
         stdout=subprocess.DEVNULL,
@@ -144,6 +178,113 @@ def main():
             )
         )
 
+    tcp_bytes = 16 * 1024 * 1024
+    tcp_path = f"/bytes/{tcp_bytes}"
+    curl_output = ["-fsS", "-o", "/dev/null", "-w", "%{size_download}"]
+    udp_sent_bytes = 8 * 1024 * 1024
+    udp_chunk_bytes = 8192
+    udp_packets = math.ceil(udp_sent_bytes / udp_chunk_bytes)
+    udp_transferred_bytes = (2 * udp_sent_bytes) + (len("udp-v4:") * udp_packets)
+    throughput = [
+        timed_transfer(
+            command(
+                heimdall,
+                "--config",
+                no_capture_config,
+                "run",
+                "--policy",
+                "direct",
+                "--",
+                "curl",
+                *curl_output,
+                f"http://127.0.0.1:18080{tcp_path}",
+            ),
+            "direct_tcp_no_capture",
+            tcp_bytes,
+            "off",
+            "off",
+        ),
+        timed_transfer(
+            command(
+                heimdall,
+                "--config",
+                no_capture_config,
+                "run",
+                "--policy",
+                "fake",
+                "--",
+                "curl",
+                *curl_output,
+                f"http://fixture.test:18080{tcp_path}",
+            ),
+            "proxy_tcp_no_capture",
+            tcp_bytes,
+            "off",
+            "off",
+        ),
+        timed_transfer(
+            command(
+                heimdall,
+                "--config",
+                no_capture_config,
+                "run",
+                "--policy",
+                "udp",
+                "--",
+                "python3",
+                "/etc/heimdall-test/udp-throughput.py",
+                "fixture.test",
+                "18082",
+                "--bytes",
+                udp_sent_bytes,
+                "--chunk-bytes",
+                udp_chunk_bytes,
+            ),
+            "proxy_udp_no_capture",
+            udp_transferred_bytes,
+            "off",
+            "off",
+        ),
+        timed_transfer(
+            command(
+                heimdall,
+                "--config",
+                capture_config,
+                "run",
+                "--policy",
+                "fake",
+                "--",
+                "curl",
+                *curl_output,
+                f"http://fixture.test:18080{tcp_path}",
+            ),
+            "proxy_tcp_capture",
+            tcp_bytes,
+            "transport",
+            "off",
+        ),
+        timed_transfer(
+            command(
+                heimdall,
+                "--config",
+                relay_capture_config,
+                "run",
+                "--policy",
+                "fake",
+                "--",
+                "curl",
+                "--cacert",
+                "/run/heimdall-test/relay/ca.pem",
+                *curl_output,
+                f"https://fixture.test:18444{tcp_path}",
+            ),
+            "relay_tls_capture",
+            tcp_bytes,
+            "tls_plaintext.relay",
+            "relay",
+        ),
+    ]
+
     after = run_ids(heimdall)
     summaries = [
         run_json([heimdall, "logs", "summary", "--run", run_id, "--json"])
@@ -153,6 +294,10 @@ def main():
     out_of_order = sum(item["sequence"]["out_of_order_records"] for item in summaries)
     incomplete = sum(not item["complete"] for item in summaries)
     active_flows = sum(item["flows"]["active"] for item in summaries)
+    failed_flows = sum(
+        sum(item["flows"]["failures_by_code"].values()) for item in summaries
+    )
+    error_events = sum(item["error_events"]["total"] for item in summaries)
     report = {
         "contract": "heimdall.benchmark/v1",
         "scope": "disposable-nixos-vm",
@@ -165,16 +310,27 @@ def main():
         },
         "samples": samples,
         "aggregates": aggregate(samples),
+        "throughput": throughput,
         "event_integrity": {
             "runs": len(summaries),
             "incomplete_runs": incomplete,
             "missing_records": missing,
             "out_of_order_records": out_of_order,
             "active_flows_after_close": active_flows,
+            "failed_flows": failed_flows,
+            "error_events": error_events,
         },
         "interpretation": "Environment-specific baseline, not a universal performance claim.",
     }
-    if not summaries or incomplete or missing or out_of_order or active_flows:
+    if (
+        not summaries
+        or incomplete
+        or missing
+        or out_of_order
+        or active_flows
+        or failed_flows
+        or error_events
+    ):
         raise RuntimeError(f"event integrity failed: {report['event_integrity']}")
     print(json.dumps(report, separators=(",", ":"), sort_keys=True))
 

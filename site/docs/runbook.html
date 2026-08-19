@@ -57,7 +57,7 @@ heimdall run -- curl -fsS https://example.com</code></pre>
 
         <h2 id="benchmark">Performance baseline</h2>
         <pre><code>nix develop -c just benchmark-vm</code></pre>
-        <p>The disposable real-eBPF VM emits one <code>heimdall.benchmark/v1</code> document after measuring cold start, direct TCP, proxied TCP/UDP, relay TLS, maximum RSS, 1/10/50 concurrent starts, and event integrity. Results are specific to the reported VM, architecture, kernel, and CPU count; sustained transport throughput remains an active roadmap item.</p>
+        <p>The disposable real-eBPF VM emits one <code>heimdall.benchmark/v1</code> document after measuring cold start, direct TCP, proxied TCP/UDP, relay TLS, maximum RSS, 1/10/50 concurrent starts, event integrity, and sustained direct/proxied TCP, proxied UDP, transport-capture, and relay-plaintext-capture throughput. Each throughput record includes bytes, elapsed time, bytes per second, and its capture/decrypt boundary. Event integrity requires zero incomplete runs, sequence gaps, out-of-order records, active or failed flows, and error events. Results are specific to the reported VM, architecture, kernel, and CPU count; they are an environment baseline, not a universal performance claim.</p>
 
         <h2 id="diagnose">Diagnose failures</h2>
         <ol><li>Run <code>heimdall agent</code> and preserve its JSON even when it exits 1.</li><li>Follow <code>actions.validate</code> as an argv array.</li><li>Check the exact sudoers path if foreground setup is denied.</li><li>Preview with <code>config explain</code>, then reproduce with a minimal command and the same policy.</li></ol>

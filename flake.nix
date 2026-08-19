@@ -429,17 +429,28 @@
             report = json.loads(output)
             assert report["contract"] == "heimdall.benchmark/v1"
             assert report["event_integrity"] == {
-              "runs": 81,
+              "runs": 86,
               "incomplete_runs": 0,
               "missing_records": 0,
               "out_of_order_records": 0,
               "active_flows_after_close": 0,
+              "failed_flows": 0,
+              "error_events": 0,
             }
             assert {
               item["concurrency"]
               for item in report["aggregates"]
               if item["scenario"] == "concurrent_cold_start"
             } == {1, 10, 50}
+            assert {item["scenario"] for item in report["throughput"]} == {
+              "direct_tcp_no_capture",
+              "proxy_tcp_no_capture",
+              "proxy_udp_no_capture",
+              "proxy_tcp_capture",
+              "relay_tls_capture",
+            }
+            assert all(item["transferred_bytes"] > 0 for item in report["throughput"])
+            assert all(item["bytes_per_second"] > 0 for item in report["throughput"])
             print("HEIMDALL_BENCHMARK_JSON=" + output.strip())
           '';
         };
