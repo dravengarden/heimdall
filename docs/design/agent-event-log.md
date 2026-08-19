@@ -4,7 +4,8 @@ Status: lifecycle, TCP/UDP metadata, bounded content-addressed payload blobs,
 payload-aware queries, byte/age rotation, and integrity verification are
 implemented. Correlated fake-DNS, policy-decision, OpenSSL runtime-observation,
 relay ClientHello, and relay TLS handshake/error metadata are implemented.
-Derived HTTP events remain in progress.
+Bounded provenance-linked HTTP/1 request/response header records are
+implemented for explicit TLS plaintext.
 
 This document defines the unified storage and CLI contract. The goals are direct Linux-tool usability, strict
 machine discovery, bounded storage, and loss-aware rotation. The event log is
@@ -112,10 +113,9 @@ mask matching payload bytes; it never persists those values as metadata.
 
 The v1 schema reserves the kinds below. The current writer emits run lifecycle,
 fake-DNS, policy-decision, TCP/UDP flow, payload-reference, `tls.runtime`, relay
-`tls.client_hello`, and relay `tls.handshake`/`tls.error` records. HTTP kinds are
-not yet emitted and must not be inferred from their presence in the schema. New
-meanings require a new schema version; optional fields cannot reinterpret an
-existing kind.
+`tls.client_hello`, relay `tls.handshake`/`tls.error`, and derived HTTP/1
+request/response records. New meanings require a new schema version; optional
+fields cannot reinterpret an existing kind.
 
 ### Run lifecycle
 
@@ -175,10 +175,19 @@ No key material, session secrets, or private CA content is ever logged.
 - `http.request`
 - `http.response`
 
-These records are optional derived evidence. They carry `source_seq` values
-pointing to the plaintext events from which they were parsed and a parser
-version. Absence means “not parsed,” not “not HTTP.” Header values and bodies
-follow the same capture/redaction limits as payload blobs.
+These records are optional derived evidence from the first complete HTTP/1
+header block in each direction of an explicitly captured `tls_plaintext.*`
+flow. The parser buffers at most 64 KiB per direction, emits no record for
+invalid, incomplete, oversized, or non-HTTP/1 input, and does not parse HTTP/2.
+Each record carries `parser={name:"heimdall-http1",version:"1"}` and
+`source_seq`, the exact plaintext event sequence numbers that contributed to
+the header. Absence means “not parsed,” not “not HTTP.”
+
+`Authorization`, `Proxy-Authorization`, `Cookie`, and `Set-Cookie` values are
+always replaced with `[REDACTED]` in derived headers. Other header values are
+derived from payload bytes after configured exact-value redaction. `body` is
+always null; retained payload remains governed by the blob allowlist,
+redaction, and size limits above.
 
 ## Payload blobs
 
@@ -336,6 +345,16 @@ Find flows with captured TLS plaintext:
 jq -r 'select(.kind == "flow.data" and
   (.data.boundary | startswith("tls_plaintext."))) | .flow_id' \
   "$run_dir"/events-*.jsonl | sort -u
+```
+
+Inspect derived HTTP/1 metadata with its source evidence:
+
+```bash
+jq -c 'select(.kind == "http.request" or .kind == "http.response") |
+  {seq, flow_id, source_seq: .data.source_seq,
+   method: .data.method, authority: .data.authority,
+   path: .data.path, status: .data.status}' \
+  "$run_dir"/events-*.jsonl
 ```
 
 Verify and read one payload:

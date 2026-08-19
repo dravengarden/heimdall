@@ -34,6 +34,9 @@ acceptance path are documented and tested.
   redaction before hashing or blob publication.
 - Per-flow/direction bounded payload block coalescing with explicit size,
   latency, index, and flush-reason evidence.
+- Conservative HTTP/1 request/response header records derived only from
+  explicit TLS plaintext, with parser provenance, source-event sequence links,
+  fixed masking for common credential headers, and no retained body copy.
 - Dry-run-first recovery of orphaned runs that rejects active owners and
   finalized-segment mutation while preserving discarded tail evidence.
 - Foreground SIGHUP/SIGINT/SIGQUIT/SIGTERM forwarding with finalized exit and
@@ -80,8 +83,8 @@ normal cleanup, and fail-closed owner-death cleanup. See
 
 ### 2. Agent-first event store
 
-- Extend the available per-run event store beyond fake-DNS, policy, runtime
-  TLS, ClientHello, and relay TLS evidence with optional HTTP records.
+- Extend the available per-run event store beyond HTTP/1 headers only when a
+  protocol parser can remain bounded, provenance-linked, and conservative.
 - Keep stable `event_store_full` diagnostics around bounded block coalescing
   and atomic blob publication.
 - Keep the available rotation writer-owned and loss-aware; do not support
@@ -122,8 +125,9 @@ trusted.
 
 ### 5. Capture analysis workflow
 
-- Extend the available boundary/direction/blob filters with bounded block
-  inspection that does not weaken strict private ownership.
+- Extend the available boundary/direction/blob filters and HTTP/1 header
+  evidence with bounded inspection that does not weaken strict private
+  ownership.
 - Expand the available pre-storage allowlist and exact-value redaction model
   only where the failure boundary remains deterministic and agent-readable.
 - Keep documenting retention and failure behavior for production-like private

@@ -749,22 +749,24 @@ fn serve_event(log: &RunLog, stream: &mut UnixStream) -> Result<()> {
                 | "tls.client_hello"
                 | "tls.handshake"
                 | "tls.error"
+                | "http.request"
+                | "http.response"
         ),
         "unsupported external event kind"
     );
-    match (request.kind.as_str(), request.payload_base64) {
+    let seq = match (request.kind.as_str(), request.payload_base64) {
         ("flow.data", Some(encoded)) => {
             let flow_id = request.flow_id.context("flow.data requires flow_id")?;
             let payload = STANDARD
                 .decode(encoded)
                 .context("decode flow.data payload")?;
-            log.emit_payload(flow_id, request.pid, request.data, &payload)?;
+            log.emit_payload(flow_id, request.pid, request.data, &payload)?
         }
         ("flow.data", None) => anyhow::bail!("flow.data requires payload_base64"),
         (_, Some(_)) => anyhow::bail!("payload_base64 is only valid for flow.data"),
         (_, None) => {
             if let Some(flow_id) = request.flow_id {
-                log.emit_flow(&request.kind, flow_id, request.pid, request.data)?;
+                log.emit_flow(&request.kind, flow_id, request.pid, request.data)?
             } else {
                 anyhow::ensure!(
                     matches!(
@@ -774,13 +776,13 @@ fn serve_event(log: &RunLog, stream: &mut UnixStream) -> Result<()> {
                     "{} requires flow_id",
                     request.kind
                 );
-                log.emit(&request.kind, request.pid, request.data)?;
+                log.emit(&request.kind, request.pid, request.data)?
             }
         }
-    }
+    };
     write_json_line(
         stream,
-        &json!({"contract": "heimdall.logs.emit.result/v1", "ok": true}),
+        &json!({"contract": "heimdall.logs.emit.result/v1", "ok": true, "seq": seq}),
     )
 }
 
@@ -877,7 +879,7 @@ impl EventClient {
         stream
             .read_to_end(&mut response)
             .context("read event response")?;
-        ensure_event_response(&response, "record event")
+        ensure_event_response(&response, "record event").map(|_| ())
     }
 }
 
@@ -904,7 +906,7 @@ impl EventClient {
         stream
             .read_to_end(&mut response)
             .context("read run event response")?;
-        ensure_event_response(&response, "record run event")
+        ensure_event_response(&response, "record run event").map(|_| ())
     }
 
     pub fn emit_payload(
@@ -914,7 +916,7 @@ impl EventClient {
         boundary: &str,
         payload: &[u8],
         metadata: PayloadMetadata,
-    ) -> Result<()> {
+    ) -> Result<u64> {
         let mut stream = UnixStream::connect(self.socket_path.as_ref())
             .with_context(|| format!("connect event socket {}", self.socket_path.display()))?;
         configure_client_timeouts(&stream)?;
@@ -964,7 +966,7 @@ impl FlowEventClient {
         boundary: &str,
         payload: &[u8],
         metadata: PayloadMetadata,
-    ) -> Result<()> {
+    ) -> Result<u64> {
         self.client
             .emit_payload(flow_id, direction, boundary, payload, metadata)
     }
@@ -1013,10 +1015,12 @@ fn classify_event_error(error: &anyhow::Error) -> &'static str {
     "event_failed"
 }
 
-fn ensure_event_response(response: &[u8], operation: &str) -> Result<()> {
+fn ensure_event_response(response: &[u8], operation: &str) -> Result<u64> {
     let response: Value = serde_json::from_slice(response).context("decode event response")?;
     if response["ok"] == true {
-        return Ok(());
+        return response["seq"]
+            .as_u64()
+            .context("successful event response is missing sequence");
     }
     let code = response["code"].as_str().unwrap_or("event_failed");
     let message = response["message"]

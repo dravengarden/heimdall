@@ -62,7 +62,7 @@ need compatibility hardening.
 | Relay TLS decryption | Available daemonless with alpha limits | Local CA plus per-host leaves; client trust and protocol compatibility are required |
 | Static Linux packaging | Available | Reproducible x86_64 musl archive, checksum, atomic install, and one-level rollback |
 | Runtime and kernel compatibility | In development | Expanding the tested matrix and documenting unsupported edge cases |
-| Capture analysis | In development | Allowlists, redaction, bounded blocks, and orphan recovery are available; optional HTTP records remain active work |
+| Capture analysis | In development | Allowlists, redaction, bounded blocks, orphan recovery, and provenance-linked HTTP/1 header evidence are available; broader analysis remains active work |
 
 See [docs/product-contract.md](docs/product-contract.md) for the normative
 requirements and [ROADMAP.md](ROADMAP.md) for status and planned work.

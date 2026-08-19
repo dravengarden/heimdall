@@ -93,7 +93,7 @@ let
 
     [capture]
     mode = "on"
-    max_bytes_per_flow = 128
+    max_bytes_per_flow = 512
     block_max_bytes = 32
     flush_interval_ms = 20
     boundaries = ["transport", "tls_plaintext.runtime", "tls_plaintext.relay"]

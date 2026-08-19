@@ -1,15 +1,16 @@
 ---
 type: docs_index
-description: Heimdall CLI proxy, daemonless runtime and agent event-log designs, strict configuration, roadmap, and operations documentation.
+description: Heimdall CLI proxy, daemonless runtime and agent event-log designs including derived HTTP evidence, strict configuration, roadmap, and operations documentation.
 ---
 
 # Documentation index
 
 ## Scope
 
-Heimdall CLI proxy, daemonless runtime and agent event-log designs, strict
-configuration, roadmap, and operations documentation. The index distinguishes
-stable contracts, planning, design material, and operational guidance.
+Heimdall CLI proxy, daemonless runtime and agent event-log designs including
+derived HTTP evidence, strict configuration, roadmap, and operations
+documentation. The index distinguishes stable contracts, planning, design
+material, and operational guidance.
 
 ## Reading order
 
@@ -37,5 +38,5 @@ stable contracts, planning, design material, and operational guidance.
 ### Design documents
 
 - [`design/daemonless-runtime.md`](design/daemonless-runtime.md) — Implemented foreground replacement for all decrypt modes, including startup-discovered OpenSSL probes
-- [`design/agent-event-log.md`](design/agent-event-log.md) — Agent-first event storage and CLI contract with lifecycle, DNS/policy/TLS observations, payload allowlists/redaction, content-addressed blobs, and orphan recovery
+- [`design/agent-event-log.md`](design/agent-event-log.md) — Agent-first event storage and CLI contract with lifecycle, DNS/policy/TLS observations, provenance-linked HTTP/1 headers, payload allowlists/redaction, content-addressed blobs, and orphan recovery
 - [`../skills/heimdall/references/events.md`](../skills/heimdall/references/events.md) — Agent-facing schema map and safe parsing rules

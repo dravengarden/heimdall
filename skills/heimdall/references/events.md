@@ -3,7 +3,8 @@
 The daemonless event store records lifecycle, TCP/UDP flow metadata, bounded
 content-addressed payload blobs, correlated fake-DNS and policy evidence,
 OpenSSL runtime observations, relay ClientHello, and relay TLS handshake/error
-evidence in `heimdall.event/v1`. Derived HTTP records remain planned. Inspect
+evidence in `heimdall.event/v1`, including bounded HTTP/1 headers derived from
+explicit TLS plaintext. Inspect
 `agent.capabilities.logs` and use [commands.md](commands.md) whenever required
 evidence is not yet emitted.
 
@@ -153,10 +154,19 @@ Messages are explanatory only. Error data always includes `phase` and
 
 ### Derived HTTP
 
-`http.request` and `http.response` are optional. Each contains a parser version
-and `source_seq`, an array of plaintext event sequence numbers. Their absence
-means no derived record was produced; it does not prove that a flow is not
-HTTP.
+`http.request` and `http.response` are optional. The
+`heimdall-http1` version `1` parser considers only the first complete HTTP/1
+header per direction from explicit `tls_plaintext.*` events and buffers no more
+than 64 KiB. Each record contains `source_seq`, the contributing plaintext
+event sequence numbers. Resolve every number back to a `flow.data` event before
+using the derived record. Their absence means no record was parsed; it does not
+prove that a flow is not HTTP.
+
+`Authorization`, `Proxy-Authorization`, `Cookie`, and `Set-Cookie` values are
+always `[REDACTED]`. Configured exact-value payload redaction runs before this
+parser. `body` is always null; inspect a permitted source blob only when the
+task authorizes payload access. HTTP/2, invalid, incomplete, and oversized
+headers produce no derived record.
 
 ## `heimdall.run/v1`
 

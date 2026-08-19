@@ -16,6 +16,7 @@ use tokio::{
 use uuid::Uuid;
 
 use crate::event_log::{EventClient, PayloadMetadata};
+use crate::http::HttpDeriver;
 
 const COPY_BUFFER: usize = 16 * 1024;
 
@@ -93,6 +94,7 @@ struct FlowWriter {
     flush_interval_ms: u64,
     client_to_remote: PendingBytes,
     remote_to_client: PendingBytes,
+    http: Option<HttpDeriver>,
     closed: bool,
     failure: Option<String>,
     events: Option<EventClient>,
@@ -176,6 +178,8 @@ impl CaptureManager {
             flush_interval_ms: self.flush_interval.as_millis() as u64,
             client_to_remote: PendingBytes::default(),
             remote_to_client: PendingBytes::default(),
+            http: (enabled && meta.boundary.starts_with("tls_plaintext."))
+                .then(HttpDeriver::default),
             closed: false,
             failure: None,
             events: self.events.clone(),
@@ -262,8 +266,8 @@ impl FlowWriter {
             ) else {
                 break;
             };
-            if let Some(events) = &self.events {
-                events.emit_payload(
+            if let Some(events) = self.events.clone() {
+                let source_seq = events.emit_payload(
                     self.flow_id,
                     direction.name(),
                     self.boundary,
@@ -277,6 +281,13 @@ impl FlowWriter {
                         flush_reason: reason.name(),
                     },
                 )?;
+                if let Some(derived) = self
+                    .http
+                    .as_mut()
+                    .and_then(|http| http.observe(direction.name(), &payload, source_seq))
+                {
+                    events.emit(derived.kind, self.flow_id, derived.data)?;
+                }
             }
         }
         Ok(())

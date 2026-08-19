@@ -66,7 +66,7 @@ as_tester heimdall agent \
     and (.execution.daemon_required | not)
     and (.execution.web_ui_required | not)
     and .config.capture.mode == "on"
-    and .config.capture.max_bytes_per_flow == 128
+    and .config.capture.max_bytes_per_flow == 512
     and .config.capture.block_max_bytes == 32
     and .config.capture.flush_interval_ms == 20
     and .config.capture.boundaries == ["transport", "tls_plaintext.runtime", "tls_plaintext.relay"]
@@ -92,6 +92,7 @@ as_tester heimdall agent \
     and .capabilities.logs.policy_decision_events
     and .capabilities.logs.tls_events == "runtime+relay"
     and .capabilities.logs.client_hello_events
+    and .capabilities.logs.derived_http_records == "http1_headers_from_tls_plaintext"
     and .capabilities.logs.offline_schema_validation
     and .capabilities.logs.writer_owned_rotation
     and .capabilities.logs.content_addressed_blobs
@@ -615,12 +616,16 @@ as_tester heimdall --config /etc/heimdall-test/relay.toml agent \
     and .config.decrypt.mode == "relay"
     and .config.decrypt.ca_material_ready'
 as_tester heimdall --config /etc/heimdall-test/relay.toml run --policy fake -- \
-  curl --cacert /run/heimdall-test/relay/ca.pem -fsS --max-time 5 \
+  curl --cacert /run/heimdall-test/relay/ca.pem -H 'User-Agent:' \
+    -H 'Authorization: bearer fixture-value' -fsS --max-time 5 \
     https://fixture.test:18444/ >/dev/null
 capture_contains tls_plaintext.relay 'GET / HTTP'
-find /home/tester/.local/state/heimdall/runs -name 'events-*.jsonl' -type f -print0 \
-  | xargs -0 jq -e -s '
-      any(.[]; .kind == "tls.client_hello"
+relay_run_id="$(as_tester heimdall logs list --json | jq -er '.runs[0].run_id')"
+relay_run_dir="$(as_tester heimdall logs path --run "$relay_run_id" --json | jq -er .run_dir)"
+jq -e -s '
+      ([.[] | select(.kind == "flow.data"
+          and .data.boundary == "tls_plaintext.relay") | .seq] | unique) as $plaintext
+      | any(.[]; .kind == "tls.client_hello"
         and .data.sni == "fixture.test"
         and (.data.alpn_offered | index("http/1.1"))
         and .data.parser_status == "parsed_versions_unavailable")
@@ -628,7 +633,22 @@ find /home/tester/.local/state/heimdall/runs -name 'events-*.jsonl' -type f -pri
         and .data.mode == "relay"
         and .data.peer_identity.verified
         and .data.version != "unknown"
-        and .data.cipher != "unknown")' >/dev/null
+        and .data.cipher != "unknown")
+      and any(.[]; .kind == "http.request"
+        and .data.parser == {"name":"heimdall-http1","version":"1"}
+        and .data.method == "GET"
+        and .data.scheme == "https"
+        and .data.authority == "fixture.test:18444"
+        and .data.path == "/"
+        and (.data.source_seq | length) > 0
+        and any(.data.headers[]; (.name | ascii_downcase) == "authorization"
+          and .value == "[REDACTED]"))
+      and any(.[]; .kind == "http.response"
+        and .data.status == 200
+        and (.data.source_seq | length) > 0)
+      and all(.[] | select(.kind == "http.request" or .kind == "http.response");
+          all(.data.source_seq[]; . as $seq | $plaintext | index($seq)))' \
+  "$relay_run_dir"/events-*.jsonl >/dev/null
 
 run_count_before_prune="$(as_tester heimdall logs list --json | jq '.runs | length')"
 as_tester heimdall logs prune --keep-last 1 --max-total-bytes 1 --json \

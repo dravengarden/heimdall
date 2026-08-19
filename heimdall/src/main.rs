@@ -34,6 +34,7 @@ mod cli;
 mod dns;
 mod ebpf;
 mod event_log;
+mod http;
 mod setup;
 mod tls_relay;
 mod tls_runtime;

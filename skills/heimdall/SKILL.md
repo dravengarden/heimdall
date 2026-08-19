@@ -40,7 +40,8 @@ Use `heimdall help -v` only when deeper command discovery is needed.
 
 Read [references/events.md](references/events.md) before consuming run logs.
 `heimdall.event/v1` records lifecycle, fake-DNS exchanges, policy decisions,
-TCP/UDP and TLS metadata, and bounded blob references in user-owned JSONL.
+TCP/UDP and TLS metadata, bounded blob references, and provenance-linked
+HTTP/1 header evidence in user-owned JSONL.
 Use `heimdall logs schema`, `list`, `path`,
 `query`, `tail`, `rotate`, `verify`, and `prune`; standard `jq`, `rg`, `sed`,
 `sort`, `sha256sum`, and `wc` are valid consumers. Do not require or start a
@@ -54,6 +55,12 @@ byte-value masking, not evidence that encoded or transformed secrets are safe.
 Only an explicit
 `tls_plaintext.*` boundary is plaintext evidence; never infer it from port,
 SNI, process, or byte shape.
+
+Treat `http.request` and `http.response` as optional derived evidence, not
+protocol classification. Require `data.parser`, follow every `data.source_seq`
+back to `flow.data` with a `tls_plaintext.*` boundary, and expect only the first
+complete HTTP/1 header per direction. Common credential headers are fixed-mask
+redacted and `body` is always null.
 
 Choose `relay` only with authority to install local trust. Require
 `ca_material_ready`, trust only the public `ca_cert`, keep `ca_key` mode 0600

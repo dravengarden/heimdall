@@ -61,6 +61,10 @@ Proxying, payload retention, and plaintext inspection are independent choices:
   values named by `capture.redact_env` are read from the inherited environment
   and masked before hashing or blob publication; unavailable values make the
   agent preflight not ready.
+- When enabled plaintext capture contains a complete bounded HTTP/1 header,
+  Heimdall may emit provenance-linked `http.request` or `http.response`
+  metadata. Common credential headers are always masked and bodies remain only
+  in the separately governed blob evidence.
 
 Selecting a TLS mode is not proof that plaintext was observed. Agents must use
 the reported capability and event boundary.
@@ -72,7 +76,9 @@ the reported capability and event boundary.
 2. Each run writes one `heimdall.run/v1` manifest and ordered append-only
    `heimdall.event/v1` JSONL segments owned by the invoking user. Fake-DNS
    exchanges, policy decisions, flow boundaries, and TLS observations are
-   explicit records rather than filename or port inferences.
+   explicit records rather than filename or port inferences. Derived HTTP/1
+   records point back to the exact plaintext event sequences used to parse
+   them.
 3. JSONL files are the evidence source of truth. `jq`, `rg`, `sed`, `sort`,
    `wc`, and the `heimdall logs` commands are supported analysis paths.
 4. Heimdall owns active-file rotation and orphan recovery. Agents use `logs

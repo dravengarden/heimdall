@@ -147,8 +147,16 @@ heimdall logs query --run RUN_ID --kind flow.close --jsonl
 heimdall logs tail --run RUN_ID --follow --jsonl
 jq -c 'select(.kind == "flow.close" and .data.client_to_remote_bytes > 0)' \
   ~/.local/state/heimdall/runs/RUN_ID/events-*.jsonl
+jq -c 'select(.kind == "http.request" or .kind == "http.response") |
+  {seq, source_seq: .data.source_seq, method: .data.method,
+   authority: .data.authority, path: .data.path, status: .data.status}' \
+  ~/.local/state/heimdall/runs/RUN_ID/events-*.jsonl
 rg '"kind":"run.error"' ~/.local/state/heimdall/runs/RUN_ID
 ```
+
+Derived HTTP records contain only the first bounded HTTP/1 header per
+direction from explicit TLS plaintext. Resolve `source_seq` before trusting
+them; common credential headers are masked and `body` is always null.
 
 Rotation is writer-owned and never deletes data:
 

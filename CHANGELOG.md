@@ -29,6 +29,9 @@ migration guide.
 - Add correlated fake-DNS query/answer records, ordered TCP/UDP policy
   decisions, explicit OpenSSL runtime-observation records, parsed relay
   ClientHello records, and negotiated relay TLS evidence.
+- Derive bounded HTTP/1 request and response header records from explicit TLS
+  plaintext, link them to source event sequences, and mask common credential
+  headers without copying bodies into JSONL.
 - Publish blobs atomically, verify an existing digest before reuse, and return
   stable `event_store_full` or `event_store_permission_denied` failures.
 - Validate every run manifest and event record against the bundled offline

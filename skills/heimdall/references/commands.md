@@ -64,6 +64,11 @@ jq -c 'select(.kind == "tls.runtime") |
 jq -c 'select(.kind == "tls.client_hello") |
   [.flow_id, .data.sni, .data.alpn_offered, .data.parser_status]' \
   "$run_dir"/events-*.jsonl
+jq -c 'select(.kind == "http.request" or .kind == "http.response") |
+  {seq, flow_id, source_seq: .data.source_seq,
+   method: .data.method, authority: .data.authority,
+   path: .data.path, status: .data.status}' \
+  "$run_dir"/events-*.jsonl
 jq -r 'select(.kind == "flow.close") |
   [.flow_id, .data.status, .data.client_to_remote_bytes,
    .data.remote_to_client_bytes] | @tsv' "$run_dir"/events-*.jsonl
