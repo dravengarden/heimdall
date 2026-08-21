@@ -1,0 +1,46 @@
+{
+  "name": "heimdall-egress",
+  "version": "@VERSION@",
+  "description": "Daemonless command-scoped TCP/UDP proxy and transparent TLS inspection for Linux CLI processes",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dravengarden/heimdall.git"
+  },
+  "homepage": "https://dravengarden.github.io/heimdall/",
+  "bugs": {
+    "url": "https://github.com/dravengarden/heimdall/issues"
+  },
+  "keywords": [
+    "cli",
+    "proxy",
+    "proxychains",
+    "socks5",
+    "ebpf",
+    "tls",
+    "egress"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "bin": {
+    "heimdall": "bin/heimdall.js",
+    "heimdall-egress": "bin/heimdall.js"
+  },
+  "files": [
+    "bin/",
+    "vendor/",
+    "LICENSE",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

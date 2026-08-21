@@ -18,6 +18,35 @@ checked for static linkage and architecture and executes CLI acceptance under
 emulation; native aarch64 real-eBPF acceptance remains active compatibility
 work.
 
+## Install through npm
+
+The public `heimdall-egress` package embeds both official Linux musl binaries.
+It has no install lifecycle script and performs no install-time download:
+
+```bash
+npm install --global heimdall-egress
+heimdall --version
+```
+
+`npx` is suitable for help, version, configuration, and compatibility checks:
+
+```bash
+npx heimdall-egress --version
+npx heimdall-egress help
+```
+
+Transparent `heimdall run` setup must authorize a stable regular native binary,
+not the Node launcher or an npm cache glob. With a global npm installation,
+print that path with:
+
+```bash
+heimdall-egress --print-native-path
+```
+
+Use the printed path in the narrow sudoers rule below. An `npx` cache path is
+not stable enough for this authorization boundary, so use a global npm or
+native archive installation for `heimdall run`.
+
 ## Install a tagged release
 
 Download the archive and checksum from the matching GitHub release. With the
@@ -54,7 +83,9 @@ and TLS CA material belong to the invoking user.
 
 ## Authorize setup
 
-Create `/etc/sudoers.d/heimdall` with `visudo`, replacing `USERNAME`:
+Create `/etc/sudoers.d/heimdall` with `visudo`, replacing `USERNAME`. Native
+archive installations use `/usr/local/bin/heimdall`; npm installations must
+use the exact path printed by `heimdall-egress --print-native-path`:
 
 ```sudoers
 USERNAME ALL=(root) NOPASSWD: /usr/local/bin/heimdall __setup-worker

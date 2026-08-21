@@ -45,6 +45,12 @@ checksums. The versioned changelog must include highlights and known limitations
 see [releasing.md](releasing.md) for the complete release contract. GitHub Pages
 or Actions status is not release evidence.
 
+After the GitHub Release exists, publish the npm wrapper for the exact same
+native binaries with `just release-npm`. It runs global-install and `npm exec`
+acceptance, then compares both npm binaries byte-for-byte with the downloaded
+GitHub assets before publishing. npm authentication is release-host state, not
+repository content.
+
 The disposable NixOS VM proves fake/system DNS, SOCKS5 and direct TCP/UDP,
 IPv4/IPv6, HTTP/3, static
 and dynamic clients, descendants, exit/signal status, two concurrent isolated

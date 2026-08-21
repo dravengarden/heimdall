@@ -34,6 +34,9 @@ test:
 test-release-notes:
     tests/release/render-notes.sh
 
+test-npm:
+    tests/npm/run-acceptance.sh
+
 test-fast:
     cargo nextest run --workspace --all-features --locked
 
@@ -64,6 +67,9 @@ release-check:
 
 release-github:
     scripts/publish-github-release
+
+release-npm:
+    scripts/publish-npm
 
 # Explicitly opt in after confirming a representative workload benefits from
 # compiler caching. On 2026-07-18, a same-path clean rebuild took 7.24s with

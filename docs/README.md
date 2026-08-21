@@ -6,7 +6,7 @@
 - [design/daemonless-runtime.md](design/daemonless-runtime.md) — implemented foreground per-run path for proxying and both TLS modes
 - [design/agent-event-log.md](design/agent-event-log.md) — JSONL events, content-addressed payload blobs, run manifests, rotation, retention, and agent CLI
 - [config.md](config.md) — the strict TOML/YAML/JSON configuration
-- [install.md](install.md) — x86_64/aarch64 static Linux releases, checksum verification, setup authorization, upgrade, and rollback
+- [install.md](install.md) — native and npm x86_64/aarch64 static Linux releases, checksum verification, setup authorization, upgrade, and rollback
 - [runbook.md](runbook.md) — build, agent JSON contract, lifecycle, and troubleshooting
 - [releasing.md](releasing.md) — curated changelog, release-note, local gate, artifact, and post-publication verification standard
 

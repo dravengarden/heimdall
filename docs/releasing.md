@@ -61,3 +61,25 @@ After publication, independently verify the peeled remote tag, asset inventory,
 downloaded checksums, extracted file set, and `heimdall --version`. A failed
 attempt may remove an unpublished tag after proving no Release exists. Never
 move or replace a published release tag.
+
+## npm publication
+
+GitHub Release publication precedes npm. The npm package is a distribution
+wrapper for the exact released native binaries, not an independent product
+build. Publish from a clean `main` checkout that exactly matches `origin/main`:
+
+```bash
+just release-npm
+```
+
+The transaction requires an authenticated npm account, rejects an existing
+version, confirms the GitHub tag is an ancestor of `main`, runs package
+acceptance, verifies the downloaded GitHub checksums, and compares both staged
+npm binaries byte-for-byte with the GitHub assets before `npm publish`.
+
+The npm tarball must expose both `heimdall` and `heimdall-egress`, contain no
+lifecycle scripts, and carry only the launcher, LICENSE, README, package
+metadata, and supported native binaries. After publication, install from the
+registry into a fresh private prefix and verify both commands, package metadata,
+registry integrity, and the reported native path. npm versions are immutable;
+never unpublish and replace a version to repair its contents.

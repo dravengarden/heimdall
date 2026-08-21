@@ -6,6 +6,12 @@ guide.
 
 ## [Unreleased]
 
+### Added
+
+- Add the public `heimdall-egress` npm distribution with embedded x86_64 and
+  aarch64 Linux musl binaries, `heimdall` and `heimdall-egress` launchers, no
+  install lifecycle scripts, and local global-install/`npm exec` acceptance.
+
 ### Changed
 
 - Require curated GitHub Release notes generated from each version's

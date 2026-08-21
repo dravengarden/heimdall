@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+output=${1:?usage: build-npm-package OUTPUT_DIRECTORY}
+[[ ! -e "$output" ]] || {
+  echo "output already exists: $output" >&2
+  exit 1
+}
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+version=$(nix eval --raw .#packages.x86_64-linux.release.version)
+x86_release=$(nix build .#release --print-out-paths --no-link -L)
+arm_release=$(nix build .#release-aarch64 --print-out-paths --no-link -L)
+work_dir=$(mktemp -d)
+trap 'rm -rf "$work_dir"' EXIT
+
+mkdir -p "$output/bin" "$output/vendor/linux-x64" "$output/vendor/linux-arm64"
+install -m 0755 packaging/npm/bin/heimdall.js "$output/bin/heimdall.js"
+install -m 0644 packaging/npm/README.md "$output/README.md"
+install -m 0644 LICENSE "$output/LICENSE"
+sed "s/@VERSION@/$version/g" packaging/npm/package.json.in >"$output/package.json"
+
+for platform in linux-x64 linux-arm64; do
+  case "$platform" in
+    linux-x64)
+      architecture=x86_64
+      release_dir=$x86_release
+      ;;
+    linux-arm64)
+      architecture=aarch64
+      release_dir=$arm_release
+      ;;
+  esac
+  archive="heimdall-egress-$version-$architecture-linux-musl.tar.gz"
+  root="heimdall-egress-$version-$architecture-linux-musl"
+  (cd "$release_dir" && sha256sum -c "$archive.sha256")
+  mkdir "$work_dir/$platform"
+  tar -xzf "$release_dir/$archive" -C "$work_dir/$platform"
+  install -m 0755 "$work_dir/$platform/$root/heimdall" \
+    "$output/vendor/$platform/heimdall"
+done
+
+node -e '
+  const packageJson = require(process.argv[1]);
+  if (packageJson.version !== process.argv[2]) process.exit(1);
+' "$output/package.json" "$version"
+
+printf 'built heimdall-egress %s npm package at %s\n' "$version" "$output"

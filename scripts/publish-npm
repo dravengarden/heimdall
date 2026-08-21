@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+package_name=heimdall-egress
+version=$(nix eval --raw .#packages.x86_64-linux.release.version)
+tag="v${version}"
+head=$(git rev-parse HEAD)
+
+git diff --quiet
+git diff --cached --quiet
+git fetch origin main
+[[ "$(git rev-list --left-right --count origin/main...HEAD)" == $'0\t0' ]] || {
+  echo 'HEAD must exactly match origin/main' >&2
+  exit 1
+}
+npm whoami >/dev/null
+
+if npm view "$package_name@$version" version >/dev/null 2>&1; then
+  echo "$package_name@$version already exists" >&2
+  exit 1
+fi
+
+tag_commit=$(git rev-list -n 1 "$tag")
+git merge-base --is-ancestor "$tag_commit" "$head" || {
+  echo "$tag is not an ancestor of HEAD" >&2
+  exit 1
+}
+gh release view "$tag" --json isDraft,isPrerelease --jq \
+  'select(.isDraft == false and .isPrerelease == false)' >/dev/null
+
+just test-npm
+
+stage=$(mktemp -d)
+trap 'rm -rf "$stage"' EXIT
+scripts/build-npm-package "$stage/package"
+pack_json=$(npm pack "$stage/package" --pack-destination "$stage" --json)
+tarball=$(node -e '
+  const result = JSON.parse(process.argv[1]);
+  if (result.length !== 1) process.exit(1);
+  process.stdout.write(result[0].filename);
+' "$pack_json")
+
+gh release download "$tag" --dir "$stage/github" \
+  --pattern "heimdall-egress-$version-*-linux-musl.tar.gz*"
+(
+  cd "$stage/github"
+  sha256sum -c ./*.sha256
+)
+for platform in linux-x64 linux-arm64; do
+  case "$platform" in
+    linux-x64) architecture=x86_64 ;;
+    linux-arm64) architecture=aarch64 ;;
+  esac
+  mkdir "$stage/github-$platform"
+  archive="heimdall-egress-$version-$architecture-linux-musl.tar.gz"
+  tar -xzf "$stage/github/$archive" -C "$stage/github-$platform"
+  cmp "$stage/package/vendor/$platform/heimdall" \
+    "$stage/github-$platform/heimdall-egress-$version-$architecture-linux-musl/heimdall"
+done
+
+npm publish "$stage/$tarball" --access public
