@@ -60,7 +60,7 @@ need compatibility hardening.
 | Agent event logs and capture | Available | Per-run lifecycle, low-cardinality health summaries, fake-DNS, policy, TCP/UDP and TLS evidence plus coalesced bounded blobs with pre-storage allowlists/redaction |
 | Runtime TLS decryption | Available daemonless with alpha limits | Startup-discovered OpenSSL images; no CA injection; unsupported TLS libraries remain opaque |
 | Relay TLS decryption | Available daemonless with alpha limits | Local CA plus per-host leaves; upstream certificate failures and downstream alerts/unclean closes remain distinct evidence |
-| Static Linux packaging | Available | Reproducible x86_64/aarch64 musl archives, checksums, signed GitHub build provenance, atomic install, and one-level rollback |
+| Static Linux packaging | Available | Reproducible x86_64/aarch64 musl archives, checksums, local release gates, atomic install, and one-level rollback |
 | Runtime and kernel compatibility | In development | The same real-eBPF suite covers current and Linux 6.6 LTS kernels on x86_64; native aarch64 data-path, more distributions, and runtime edge cases remain active work |
 | Capture analysis | In development | Allowlists, redaction, bounded blocks, orphan recovery, and provenance-linked HTTP/1 header evidence are available; broader analysis remains active work |
 | Performance and observability | In development | Repeatable current/6.6 LTS real-eBPF latency, RSS, 1/10/50 concurrency, sustained TCP/UDP/capture throughput, and event-integrity baselines are available; the distribution matrix remains active work |
@@ -100,8 +100,8 @@ semantics.
 ## Quick start
 
 Tagged releases provide static x86_64 and aarch64 Linux archives. Follow
-[docs/install.md](docs/install.md) to verify checksum and signed build
-provenance, install or upgrade atomically, and retain one rollback executable.
+[docs/install.md](docs/install.md) to verify its checksum, install or upgrade
+atomically, and retain one rollback executable.
 To build from source instead:
 
 ### Requirements

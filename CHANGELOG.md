@@ -18,7 +18,7 @@ guide.
 ### Added
 
 - Add reproducible static x86_64 and aarch64 Linux release archives, SHA-256
-  checksums, signed GitHub build provenance, atomic installation, one-level
+  checksums, authoritative local release gates, atomic installation, one-level
   rollback, and tagged GitHub release automation. Packaging acceptance rejects
   dynamic dependencies on both architectures, exercises the aarch64 CLI under
   emulation, and exercises native install, upgrade, and rollback on x86_64.

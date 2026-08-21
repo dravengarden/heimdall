@@ -31,10 +31,17 @@ install, upgrade, and rollback acceptance:
 nix develop -c just test-package
 ```
 
-Run the same source, package, and per-kernel gates locally with `just verify`,
-`just test-package`, and `just test-vm`. The tagged release workflow reruns
-source, both real-eBPF kernels, and package checks before attestation or
-publication; Pages success alone is not release evidence.
+Local release verification is authoritative. From a clean `main` checkout that
+exactly matches `origin/main`, publish only with:
+
+```bash
+just release-github
+```
+
+This runs source verification, then the current and Linux 6.6 LTS real-eBPF
+guests sequentially, then both package checks. Only after every gate passes does
+it create the version tag and GitHub Release with archives and checksums. GitHub
+Pages or Actions status is not release evidence.
 
 The disposable NixOS VM proves fake/system DNS, SOCKS5 and direct TCP/UDP,
 IPv4/IPv6, HTTP/3, static

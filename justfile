@@ -37,7 +37,10 @@ test-fast:
 # Boots current and LTS-kernel disposable NixOS guests and exercises the same
 # real cgroup/eBPF data-path acceptance suite in both.
 test-vm:
-    nix build .#checks.x86_64-linux.vm-proxy .#checks.x86_64-linux.vm-proxy-lts -L
+    # Each guest owns two vCPUs. Sequential execution keeps UDP stress timing
+    # meaningful on two-core development and hosted runners.
+    nix build .#checks.x86_64-linux.vm-proxy -L
+    nix build .#checks.x86_64-linux.vm-proxy-lts -L
 
 # Runs environment-specific latency, memory, concurrency, sustained-throughput,
 # and event-integrity baselines in current and LTS real-eBPF NixOS guests.
@@ -48,6 +51,16 @@ benchmark-vm:
 # emulation, and native x86_64 install, upgrade, and rollback paths.
 test-package:
     nix build .#checks.x86_64-linux.release .#checks.x86_64-linux.release-aarch64 -L
+
+# Local publication is authoritative: source, real-kernel, and package gates
+# all complete on the release host before any tag or GitHub asset is created.
+release-check:
+    nix develop -c just verify
+    just test-vm
+    just test-package
+
+release-github:
+    scripts/publish-github-release
 
 # Explicitly opt in after confirming a representative workload benefits from
 # compiler caching. On 2026-07-18, a same-path clean rebuild took 7.24s with

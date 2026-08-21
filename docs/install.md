@@ -31,7 +31,6 @@ gh release download "v$version" --repo dravengarden/heimdall \
   --pattern "heimdall-egress-$version-$architecture-linux-musl.tar.gz*"
 archive="heimdall-egress-$version-$architecture-linux-musl.tar.gz"
 sha256sum -c "$archive.sha256"
-gh attestation verify "$archive" --repo dravengarden/heimdall
 tar -xzf "$archive"
 cd "heimdall-egress-$version-$architecture-linux-musl"
 sudo ./heimdall-install install
