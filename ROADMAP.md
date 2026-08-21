@@ -61,11 +61,11 @@ acceptance path are documented and tested.
 - A machine-readable real-eBPF benchmark covering daemonless latency, RSS,
   1/10/50 concurrent starts, sustained TCP/UDP and capture throughput, and
   event integrity without requiring a metrics service.
-- Reproducible static x86_64 and aarch64 Linux archives with checksum and
-  signed GitHub build-provenance verification, atomic installation, and
-  one-level executable rollback. The aarch64 package has structural and
-  emulated CLI acceptance; native aarch64 real-eBPF acceptance remains in the
-  compatibility track.
+- Reproducible static x86_64 and aarch64 Linux archives with checksums,
+  authoritative local release gates, atomic installation, and one-level
+  executable rollback. The aarch64 package has structural and emulated CLI
+  acceptance; native aarch64 real-eBPF acceptance remains in the compatibility
+  track.
 
 The current available implementation is Linux-only. macOS support is planned
 below and is not part of the available contract yet.
@@ -174,6 +174,23 @@ environment-specific rather than product-wide performance claims.
 Acceptance target: a repeatable environment records latency, memory,
 concurrency, sustained transport throughput, and event loss for TCP, UDP,
 capture, and TLS without changing the daemonless product boundary.
+
+### 7. Release artifact hygiene and native ARM acceptance
+
+- Remove DWARF debug sections and deterministic remapped Nix source paths from
+  the embedded eBPF ELF before it is included in the userspace executable.
+- Preserve the BTF and BTF.ext metadata required by the eBPF loader and kernel;
+  do not treat stripping the outer userspace ELF as sufficient.
+- Extend package acceptance to reject private paths, real Nix store paths,
+  remapped build paths, unexpected debug sections, dynamic interpreters, and
+  dynamic library dependencies in every published Linux artifact.
+- Add native aarch64 Linux real-eBPF acceptance in addition to the available
+  structural and emulated CLI checks.
+
+Acceptance target: x86_64 and aarch64 Linux archives remain reproducible and
+static, contain no private or build-path evidence, preserve required eBPF
+metadata, and pass native current/LTS data-path acceptance on each supported
+architecture.
 
 ## Planned
 
