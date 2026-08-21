@@ -6,6 +6,13 @@ guide.
 
 ## [Unreleased]
 
+### Removed
+
+- Remove the GitHub Actions Linux CI workflow. Source, package, and current/6.6
+  LTS real-eBPF gates remain local (`just verify`, `just test-package`,
+  `just test-vm`); tagged releases still rerun them before attestation and
+  publication.
+
 ## [0.1.0] - 2026-08-21
 
 ### Added

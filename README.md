@@ -9,7 +9,6 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/dravengarden/heimdall/actions/workflows/ci.yml"><img src="https://github.com/dravengarden/heimdall/actions/workflows/ci.yml/badge.svg" alt="Linux CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-132A62.svg" alt="Apache 2.0 license"></a>
   <img src="https://img.shields.io/badge/backend-Rust-132A62.svg" alt="Rust backend">
   <img src="https://img.shields.io/badge/kernel-eBPF-3476E8.svg" alt="eBPF kernel hooks">
