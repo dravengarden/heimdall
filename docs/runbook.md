@@ -40,8 +40,10 @@ just release-github
 
 This runs source verification, then the current and Linux 6.6 LTS real-eBPF
 guests sequentially, then both package checks. Only after every gate passes does
-it create the version tag and GitHub Release with archives and checksums. GitHub
-Pages or Actions status is not release evidence.
+it create the version tag and GitHub Release with curated notes, archives, and
+checksums. The versioned changelog must include highlights and known limitations;
+see [releasing.md](releasing.md) for the complete release contract. GitHub Pages
+or Actions status is not release evidence.
 
 The disposable NixOS VM proves fake/system DNS, SOCKS5 and direct TCP/UDP,
 IPv4/IPv6, HTTP/3, static

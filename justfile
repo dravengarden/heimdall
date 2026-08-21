@@ -31,6 +31,9 @@ build-ebpf:
 test:
     cargo test --workspace --all-features --locked --release
 
+test-release-notes:
+    tests/release/render-notes.sh
+
 test-fast:
     cargo nextest run --workspace --all-features --locked
 
@@ -75,5 +78,5 @@ build-userspace:
 cache-stats:
     sccache --show-stats
 
-verify: toolchain-check check-format build-ebpf lint lint-ebpf dependencies test build-userspace
+verify: toolchain-check check-format build-ebpf lint lint-ebpf dependencies test test-release-notes build-userspace
     @echo "verify OK"

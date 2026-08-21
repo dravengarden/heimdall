@@ -14,11 +14,19 @@ test "$(git rev-list --left-right --count origin/main...HEAD)" = $'0\t0' || {
 }
 gh auth status >/dev/null
 
-just release-check
+if gh release view "$tag" >/dev/null 2>&1; then
+  echo "GitHub release $tag already exists" >&2
+  exit 1
+fi
 
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 mkdir "$stage/dist"
+repository_url="$(gh repo view --json url --jq .url)"
+scripts/render-release-notes "$version" "$repository_url" >"$stage/release-notes.md"
+
+just release-check
+
 x86_release="$(nix build .#release --print-out-paths --no-link -L)"
 arm_release="$(nix build .#release-aarch64 --print-out-paths --no-link -L)"
 cp -L "$x86_release"/* "$arm_release"/* "$stage/dist/"
@@ -43,11 +51,7 @@ else
   git push origin "refs/tags/$tag"
 fi
 
-if gh release view "$tag" >/dev/null 2>&1; then
-  echo "GitHub release $tag already exists" >&2
-  exit 1
-fi
 gh release create "$tag" "$stage/dist"/* \
   --verify-tag \
-  --generate-notes \
+  --notes-file "$stage/release-notes.md" \
   --title "Heimdall $tag"

@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+version=${1:?usage: render-release-notes VERSION REPOSITORY_URL}
+repository_url=${2:?usage: render-release-notes VERSION REPOSITORY_URL}
+tag="v${version}"
+changelog_file=${CHANGELOG_FILE:-CHANGELOG.md}
+
+section="$({
+  awk -v marker="## [${version}] - " '
+    index($0, marker) == 1 { found = 1; next }
+    found && /^## \[/ { exit }
+    found { print }
+    END { if (!found) exit 2 }
+  ' "$changelog_file"
+} | sed '/./,$!d')" || {
+  echo "CHANGELOG.md has no dated section for ${version}" >&2
+  exit 1
+}
+
+for required_heading in '### Highlights' '### Known limitations'; do
+  grep -Fqx "$required_heading" <<<"$section" || {
+    echo "${changelog_file} ${version} is missing ${required_heading}" >&2
+    exit 1
+  }
+done
+
+previous_tag="$({
+  git tag --merged HEAD --sort=-version:refname 'v[0-9]*' |
+    awk -v current="$tag" '$0 != current { print; exit }'
+})"
+if [[ -n "$previous_tag" ]]; then
+  changelog_url="${repository_url}/compare/${previous_tag}...${tag}"
+else
+  changelog_url="${repository_url}/commits/${tag}"
+fi
+
+cat <<EOF
+## Changes
+
+${section}
+
+## Install
+
+Download the archive and matching SHA-256 file for your Linux architecture.
+Follow the [versioned installation guide](${repository_url}/blob/${tag}/docs/install.md)
+for checksum verification, setup authorization, upgrade, and rollback.
+
+## Release artifacts
+
+- \`heimdall-egress-${version}-x86_64-linux-musl.tar.gz\`
+- \`heimdall-egress-${version}-aarch64-linux-musl.tar.gz\`
+- One SHA-256 file beside each archive
+
+## Verification
+
+The release host completed the authoritative local source checks, current and
+Linux 6.6 LTS real-eBPF VM suites sequentially, and both static package gates
+before the tag or assets were published.
+
+## Full changelog
+
+[Compare the complete Git history](${changelog_url}).
+EOF

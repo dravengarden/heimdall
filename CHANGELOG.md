@@ -6,6 +6,12 @@ guide.
 
 ## [Unreleased]
 
+### Changed
+
+- Require curated GitHub Release notes generated from each version's
+  highlights, structured changelog, known limitations, installation and
+  artifact details, local verification evidence, and full comparison link.
+
 ### Removed
 
 - Remove the GitHub Actions Linux CI workflow. Source, package, and current/6.6
