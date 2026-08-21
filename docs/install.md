@@ -28,12 +28,12 @@ version=0.1.0
 architecture=$(uname -m)
 case "$architecture" in x86_64|aarch64) ;; *) exit 1 ;; esac
 gh release download "v$version" --repo dravengarden/heimdall \
-  --pattern "heimdall-$version-$architecture-linux-musl.tar.gz*"
-archive="heimdall-$version-$architecture-linux-musl.tar.gz"
+  --pattern "heimdall-egress-$version-$architecture-linux-musl.tar.gz*"
+archive="heimdall-egress-$version-$architecture-linux-musl.tar.gz"
 sha256sum -c "$archive.sha256"
 gh attestation verify "$archive" --repo dravengarden/heimdall
 tar -xzf "$archive"
-cd "heimdall-$version-$architecture-linux-musl"
+cd "heimdall-egress-$version-$architecture-linux-musl"
 sudo ./heimdall-install install
 heimdall --version
 ```

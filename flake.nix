@@ -362,7 +362,7 @@
       };
 
       releaseBundle =
-        pkgs.runCommand "heimdall-${heimdallVersion}-x86_64-linux-musl"
+        pkgs.runCommand "heimdall-egress-${heimdallVersion}-x86_64-linux-musl"
           {
             version = heimdallVersion;
             nativeBuildInputs = [
@@ -372,7 +372,7 @@
             ];
           }
           ''
-            archive_root=heimdall-${heimdallVersion}-x86_64-linux-musl
+            archive_root=heimdall-egress-${heimdallVersion}-x86_64-linux-musl
             mkdir -p "$out" "$archive_root"
             install -m 0755 ${heimdall-static}/bin/heimdall "$archive_root/heimdall"
             substitute ${./packaging/heimdall-install} "$archive_root/heimdall-install" \
@@ -386,7 +386,7 @@
           '';
 
       releaseBundleAarch64 =
-        pkgs.runCommand "heimdall-${heimdallVersion}-aarch64-linux-musl"
+        pkgs.runCommand "heimdall-egress-${heimdallVersion}-aarch64-linux-musl"
           {
             version = heimdallVersion;
             nativeBuildInputs = [
@@ -396,7 +396,7 @@
             ];
           }
           ''
-            archive_root=heimdall-${heimdallVersion}-aarch64-linux-musl
+            archive_root=heimdall-egress-${heimdallVersion}-aarch64-linux-musl
             mkdir -p "$out" "$archive_root"
             install -m 0755 ${heimdall-static-aarch64}/bin/heimdall "$archive_root/heimdall"
             substitute ${./packaging/heimdall-install} "$archive_root/heimdall-install" \

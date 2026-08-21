@@ -6,7 +6,7 @@ version=${2:?usage: run-acceptance.sh RELEASE_DIRECTORY VERSION}
 architecture=${3:?usage: run-acceptance.sh RELEASE_DIRECTORY VERSION ARCHITECTURE ELF_MACHINE [RUNNER]}
 elf_machine=${4:?usage: run-acceptance.sh RELEASE_DIRECTORY VERSION ARCHITECTURE ELF_MACHINE [RUNNER]}
 runner=${5:-}
-archive_name=heimdall-$version-$architecture-linux-musl.tar.gz
+archive_name=heimdall-egress-$version-$architecture-linux-musl.tar.gz
 archive=$release_dir/$archive_name
 
 (cd "$release_dir" && sha256sum -c "$archive_name.sha256")
@@ -14,7 +14,7 @@ archive=$release_dir/$archive_name
 work_dir=$(mktemp -d)
 trap 'rm -rf "$work_dir"' 0 HUP INT TERM
 tar -xzf "$archive" -C "$work_dir"
-bundle=$work_dir/heimdall-$version-$architecture-linux-musl
+bundle=$work_dir/heimdall-egress-$version-$architecture-linux-musl
 
 expected_entries='LICENSE
 README.md

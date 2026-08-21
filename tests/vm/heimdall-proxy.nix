@@ -11,9 +11,11 @@ let
     pkgs.runCommand "heimdall-test-tls-fixture" { nativeBuildInputs = [ pkgs.openssl ]; }
       ''
         mkdir -p $out
+        # Nix may retain this fixture indefinitely. A short-lived certificate
+        # makes a previously green store path fail solely as wall time passes.
         openssl req -x509 -newkey rsa:2048 -nodes \
           -keyout $out/ca-key.pem -out $out/ca.pem \
-          -subj /CN=Heimdall-Test-Upstream-CA -days 2 \
+          -subj /CN=Heimdall-Test-Upstream-CA -days 36500 \
           -addext basicConstraints=critical,CA:TRUE \
           -addext keyUsage=critical,keyCertSign,cRLSign
         openssl req -newkey rsa:2048 -nodes \
@@ -26,7 +28,7 @@ let
           'subjectAltName=DNS:fixture.test' > $out/server.ext
         openssl x509 -req -in $out/server.csr \
           -CA $out/ca.pem -CAkey $out/ca-key.pem -CAcreateserial \
-          -out $out/server.pem -days 2 -extfile $out/server.ext
+          -out $out/server.pem -days 36500 -extfile $out/server.ext
         rm $out/server.csr $out/server.ext $out/ca-key.pem $out/ca.srl
       '';
   heimdallConfigText = ''
