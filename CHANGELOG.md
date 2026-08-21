@@ -1,10 +1,12 @@
 # Changelog
 
 All notable changes to Heimdall are documented here. Heimdall is pre-1.0; this
-file describes the current unreleased contract and does not serve as an API
-migration guide.
+file records release-level changes and does not serve as an API migration
+guide.
 
 ## [Unreleased]
+
+## [0.1.0] - 2026-08-21
 
 ### Added
 
