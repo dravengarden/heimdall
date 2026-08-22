@@ -30,6 +30,7 @@ just release-check
 x86_release="$(nix build .#release --print-out-paths --no-link -L)"
 arm_release="$(nix build .#release-aarch64 --print-out-paths --no-link -L)"
 cp -L "$x86_release"/* "$arm_release"/* "$stage/dist/"
+scripts/build-npm-release-assets "$stage/dist"
 (cd "$stage/dist" && sha256sum -c ./*.sha256)
 
 if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then

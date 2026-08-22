@@ -37,6 +37,10 @@ test-release-notes:
 test-npm:
     tests/npm/run-acceptance.sh
 
+test-release-tooling:
+    actionlint .github/workflows/publish-npm.yml
+    shellcheck scripts/build-npm-package scripts/build-npm-release-assets scripts/publish-github-release scripts/render-release-notes tests/npm/run-acceptance.sh tests/release/render-notes.sh
+
 test-fast:
     cargo nextest run --workspace --all-features --locked
 
@@ -68,9 +72,6 @@ release-check:
 release-github:
     scripts/publish-github-release
 
-release-npm:
-    scripts/publish-npm
-
 # Explicitly opt in after confirming a representative workload benefits from
 # compiler caching. On 2026-07-18, a same-path clean rebuild took 7.24s with
 # 241 Rust cache hits versus 10.46s with plain Cargo; filling the cache took
@@ -84,5 +85,5 @@ build-userspace:
 cache-stats:
     sccache --show-stats
 
-verify: toolchain-check check-format build-ebpf lint lint-ebpf dependencies test test-release-notes build-userspace
+verify: toolchain-check check-format build-ebpf lint lint-ebpf dependencies test test-release-notes test-release-tooling build-userspace
     @echo "verify OK"

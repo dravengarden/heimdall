@@ -50,6 +50,7 @@ for checksum verification, setup authorization, upgrade, and rollback.
 
 - \`heimdall-egress-${version}-x86_64-linux-musl.tar.gz\`
 - \`heimdall-egress-${version}-aarch64-linux-musl.tar.gz\`
+- \`heimdall-egress-${version}.tgz\` for npm trusted publishing
 - One SHA-256 file beside each archive
 
 ## Verification

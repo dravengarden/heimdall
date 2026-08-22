@@ -14,12 +14,18 @@ guide.
 
 ### Changed
 
+- Build the exact npm tarball locally with pinned npm 12, attach it and its
+  checksum to the GitHub Release, and publish only through the tokenless Lasso
+  OIDC workflow. The explicit Lasso command replaces local npm login, 2FA
+  links, long-lived write tokens, and a second web approval.
 - Require curated GitHub Release notes generated from each version's
   highlights, structured changelog, known limitations, installation and
   artifact details, local verification evidence, and full comparison link.
 
 ### Removed
 
+- Remove the legacy authenticated local `npm publish` transaction. npm
+  versions now derive only from checksum-verified GitHub Release assets.
 - Remove the GitHub Actions Linux CI workflow. Source, package, and current/6.6
   LTS real-eBPF gates remain local (`just verify`, `just test-package`,
   `just test-vm`); `just release-github` reruns them locally before creating

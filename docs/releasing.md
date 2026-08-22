@@ -66,20 +66,34 @@ move or replace a published release tag.
 
 GitHub Release publication precedes npm. The npm package is a distribution
 wrapper for the exact released native binaries, not an independent product
-build. Publish from a clean `main` checkout that exactly matches `origin/main`:
+build. `just release-github` builds the tarball with npm 12.0.2 and uploads
+`heimdall-egress-VERSION.tgz` plus its SHA-256 file beside the native archives.
+No product build runs in GitHub Actions.
+
+Columbus Lasso owns the external publication transaction:
 
 ```bash
-just release-npm
+lasso check
+lasso npm publish "v$(nix eval --raw .#packages.x86_64-linux.release.version)" --yes
 ```
 
-The transaction requires an authenticated npm account, rejects an existing
-version, confirms the GitHub tag is an ancestor of `main`, runs package
-acceptance, verifies the downloaded GitHub checksums, and compares both staged
-npm binaries byte-for-byte with the GitHub assets before `npm publish`.
+The thin `publish-npm.yml` workflow runs only on a GitHub-hosted runner. It
+checks out the immutable tag, installs the pinned npm 12.0.2 client, downloads
+the existing GitHub Release tarball and checksum, validates package identity,
+and calls `npm publish` through OIDC trusted publishing. It has no npm token,
+`NODE_AUTH_TOKEN`, build step, GitHub Environment, or separate web approval.
+The explicit Lasso command is the publication authorization.
+
+One-time package setup uses `lasso npm trust --apply` to bind
+`heimdall-egress` to repository `dravengarden/heimdall`, workflow
+`publish-npm.yml`, no environment, and direct `npm publish` permission. This
+account-level change may require interactive npm authentication; routine
+releases do not.
 
 The npm tarball must expose both `heimdall` and `heimdall-egress`, contain no
 lifecycle scripts, and carry only the launcher, LICENSE, README, package
-metadata, and supported native binaries. After publication, install from the
-registry into a fresh private prefix and verify both commands, package metadata,
-registry integrity, and the reported native path. npm versions are immutable;
-never unpublish and replace a version to repair its contents.
+metadata, and supported native binaries. Lasso accepts completion only after
+registry identity/integrity and fresh-cache execution of both commands pass.
+npm versions are immutable; never unpublish and replace a version to repair its
+contents. Re-running Lasso for an existing matching version performs acceptance
+without dispatching another publication.

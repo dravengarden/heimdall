@@ -11,6 +11,7 @@ grep -Fq '## Changes' <<<"$notes"
 grep -Fq '### Highlights' <<<"$notes"
 grep -Fq '### Known limitations' <<<"$notes"
 grep -Fq 'heimdall-egress-0.2.0-aarch64-linux-musl.tar.gz' <<<"$notes"
+grep -Fq 'heimdall-egress-0.2.0.tgz' <<<"$notes"
 grep -Fq 'https://github.com/example/heimdall/compare/v0.1.0...v0.2.0' <<<"$notes"
 
 if CHANGELOG_FILE=tests/release/CHANGELOG.md \

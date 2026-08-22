@@ -7,13 +7,9 @@ version=$(nix eval --raw .#packages.x86_64-linux.release.version)
 work_dir=$(mktemp -d)
 trap 'rm -rf "$work_dir"' EXIT
 
-scripts/build-npm-package "$work_dir/package"
-pack_json=$(npm pack "$work_dir/package" --pack-destination "$work_dir" --json)
-tarball=$(node -e '
-  const result = JSON.parse(process.argv[1]);
-  if (result.length !== 1) process.exit(1);
-  process.stdout.write(result[0].filename);
-' "$pack_json")
+scripts/build-npm-release-assets "$work_dir"
+tarball="heimdall-egress-$version.tgz"
+(cd "$work_dir" && sha256sum -c "$tarball.sha256")
 
 expected_files='LICENSE
 README.md
@@ -49,7 +45,10 @@ native_path=$("$prefix/bin/heimdall-egress" --print-native-path)
 npm exec --yes --package="$work_dir/$tarball" -- \
   heimdall-egress --version | grep -Fxq "heimdall $version"
 
-readelf -h "$work_dir/package/vendor/linux-arm64/heimdall" |
+mkdir "$work_dir/extracted"
+tar -xzf "$work_dir/$tarball" -C "$work_dir/extracted" \
+  package/vendor/linux-arm64/heimdall
+readelf -h "$work_dir/extracted/package/vendor/linux-arm64/heimdall" |
   grep -F 'Machine:' | grep -Fq AArch64
 if readelf -l "$native_path" | grep -qi interpreter; then
   echo 'npm x86_64 binary has a dynamic interpreter' >&2

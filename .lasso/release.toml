@@ -1,0 +1,10 @@
+schema = 1
+repository = "dravengarden/heimdall"
+
+[npm]
+package = "heimdall-egress"
+workflow = "publish-npm.yml"
+artifact = "heimdall-egress-{version}.tgz"
+checksum = "heimdall-egress-{version}.tgz.sha256"
+bins = ["heimdall", "heimdall-egress"]
+npm_version = "12.0.2"

@@ -581,6 +581,10 @@
             pkgs.cargo-watch
             pkgs.just
             pkgs.nixfmt
+            pkgs.nodejs_22
+            pkgs.gh
+            pkgs.actionlint
+            pkgs.shellcheck
           ];
 
         };

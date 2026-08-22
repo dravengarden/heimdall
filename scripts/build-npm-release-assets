@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+output=${1:?usage: build-npm-release-assets OUTPUT_DIRECTORY}
+mkdir -p "$output"
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+version=$(nix eval --raw .#packages.x86_64-linux.release.version)
+stage=$(mktemp -d)
+trap 'rm -rf "$stage"' EXIT
+npm_cli=(npx --yes npm@12.0.2)
+
+[[ $(node --version) == v22.* ]]
+[[ $("${npm_cli[@]}" --version) == 12.0.2 ]]
+
+scripts/build-npm-package "$stage/package"
+pack_json=$("${npm_cli[@]}" pack "$stage/package" --pack-destination "$output" --json)
+tarball=$(node -e '
+  const result = JSON.parse(process.argv[1]);
+  const entries = Array.isArray(result) ? result : Object.values(result);
+  if (entries.length !== 1) process.exit(1);
+  process.stdout.write(entries[0].filename);
+' "$pack_json")
+test "$tarball" = "heimdall-egress-$version.tgz"
+(cd "$output" && sha256sum "$tarball" >"$tarball.sha256")
+
+printf 'built npm release assets for heimdall-egress %s at %s\n' "$version" "$output"
