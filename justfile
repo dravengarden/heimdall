@@ -39,7 +39,8 @@ test-npm:
 
 test-release-tooling:
     actionlint .github/workflows/publish-npm.yml
-    shellcheck scripts/build-npm-package scripts/build-npm-release-assets scripts/publish-github-release scripts/render-release-notes tests/npm/run-acceptance.sh tests/release/render-notes.sh
+    shellcheck scripts/build-npm-package scripts/build-npm-release-assets scripts/publish-github-release scripts/render-release-notes tests/npm/run-acceptance.sh tests/release/npm-workflow.sh tests/release/render-notes.sh
+    tests/release/npm-workflow.sh
 
 test-fast:
     cargo nextest run --workspace --all-features --locked

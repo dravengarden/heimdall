@@ -1,13 +1,9 @@
 name: Publish npm package
-run-name: npm ${{ inputs.tag }}
+run-name: npm ${{ github.event.release.tag_name }}
 
 on:
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing final GitHub Release tag
-        required: true
-        type: string
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -15,50 +11,34 @@ permissions:
 
 jobs:
   publish:
+    if: github.event.release.prerelease == false
     runs-on: ubuntu-latest
     steps:
       - name: Check out the immutable release tag
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ github.event.release.tag_name }}
           persist-credentials: false
 
-      - name: Set up Node.js
+      - name: Set up Node.js and npm
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: "22.23.2"
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
           package-manager-cache: false
 
-      - name: Install the pinned npm release client
-        run: npm install --global npm@12.0.2 && test "$(npm --version)" = "12.0.2"
-
-      - name: Download and verify the locally built package
+      - name: Download the locally built package
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
           version="${RELEASE_TAG#v}"
-          archive="$(printf '%s' 'heimdall-egress-{version}.tgz' | sed "s/{version}/$version/g")"
-          checksum="$(printf '%s' 'heimdall-egress-{version}.tgz.sha256' | sed "s/{version}/$version/g")"
-          gh release download "$RELEASE_TAG" --repo "dravengarden/heimdall" --pattern "$archive" --pattern "$checksum"
+          archive="heimdall-egress-${version}.tgz"
+          checksum="${archive}.sha256"
+          gh release download "$RELEASE_TAG" --pattern "$archive" --pattern "$checksum"
           sha256sum -c "$checksum"
-          tar -xOf "$archive" package/package.json > package.json
-          node -e '
-            const p = require("./package.json");
-            const expected = process.argv[1];
-            const version = process.argv[2];
-            const expectedBins = JSON.parse(process.argv[3]);
-            const repository = typeof p.repository === "string" ? p.repository : p.repository?.url;
-            const repositoryMatches = typeof repository === "string" &&
-              (repository.endsWith("/dravengarden/heimdall") || repository.endsWith("/dravengarden/heimdall.git") ||
-               repository === "github:dravengarden/heimdall");
-            const bins = typeof p.bin === "string" ? { [p.name]: p.bin } : p.bin;
-            if (p.name !== expected || p.version !== version || !repositoryMatches ||
-                Object.keys(p.scripts ?? {}).length !== 0 ||
-                expectedBins.some((name) => typeof bins?.[name] !== "string")) process.exit(1);
-          ' "heimdall-egress" "$version" '["heimdall", "heimdall-egress"]'
           printf '%s\n' "archive=$archive" >> "$GITHUB_ENV"
 
-      - name: Publish through npm trusted publishing
+      - name: Publish with the native npm CLI
         run: npm publish "$archive" --access public

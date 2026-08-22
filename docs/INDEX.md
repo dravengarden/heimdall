@@ -22,7 +22,7 @@ stable contracts, planning, design material, and operational guidance.
 - [`design/agent-event-log.md`](design/agent-event-log.md) — Daemonless JSONL/run schemas, DNS/policy/TLS evidence, content-addressed blobs, rotation, orphan recovery, and CLI
 - [`install.md`](install.md) — Native and npm `heimdall-egress` static Linux installation, narrow setup authorization, upgrade, and one-level rollback
 - [`runbook.md`](runbook.md) — Runbook
-- [`releasing.md`](releasing.md) — Curated changelog, local GitHub assets, Lasso npm OIDC publication, and post-publication verification standard
+- [`releasing.md`](releasing.md) — Curated changelog, local GitHub assets, release-triggered native npm OIDC publication, and post-publication verification standard
 
 ## Documents
 
@@ -35,7 +35,7 @@ stable contracts, planning, design material, and operational guidance.
 - [`config.md`](config.md) — Generated offline schema/examples, strict TOML/YAML/JSON policy rules, credentials, capture allowlists/redaction, decrypt modes, and UDP/QUIC limits
 - [`install.md`](install.md) — Reproducible native/npm `heimdall-egress` x86_64/aarch64 Linux artifacts, checksums, install ownership, upgrade, and rollback
 - [`runbook.md`](runbook.md) — Build, narrow setup authorization, agent/log contracts, capture readiness, daemonless operation, TLS, current/LTS kernel VM acceptance, and performance baseline
-- [`releasing.md`](releasing.md) — Required release body, local GitHub artifacts, tokenless Lasso npm publication, and post-publication verification
+- [`releasing.md`](releasing.md) — Required release body, local GitHub artifacts, release-triggered native npm publication, and post-publication verification
 
 ### Design documents
 

@@ -46,12 +46,11 @@ see [releasing.md](releasing.md) for the complete release contract. GitHub Pages
 or Actions status is not release evidence.
 
 `just release-github` also uploads the locally built npm 12 tarball and
-checksum. After the GitHub Release exists, run `lasso npm publish TAG --yes`.
-Lasso validates the immutable assets, dispatches the tokenless
-`publish-npm.yml` OIDC workflow, waits for it, and verifies both commands from a
-fresh npm cache. Routine publication has no local npm login, write token, 2FA
-link, or separate GitHub approval. See [releasing.md](releasing.md) for the
-one-time trusted-publisher setup and failure contract.
+checksum. Publishing that Release automatically starts the project-owned
+`publish-npm.yml`; its native npm CLI publishes the archive through OIDC.
+Routine publication has no Lasso invocation, local npm login, write token, 2FA
+link, or second dispatch. See [releasing.md](releasing.md) for the one-time
+trusted-publisher setup and failure contract.
 
 The disposable NixOS VM proves fake/system DNS, SOCKS5 and direct TCP/UDP,
 IPv4/IPv6, HTTP/3, static

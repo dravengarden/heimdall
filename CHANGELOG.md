@@ -14,10 +14,10 @@ guide.
 
 ### Changed
 
-- Build the exact npm tarball locally with pinned npm 12, attach it and its
-  checksum to the GitHub Release, and publish only through the tokenless Lasso
-  OIDC workflow. The explicit Lasso command replaces local npm login, 2FA
-  links, long-lived write tokens, and a second web approval.
+- Build the exact npm tarball locally with pinned npm 12 and attach it and its
+  checksum to the GitHub Release. Publishing the Release triggers the
+  project-owned workflow, whose native npm CLI uses OIDC without a long-lived
+  write token or a second release command.
 - Require curated GitHub Release notes generated from each version's
   highlights, structured changelog, known limitations, installation and
   artifact details, local verification evidence, and full comparison link.
