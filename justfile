@@ -89,7 +89,7 @@ release-check:
     just test-package
 
 release-github:
-    scripts/publish-github-release
+    nix develop -c scripts/publish-github-release
 
 # Explicitly opt in after confirming a representative workload benefits from
 # compiler caching. On 2026-07-18, a same-path clean rebuild took 7.24s with
