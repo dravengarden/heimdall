@@ -27,7 +27,7 @@
         <p class="doc-lead">Install one static x86_64 or aarch64 Linux CLI with its eBPF object embedded. Verify its checksum, authorize only the setup worker, and keep all runtime state under the invoking user.</p>
 
         <h2 id="download">Download and install</h2>
-        <pre><code>version=0.1.0
+        <pre><code>version=0.1.1
 architecture=$(uname -m)
 case "$architecture" in x86_64|aarch64) ;; *) exit 1 ;; esac
 gh release download "v$version" --repo dravengarden/heimdall \

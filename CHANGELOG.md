@@ -4,7 +4,16 @@ All notable changes to Heimdall are documented here. Heimdall is pre-1.0; this
 file records release-level changes and does not serve as an API migration
 guide.
 
-## [Unreleased]
+## [0.1.1] - 2026-08-24
+
+### Highlights
+
+- Publish the official daemonless Heimdall CLI through npm for x86_64 and
+  aarch64 Linux with no install lifecycle scripts.
+- Make npm publication consume the exact locally verified GitHub Release asset
+  through GitHub OIDC instead of a long-lived registry token.
+- Expand the npm package page with verified install and one-shot commands,
+  quick start, architecture, operating modes, and security boundaries.
 
 ### Added
 
@@ -33,6 +42,10 @@ guide.
   LTS real-eBPF gates remain local (`just verify`, `just test-package`,
   `just test-vm`); `just release-github` reruns them locally before creating
   the tag and publishing its archives and checksums.
+
+### Known limitations
+
+- Native macOS support is not available yet.
 
 ## [0.1.0] - 2026-08-21
 

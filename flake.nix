@@ -44,7 +44,7 @@
         overlays = [ fenix.overlays.default ];
       };
       lib = pkgs.lib;
-      heimdallVersion = "0.1.0";
+      heimdallVersion = "0.1.1";
       heimdallSrc = lib.cleanSourceWith {
         src = ./.;
         filter =
@@ -206,7 +206,7 @@
 
       heimdall-ebpf = craneLib.buildPackage {
         pname = "heimdall-ebpf";
-        version = "0.1.0";
+        version = "0.1.1";
 
         src = ebpfSrc;
 
