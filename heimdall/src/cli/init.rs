@@ -190,7 +190,7 @@ pub fn run(args: InitArgs) -> Result<()> {
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use heimdall_config::HeimdallConfig;
+    use crate::heimdall_config::HeimdallConfig;
 
     use super::*;
 

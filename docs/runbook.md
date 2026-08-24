@@ -46,11 +46,11 @@ see [releasing.md](releasing.md) for the complete release contract. GitHub Pages
 or Actions status is not release evidence.
 
 `just release-github` also uploads the locally built npm 12 tarball, two
-platform-specific PyPI wheels, three Cargo source packages, and their
+platform-specific PyPI wheels, the Cargo CLI source package, and their
 checksums. Publishing that Release automatically starts the project-owned
 `publish-npm.yml`, `publish-pypi.yml`, and `publish-cargo.yml`; their native
-registry CLIs publish through OIDC. The Cargo workflow first reproduces all
-three `.crate` files byte for byte from the immutable tag. Routine publication
+registry CLIs publish through OIDC. The Cargo workflow first reproduces the
+`.crate` file byte for byte from the immutable tag. Routine publication
 has no Lasso invocation, local registry login, write token, 2FA link, or second
 dispatch. See
 [releasing.md](releasing.md) for the one-time trusted-publisher setup and

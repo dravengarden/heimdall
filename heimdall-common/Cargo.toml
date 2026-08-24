@@ -1,9 +1,9 @@
 [package]
 name = "heimdall-common"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 rust-version = "1.95"
-publish = ["crates-io"]
+publish = false
 description = "Shared kernel/userspace wire types for Heimdall egress"
 license = "Apache-2.0"
 repository = "https://github.com/dravengarden/heimdall"

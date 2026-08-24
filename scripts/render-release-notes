@@ -53,8 +53,7 @@ for checksum verification, setup authorization, upgrade, and rollback.
 - \`heimdall-egress-${version}.tgz\` for npm trusted publishing
 - x86_64 and aarch64 \`heimdall_egress-${version}-*.whl\` files for PyPI
   trusted publishing
-- \`heimdall-common-${version}.crate\`, \`heimdall-config-${version}.crate\`, and
-  \`heimdall-egress-${version}.crate\` for crates.io publication
+- \`heimdall-egress-${version}.crate\` for crates.io publication
 - One SHA-256 file beside each archive
 
 ## Verification

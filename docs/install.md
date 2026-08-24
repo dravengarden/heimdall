@@ -97,7 +97,7 @@ Download the archive and checksum from the matching GitHub release. With the
 GitHub CLI:
 
 ```bash
-version=0.1.3
+version=0.1.4
 architecture=$(uname -m)
 case "$architecture" in x86_64|aarch64) ;; *) exit 1 ;; esac
 gh release download "v$version" --repo dravengarden/heimdall \

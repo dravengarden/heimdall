@@ -44,7 +44,7 @@
         overlays = [ fenix.overlays.default ];
       };
       lib = pkgs.lib;
-      heimdallVersion = "0.1.3";
+      heimdallVersion = "0.1.4";
       heimdallSrc = lib.cleanSourceWith {
         src = ./.;
         filter =
@@ -192,6 +192,9 @@
         mkdir -p $out
         cp -r ${./heimdall-ebpf} $out/heimdall-ebpf
         cp -r ${./heimdall-common} $out/heimdall-common
+        mkdir -p $out/heimdall/src/internal
+        cp ${./heimdall/src/internal/common.rs} \
+          $out/heimdall/src/internal/common.rs
         cp ${./heimdall-ebpf/Cargo.lock} $out/Cargo.lock
         # Mirror heimdall-ebpf/.cargo/config.toml at the src root so
         # crane's cargo invocation (run from src root, not the
@@ -206,7 +209,7 @@
 
       heimdall-ebpf = craneLib.buildPackage {
         pname = "heimdall-ebpf";
-        version = "0.1.3";
+        version = "0.1.4";
 
         src = ebpfSrc;
 

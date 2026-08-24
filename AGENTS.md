@@ -14,8 +14,9 @@ these rules; this file is the standardized project entry point.
   data flow and lifecycle.
 - **Where to start coding**: pick a doc that mentions the file you
   want to change. Most non-trivial changes touch `heimdall/` (CLI and
-  foreground session), `heimdall-ebpf/` (kernel programs), or `heimdall-config/`
-  (the small format-independent schema). See `docs/runbook.md` for build order.
+  foreground session), `heimdall-ebpf/` (kernel programs), or
+  `heimdall/src/internal/config.rs` (the small format-independent schema). See
+  `docs/runbook.md` for build order.
 
 ## House rules
 
@@ -74,7 +75,7 @@ nix develop -c just verify
 
 ### Config changes stay small
 
-`heimdall-config/src/lib.rs` is the source of truth. Keep the three embedded
+`heimdall/src/internal/config.rs` is the source of truth. Keep the three embedded
 `heimdall init` templates, `docs/config.md`, and
 `skills/heimdall/references/config.md` in sync. Every syntax must enter the same
 strict schema; do not add a workload policy language.

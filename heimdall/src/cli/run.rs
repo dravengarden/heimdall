@@ -40,9 +40,9 @@ use std::time::Duration;
 use nix::mount::{MsFlags, mount};
 use nix::sched::{CloneFlags, unshare};
 
+use crate::heimdall_config::HeimdallConfig;
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
-use heimdall_config::HeimdallConfig;
 use nix::sys::signal::{self, SaFlags, SigAction, SigHandler, SigSet, SigmaskHow, Signal};
 use nix::sys::wait::{WaitStatus, waitpid};
 use nix::unistd::{ForkResult, Pid, fork};
@@ -249,11 +249,11 @@ async fn run_registered(
         let _ = fs::remove_dir(&cgroup_path);
     })?;
     let boundaries = match cfg.decrypt.mode {
-        heimdall_config::DecryptMode::Off => vec!["transport"],
-        heimdall_config::DecryptMode::Runtime => {
+        crate::heimdall_config::DecryptMode::Off => vec!["transport"],
+        crate::heimdall_config::DecryptMode::Runtime => {
             vec!["transport", "tls_plaintext.runtime"]
         }
-        heimdall_config::DecryptMode::Relay => vec!["transport", "tls_plaintext.relay"],
+        crate::heimdall_config::DecryptMode::Relay => vec!["transport", "tls_plaintext.relay"],
     };
     if let Err(error) = event_log.ready("heimdall-run", None, &boundaries) {
         session.shutdown().await;
@@ -385,8 +385,8 @@ fn resolve_decision(cfg: &HeimdallConfig, args: &RunArgs) -> Result<RunDecision>
         )
     })?;
     let dns = match selected.dns.mode {
-        heimdall_config::DnsMode::Fake => "fake",
-        heimdall_config::DnsMode::System => "system",
+        crate::heimdall_config::DnsMode::Fake => "fake",
+        crate::heimdall_config::DnsMode::System => "system",
     }
     .to_string();
     Ok(RunDecision { policy, dns })

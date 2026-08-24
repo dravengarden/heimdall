@@ -36,7 +36,7 @@ In scope:
 - The foreground relay, DNS, TLS, capture, and event-log path
 - The `heimdall run` cgroup + mount-namespace machinery
 - The fake-IP DNS server
-- Configuration parsing (heimdall-config)
+- Configuration parsing (`heimdall/src/internal/config.rs`)
 
 Out of scope:
 

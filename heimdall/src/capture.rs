@@ -7,8 +7,8 @@ use std::{
     time::Duration,
 };
 
+use crate::heimdall_config::{CaptureBoundary, CaptureConfig, CaptureDirection, CaptureMode};
 use anyhow::{Context, Result};
-use heimdall_config::{CaptureBoundary, CaptureConfig, CaptureDirection, CaptureMode};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     sync::Mutex,

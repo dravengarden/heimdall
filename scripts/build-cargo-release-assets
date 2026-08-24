@@ -17,14 +17,10 @@ work_dir=$(mktemp -d)
 trap 'rm -rf "$work_dir"' EXIT
 export CARGO_TARGET_DIR="$work_dir/target"
 
-for package in heimdall-common heimdall-config heimdall-egress; do
-  cargo package --package "$package" --locked --no-verify --allow-dirty \
-    --config 'patch.crates-io.heimdall-common.path="heimdall-common"' \
-    --config 'patch.crates-io.heimdall-config.path="heimdall-config"'
-  archive="$package-$version.crate"
-  install -m 0644 "$CARGO_TARGET_DIR/package/$archive" "$output/$archive"
-  (cd "$output" && sha256sum "$archive" >"$archive.sha256")
-done
+cargo package --package heimdall-egress --locked --no-verify --allow-dirty
+archive="heimdall-egress-$version.crate"
+install -m 0644 "$CARGO_TARGET_DIR/package/$archive" "$output/$archive"
+(cd "$output" && sha256sum "$archive" >"$archive.sha256")
 
 printf 'built crates.io release assets for Heimdall %s at %s\n' \
   "$version" "$output"

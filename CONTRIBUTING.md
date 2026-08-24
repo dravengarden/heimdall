@@ -14,7 +14,7 @@ target on accepted ideas is fast.
   active development track, a planned area, or an explicit non-goal.
 - Skim [docs/architecture.md](docs/architecture.md) to know which
   control loop your change lands in.
-- For changes touching `heimdall-config/src/lib.rs`, update the four embedded
+- For changes touching `heimdall/src/internal/config.rs`, update the four embedded
   init templates, `docs/config.md`, and the bundled skill reference together.
 
 ## Dev setup

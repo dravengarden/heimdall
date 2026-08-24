@@ -10,11 +10,9 @@ trap 'rm -rf "$work_dir"' EXIT
 scripts/build-cargo-release-assets "$work_dir/dist"
 (cd "$work_dir/dist" && sha256sum -c ./*.crate.sha256)
 
-expected_files=$(
-  for package in heimdall-common heimdall-config heimdall-egress; do
-    printf '%s\n' "$package-$version.crate" "$package-$version.crate.sha256"
-  done | sort
-)
+expected_files=$(printf '%s\n' \
+  "heimdall-egress-$version.crate" \
+  "heimdall-egress-$version.crate.sha256" | sort)
 actual_files=$(find "$work_dir/dist" -maxdepth 1 -type f -printf '%f\n' | sort)
 [[ "$actual_files" == "$expected_files" ]] || {
   echo 'Cargo release assets have unexpected files:' >&2
@@ -29,7 +27,11 @@ root="$work_dir/unpacked/heimdall-egress-$version"
 cmp heimdall/embedded/heimdall-ebpf "$root/embedded/heimdall-ebpf"
 grep -Fq 'name = "heimdall-egress"' "$root/Cargo.toml"
 grep -Fq 'name = "heimdall"' "$root/Cargo.toml"
-grep -Fq 'version = "0.1.3"' "$root/Cargo.toml"
+grep -Fq "version = \"$version\"" "$root/Cargo.toml"
+if grep -Eq 'heimdall-(common|config)' "$root/Cargo.toml"; then
+  echo 'published CLI unexpectedly depends on an internal Heimdall crate' >&2
+  exit 1
+fi
 
 for expected in \
   'cargo install heimdall-egress --locked' \
@@ -43,4 +45,17 @@ for expected in \
 done
 
 file "$root/embedded/heimdall-ebpf" | grep -Fq 'eBPF'
+
+CARGO_TARGET_DIR="$work_dir/install-target" cargo install \
+  --path "$root" \
+  --locked \
+  --root "$work_dir/install-root"
+[[ "$("$work_dir/install-root/bin/heimdall" --version)" == "heimdall $version" ]]
+installed_bins=$(find "$work_dir/install-root/bin" -maxdepth 1 -type f -printf '%f\n')
+[[ "$installed_bins" == heimdall ]] || {
+  echo 'Cargo package installed an unexpected executable set:' >&2
+  printf '%s\n' "$installed_bins" >&2
+  exit 1
+}
+
 printf 'Cargo package acceptance OK\n'

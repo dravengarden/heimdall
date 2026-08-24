@@ -4,6 +4,30 @@ All notable changes to Heimdall are documented here. Heimdall is pre-1.0; this
 file records release-level changes and does not serve as an API migration
 guide.
 
+## [0.1.4] - 2026-08-24
+
+### Highlights
+
+- Publish only the user-facing `heimdall-egress` CLI package on crates.io.
+- Keep eBPF wire types and configuration parsing as repository-internal crates
+  instead of exposing implementation packages as products.
+- Preserve one-command `cargo install heimdall-egress --locked` installation
+  with the verified eBPF object embedded in the source crate.
+
+### Changed
+
+- Move the canonical shared wire types and configuration schema into the CLI
+  source tree, with internal workspace crates reusing those exact files for
+  eBPF builds and schema tests.
+- Reduce the Cargo Release asset, trusted-publishing workflow, Lasso binding,
+  and registry acceptance contract from three crates to `heimdall-egress`.
+
+### Known limitations
+
+- Native macOS support is not available yet.
+- Cargo installation compiles the userspace CLI locally and therefore takes
+  longer than installing the prebuilt npm, PyPI, or GitHub Release packages.
+
 ## [0.1.3] - 2026-08-24
 
 ### Highlights

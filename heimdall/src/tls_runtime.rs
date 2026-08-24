@@ -12,6 +12,7 @@ use std::{
     sync::atomic::{self, Ordering},
 };
 
+use crate::heimdall_common::{TAP_DATA_LEN, TapDir, TapEvent};
 use anyhow::{Context, Result};
 use aya::{
     Ebpf,
@@ -23,7 +24,6 @@ use aya::{
     },
     util::online_cpus,
 };
-use heimdall_common::{TAP_DATA_LEN, TapDir, TapEvent};
 use tokio::sync::{mpsc, watch};
 use tracing::warn;
 

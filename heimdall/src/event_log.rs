@@ -16,9 +16,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::heimdall_config::{CaptureConfig, CaptureMode};
 use anyhow::{Context, Result};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use heimdall_config::{CaptureConfig, CaptureMode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};

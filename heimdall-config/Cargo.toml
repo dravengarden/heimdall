@@ -1,9 +1,9 @@
 [package]
 name = "heimdall-config"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 rust-version.workspace = true
-publish = ["crates-io"]
+publish = false
 description = "Strict configuration schema for Heimdall egress"
 license = "Apache-2.0"
 repository = "https://github.com/dravengarden/heimdall"
@@ -14,6 +14,11 @@ categories = ["config", "network-programming"]
 
 [lints]
 workspace = true
+
+[package.metadata.cargo-machete]
+# cargo-machete does not follow the #[path] module that keeps this internal
+# test crate on the CLI package's canonical schema source.
+ignored = ["schemars", "serde", "serde_json", "serde_yaml_ng", "thiserror", "toml"]
 
 [dependencies]
 schemars = "=1.2.2"

@@ -34,6 +34,8 @@ mod cli;
 mod dns;
 mod ebpf;
 mod event_log;
+mod heimdall_common;
+mod heimdall_config;
 mod http;
 mod setup;
 mod tls_relay;
@@ -54,6 +56,8 @@ use std::{
     time::Duration,
 };
 
+use crate::heimdall_common::{FAMILY_V4, FAMILY_V6, OrigDst, relay_key};
+use crate::heimdall_config::{Action, HeimdallConfig, Outbound, Socks5Auth, Socks5Outbound};
 use anyhow::{Context, Result};
 use aya::{
     Ebpf, EbpfLoader,
@@ -63,8 +67,6 @@ use aya::{
     },
 };
 use clap::Parser;
-use heimdall_common::{FAMILY_V4, FAMILY_V6, OrigDst, relay_key};
-use heimdall_config::{Action, HeimdallConfig, Outbound, Socks5Auth, Socks5Outbound};
 use nix::sys::socket::{
     AddressFamily, ControlMessage, ControlMessageOwned, MsgFlags, SockFlag, SockType, SockaddrIn,
     SockaddrStorage, bind, recvmsg, sendmsg, setsockopt, socket, sockopt,
@@ -311,16 +313,16 @@ impl ForegroundSession {
             .with_context(|| format!("selected policy `{policy_name}` disappeared"))?;
         let mut policy_flags = 0;
         if selected.dns_hijack() {
-            policy_flags |= heimdall_common::POLICY_DNS_HIJACK;
+            policy_flags |= crate::heimdall_common::POLICY_DNS_HIJACK;
         } else {
-            policy_flags |= heimdall_common::POLICY_DNS_SYSTEM;
+            policy_flags |= crate::heimdall_common::POLICY_DNS_SYSTEM;
         }
         if selected.rejects_all_udp() {
-            policy_flags |= heimdall_common::POLICY_UDP_REJECT;
+            policy_flags |= crate::heimdall_common::POLICY_UDP_REJECT;
         }
 
         let upstreams = resolve_all(cfg)?;
-        let relay_tls = (cfg.decrypt.mode == heimdall_config::DecryptMode::Relay)
+        let relay_tls = (cfg.decrypt.mode == crate::heimdall_config::DecryptMode::Relay)
             .then(|| {
                 let ca_cert = cfg
                     .decrypt
@@ -346,7 +348,7 @@ impl ForegroundSession {
             runtime.relay_port(),
             runtime.dns_port(),
             policy_flags,
-            cfg.decrypt.mode == heimdall_config::DecryptMode::Runtime,
+            cfg.decrypt.mode == crate::heimdall_config::DecryptMode::Runtime,
         )?;
         let bundle = tokio::task::spawn_blocking(move || setup::launch_worker(&request))
             .await
@@ -390,7 +392,7 @@ impl ForegroundSession {
 
         let cli_overrides: CliOverrides = Arc::new(parking_lot::RwLock::new(StdHashMap::from([(
             cgroup_id,
-            heimdall_config::Decision {
+            crate::heimdall_config::Decision {
                 policy: policy_name.to_owned(),
             },
         )])));
@@ -872,7 +874,7 @@ pub(crate) async fn close_udp_sessions_for_cgroup(sessions: &UdpSessions, cgroup
 
 /// Shared (cgroup_id → Decision) override map for `heimdall run`
 /// CLI processes. See `Shared.cli_overrides` for semantics.
-pub type CliOverrides = Arc<parking_lot::RwLock<StdHashMap<u64, heimdall_config::Decision>>>;
+pub type CliOverrides = Arc<parking_lot::RwLock<StdHashMap<u64, crate::heimdall_config::Decision>>>;
 pub type EventClients = Arc<parking_lot::RwLock<StdHashMap<u64, crate::event_log::EventClient>>>;
 
 /// SOCKS5 destination — IPv4 literal (ATYP=0x01), IPv6 literal
@@ -931,7 +933,7 @@ async fn main() -> Result<()> {
                 resolve_config_path(cli.config.as_deref())?
             } else {
                 cli.config.unwrap_or_else(|| {
-                    PathBuf::from(heimdall_config::DEFAULT_DIR).join("config.toml")
+                    PathBuf::from(crate::heimdall_config::DEFAULT_DIR).join("config.toml")
                 })
             };
             cli::config::run(&config_path, sub).await
@@ -949,7 +951,10 @@ async fn main() -> Result<()> {
 /// Resolve `--config` / `HEIMDALL_CONFIG`, otherwise discover one config.
 fn resolve_config_path(explicit: Option<&std::path::Path>) -> Result<PathBuf> {
     explicit.map(PathBuf::from).map_or_else(
-        || heimdall_config::discover_config_path(heimdall_config::DEFAULT_DIR).map_err(Into::into),
+        || {
+            crate::heimdall_config::discover_config_path(crate::heimdall_config::DEFAULT_DIR)
+                .map_err(Into::into)
+        },
         Ok,
     )
 }
@@ -1487,7 +1492,7 @@ fn emit_policy_decision(
     network: &'static str,
     destination: &Dst,
     port: u16,
-    rule: Option<&heimdall_config::RouteRule>,
+    rule: Option<&crate::heimdall_config::RouteRule>,
     action: &Action,
 ) -> Result<()> {
     let (cgroup_id, policy) = owner;

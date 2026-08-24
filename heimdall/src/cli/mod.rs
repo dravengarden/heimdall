@@ -11,11 +11,11 @@ pub mod agent {
 
     use std::path::{Path, PathBuf};
 
-    use anyhow::Result;
-    use heimdall_config::{
+    use crate::heimdall_config::{
         Action, CaptureMode, ConfigDiagnostic, ConfigError, ConfigFormat, DecryptConfig, DnsMode,
         HeimdallConfig,
     };
+    use anyhow::Result;
     use serde::Serialize;
 
     const CONTRACT_VERSION: &str = "heimdall.agent/v8";
@@ -244,14 +244,14 @@ pub mod agent {
     /// or executes the wrapped command.
     pub async fn run(explicit_path: Option<&Path>, args: AgentArgs) -> Result<bool> {
         let path_result = explicit_path.map(PathBuf::from).map_or_else(
-            || heimdall_config::discover_config_path(heimdall_config::DEFAULT_DIR),
+            || crate::heimdall_config::discover_config_path(crate::heimdall_config::DEFAULT_DIR),
             Ok,
         );
 
         let (path, discovery_error) = match path_result {
             Ok(path) => (path, None),
             Err(error) => (
-                Path::new(heimdall_config::DEFAULT_DIR).join("config.toml"),
+                Path::new(crate::heimdall_config::DEFAULT_DIR).join("config.toml"),
                 Some(error),
             ),
         };
@@ -575,21 +575,21 @@ pub mod agent {
 
     fn decrypt_report(config: &DecryptConfig) -> DecryptConfigReport {
         match config.mode {
-            heimdall_config::DecryptMode::Off => DecryptConfigReport {
+            crate::heimdall_config::DecryptMode::Off => DecryptConfigReport {
                 mode: "off",
                 ca_cert: None,
                 ca_cert_sha256: None,
                 ca_key: None,
                 ca_material_ready: true,
             },
-            heimdall_config::DecryptMode::Runtime => DecryptConfigReport {
+            crate::heimdall_config::DecryptMode::Runtime => DecryptConfigReport {
                 mode: "runtime",
                 ca_cert: None,
                 ca_cert_sha256: None,
                 ca_key: None,
                 ca_material_ready: true,
             },
-            heimdall_config::DecryptMode::Relay => DecryptConfigReport {
+            crate::heimdall_config::DecryptMode::Relay => DecryptConfigReport {
                 mode: "relay",
                 ca_cert: config
                     .ca_cert
@@ -610,7 +610,7 @@ pub mod agent {
     }
 
     fn relay_ca_init_argv(config: &DecryptConfig) -> Option<Vec<String>> {
-        if config.mode != heimdall_config::DecryptMode::Relay {
+        if config.mode != crate::heimdall_config::DecryptMode::Relay {
             return None;
         }
         let ca_cert = config.ca_cert.as_ref()?;
@@ -676,7 +676,7 @@ pub mod agent {
                 runtime_apis: &["SSL_read", "SSL_read_ex", "SSL_write", "SSL_write_ex"],
                 runtime_evidence: "tls.runtime+flow.data",
                 runtime_discovery: "loaded_images_at_run_start",
-                runtime_max_bytes_per_event: heimdall_common::TAP_DATA_LEN,
+                runtime_max_bytes_per_event: crate::heimdall_common::TAP_DATA_LEN,
                 runtime_requires_attached_image: true,
                 runtime_requires_ca_trust: false,
                 runtime_supports_pinning_and_mtls: true,
@@ -810,7 +810,7 @@ pub mod agent {
             );
             assert_eq!(
                 capabilities().decrypt.runtime_max_bytes_per_event,
-                heimdall_common::TAP_DATA_LEN
+                crate::heimdall_common::TAP_DATA_LEN
             );
             assert!(capabilities().decrypt.runtime_requires_attached_image);
         }

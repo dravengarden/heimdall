@@ -1,4 +1,4 @@
-name: Publish crates.io packages
+name: Publish crates.io package
 run-name: crates.io ${{ github.event.release.tag_name }}
 
 on:
@@ -28,7 +28,7 @@ jobs:
           rustup toolchain install 1.95.0 --profile minimal
           rustup default 1.95.0
 
-      - name: Download locally packaged crates
+      - name: Download the locally packaged crate
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
@@ -39,24 +39,20 @@ jobs:
             --dir dist \
             --pattern '*.crate' \
             --pattern '*.crate.sha256'
-          test "$(find dist -maxdepth 1 -type f -name '*.crate' | wc -l)" -eq 3
+          test "$(find dist -maxdepth 1 -type f -name '*.crate' | wc -l)" -eq 1
           (cd dist && sha256sum -c ./*.crate.sha256)
 
-      - name: Reproduce the locally packaged crates
+      - name: Reproduce the locally packaged crate
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
           version="${RELEASE_TAG#v}"
           export CARGO_TARGET_DIR="$RUNNER_TEMP/cargo-package"
-          for package in heimdall-common heimdall-config heimdall-egress; do
-            cargo package --package "$package" --locked --no-verify \
-              --config 'patch.crates-io.heimdall-common.path="heimdall-common"' \
-              --config 'patch.crates-io.heimdall-config.path="heimdall-config"'
-            cmp \
-              "$CARGO_TARGET_DIR/package/$package-$version.crate" \
-              "dist/$package-$version.crate"
-          done
+          cargo package --package heimdall-egress --locked --no-verify
+          cmp \
+            "$CARGO_TARGET_DIR/package/heimdall-egress-$version.crate" \
+            "dist/heimdall-egress-$version.crate"
 
       - name: Obtain a short-lived crates.io token
         id: auth
@@ -69,13 +65,11 @@ jobs:
         run: |
           set -euo pipefail
           version="${RELEASE_TAG#v}"
-          for package in heimdall-common heimdall-config heimdall-egress; do
-            cargo publish --package "$package" --locked --no-verify
-            for attempt in $(seq 1 30); do
-              if cargo info "$package@$version" >/dev/null 2>&1; then
-                break
-              fi
-              test "$attempt" -lt 30
-              sleep 2
-            done
+          cargo publish --package heimdall-egress --locked --no-verify
+          for attempt in $(seq 1 30); do
+            if cargo info "heimdall-egress@$version" >/dev/null 2>&1; then
+              break
+            fi
+            test "$attempt" -lt 30
+            sleep 2
           done

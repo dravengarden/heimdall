@@ -1,26 +1,26 @@
-//! Internal eBPF/userspace wire-type crate.
-#![cfg_attr(not(feature = "user"), no_std)]
+//! Userspace view of the wire types shared with Heimdall's eBPF program.
 
-#[path = "../../heimdall/src/internal/common.rs"]
+#[path = "internal/common.rs"]
+#[allow(
+    dead_code,
+    reason = "the shared eBPF ABI includes fields used only by the kernel program"
+)]
 mod wire;
 
 pub use wire::*;
 
-#[cfg(feature = "user")]
 #[allow(
     unsafe_code,
     reason = "repr(C) contains only fixed-width Pod fields shared verbatim with eBPF"
 )]
 unsafe impl aya::Pod for OrigDst {}
 
-#[cfg(feature = "user")]
 #[allow(
     unsafe_code,
     reason = "repr(C) contains only fixed-width Pod fields shared verbatim with eBPF"
 )]
 unsafe impl aya::Pod for UdpFlowKey {}
 
-#[cfg(feature = "user")]
 #[allow(
     unsafe_code,
     reason = "repr(C) contains only fixed-width Pod fields shared verbatim with eBPF"

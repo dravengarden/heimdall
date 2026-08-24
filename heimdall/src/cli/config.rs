@@ -18,8 +18,8 @@
 
 use std::{net::IpAddr, path::Path};
 
+use crate::heimdall_config::{Action, DnsMode, HeimdallConfig};
 use anyhow::{Context, Result};
-use heimdall_config::{Action, DnsMode, HeimdallConfig};
 use serde::Serialize;
 
 use super::init::InitFormat;
@@ -143,7 +143,7 @@ fn schema(args: SchemaArgs) -> Result<()> {
     }
     println!(
         "{}",
-        serde_json::to_string(&heimdall_config::json_schema())?
+        serde_json::to_string(&crate::heimdall_config::json_schema())?
     );
     Ok(())
 }
@@ -241,7 +241,7 @@ struct ValidateJson<'a> {
     contract: &'static str,
     valid: bool,
     path: String,
-    diagnostics: &'a [heimdall_config::ConfigDiagnostic],
+    diagnostics: &'a [crate::heimdall_config::ConfigDiagnostic],
 }
 
 async fn validate(config_path: &Path, args: ValidateArgs) -> Result<()> {
@@ -316,7 +316,7 @@ mod tests {
 
     #[test]
     fn generated_schema_accepts_the_bundled_json_example() {
-        let schema = heimdall_config::json_schema();
+        let schema = crate::heimdall_config::json_schema();
         assert_eq!(
             schema["$schema"],
             "https://json-schema.org/draft/2020-12/schema"

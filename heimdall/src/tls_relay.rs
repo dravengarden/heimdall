@@ -439,7 +439,7 @@ pub async fn looks_like_client_hello(stream: &TcpStream) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use heimdall_config::{CaptureConfig, CaptureMode};
+    use crate::heimdall_config::{CaptureConfig, CaptureMode};
     use rcgen::{BasicConstraints, IsCa};
     use rustls::{CertificateError, server::WebPkiClientVerifier};
     use tokio::{

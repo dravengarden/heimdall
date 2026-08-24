@@ -8,12 +8,12 @@ use std::{
     process::{Child, Command, Stdio},
 };
 
-use anyhow::{Context, Result};
-use aya::maps::{HashMap, Map, MapData};
-use heimdall_common::OrigDst;
-use heimdall_common::{
+use crate::heimdall_common::OrigDst;
+use crate::heimdall_common::{
     POLICY_DNS_HIJACK, POLICY_DNS_SYSTEM, POLICY_REDIRECT_OFF, POLICY_UDP_REJECT,
 };
+use anyhow::{Context, Result};
+use aya::maps::{HashMap, Map, MapData};
 use rustix::net::{
     RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SendAncillaryBuffer,
     SendAncillaryMessage, SendFlags, recvmsg, sendmsg,
