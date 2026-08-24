@@ -47,7 +47,7 @@
 
   const currentPage = document.body.dataset.page;
   if (currentPage) {
-    document.querySelectorAll(`[data-page="${currentPage}"]`).forEach((link) => {
+    document.querySelectorAll(`a[data-page="${currentPage}"]`).forEach((link) => {
       link.setAttribute("aria-current", "page");
     });
   }

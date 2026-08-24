@@ -21,13 +21,13 @@
     <main id="main-content" class="container docs-shell">
       <aside class="docs-sidebar" aria-label="Documentation navigation"><div class="sidebar-label">Documentation</div><nav class="sidebar-nav"><a href="product-contract.html" data-page="product-contract">Product contract</a><a href="install.html" data-page="install">Install and upgrade</a><a href="architecture.html" data-page="architecture">Architecture</a><a href="configuration.html" data-page="configuration">Configuration</a><a href="commands.html" data-page="commands">Command workflows</a><a href="runbook.html" data-page="runbook">Runbook</a><a href="roadmap.html" data-page="roadmap">Roadmap</a></nav><div class="sidebar-meta"><strong>Source document</strong><a href="https://github.com/dravengarden/heimdall/blob/main/docs/install.md">docs/install.md ↗</a></div></aside>
       <article class="doc-content">
-        <details class="mobile-toc"><summary>In this section</summary><nav><a href="#download">Download</a><a href="#npm">npm</a><a href="#pypi">PyPI</a><a href="#authorize">Authorize setup</a><a href="#upgrade">Upgrade and rollback</a><a href="#ownership">Ownership</a></nav></details>
+        <details class="mobile-toc"><summary>In this section</summary><nav><a href="#download">Download</a><a href="#npm">npm</a><a href="#pypi">PyPI</a><a href="#cargo">Cargo</a><a href="#authorize">Authorize setup</a><a href="#upgrade">Upgrade and rollback</a><a href="#ownership">Ownership</a></nav></details>
         <span class="doc-kicker">One binary / no daemon</span>
         <h1>Install Heimdall</h1>
         <p class="doc-lead">Install one static x86_64 or aarch64 Linux CLI with its eBPF object embedded. Verify its checksum, authorize only the setup worker, and keep all runtime state under the invoking user.</p>
 
         <h2 id="download">Download and install</h2>
-        <pre><code>version=0.1.2
+        <pre><code>version=0.1.4
 architecture=$(uname -m)
 case "$architecture" in x86_64|aarch64) ;; *) exit 1 ;; esac
 gh release download "v$version" --repo dravengarden/heimdall \
@@ -55,6 +55,11 @@ heimdall --version
 # Ephemeral compatibility check only.
 uvx --from heimdall-egress heimdall help</code></pre>
         <p>PyPI provides separate x86_64 and aarch64 Linux wheels for glibc and musl systems, with one static binary embedded in each wheel and no install-time build or download. After a persistent install, use <code>heimdall-egress --print-native-path</code> and authorize that exact regular binary. Do not authorize a Python launcher or ephemeral tool-cache path.</p>
+
+        <h2 id="cargo">Install through Cargo</h2>
+        <pre><code>cargo install heimdall-egress --locked
+heimdall --version</code></pre>
+        <p>The crate installs only <code>heimdall</code> and embeds the verified eBPF object. It requires Rust 1.95 or newer, but it does not require nightly Rust or an eBPF toolchain. Authorize the exact regular path printed by <code>command -v heimdall</code>.</p>
 
         <h2 id="authorize">Authorize only setup</h2>
         <p>Create this entry with <code>visudo</code>, replacing <code>USERNAME</code>:</p>
