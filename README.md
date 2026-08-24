@@ -102,10 +102,11 @@ semantics.
 Tagged releases provide static x86_64 and aarch64 Linux archives. Follow
 [docs/install.md](docs/install.md) to verify its checksum, install or upgrade
 atomically, and retain one rollback executable.
-The same official binaries are also available through npm:
+The same official binaries are also available through npm and PyPI:
 
 ```bash
 npm install --global heimdall-egress
+# or: uv tool install heimdall-egress
 heimdall --version
 ```
 

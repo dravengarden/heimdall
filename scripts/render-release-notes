@@ -25,10 +25,10 @@ for required_heading in '### Highlights' '### Known limitations'; do
   }
 done
 
-previous_tag="$({
+previous_tag="${PREVIOUS_TAG_OVERRIDE:-$({
   git tag --merged HEAD --sort=-version:refname 'v[0-9]*' |
     awk -v current="$tag" '$0 != current { print; exit }'
-})"
+})}"
 if [[ -n "$previous_tag" ]]; then
   changelog_url="${repository_url}/compare/${previous_tag}...${tag}"
 else
@@ -51,13 +51,15 @@ for checksum verification, setup authorization, upgrade, and rollback.
 - \`heimdall-egress-${version}-x86_64-linux-musl.tar.gz\`
 - \`heimdall-egress-${version}-aarch64-linux-musl.tar.gz\`
 - \`heimdall-egress-${version}.tgz\` for npm trusted publishing
+- x86_64 and aarch64 \`heimdall_egress-${version}-*.whl\` files for PyPI
+  trusted publishing
 - One SHA-256 file beside each archive
 
 ## Verification
 
 The release host completed the authoritative local source checks, current and
-Linux 6.6 LTS real-eBPF VM suites sequentially, and both static package gates
-before the tag or assets were published.
+Linux 6.6 LTS real-eBPF VM suites sequentially, and native, npm, and PyPI
+package gates before the tag or assets were published.
 
 ## Full changelog
 

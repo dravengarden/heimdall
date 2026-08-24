@@ -102,3 +102,47 @@ check, or publish Heimdall's copy.
 After the workflow succeeds, use native `npm view` and fresh-cache `npm exec`
 commands for independent acceptance. npm versions are immutable; never
 unpublish and replace a version to repair its contents.
+
+## PyPI publication
+
+PyPI follows the same immutable-asset boundary as npm. Before creating the
+GitHub Release, `just release-github` builds separate x86_64 and aarch64 Linux
+wheels with compressed manylinux/musllinux platform tags, verifies each bundled
+static binary, and uploads each wheel with its SHA-256 file. No source
+distribution is published because an sdist cannot reproduce the release binary
+without rebuilding the product.
+
+Publishing the GitHub Release starts the project-owned `publish-pypi.yml`. The
+workflow checks out the immutable tag, downloads exactly two wheels and their
+checksums, and uses pinned `uv publish --trusted-publishing always` to exchange
+the GitHub OIDC identity for a short-lived PyPI credential. It has no PyPI
+token, product build, Lasso command, GitHub Environment, or manual dispatch.
+
+The one-time PyPI pending publisher must use these exact values:
+
+```text
+PyPI project: heimdall-egress
+GitHub owner: dravengarden
+Repository: heimdall
+Workflow: publish-pypi.yml
+Environment: (blank)
+```
+
+Leaving the environment blank intentionally preserves the one-command release
+transaction without a per-version approval click. Repository write access and
+changes to the publishing workflow therefore remain release-authority
+boundaries. Once the first OIDC upload succeeds, PyPI converts the pending
+publisher to the normal project publisher automatically.
+
+`packaging/pypi/README.md` is the project-owned PyPI landing page. Keep its
+`uv`, `pip`, `pipx`, and ephemeral-run commands, wheel/platform claims, stable
+native-path caveat, architecture, modes, and security boundaries aligned with
+the actual package. The Lasso template is an optional disposable starting
+point; Lasso never owns, synchronizes, checks, builds, or publishes Heimdall's
+page.
+
+After publication, independently inspect the PyPI JSON API and install the
+exact version into fresh `uv tool` and `pip` environments. Verify
+`heimdall --version`, `heimdall-egress --print-native-path`, the rendered
+project description, wheel inventory, and release-file digests. PyPI versions
+are immutable; repair a bad package with a new version.

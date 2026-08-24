@@ -47,13 +47,40 @@ Use the printed path in the narrow sudoers rule below. An `npx` cache path is
 not stable enough for this authorization boundary, so use a global npm or
 native archive installation for `heimdall run`.
 
+## Install through PyPI
+
+The public `heimdall-egress` project provides separate x86_64 and aarch64
+Linux wheels that work on glibc and musl systems. Each wheel embeds one static
+native binary, requires Python 3.9 or newer, and performs no install-time build
+or download:
+
+```bash
+uv tool install heimdall-egress
+# or: pipx install heimdall-egress
+# or inside an isolated environment: python -m pip install heimdall-egress
+heimdall --version
+```
+
+For ephemeral help and compatibility checks:
+
+```bash
+uvx --from heimdall-egress heimdall --version
+pipx run --spec heimdall-egress heimdall help
+```
+
+For a persistent installation, print the regular bundled binary path with
+`heimdall-egress --print-native-path` and use it in the narrow sudoers rule
+below. Do not authorize a Python console-script wrapper or ephemeral tool-cache
+path. Use a persistent `uv tool`, `pipx`, or virtual-environment installation
+for real `heimdall run` sessions.
+
 ## Install a tagged release
 
 Download the archive and checksum from the matching GitHub release. With the
 GitHub CLI:
 
 ```bash
-version=0.1.1
+version=0.1.2
 architecture=$(uname -m)
 case "$architecture" in x86_64|aarch64) ;; *) exit 1 ;; esac
 gh release download "v$version" --repo dravengarden/heimdall \
@@ -84,8 +111,9 @@ and TLS CA material belong to the invoking user.
 ## Authorize setup
 
 Create `/etc/sudoers.d/heimdall` with `visudo`, replacing `USERNAME`. Native
-archive installations use `/usr/local/bin/heimdall`; npm installations must
-use the exact path printed by `heimdall-egress --print-native-path`:
+archive installations use `/usr/local/bin/heimdall`; npm and PyPI installations
+must use the exact native path printed by
+`heimdall-egress --print-native-path`:
 
 ```sudoers
 USERNAME ALL=(root) NOPASSWD: /usr/local/bin/heimdall __setup-worker

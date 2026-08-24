@@ -45,12 +45,14 @@ checksums. The versioned changelog must include highlights and known limitations
 see [releasing.md](releasing.md) for the complete release contract. GitHub Pages
 or Actions status is not release evidence.
 
-`just release-github` also uploads the locally built npm 12 tarball and
-checksum. Publishing that Release automatically starts the project-owned
-`publish-npm.yml`; its native npm CLI publishes the archive through OIDC.
-Routine publication has no Lasso invocation, local npm login, write token, 2FA
-link, or second dispatch. See [releasing.md](releasing.md) for the one-time
-trusted-publisher setup and failure contract.
+`just release-github` also uploads the locally built npm 12 tarball, two
+platform-specific PyPI wheels, and their checksums. Publishing that Release
+automatically starts the project-owned `publish-npm.yml` and
+`publish-pypi.yml`; their native npm and pinned uv CLIs publish the existing
+assets through OIDC. Routine publication has no Lasso invocation, local
+registry login, write token, 2FA link, or second dispatch. See
+[releasing.md](releasing.md) for the one-time trusted-publisher setup and
+failure contracts.
 
 The disposable NixOS VM proves fake/system DNS, SOCKS5 and direct TCP/UDP,
 IPv4/IPv6, HTTP/3, static

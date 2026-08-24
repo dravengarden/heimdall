@@ -4,6 +4,42 @@ All notable changes to Heimdall are documented here. Heimdall is pre-1.0; this
 file records release-level changes and does not serve as an API migration
 guide.
 
+## [0.1.2] - 2026-08-24
+
+### Highlights
+
+- Publish the official daemonless Heimdall CLI through PyPI for x86_64 and
+  aarch64 Linux across glibc and musl systems.
+- Keep PyPI packaging local and immutable: each wheel embeds one verified
+  release binary and performs no install-time download or build.
+- Publish the exact checksum-verified GitHub Release wheels through PyPI OIDC
+  with no registry token or second release command.
+
+### Added
+
+- Add the public `heimdall-egress` PyPI distribution with `heimdall` and
+  `heimdall-egress` console commands, Python 3.9+ metadata, `pipx.run` support,
+  and project-owned install, architecture, mode, and security documentation.
+- Add native wheel acceptance for metadata rendering, checksums, x86_64
+  installation and execution, bundled-path discovery, static linkage, and
+  aarch64 architecture integrity.
+
+### Changed
+
+- Extend `just release-github` to build and verify the two PyPI wheels locally,
+  attach them and their checksums to the GitHub Release, and let the thin
+  `publish-pypi.yml` workflow upload only those immutable assets with pinned
+  `uv` and GitHub OIDC.
+- Document persistent and ephemeral installation through `uv`, `pip`, and
+  `pipx`, including the stable native-path authorization boundary required by
+  real proxy sessions.
+
+### Known limitations
+
+- Native macOS support is not available yet.
+- Native aarch64 real-eBPF VM acceptance remains future work; the aarch64 wheel
+  is checked for architecture, static linkage, metadata, and checksum integrity.
+
 ## [0.1.1] - 2026-08-24
 
 ### Highlights

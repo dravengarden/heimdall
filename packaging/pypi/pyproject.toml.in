@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools==80.10.1", "wheel==0.46.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "heimdall-egress"
+version = "@VERSION@"
+description = "Daemonless command-scoped TCP/UDP proxy and transparent TLS inspection for Linux CLI processes"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Draven Garden", email = "dravengarden@gmail.com" }]
+keywords = ["cli", "proxy", "proxychains", "socks5", "ebpf", "tls", "egress"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Internet :: Proxy Servers",
+  "Topic :: Security",
+  "Topic :: System :: Networking",
+]
+
+[project.urls]
+Documentation = "https://dravengarden.github.io/heimdall/"
+Source = "https://github.com/dravengarden/heimdall"
+Issues = "https://github.com/dravengarden/heimdall/issues"
+Releases = "https://github.com/dravengarden/heimdall/releases"
+
+[project.scripts]
+heimdall = "heimdall_egress:main"
+heimdall-egress = "heimdall_egress:main"
+
+[project.entry-points."pipx.run"]
+heimdall-egress = "heimdall_egress:main"
+
+[tool.setuptools]
+packages = ["heimdall_egress", "heimdall_egress.native"]
+
+[tool.setuptools.package-data]
+heimdall_egress = ["native/heimdall"]

@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+output=${1:?usage: build-pypi-release-assets OUTPUT_DIRECTORY}
+mkdir -p "$output"
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+version=$(nix eval --raw .#packages.x86_64-linux.release.version)
+x86_release=$(nix build .#release --print-out-paths --no-link -L)
+arm_release=$(nix build .#release-aarch64 --print-out-paths --no-link -L)
+work_dir=$(mktemp -d)
+trap 'rm -rf "$work_dir"' EXIT
+
+for architecture in x86_64 aarch64; do
+  case "$architecture" in
+    x86_64)
+      release_dir=$x86_release
+      wheel_arch=x86_64
+      ;;
+    aarch64)
+      release_dir=$arm_release
+      wheel_arch=aarch64
+      ;;
+  esac
+
+  archive="heimdall-egress-$version-$architecture-linux-musl.tar.gz"
+  root="heimdall-egress-$version-$architecture-linux-musl"
+  stage="$work_dir/$architecture"
+  mkdir -p "$stage/heimdall_egress/native"
+  install -m 0644 packaging/pypi/README.md "$stage/README.md"
+  install -m 0644 packaging/pypi/setup.py "$stage/setup.py"
+  install -m 0644 packaging/pypi/heimdall_egress/__init__.py \
+    "$stage/heimdall_egress/__init__.py"
+  install -m 0644 packaging/pypi/heimdall_egress/native/__init__.py \
+    "$stage/heimdall_egress/native/__init__.py"
+  install -m 0644 LICENSE "$stage/LICENSE"
+  sed "s/@VERSION@/$version/g" packaging/pypi/pyproject.toml.in \
+    >"$stage/pyproject.toml"
+
+  (cd "$release_dir" && sha256sum -c "$archive.sha256")
+  mkdir "$stage/release"
+  tar -xzf "$release_dir/$archive" -C "$stage/release"
+  install -m 0755 "$stage/release/$root/heimdall" \
+    "$stage/heimdall_egress/native/heimdall"
+
+  HEIMDALL_WHEEL_PLATFORM="manylinux_2_17_${wheel_arch}.musllinux_1_2_${wheel_arch}" \
+    python -m build --wheel --no-isolation --outdir "$output" "$stage"
+done
+
+for wheel_file in "$output"/*.whl; do
+  wheel_name=$(basename "$wheel_file")
+  (cd "$output" && sha256sum "$wheel_name" >"$wheel_name.sha256")
+done
+
+printf 'built PyPI release assets for heimdall-egress %s at %s\n' \
+  "$version" "$output"

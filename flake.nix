@@ -44,7 +44,7 @@
         overlays = [ fenix.overlays.default ];
       };
       lib = pkgs.lib;
-      heimdallVersion = "0.1.1";
+      heimdallVersion = "0.1.2";
       heimdallSrc = lib.cleanSourceWith {
         src = ./.;
         filter =
@@ -206,7 +206,7 @@
 
       heimdall-ebpf = craneLib.buildPackage {
         pname = "heimdall-ebpf";
-        version = "0.1.1";
+        version = "0.1.2";
 
         src = ebpfSrc;
 
@@ -582,6 +582,12 @@
             pkgs.just
             pkgs.nixfmt
             pkgs.nodejs_22
+            pkgs.python3
+            pkgs.python3Packages.build
+            pkgs.python3Packages.setuptools
+            pkgs.python3Packages.wheel
+            pkgs.python3Packages.twine
+            pkgs.uv
             pkgs.gh
             pkgs.actionlint
             pkgs.shellcheck

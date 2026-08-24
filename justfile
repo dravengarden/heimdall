@@ -37,10 +37,14 @@ test-release-notes:
 test-npm:
     tests/npm/run-acceptance.sh
 
+test-pypi:
+    tests/pypi/run-acceptance.sh
+
 test-release-tooling:
-    actionlint .github/workflows/publish-npm.yml
-    shellcheck scripts/build-npm-package scripts/build-npm-release-assets scripts/publish-github-release scripts/render-release-notes tests/npm/run-acceptance.sh tests/release/npm-workflow.sh tests/release/render-notes.sh
+    actionlint .github/workflows/publish-npm.yml .github/workflows/publish-pypi.yml
+    shellcheck scripts/build-npm-package scripts/build-npm-release-assets scripts/build-pypi-release-assets scripts/publish-github-release scripts/render-release-notes tests/npm/run-acceptance.sh tests/pypi/run-acceptance.sh tests/release/npm-workflow.sh tests/release/pypi-workflow.sh tests/release/render-notes.sh
     tests/release/npm-workflow.sh
+    tests/release/pypi-workflow.sh
 
 test-fast:
     cargo nextest run --workspace --all-features --locked
@@ -58,10 +62,13 @@ test-vm:
 benchmark-vm:
     nix build .#checks.x86_64-linux.vm-benchmark .#checks.x86_64-linux.vm-benchmark-lts -L
 
-# Verifies both static archives, architecture/checksum integrity, aarch64 CLI
-# emulation, and native x86_64 install, upgrade, and rollback paths.
+# Verifies both static archives and the npm/PyPI wrappers, including
+# architecture/checksum integrity, aarch64 inspection/emulation, and native
+# x86_64 install, upgrade, and rollback paths.
 test-package:
     nix build .#checks.x86_64-linux.release .#checks.x86_64-linux.release-aarch64 -L
+    just test-npm
+    just test-pypi
 
 # Local publication is authoritative: source, real-kernel, and package gates
 # all complete on the release host before any tag or GitHub asset is created.

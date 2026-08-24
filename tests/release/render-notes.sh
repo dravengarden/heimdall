@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root=$(git rev-parse --show-toplevel)
 cd "$repo_root"
 
-notes=$(CHANGELOG_FILE=tests/release/CHANGELOG.md \
+notes=$(CHANGELOG_FILE=tests/release/CHANGELOG.md PREVIOUS_TAG_OVERRIDE=v0.1.0 \
   scripts/render-release-notes 0.2.0 https://github.com/example/heimdall)
 
 grep -Fq '## Changes' <<<"$notes"
@@ -12,6 +12,7 @@ grep -Fq '### Highlights' <<<"$notes"
 grep -Fq '### Known limitations' <<<"$notes"
 grep -Fq 'heimdall-egress-0.2.0-aarch64-linux-musl.tar.gz' <<<"$notes"
 grep -Fq 'heimdall-egress-0.2.0.tgz' <<<"$notes"
+grep -Fq 'heimdall_egress-0.2.0-*.whl' <<<"$notes"
 grep -Fq 'https://github.com/example/heimdall/compare/v0.1.0...v0.2.0' <<<"$notes"
 
 if CHANGELOG_FILE=tests/release/CHANGELOG.md \
