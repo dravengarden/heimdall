@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+ebpf_release=$(nix build .#heimdall-ebpf --print-out-paths --no-link -L)
+mkdir -p heimdall/embedded
+install -m 0644 "$ebpf_release/heimdall-ebpf" heimdall/embedded/heimdall-ebpf
+sha256sum heimdall/embedded/heimdall-ebpf

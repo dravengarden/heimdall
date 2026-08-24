@@ -63,13 +63,12 @@ Just change the code. Bump `CHANGELOG.md` if it's user-visible.
 
 ### Build flow
 
-eBPF must be built **before** the userspace binary (it's
-`include_bytes!`'d into the binary). `docs/runbook.md` has the
-canonical incantation.
+The versioned eBPF object must be refreshed **before** the userspace binary is
+built (it's `include_bytes!`'d into both the binary and crates.io package).
+`docs/runbook.md` has the canonical incantation.
 
 ```bash
-nix develop .#ebpf -c bash -c \
-  'cd heimdall-ebpf && cargo-nightly build --locked --release'
+nix develop -c just sync-ebpf
 nix develop -c just verify
 ```
 

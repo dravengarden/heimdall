@@ -146,3 +146,64 @@ exact version into fresh `uv tool` and `pip` environments. Verify
 `heimdall --version`, `heimdall-egress --print-native-path`, the rendered
 project description, wheel inventory, and release-file digests. PyPI versions
 are immutable; repair a bad package with a new version.
+
+## crates.io publication
+
+The Cargo distribution is a source build, not a prebuilt-binary wrapper. The
+public package is `heimdall-egress`, its only installed executable is
+`heimdall`, and it depends on the separately published `heimdall-common` and
+`heimdall-config` crates. The CLI crate includes the release's locally built
+eBPF ELF so installation needs stable Rust but no nightly compiler,
+`bpf-linker`, lifecycle script, or remote binary download.
+
+Before the GitHub Release is created, `just release-github` packages all three
+crates locally with pinned Cargo, proves that the embedded ELF equals the Nix
+eBPF derivation, runs package acceptance, and uploads each `.crate` with its
+SHA-256 file. Standard `cargo publish` does not accept an existing `.crate`
+path, so the thin `publish-cargo.yml` workflow makes the narrowest necessary
+exception to the immutable-asset upload model: it recreates each package from
+the immutable tag and refuses publication unless every byte matches the local
+GitHub Release asset. It does not compile or test the product.
+
+crates.io requires each new crate to be published once with a regular API
+token before Trusted Publishing can be configured. For that one bootstrap
+release only, keep `CARGO_TRUSTED_PUBLISHING_ENABLED` absent, run `cargo login`
+locally, and publish in dependency order:
+
+```bash
+cargo publish --package heimdall-common --locked --no-verify
+cargo publish --package heimdall-config --locked --no-verify
+cargo publish --package heimdall-egress --locked --no-verify
+```
+
+Wait for each package to appear in the index before publishing its dependent.
+Then configure all three crates with the same publisher identity:
+
+```text
+GitHub owner: dravengarden
+Repository: heimdall
+Workflow: publish-cargo.yml
+Environment: (blank)
+```
+
+Columbus Lasso may validate and open the three native settings pages, but it
+does not store a Cargo token or participate in publication. After the bindings
+are verified, remove the bootstrap token with `cargo logout` and set the
+repository variable `CARGO_TRUSTED_PUBLISHING_ENABLED=true`. Future Release
+publication obtains one short-lived token through the pinned official
+crates.io auth action, reproduces the local packages, publishes them in order,
+and revokes the token automatically. Leaving the environment blank avoids a
+per-version approval click while keeping repository and workflow changes as
+release-authority boundaries.
+
+`packaging/cargo/README.md` is the project-owned crates.io landing page. Keep
+its installation, Rust/platform requirements, architecture, modes, daemonless
+lifecycle, and setup-authorization guidance aligned with the package. Lasso's
+template is only an optional disposable starting point.
+
+After publication, inspect all three exact versions with `cargo info`, compare
+their registry checksums with the GitHub Release assets, and run
+`cargo install heimdall-egress --version VERSION --locked` with fresh Cargo
+home, target, and install roots. Verify `heimdall --version`, the regular
+installed path, and the absence of any second executable. crates.io versions
+cannot be overwritten; repair a bad package with a new version.

@@ -2,11 +2,11 @@
 
 ## Build
 
-Build eBPF first because its ELF is embedded in the single userspace binary.
+Refresh the pinned eBPF ELF first because it is embedded in the single
+userspace binary and the crates.io source package.
 
 ```bash
-nix develop .#ebpf -c bash -c \
-  'cd heimdall-ebpf && cargo-nightly build --locked --release'
+nix develop -c just sync-ebpf
 nix develop -c just verify
 ```
 
@@ -46,11 +46,13 @@ see [releasing.md](releasing.md) for the complete release contract. GitHub Pages
 or Actions status is not release evidence.
 
 `just release-github` also uploads the locally built npm 12 tarball, two
-platform-specific PyPI wheels, and their checksums. Publishing that Release
-automatically starts the project-owned `publish-npm.yml` and
-`publish-pypi.yml`; their native npm and pinned uv CLIs publish the existing
-assets through OIDC. Routine publication has no Lasso invocation, local
-registry login, write token, 2FA link, or second dispatch. See
+platform-specific PyPI wheels, three Cargo source packages, and their
+checksums. Publishing that Release automatically starts the project-owned
+`publish-npm.yml`, `publish-pypi.yml`, and `publish-cargo.yml`; their native
+registry CLIs publish through OIDC. The Cargo workflow first reproduces all
+three `.crate` files byte for byte from the immutable tag. Routine publication
+has no Lasso invocation, local registry login, write token, 2FA link, or second
+dispatch. See
 [releasing.md](releasing.md) for the one-time trusted-publisher setup and
 failure contracts.
 

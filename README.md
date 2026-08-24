@@ -102,11 +102,12 @@ semantics.
 Tagged releases provide static x86_64 and aarch64 Linux archives. Follow
 [docs/install.md](docs/install.md) to verify its checksum, install or upgrade
 atomically, and retain one rollback executable.
-The same official binaries are also available through npm and PyPI:
+The same CLI is also available through npm, PyPI, and Cargo:
 
 ```bash
 npm install --global heimdall-egress
 # or: uv tool install heimdall-egress
+# or: cargo install heimdall-egress --locked
 heimdall --version
 ```
 
@@ -120,14 +121,13 @@ To build from source instead:
 - A reachable SOCKS5 server
 - `sudo` authorization for the exact hidden `heimdall __setup-worker` command
 
-Build eBPF before userspace because the object is embedded into the binary:
+Refresh the pinned eBPF object before building userspace:
 
 ```bash
 git clone https://github.com/dravengarden/heimdall.git
 cd heimdall
 
-nix develop .#ebpf -c bash -c \
-  'cd heimdall-ebpf && cargo-nightly build --locked --release'
+nix develop -c just sync-ebpf
 nix develop -c cargo build --workspace --locked --release
 ```
 

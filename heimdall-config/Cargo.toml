@@ -1,9 +1,16 @@
 [package]
 name = "heimdall-config"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 rust-version.workspace = true
-publish.workspace = true
+publish = ["crates-io"]
+description = "Strict configuration schema for Heimdall egress"
+license = "Apache-2.0"
+repository = "https://github.com/dravengarden/heimdall"
+homepage = "https://dravengarden.github.io/heimdall/"
+readme = "README.md"
+keywords = ["heimdall", "configuration", "proxy"]
+categories = ["config", "network-programming"]
 
 [lints]
 workspace = true

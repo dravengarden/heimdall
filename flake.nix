@@ -44,7 +44,7 @@
         overlays = [ fenix.overlays.default ];
       };
       lib = pkgs.lib;
-      heimdallVersion = "0.1.2";
+      heimdallVersion = "0.1.3";
       heimdallSrc = lib.cleanSourceWith {
         src = ./.;
         filter =
@@ -206,7 +206,7 @@
 
       heimdall-ebpf = craneLib.buildPackage {
         pname = "heimdall-ebpf";
-        version = "0.1.2";
+        version = "0.1.3";
 
         src = ebpfSrc;
 
@@ -280,16 +280,16 @@
 
         # Place the eBPF object at the path used by include_bytes!.
         preBuild = ''
-          mkdir -p heimdall-ebpf/target/bpfel-unknown-none/release
+          mkdir -p heimdall/embedded
           cp ${heimdall-ebpf}/heimdall-ebpf \
-             heimdall-ebpf/target/bpfel-unknown-none/release/heimdall-ebpf
+             heimdall/embedded/heimdall-ebpf
         '';
 
         cargoBuildFlags = [
           "--bin"
           "heimdall"
           "--package"
-          "heimdall"
+          "heimdall-egress"
         ];
 
         # Tests touch /proc, /sys/fs/cgroup, and require root for the
@@ -314,15 +314,15 @@
 
         cargoLock.lockFile = ./Cargo.lock;
         preBuild = ''
-          mkdir -p heimdall-ebpf/target/bpfel-unknown-none/release
+          mkdir -p heimdall/embedded
           cp ${heimdall-ebpf}/heimdall-ebpf \
-             heimdall-ebpf/target/bpfel-unknown-none/release/heimdall-ebpf
+             heimdall/embedded/heimdall-ebpf
         '';
         cargoBuildFlags = [
           "--bin"
           "heimdall"
           "--package"
-          "heimdall"
+          "heimdall-egress"
         ];
         doCheck = false;
 
@@ -341,15 +341,15 @@
 
         cargoLock.lockFile = ./Cargo.lock;
         preBuild = ''
-          mkdir -p heimdall-ebpf/target/bpfel-unknown-none/release
+          mkdir -p heimdall/embedded
           cp ${heimdall-ebpf}/heimdall-ebpf \
-             heimdall-ebpf/target/bpfel-unknown-none/release/heimdall-ebpf
+             heimdall/embedded/heimdall-ebpf
         '';
         cargoBuildFlags = [
           "--bin"
           "heimdall"
           "--package"
-          "heimdall"
+          "heimdall-egress"
         ];
         doCheck = false;
 

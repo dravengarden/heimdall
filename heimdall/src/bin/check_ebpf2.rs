@@ -1,14 +1,8 @@
 #[repr(C, align(8))]
 struct AlignedBytes<const N: usize>([u8; N]);
 
-static EBPF_OBJ: AlignedBytes<
-    {
-        include_bytes!("../../../heimdall-ebpf/target/bpfel-unknown-none/release/heimdall-ebpf")
-            .len()
-    },
-> = AlignedBytes(*include_bytes!(
-    "../../../heimdall-ebpf/target/bpfel-unknown-none/release/heimdall-ebpf"
-));
+static EBPF_OBJ: AlignedBytes<{ include_bytes!("../../embedded/heimdall-ebpf").len() }> =
+    AlignedBytes(*include_bytes!("../../embedded/heimdall-ebpf"));
 
 fn main() {
     let bytes: &[u8] = &EBPF_OBJ.0;

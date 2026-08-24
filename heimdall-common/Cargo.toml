@@ -1,9 +1,16 @@
 [package]
 name = "heimdall-common"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 rust-version = "1.95"
-publish = false
+publish = ["crates-io"]
+description = "Shared kernel/userspace wire types for Heimdall egress"
+license = "Apache-2.0"
+repository = "https://github.com/dravengarden/heimdall"
+homepage = "https://dravengarden.github.io/heimdall/"
+readme = "README.md"
+keywords = ["heimdall", "ebpf", "networking"]
+categories = ["network-programming"]
 
 [lints.rust]
 unsafe_code = "deny"
@@ -12,7 +19,6 @@ unexpected_cfgs = "warn"
 [lints.clippy]
 all = { level = "warn", priority = -1 }
 cargo = { level = "warn", priority = -1 }
-cargo_common_metadata = "allow"
 multiple_crate_versions = "allow"
 dbg_macro = "deny"
 todo = "deny"

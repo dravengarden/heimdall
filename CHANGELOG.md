@@ -4,6 +4,44 @@ All notable changes to Heimdall are documented here. Heimdall is pre-1.0; this
 file records release-level changes and does not serve as an API migration
 guide.
 
+## [0.1.3] - 2026-08-24
+
+### Highlights
+
+- Publish the official `heimdall` CLI as the `heimdall-egress` source crate,
+  with no install-time downloader, lifecycle script, or daemon.
+- Preserve local release authority by attaching checksum-verified Cargo
+  packages to GitHub Releases and reproducing them before any OIDC upload.
+- Add one-time crates.io Trusted Publisher setup so routine releases use a
+  short-lived GitHub OIDC credential instead of a stored registry token.
+
+### Added
+
+- Add publishable `heimdall-common`, `heimdall-config`, and `heimdall-egress`
+  crates with complete registry metadata and a project-owned crates.io landing
+  page.
+- Add Cargo package acceptance for archive inventory, metadata, landing-page
+  content, and byte equality between the packaged eBPF ELF and its pinned Nix
+  build.
+
+### Changed
+
+- Embed the locally verified eBPF object from a versioned crate resource so
+  `cargo install heimdall-egress --locked` needs only stable Rust 1.95 and does
+  not require an eBPF compiler at installation time.
+- Extend the GitHub Release transaction with three `.crate` assets and their
+  SHA-256 files. The thin Cargo workflow reproduces those packages from the
+  immutable tag before publishing the dependency crates and CLI in order.
+- Document Cargo installation, source-package architecture, first-publication
+  bootstrap, subsequent OIDC publication, and independent fresh-install
+  acceptance.
+
+### Known limitations
+
+- Native macOS support is not available yet.
+- Cargo installation compiles the userspace CLI locally and therefore takes
+  longer than installing the prebuilt npm, PyPI, or GitHub Release packages.
+
 ## [0.1.2] - 2026-08-24
 
 ### Highlights

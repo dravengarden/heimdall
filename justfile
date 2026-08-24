@@ -28,6 +28,12 @@ dependencies:
 build-ebpf:
     nix develop .#ebpf -c bash -euo pipefail -c 'cd heimdall-ebpf && cargo-nightly build --locked --release'
 
+sync-ebpf:
+    scripts/sync-ebpf-object
+
+check-embedded-ebpf:
+    output="$(nix build .#heimdall-ebpf --print-out-paths --no-link -L)"; cmp "$output/heimdall-ebpf" heimdall/embedded/heimdall-ebpf
+
 test:
     cargo test --workspace --all-features --locked --release
 
@@ -40,9 +46,13 @@ test-npm:
 test-pypi:
     tests/pypi/run-acceptance.sh
 
+test-cargo:
+    tests/cargo/run-acceptance.sh
+
 test-release-tooling:
-    actionlint .github/workflows/publish-npm.yml .github/workflows/publish-pypi.yml
-    shellcheck scripts/build-npm-package scripts/build-npm-release-assets scripts/build-pypi-release-assets scripts/publish-github-release scripts/render-release-notes tests/npm/run-acceptance.sh tests/pypi/run-acceptance.sh tests/release/npm-workflow.sh tests/release/pypi-workflow.sh tests/release/render-notes.sh
+    actionlint .github/workflows/publish-cargo.yml .github/workflows/publish-npm.yml .github/workflows/publish-pypi.yml
+    shellcheck scripts/build-cargo-release-assets scripts/build-npm-package scripts/build-npm-release-assets scripts/build-pypi-release-assets scripts/publish-github-release scripts/render-release-notes scripts/sync-ebpf-object tests/cargo/run-acceptance.sh tests/npm/run-acceptance.sh tests/pypi/run-acceptance.sh tests/release/cargo-workflow.sh tests/release/npm-workflow.sh tests/release/pypi-workflow.sh tests/release/render-notes.sh
+    tests/release/cargo-workflow.sh
     tests/release/npm-workflow.sh
     tests/release/pypi-workflow.sh
 
@@ -62,13 +72,14 @@ test-vm:
 benchmark-vm:
     nix build .#checks.x86_64-linux.vm-benchmark .#checks.x86_64-linux.vm-benchmark-lts -L
 
-# Verifies both static archives and the npm/PyPI wrappers, including
+# Verifies static archives and the npm/PyPI/Cargo distributions, including
 # architecture/checksum integrity, aarch64 inspection/emulation, and native
 # x86_64 install, upgrade, and rollback paths.
 test-package:
     nix build .#checks.x86_64-linux.release .#checks.x86_64-linux.release-aarch64 -L
     just test-npm
     just test-pypi
+    just test-cargo
 
 # Local publication is authoritative: source, real-kernel, and package gates
 # all complete on the release host before any tag or GitHub asset is created.
@@ -93,5 +104,5 @@ build-userspace:
 cache-stats:
     sccache --show-stats
 
-verify: toolchain-check check-format build-ebpf lint lint-ebpf dependencies test test-release-notes test-release-tooling build-userspace
+verify: toolchain-check check-format build-ebpf check-embedded-ebpf lint lint-ebpf dependencies test test-release-notes test-release-tooling build-userspace
     @echo "verify OK"

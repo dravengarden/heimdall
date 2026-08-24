@@ -1,8 +1,5 @@
 fn main() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../heimdall-ebpf/target/bpfel-unknown-none/release/heimdall-ebpf",
-    );
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/embedded/heimdall-ebpf",);
     let data = std::fs::read(path).expect("read ebpf file");
     println!("File size: {} bytes", data.len());
     match aya::Ebpf::load(&data) {

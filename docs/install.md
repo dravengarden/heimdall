@@ -74,13 +74,30 @@ below. Do not authorize a Python console-script wrapper or ephemeral tool-cache
 path. Use a persistent `uv tool`, `pipx`, or virtual-environment installation
 for real `heimdall run` sessions.
 
+## Install through Cargo
+
+The public `heimdall-egress` crate compiles the userspace CLI and embeds the
+release's verified eBPF object. It has no install-time downloader or lifecycle
+script and installs only the `heimdall` executable:
+
+```bash
+cargo install heimdall-egress --locked
+heimdall --version
+```
+
+Rust 1.95 or newer is required. Cargo installation does not require nightly
+Rust, `bpf-linker`, or an eBPF build because the release object is already part
+of the source crate. Use the regular path printed by `command -v heimdall` in
+the narrow sudoers rule below; do not authorize a Cargo registry or build-cache
+glob.
+
 ## Install a tagged release
 
 Download the archive and checksum from the matching GitHub release. With the
 GitHub CLI:
 
 ```bash
-version=0.1.2
+version=0.1.3
 architecture=$(uname -m)
 case "$architecture" in x86_64|aarch64) ;; *) exit 1 ;; esac
 gh release download "v$version" --repo dravengarden/heimdall \
@@ -111,8 +128,9 @@ and TLS CA material belong to the invoking user.
 ## Authorize setup
 
 Create `/etc/sudoers.d/heimdall` with `visudo`, replacing `USERNAME`. Native
-archive installations use `/usr/local/bin/heimdall`; npm and PyPI installations
-must use the exact native path printed by
+archive installations use `/usr/local/bin/heimdall`; Cargo installations use
+the exact regular path printed by `command -v heimdall`; npm and PyPI
+installations use the exact native path printed by
 `heimdall-egress --print-native-path`:
 
 ```sudoers
@@ -159,11 +177,11 @@ For an unprivileged packaging test, use an absolute private prefix:
 
 ## Build from source
 
-Use the pinned Nix toolchains and build eBPF before userspace:
+Use the pinned Nix toolchains, refresh the versioned eBPF object, and then build
+userspace:
 
 ```bash
-nix develop .#ebpf -c bash -c \
-  'cd heimdall-ebpf && cargo-nightly build --locked --release'
+nix develop -c just sync-ebpf
 nix develop -c cargo build --workspace --locked --release
 sudo install -Dm755 target/release/heimdall /usr/local/bin/heimdall
 ```
