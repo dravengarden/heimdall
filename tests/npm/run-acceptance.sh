@@ -26,12 +26,33 @@ actual_files=$(tar -tzf "$work_dir/$tarball" |
 }
 
 package_json=$(tar -xOf "$work_dir/$tarball" package/package.json)
+package_readme=$(tar -xOf "$work_dir/$tarball" package/README.md)
 node -e '
   const packageJson = JSON.parse(process.argv[1]);
   if (packageJson.name !== "heimdall-egress") process.exit(1);
   if (packageJson.version !== process.argv[2]) process.exit(1);
   if (packageJson.scripts !== undefined) process.exit(1);
 ' "$package_json" "$version"
+
+for expected in \
+  'npm install --global heimdall-egress' \
+  'pnpm add --global heimdall-egress' \
+  'yarn global add heimdall-egress' \
+  'bun add --global heimdall-egress' \
+  'deno install --global -A --name heimdall npm:heimdall-egress' \
+  'npx --yes --package=heimdall-egress -- heimdall --version' \
+  'pnpm dlx --package heimdall-egress heimdall --version' \
+  'yarn dlx --package heimdall-egress heimdall --version' \
+  'bunx --package heimdall-egress heimdall --version' \
+  'deno x -A --package heimdall-egress heimdall --version' \
+  '## Architecture' \
+  '## Modes' \
+  'No persistent Heimdall daemon'; do
+  grep -Fq "$expected" <<<"$package_readme" || {
+    printf 'npm package README is missing: %s\n' "$expected" >&2
+    exit 1
+  }
+done
 
 prefix="$work_dir/prefix"
 npm install --global --ignore-scripts --prefix "$prefix" "$work_dir/$tarball" \

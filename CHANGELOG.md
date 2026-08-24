@@ -14,6 +14,9 @@ guide.
 
 ### Changed
 
+- Expand the npm package page with npm, pnpm, Yarn, Bun, and Deno install and
+  one-shot commands plus concise setup, architecture, operating-mode, platform,
+  daemonless lifecycle, and security guidance.
 - Build the exact npm tarball locally with pinned npm 12 and attach it and its
   checksum to the GitHub Release. Publishing the Release triggers the
   project-owned workflow, whose native npm CLI uses OIDC without a long-lived
