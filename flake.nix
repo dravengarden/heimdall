@@ -45,6 +45,44 @@
       };
       lib = pkgs.lib;
       heimdallVersion = "0.1.4";
+      # Why: this nixpkgs revision still defaults importCargoLock to the old
+      # crates.io API route, which rejects anonymous fetchurl clients. Limit
+      # the compatibility override to Heimdall's Rust platforms and use the
+      # canonical `dl` root advertised by the registry index; Cargo.lock still
+      # supplies every crate checksum.
+      makeRustPlatformWithCanonicalCrates =
+        {
+          platformPkgs,
+          cargo,
+          rustc,
+        }:
+        let
+          rewriteCratesIoFetch =
+            args:
+            args
+            // {
+              url =
+                builtins.replaceStrings
+                  [
+                    "https://crates.io/api/v1/crates"
+                  ]
+                  [
+                    "https://static.crates.io/crates"
+                  ]
+                  args.url;
+            };
+          basePlatform = platformPkgs.makeRustPlatform { inherit cargo rustc; };
+        in
+        basePlatform.overrideScope (
+          _final: _previous: {
+            importCargoLock =
+              platformPkgs.buildPackages.callPackage "${nixpkgs}/pkgs/build-support/rust/import-cargo-lock.nix"
+                {
+                  inherit cargo;
+                  fetchurl = args: platformPkgs.buildPackages.fetchurl (rewriteCratesIoFetch args);
+                };
+          }
+        );
       releaseRustFlags = lib.concatStringsSep " " [
         "--remap-path-prefix=/build/source=/source/heimdall"
         "--remap-path-prefix=/build/cargo-vendor-dir=/source/deps"
@@ -80,16 +118,19 @@
         file = ./rust-toolchain.toml;
         sha256 = "sha256-gh/xTkxKHL4eiRXzWv8KP7vfjSk61Iq48x47BEDFgfk=";
       };
-      rustPlatform = pkgs.makeRustPlatform {
+      rustPlatform = makeRustPlatformWithCanonicalCrates {
+        platformPkgs = pkgs;
         cargo = rustStable;
         rustc = rustStable;
       };
-      staticRustPlatform = pkgs.pkgsStatic.makeRustPlatform {
+      staticRustPlatform = makeRustPlatformWithCanonicalCrates {
+        platformPkgs = pkgs.pkgsStatic;
         cargo = rustStable;
         rustc = rustStable;
       };
       aarch64MuslPkgs = pkgs.pkgsCross.aarch64-multiplatform-musl;
-      aarch64StaticRustPlatform = aarch64MuslPkgs.pkgsStatic.makeRustPlatform {
+      aarch64StaticRustPlatform = makeRustPlatformWithCanonicalCrates {
+        platformPkgs = aarch64MuslPkgs.pkgsStatic;
         cargo = rustStable;
         rustc = rustStable;
       };
@@ -103,7 +144,8 @@
         file = ./rust-toolchain.toml;
         sha256 = "sha256-gh/xTkxKHL4eiRXzWv8KP7vfjSk61Iq48x47BEDFgfk=";
       };
-      nativeAarch64StaticRustPlatform = nativeAarch64Pkgs.pkgsStatic.makeRustPlatform {
+      nativeAarch64StaticRustPlatform = makeRustPlatformWithCanonicalCrates {
+        platformPkgs = nativeAarch64Pkgs.pkgsStatic;
         cargo = nativeAarch64RustStable;
         rustc = nativeAarch64RustStable;
       };

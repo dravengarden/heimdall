@@ -16,9 +16,15 @@ guide.
 
 - Remap eBPF and userspace source paths to deterministic `/source` roots and
   strip redundant DWARF from the embedded eBPF object after BTF generation.
-- Make Linux archive and Cargo-package acceptance reject private paths, build
-  roots, Nix store paths, ELF debug sections, dynamic interpreters, and dynamic
-  dependencies while requiring the eBPF BTF/BTF.ext sections.
+- Make Linux archive, npm, PyPI, and Cargo-package acceptance reject private
+  paths, build roots, Nix store paths, ELF debug sections, dynamic
+  interpreters, and dynamic dependencies while requiring the eBPF BTF/BTF.ext
+  sections.
+- Update the transitive `chacha20` lock to 0.10.2, replacing the yanked 0.10.1
+  release that contained undefined behavior in its SSE2 RNG backend.
+- Route Nix Cargo vendoring through crates.io's canonical static download root
+  instead of the legacy API route while retaining lockfile checksum
+  verification.
 
 ### Known limitations
 

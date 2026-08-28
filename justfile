@@ -83,8 +83,8 @@ benchmark-vm:
     nix build .#checks.x86_64-linux.vm-benchmark .#checks.x86_64-linux.vm-benchmark-lts -L
 
 # Verifies static archives and the npm/PyPI/Cargo distributions, including
-# architecture/checksum integrity, aarch64 inspection/emulation, and native
-# x86_64 install, upgrade, and rollback paths.
+# architecture/checksum/artifact hygiene, aarch64 inspection/emulation, and
+# native x86_64 install, upgrade, and rollback paths.
 test-package:
     nix build .#checks.x86_64-linux.release .#checks.x86_64-linux.release-aarch64 -L
     just test-npm

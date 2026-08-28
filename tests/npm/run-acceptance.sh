@@ -68,16 +68,14 @@ npm exec --yes --package="$work_dir/$tarball" -- \
 
 mkdir "$work_dir/extracted"
 tar -xzf "$work_dir/$tarball" -C "$work_dir/extracted" \
-  package/vendor/linux-arm64/heimdall
-readelf -h "$work_dir/extracted/package/vendor/linux-arm64/heimdall" |
+  package/vendor/linux-arm64/heimdall \
+  package/vendor/linux-x64/heimdall
+arm_binary="$work_dir/extracted/package/vendor/linux-arm64/heimdall"
+x86_binary="$work_dir/extracted/package/vendor/linux-x64/heimdall"
+cmp "$native_path" "$x86_binary"
+tests/package/check-artifact-hygiene.sh "$x86_binary" linux-executable
+tests/package/check-artifact-hygiene.sh "$arm_binary" linux-executable
+readelf -h "$arm_binary" |
   grep -F 'Machine:' | grep -Fq AArch64
-if readelf -l "$native_path" | grep -qi interpreter; then
-  echo 'npm x86_64 binary has a dynamic interpreter' >&2
-  exit 1
-fi
-if readelf -d "$native_path" 2>&1 | grep -q NEEDED; then
-  echo 'npm x86_64 binary has dynamic dependencies' >&2
-  exit 1
-fi
 
 echo 'npm package acceptance OK'

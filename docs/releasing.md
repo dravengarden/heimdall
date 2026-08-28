@@ -50,6 +50,16 @@ object separately because stripping the outer userspace ELF cannot prove that
 the object is clean; the object must retain `.BTF`, `.BTF.ext`, and their
 relocation sections after DWARF removal.
 
+The npm, PyPI, and Cargo acceptance scripts must apply the same hygiene policy
+to the native bytes recovered from each final registry package. A clean source
+archive is not evidence that a later package assembly step preserved those
+bytes or the release boundary.
+
+The flake overrides the legacy crates.io index key to the registry's canonical
+static download root for Nix vendoring. Keep Cargo.lock checksums authoritative;
+do not replace a failed registry fetch with an unchecked mirror or a local
+cache dependency.
+
 Before release notes claim native aarch64 data-path coverage, run the following
 on an aarch64 Linux execution host at the exact release commit:
 

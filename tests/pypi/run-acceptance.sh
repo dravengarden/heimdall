@@ -58,13 +58,7 @@ mkdir "$work_dir/arm"
 unzip -q "$work_dir/dist/$arm_wheel" -d "$work_dir/arm"
 arm_binary="$work_dir/arm/heimdall_egress/native/heimdall"
 readelf -h "$arm_binary" | grep -F 'Machine:' | grep -Fq AArch64
-if readelf -l "$native_path" | grep -qi interpreter; then
-  echo 'PyPI x86_64 binary has a dynamic interpreter' >&2
-  exit 1
-fi
-if readelf -d "$native_path" 2>&1 | grep -q NEEDED; then
-  echo 'PyPI x86_64 binary has dynamic dependencies' >&2
-  exit 1
-fi
+tests/package/check-artifact-hygiene.sh "$native_path" linux-executable
+tests/package/check-artifact-hygiene.sh "$arm_binary" linux-executable
 
 printf 'PyPI package acceptance OK\n'
