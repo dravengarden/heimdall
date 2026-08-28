@@ -184,6 +184,7 @@ Discover schemas and paths instead of hard-coding fields:
 ```bash
 heimdall logs schema --event v1
 heimdall logs schema --run v1
+heimdall logs schema --summary v1
 heimdall logs list --json
 heimdall logs summary --run RUN_ID --json
 heimdall logs path --run RUN_ID --json
@@ -205,9 +206,10 @@ rg '"kind":"run.error"' ~/.local/state/heimdall/runs/RUN_ID
 
 `logs summary` emits one `heimdall.logs.summary/v1` document with sequence
 continuity, active/closed flow counts, low-cardinality failure codes, byte and
-capture-truncation totals, and DNS/policy/TLS/HTTP counters. It is an
-operational aggregation, not a substitute for `logs verify`, which validates
-schemas, segment digests, sequences, and referenced blobs.
+capture-truncation totals, and DNS/policy/TLS/HTTP counters. Export its strict
+offline contract with `logs schema --summary v1`. The summary is an operational
+aggregation, not a substitute for `logs verify`, which validates schemas,
+segment digests, sequences, and referenced blobs.
 
 Derived HTTP records contain only the first bounded HTTP/1 header per
 direction from explicit TLS plaintext. Resolve `source_seq` before trusting

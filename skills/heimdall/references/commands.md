@@ -1,5 +1,15 @@
 # Command workflows
 
+## Contents
+
+- [Inspect without mutation](#inspect-without-mutation)
+- [Run through a policy](#run-through-a-policy)
+- [Inspect JSONL with Linux tools](#inspect-jsonl-with-linux-tools)
+- [Relay TLS](#relay-tls)
+- [Runtime TLS](#runtime-tls)
+- [Rotate and retain](#rotate-and-retain)
+- [Diagnose failures](#diagnose-failures)
+
 ## Inspect without mutation
 
 ```bash
@@ -11,6 +21,9 @@ heimdall config show
 heimdall config validate --json
 heimdall config explain --policy default --domain example.com --port 443 --json
 heimdall config explain --policy default --network udp --domain example.com --port 443 --json
+heimdall logs schema --event v1
+heimdall logs schema --run v1
+heimdall logs schema --summary v1
 heimdall logs list --json
 heimdall logs summary --run RUN_ID --json
 ```
@@ -29,6 +42,10 @@ example` prints the same complete starter used by `init` without writing.
 capability checks. `config explain` evaluates one destination and returns the
 first rule plus structured action; use `--network udp` and either `--domain`
 or `--ip` as appropriate.
+
+The three `logs schema` actions export the strict event, manifest, and summary
+contracts without network access. Validate stored or generated documents
+against those schemas instead of copying field lists from prose.
 
 ## Run through a policy
 
@@ -90,6 +107,25 @@ Start with `logs summary` when choosing what to inspect. Its single
 opened/closed/active flows, network/status/failure-code counts, durations,
 bytes, capture truncation/boundaries, protocol counters, segments, and blobs.
 It can describe a live incomplete run and does not replace `logs verify`.
+
+For a closed run expected to be clean, use a bounded gate before selecting
+detailed evidence:
+
+```bash
+heimdall logs summary --run "$run_id" --json | jq -e '
+  .contract == "heimdall.logs.summary/v1"
+  and .state == "closed" and .complete
+  and .sequence.contiguous
+  and .flows.active == 0
+  and .error_events.total == 0
+' >/dev/null
+```
+
+`--has-blob` selects only records with a non-null content-addressed blob
+reference. Before reading one, run `logs verify`, resolve its path with
+`realpath`, prove it remains below the discovered `run_dir/blobs`, and compare
+both `stat -c '%s'` and `sha256sum` with the reference. The complete
+non-disclosing recipe is in [events.md](events.md#flow-data).
 
 For a live stream across writer-owned rotation:
 

@@ -12,6 +12,15 @@ The complete lifecycle, rotation, retention, and security design is in
 [`../../../docs/design/agent-event-log.md`](../../../docs/design/agent-event-log.md).
 This reference is the agent-facing schema map.
 
+## Contents
+
+- [Discovery contract](#discovery-contract)
+- [`heimdall.event/v1`](#heimdalleventv1)
+- [`heimdall.run/v1`](#heimdallrunv1)
+- [`heimdall.logs.summary/v1`](#heimdalllogssummaryv1)
+- [Rotation and querying](#rotation-and-querying)
+- [Retention safety](#retention-safety)
+
 ## Discovery contract
 
 Never hard-code an XDG path. Discover the active contracts and paths from
@@ -20,11 +29,12 @@ Never hard-code an XDG path. Discover the active contracts and paths from
 ```text
 heimdall logs schema --event v1
 heimdall logs schema --run v1
+heimdall logs schema --summary v1
 heimdall logs summary --run RUN_ID --json
 heimdall logs path --run RUN_ID --json
 ```
 
-The two schema commands each print one JSON Schema Draft 2020-12 document.
+The three schema commands each print one JSON Schema Draft 2020-12 document.
 `logs summary` prints one `heimdall.logs.summary/v1` operational aggregation;
 it does not replace integrity verification. `logs path` prints one result
 document containing an absolute `run_dir`.
@@ -131,6 +141,7 @@ For a closed run, foreground shutdown drains tracked flows before
 | `original_bytes` | unsigned integer | Bytes observed before capture limits |
 | `stored_bytes` | unsigned integer | Bytes persisted in the blob, or zero |
 | `truncated` | boolean | Observation exceeded a configured limit |
+| `block` | object or absent | Coalescing `index`, configured limits, and `flush_reason` (`size`, `interval`, or `close`) |
 | `blob` | object or null | Content-addressed payload reference |
 
 Never infer plaintext from ports, SNI, or byte shape. Only a boundary beginning
@@ -148,6 +159,30 @@ A non-null blob has:
 
 Canonicalize the joined path, prove it remains below `run_dir/blobs`, and
 verify SHA-256 before consuming payload bytes. Never shell-evaluate a path.
+
+For a closed run, let Heimdall validate all evidence first, then independently
+resolve and hash one allowed blob without printing its content:
+
+```bash
+heimdall logs verify --run "$run_id" --json | jq -e '.valid' >/dev/null
+run_dir="$(heimdall logs path --run "$run_id" --json | jq -er '.run_dir')"
+blob_event="$(heimdall logs query --run "$run_id" --has-blob --jsonl |
+  jq -sc '.[0] // error("no stored blob")')"
+relative="$(jq -er '.data.blob.path' <<<"$blob_event")"
+expected_digest="$(jq -er '.data.blob.digest' <<<"$blob_event")"
+expected_bytes="$(jq -er '.data.blob.bytes' <<<"$blob_event")"
+blob_root="$(realpath -e -- "$run_dir/blobs")"
+blob_path="$(realpath -e -- "$run_dir/$relative")"
+case "$blob_path" in
+  "$blob_root"/*) ;;
+  *) echo 'blob escaped the run blob root' >&2; exit 1 ;;
+esac
+test "$(stat -c '%s' -- "$blob_path")" -eq "$expected_bytes"
+test "$(sha256sum -- "$blob_path" | awk '{print $1}')" = "$expected_digest"
+```
+
+Do not replace the containment check with string concatenation, and do not
+print or upload `blob_path` merely because integrity passed.
 
 ### Errors
 
@@ -174,6 +209,26 @@ always `[REDACTED]`. Configured exact-value payload redaction runs before this
 parser. `body` is always null; inspect a permitted source blob only when the
 task authorizes payload access. HTTP/2, invalid, incomplete, and oversized
 headers produce no derived record.
+
+Validate every derived record's provenance with one bounded `jq` join:
+
+```bash
+jq -e -s '
+  (map(select(.kind == "flow.data")) | INDEX(.seq)) as $flow_data
+  | all(
+      .[] | select(.kind == "http.request" or .kind == "http.response");
+      . as $derived
+      | all(
+          .data.source_seq[];
+          . as $seq
+          | ($flow_data[($seq | tostring)] // null) as $source
+          | ($source != null
+             and $source.flow_id == $derived.flow_id
+             and ($source.data.boundary | startswith("tls_plaintext.")))
+        )
+    )
+' "$run_dir"/events-*.jsonl >/dev/null
+```
 
 ## `heimdall.run/v1`
 
@@ -202,6 +257,42 @@ By default `command.argv` is null. Agents use `command.executable` and
 because low-entropy secrets could be guessed from it. A non-null `argv`
 requires explicit capture and is still an array, never shell text. Treat it as
 sensitive and never evaluate or print it without authority.
+
+## `heimdall.logs.summary/v1`
+
+Export its strict offline contract with `heimdall logs schema --summary v1`.
+Every summary has `contract`, `run_id`, `state`, `complete`, and `duration_ns`,
+plus these required low-cardinality objects:
+
+| Object | Required evidence |
+| --- | --- |
+| `sequence` | First/last sequence, record count, missing/out-of-order counts, and `contiguous` |
+| `events` | Counts by event kind |
+| `flows` | Opened/closed/active counts, network/status/failure maps, durations, and directional bytes |
+| `capture` | Record/original/stored/truncated counts and boundary counts |
+| `dns`, `policy` | Query/answer and policy-decision counts |
+| `tls`, `http` | Runtime, ClientHello, handshake, TLS-error, and derived HTTP counts |
+| `error_events` | Total run/TLS errors and stable-code counts |
+| `storage` | Segment count, blob count, and blob bytes from the manifest |
+
+Use the summary to choose a bounded investigation, not to authenticate it. For
+a closed run expected to be clean, require completion, contiguous sequence,
+no active flows, and no error events before selecting detailed records:
+
+```bash
+summary="$(heimdall logs summary --run "$run_id" --json)"
+jq -e '
+  .contract == "heimdall.logs.summary/v1"
+  and .state == "closed" and .complete
+  and .sequence.contiguous
+  and .flows.active == 0
+  and .error_events.total == 0
+' <<<"$summary" >/dev/null
+```
+
+A live run may legitimately be incomplete with active flows. A clean summary
+does not prove segment/blob integrity; always use `logs verify` before an
+integrity claim.
 
 ## Rotation and querying
 

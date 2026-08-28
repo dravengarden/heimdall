@@ -27,12 +27,14 @@ use uuid::Uuid;
 
 pub const EVENT_CONTRACT: &str = "heimdall.event/v1";
 pub const RUN_CONTRACT: &str = "heimdall.run/v1";
+pub const SUMMARY_CONTRACT: &str = "heimdall.logs.summary/v1";
 pub const CONTROL_CONTRACT: &str = "heimdall.logs.control/v1";
 pub const DEFAULT_SEGMENT_BYTES: u64 = 16 * 1024 * 1024;
 pub const DEFAULT_SEGMENT_AGE: Duration = Duration::from_secs(15 * 60);
 
 pub const EVENT_SCHEMA: &str = include_str!("../schemas/heimdall.event.v1.schema.json");
 pub const RUN_SCHEMA: &str = include_str!("../schemas/heimdall.run.v1.schema.json");
+pub const SUMMARY_SCHEMA: &str = include_str!("../schemas/heimdall.logs.summary.v1.schema.json");
 
 const TIMESTAMP_FORMAT: &[time::format_description::BorrowedFormatItem<'_>] =
     format_description!("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:6]Z");
@@ -1236,6 +1238,7 @@ mod tests {
     fn bundled_schemas_are_valid_json_and_segment_uses_final_key() {
         let _: Value = serde_json::from_str(EVENT_SCHEMA).unwrap();
         let _: Value = serde_json::from_str(RUN_SCHEMA).unwrap();
+        let _: Value = serde_json::from_str(SUMMARY_SCHEMA).unwrap();
         let value = serde_json::to_value(SegmentManifest {
             file: "events-000001.jsonl".into(),
             first_seq: 1,

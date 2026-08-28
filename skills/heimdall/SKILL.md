@@ -46,6 +46,8 @@ Use `heimdall logs schema`, `list`, `path`, `summary`,
 `query`, `tail`, `rotate`, `verify`, `recover`, and `prune`; standard `jq`, `rg`, `sed`,
 `sort`, `sha256sum`, and `wc` are valid consumers. Do not require or start a
 Web UI.
+Export all three evidence contracts before writing a parser:
+`logs schema --event v1`, `--run v1`, and `--summary v1`.
 
 If capture is requested, inspect `config.capture`, `config.decrypt`,
 `capabilities.capture`, and `capabilities.decrypt`. Require capture `mode: on`

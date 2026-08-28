@@ -34,7 +34,8 @@ acceptance path are documented and tested.
   integrity verification, payload-aware filters, and `heimdall logs`.
 - Low-cardinality `heimdall.logs.summary/v1` run health derived from the
   append-only evidence, including sequence loss, active flows, failures,
-  capture truncation, and protocol-boundary counters.
+  capture truncation, and protocol-boundary counters, with a strict offline
+  schema for agent validation.
 - Payload boundary/direction allowlists and environment-backed exact-value
   redaction before hashing or blob publication.
 - Per-flow/direction bounded payload block coalescing with explicit size,
@@ -105,8 +106,8 @@ normal cleanup, and fail-closed owner-death cleanup. See
   and atomic blob publication.
 - Keep the available rotation writer-owned and loss-aware; do not support
   external `copytruncate` against active logs.
-- Publish exhaustive schema and Linux-tool recipes in the bundled Heimdall
-  skill.
+- Keep exhaustive event, run, and summary schemas plus bounded Linux-tool
+  recipes in the bundled Heimdall skill.
 
 Acceptance target: an agent can discover paths and schemas without guessing,
 follow a run across rotation, select flows with `jq`, verify blobs and segment

@@ -139,6 +139,7 @@ as_tester heimdall agent \
     and .capabilities.lifecycle.descendant_cgroup_lifetime
     and .capabilities.lifecycle.exit_code_passthrough
     and .actions.logs_schema_event == ["heimdall", "logs", "schema", "--event", "v1"]
+    and .actions.logs_schema_summary == ["heimdall", "logs", "schema", "--summary", "v1"]
     and .actions.config_schema == ["heimdall", "config", "schema", "--version", "v1"]
     and .actions.config_example_toml == ["heimdall", "config", "example", "--format", "toml"]
     and .actions.logs_summary == ["heimdall", "logs", "summary", "--run", "<RUN_ID>", "--json"]
@@ -263,6 +264,12 @@ as_tester heimdall logs schema --event v1 \
   | jq -e '."$schema" == "https://json-schema.org/draft/2020-12/schema" and (.oneOf | length) == 18' >/dev/null
 as_tester heimdall logs schema --run v1 \
   | jq -e '."$schema" == "https://json-schema.org/draft/2020-12/schema"' >/dev/null
+as_tester heimdall logs schema --summary v1 \
+  | jq -e '
+      ."$schema" == "https://json-schema.org/draft/2020-12/schema"
+      and .properties.contract.const == "heimdall.logs.summary/v1"
+      and (.required | index("sequence")) != null
+      and (.required | index("error_events")) != null' >/dev/null
 
 as_tester heimdall run --policy direct -- sleep 1 &
 rotation_process=$!

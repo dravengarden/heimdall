@@ -20,7 +20,8 @@ use uuid::Uuid;
 
 use crate::event_log::{
     BlobSummary, EVENT_CONTRACT, EVENT_SCHEMA, Event, RUN_SCHEMA, RunManifest, RunResult,
-    SegmentManifest, persist_manifest, read_manifest, request_rotation, run_is_active, runs_root,
+    SUMMARY_CONTRACT, SUMMARY_SCHEMA, SegmentManifest, persist_manifest, read_manifest,
+    request_rotation, run_is_active, runs_root,
 };
 
 #[derive(Subcommand, Debug)]
@@ -53,18 +54,26 @@ pub struct SchemaArgs {
     #[arg(
         long,
         value_name = "VERSION",
-        conflicts_with = "run",
-        required_unless_present = "run"
+        conflicts_with_all = ["run", "summary"],
+        required_unless_present_any = ["run", "summary"]
     )]
     event: Option<String>,
     /// Print the heimdall.run schema version (currently v1).
     #[arg(
         long,
         value_name = "VERSION",
-        conflicts_with = "event",
-        required_unless_present = "event"
+        conflicts_with_all = ["event", "summary"],
+        required_unless_present_any = ["event", "summary"]
     )]
     run: Option<String>,
+    /// Print the heimdall.logs.summary schema version (currently v1).
+    #[arg(
+        long,
+        value_name = "VERSION",
+        conflicts_with_all = ["event", "run"],
+        required_unless_present_any = ["event", "run"]
+    )]
+    summary: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -189,12 +198,20 @@ pub fn run(command: LogsCmd) -> Result<()> {
 }
 
 fn schema(args: SchemaArgs) -> Result<()> {
-    let raw = match (args.event.as_deref(), args.run.as_deref()) {
-        (Some("v1"), None) => EVENT_SCHEMA,
-        (None, Some("v1")) => RUN_SCHEMA,
-        (Some(version), None) => anyhow::bail!("unsupported event schema `{version}`"),
-        (None, Some(version)) => anyhow::bail!("unsupported run schema `{version}`"),
-        _ => anyhow::bail!("select exactly one of --event v1 or --run v1"),
+    let raw = match (
+        args.event.as_deref(),
+        args.run.as_deref(),
+        args.summary.as_deref(),
+    ) {
+        (Some("v1"), None, None) => EVENT_SCHEMA,
+        (None, Some("v1"), None) => RUN_SCHEMA,
+        (None, None, Some("v1")) => SUMMARY_SCHEMA,
+        (Some(version), None, None) => anyhow::bail!("unsupported event schema `{version}`"),
+        (None, Some(version), None) => anyhow::bail!("unsupported run schema `{version}`"),
+        (None, None, Some(version)) => {
+            anyhow::bail!("unsupported summary schema `{version}`")
+        }
+        _ => anyhow::bail!("select exactly one of --event v1, --run v1, or --summary v1"),
     };
     let value: Value = serde_json::from_str(raw).context("decode bundled JSON Schema")?;
     println!("{}", serde_json::to_string(&value)?);
@@ -370,7 +387,7 @@ fn summarize_run(run_dir: &Path, manifest: &RunManifest) -> Result<Value> {
     let http_responses = counters.by_kind.get("http.response").copied().unwrap_or(0);
     let run_errors = counters.by_kind.get("run.error").copied().unwrap_or(0);
     Ok(json!({
-        "contract": "heimdall.logs.summary/v1",
+        "contract": SUMMARY_CONTRACT,
         "run_id": manifest.run_id,
         "state": manifest.state,
         "complete": manifest.result.as_ref().is_some_and(|result| result.complete),
@@ -503,9 +520,9 @@ fn matches_query(event: &Event, args: &QueryArgs) -> bool {
         && matches_data_string(&event.data, "direction", &args.direction)
         && matches_data_string(&event.data, "boundary", &args.boundary)
         && matches_data_string(&event.data, "error_code", &args.error_code)
-        && args
-            .has_blob
-            .is_none_or(|expected| event.data.get("blob").is_some() == expected)
+        && args.has_blob.is_none_or(|expected| {
+            event.data.get("blob").is_some_and(|blob| !blob.is_null()) == expected
+        })
 }
 
 fn matches_data_string(data: &Value, key: &str, selected: &[String]) -> bool {
@@ -1354,6 +1371,15 @@ mod tests {
         args.boundary.clear();
         args.has_blob = Some(false);
         assert!(!matches_query(&event, &args));
+
+        args.has_blob = Some(true);
+        args.boundary = vec!["tls_plaintext.relay".into()];
+        args.error_code = vec!["capture_truncated".into()];
+        let mut event_without_blob = event;
+        event_without_blob.data["blob"] = Value::Null;
+        assert!(!matches_query(&event_without_blob, &args));
+        args.has_blob = Some(false);
+        assert!(matches_query(&event_without_blob, &args));
     }
 
     #[test]
@@ -1408,6 +1434,27 @@ mod tests {
         assert_eq!(counters.flow_failures_by_code["relay_failed"], 1);
         assert!(counters.open_flows.contains(&flow_id));
         assert!(counters.closed_flows.contains(&flow_id));
+    }
+
+    #[test]
+    fn summary_document_matches_bundled_schema() {
+        let root = test_root("summary-schema");
+        let log = RunLog::create_at(&root, &["true".into()], "default", "foreground").unwrap();
+        log.ready("heimdall-run", None, &["transport"]).unwrap();
+        log.finish(0, true).unwrap();
+        let run_dir = log.run_dir().unwrap();
+        let manifest = read_manifest(&run_dir.join("run.json")).unwrap();
+        let summary = summarize_run(&run_dir, &manifest).unwrap();
+        let schema: Value = serde_json::from_str(SUMMARY_SCHEMA).unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let errors = validator
+            .iter_errors(&summary)
+            .map(|error| error.to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(summary["contract"], SUMMARY_CONTRACT);
+        assert!(errors.is_empty(), "{errors:#?}");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

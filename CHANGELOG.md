@@ -11,6 +11,9 @@ guide.
 - Add native `aarch64-linux` static-package and current/Linux 6.6 LTS
   real-eBPF VM outputs, with a host-guarded
   `just test-vm-native-aarch64` entry point.
+- Add a strict offline `heimdall.logs.summary/v1` JSON Schema through
+  `heimdall logs schema --summary v1` and advertise the argv action in
+  `heimdall agent`.
 
 ### Changed
 
@@ -25,6 +28,8 @@ guide.
 - Route Nix Cargo vendoring through crates.io's canonical static download root
   instead of the legacy API route while retaining lockfile checksum
   verification.
+- Make `logs query --has-blob` match only non-null content-addressed blob
+  references instead of records whose `blob` field is present but null.
 
 ### Known limitations
 

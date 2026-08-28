@@ -298,6 +298,7 @@ stream.
 ```text
 heimdall logs schema --event v1
 heimdall logs schema --run v1
+heimdall logs schema --summary v1
 heimdall logs list --json
 heimdall logs summary --run RUN_ID --json
 heimdall logs path --run RUN_ID --json
@@ -315,7 +316,8 @@ opened/closed/active flows, network/status/failure-code counts, durations,
 bytes, capture truncation and boundaries, DNS, policy, TLS, HTTP, run errors,
 segments, and blobs. It may summarize a live incomplete run. It does not
 authenticate evidence; use `verify` for schema, digest, sequence, and blob
-integrity.
+integrity. `logs schema --summary v1` exports its strict JSON Schema Draft
+2020-12 contract offline.
 
 Contract rules:
 

@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "site/**"
+      - "heimdall/schemas/**"
       - ".github/workflows/docs-pages.yml"
   workflow_dispatch:
 
@@ -30,10 +31,16 @@ jobs:
       - name: Configure Pages
         uses: actions/configure-pages@v6
 
+      - name: Assemble static site
+        run: |
+          mkdir -p _site/schemas
+          cp -R site/. _site/
+          cp heimdall/schemas/*.schema.json _site/schemas/
+
       - name: Upload static site
         uses: actions/upload-pages-artifact@v5
         with:
-          path: site
+          path: _site
 
       - name: Deploy to GitHub Pages
         id: deployment

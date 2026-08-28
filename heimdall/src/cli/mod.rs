@@ -221,6 +221,7 @@ pub mod agent {
         tls_ca_init: Option<Vec<String>>,
         logs_schema_event: Vec<String>,
         logs_schema_run: Vec<String>,
+        logs_schema_summary: Vec<String>,
         logs_list: Vec<String>,
         logs_summary: Vec<String>,
         logs_query_prefix: Vec<String>,
@@ -298,6 +299,13 @@ pub mod agent {
                         "logs".into(),
                         "schema".into(),
                         "--run".into(),
+                        "v1".into(),
+                    ],
+                    logs_schema_summary: vec![
+                        "heimdall".into(),
+                        "logs".into(),
+                        "schema".into(),
+                        "--summary".into(),
                         "v1".into(),
                     ],
                     logs_list: vec![
@@ -449,6 +457,13 @@ pub mod agent {
                     "logs".into(),
                     "schema".into(),
                     "--run".into(),
+                    "v1".into(),
+                ],
+                logs_schema_summary: vec![
+                    "heimdall".into(),
+                    "logs".into(),
+                    "schema".into(),
+                    "--summary".into(),
                     "v1".into(),
                 ],
                 logs_list: vec![
@@ -655,7 +670,7 @@ pub mod agent {
             logs: LogsCapabilities {
                 event_contract: crate::event_log::EVENT_CONTRACT,
                 run_contract: crate::event_log::RUN_CONTRACT,
-                summary_contract: "heimdall.logs.summary/v1",
+                summary_contract: crate::event_log::SUMMARY_CONTRACT,
                 format: "jsonl",
                 lifecycle_events: true,
                 flow_events: "tcp+udp+payload",
