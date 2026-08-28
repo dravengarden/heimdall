@@ -33,6 +33,7 @@ sync-ebpf:
 
 check-embedded-ebpf:
     output="$(nix build .#heimdall-ebpf --print-out-paths --no-link -L)"; cmp "$output/heimdall-ebpf" heimdall/embedded/heimdall-ebpf
+    tests/package/check-artifact-hygiene.sh heimdall/embedded/heimdall-ebpf ebpf
 
 test:
     cargo test --workspace --all-features --locked --release
@@ -51,7 +52,7 @@ test-cargo:
 
 test-release-tooling:
     actionlint .github/workflows/publish-cargo.yml .github/workflows/publish-npm.yml .github/workflows/publish-pypi.yml
-    shellcheck scripts/build-cargo-release-assets scripts/build-npm-package scripts/build-npm-release-assets scripts/build-pypi-release-assets scripts/publish-github-release scripts/render-release-notes scripts/sync-ebpf-object tests/cargo/run-acceptance.sh tests/npm/run-acceptance.sh tests/pypi/run-acceptance.sh tests/release/cargo-workflow.sh tests/release/npm-workflow.sh tests/release/pypi-workflow.sh tests/release/render-notes.sh
+    shellcheck scripts/build-cargo-release-assets scripts/build-npm-package scripts/build-npm-release-assets scripts/build-pypi-release-assets scripts/publish-github-release scripts/render-release-notes scripts/sync-ebpf-object tests/cargo/run-acceptance.sh tests/npm/run-acceptance.sh tests/package/check-artifact-hygiene.sh tests/package/run-acceptance.sh tests/pypi/run-acceptance.sh tests/release/cargo-workflow.sh tests/release/npm-workflow.sh tests/release/pypi-workflow.sh tests/release/render-notes.sh
     tests/release/cargo-workflow.sh
     tests/release/npm-workflow.sh
     tests/release/pypi-workflow.sh
@@ -66,6 +67,15 @@ test-vm:
     # meaningful on two-core development and hosted runners.
     nix build .#checks.x86_64-linux.vm-proxy -L
     nix build .#checks.x86_64-linux.vm-proxy-lts -L
+
+# Runs the same current/LTS real-eBPF guests with an aarch64 userspace and
+# kernel. The host guard prevents the x86 release host's qemu-user CLI check
+# from being reported as the native aarch64 system gate.
+test-vm-native-aarch64:
+    test "$(uname -s)" = Linux || { echo "native aarch64 acceptance requires Linux" >&2; exit 1; }
+    test "$(uname -m)" = aarch64 || { echo "native aarch64 acceptance requires an aarch64 host" >&2; exit 1; }
+    nix build .#checks.aarch64-linux.vm-proxy -L
+    nix build .#checks.aarch64-linux.vm-proxy-lts -L
 
 # Runs environment-specific latency, memory, concurrency, sustained-throughput,
 # and event-integrity baselines in current and LTS real-eBPF NixOS guests.

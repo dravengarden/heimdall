@@ -4,6 +4,28 @@ All notable changes to Heimdall are documented here. Heimdall is pre-1.0; this
 file records release-level changes and does not serve as an API migration
 guide.
 
+## [Unreleased]
+
+### Added
+
+- Add native `aarch64-linux` static-package and current/Linux 6.6 LTS
+  real-eBPF VM outputs, with a host-guarded
+  `just test-vm-native-aarch64` entry point.
+
+### Changed
+
+- Remap eBPF and userspace source paths to deterministic `/source` roots and
+  strip redundant DWARF from the embedded eBPF object after BTF generation.
+- Make Linux archive and Cargo-package acceptance reject private paths, build
+  roots, Nix store paths, ELF debug sections, dynamic interpreters, and dynamic
+  dependencies while requiring the eBPF BTF/BTF.ext sections.
+
+### Known limitations
+
+- The native aarch64 VM outputs require an aarch64 Linux execution host. The
+  current release infrastructure has not yet produced that current/LTS result,
+  so aarch64 remains structurally checked with CLI execution under emulation.
+
 ## [0.1.4] - 2026-08-24
 
 ### Highlights

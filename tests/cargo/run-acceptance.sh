@@ -45,6 +45,7 @@ for expected in \
 done
 
 file "$root/embedded/heimdall-ebpf" | grep -Fq 'eBPF'
+tests/package/check-artifact-hygiene.sh "$root/embedded/heimdall-ebpf" ebpf
 
 CARGO_TARGET_DIR="$work_dir/install-target" cargo install \
   --path "$root" \

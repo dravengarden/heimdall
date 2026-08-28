@@ -62,10 +62,11 @@ acceptance path are documented and tested.
   1/10/50 concurrent starts, sustained TCP/UDP and capture throughput, and
   event integrity without requiring a metrics service.
 - Reproducible static x86_64 and aarch64 Linux archives with checksums,
-  authoritative local release gates, atomic installation, and one-level
-  executable rollback. The aarch64 package has structural and emulated CLI
-  acceptance; native aarch64 real-eBPF acceptance remains in the compatibility
-  track.
+  authoritative local release gates, atomic installation, one-level executable
+  rollback, and artifact-hygiene checks. The embedded eBPF object has
+  deterministic source roots and no DWARF while retaining BTF/BTF.ext. The
+  aarch64 package has structural and emulated CLI acceptance; native aarch64
+  real-eBPF execution remains in the compatibility track.
 
 The current available implementation is Linux-only. macOS support is planned
 below and is not part of the available contract yet.
@@ -177,15 +178,19 @@ capture, and TLS without changing the daemonless product boundary.
 
 ### 7. Release artifact hygiene and native ARM acceptance
 
-- Remove DWARF debug sections and deterministic remapped Nix source paths from
-  the embedded eBPF ELF before it is included in the userspace executable.
-- Preserve the BTF and BTF.ext metadata required by the eBPF loader and kernel;
-  do not treat stripping the outer userspace ELF as sufficient.
-- Extend package acceptance to reject private paths, real Nix store paths,
-  remapped build paths, unexpected debug sections, dynamic interpreters, and
-  dynamic library dependencies in every published Linux artifact.
-- Add native aarch64 Linux real-eBPF acceptance in addition to the available
-  structural and emulated CLI checks.
+The artifact-hygiene half is available: source paths are remapped before BTF
+generation, LLVM removes the redundant DWARF before embedding, BTF/BTF.ext and
+their relocations are required, and package gates reject private/build paths,
+Nix store paths, debug sections, dynamic interpreters, and dynamic
+dependencies on both release architectures.
+
+- Keep the hygiene gate aligned across native archives, npm, PyPI, and the
+  Cargo source package whenever packaging changes.
+- Execute the available `aarch64-linux` current and Linux 6.6 LTS real-eBPF VM
+  outputs on an ARM Linux host; structural and qemu-user CLI checks do not
+  satisfy this target.
+- Add that native result to the release transaction only after a repeatable ARM
+  Linux executor exists.
 
 Acceptance target: x86_64 and aarch64 Linux archives remain reproducible and
 static, contain no private or build-path evidence, preserve required eBPF

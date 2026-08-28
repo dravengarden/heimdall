@@ -23,9 +23,23 @@ cover dual-stack TCP/UDP, fake and system DNS, SOCKS5, QUIC, common runtime
 clients, concurrent runs, runtime and relay TLS, capture, rotation, recovery,
 signals, authorization failure, parent-death cleanup, and link cleanup.
 
-Build both generic static archives, reject incorrect architecture or dynamic
-linkage, exercise the aarch64 CLI under emulation, and run native x86_64
-install, upgrade, and rollback acceptance:
+On an aarch64 Linux execution host, run the architecture-equivalent current
+and LTS guests with:
+
+```bash
+nix develop .#acceptance -c just test-vm-native-aarch64
+```
+
+The recipe rejects a non-Linux or non-aarch64 host, and each guest asserts
+`uname -m` before the data-path suite starts. This is the native-system gate;
+the qemu-user CLI check in `test-package` is not a substitute. Until this gate
+has a successful ARM Linux result, keep native aarch64 real-eBPF acceptance in
+release notes as a known limitation.
+
+Build both generic static archives, reject incorrect architecture, dynamic
+linkage, private/build paths, and debug sections, verify embedded BTF metadata,
+exercise the aarch64 CLI under emulation, and run native x86_64 install,
+upgrade, and rollback acceptance:
 
 ```bash
 nix develop -c just test-package

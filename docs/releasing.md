@@ -43,6 +43,24 @@ installation guide, compatibility section, and artifact list in the same
 release-preparation change. In particular, native macOS support must add its
 actual macOS artifacts rather than describing Linux aarch64 as macOS support.
 
+Every Linux archive must pass `tests/package/check-artifact-hygiene.sh`. The
+gate rejects private and build paths, Nix store paths, ELF debug sections,
+dynamic interpreters, and dynamic dependencies. It checks the embedded eBPF
+object separately because stripping the outer userspace ELF cannot prove that
+the object is clean; the object must retain `.BTF`, `.BTF.ext`, and their
+relocation sections after DWARF removal.
+
+Before release notes claim native aarch64 data-path coverage, run the following
+on an aarch64 Linux execution host at the exact release commit:
+
+```bash
+nix develop .#acceptance -c just test-vm-native-aarch64
+```
+
+This is separate from the x86_64 release host's qemu-user CLI check. Until the
+native current and Linux 6.6 LTS guests both pass, the version changelog must
+retain native aarch64 real-eBPF acceptance as a known limitation.
+
 ## Publication transaction
 
 From a clean `main` checkout that exactly matches `origin/main`, run only:

@@ -45,6 +45,10 @@
       };
       lib = pkgs.lib;
       heimdallVersion = "0.1.4";
+      releaseRustFlags = lib.concatStringsSep " " [
+        "--remap-path-prefix=/build/source=/source/heimdall"
+        "--remap-path-prefix=/build/cargo-vendor-dir=/source/deps"
+      ];
       heimdallSrc = lib.cleanSourceWith {
         src = ./.;
         filter =
@@ -88,6 +92,20 @@
       aarch64StaticRustPlatform = aarch64MuslPkgs.pkgsStatic.makeRustPlatform {
         cargo = rustStable;
         rustc = rustStable;
+      };
+      nativeAarch64System = "aarch64-linux";
+      nativeAarch64Pkgs = import nixpkgs {
+        system = nativeAarch64System;
+        overlays = [ fenix.overlays.default ];
+      };
+      nativeAarch64Lib = nativeAarch64Pkgs.lib;
+      nativeAarch64RustStable = nativeAarch64Pkgs.fenix.fromToolchainFile {
+        file = ./rust-toolchain.toml;
+        sha256 = "sha256-gh/xTkxKHL4eiRXzWv8KP7vfjSk61Iq48x47BEDFgfk=";
+      };
+      nativeAarch64StaticRustPlatform = nativeAarch64Pkgs.pkgsStatic.makeRustPlatform {
+        cargo = nativeAarch64RustStable;
+        rustc = nativeAarch64RustStable;
       };
 
       # Cargo's `+toolchain` syntax is implemented by rustup, which is not part
@@ -234,7 +252,10 @@
         # Use our locally-built bpf-linker 0.10.2 (LLVM 22), not
         # nixpkgs' 0.9.15 (LLVM 19) which can't parse current
         # nightly rustc bitcode.
-        nativeBuildInputs = [ bpf-linker ];
+        nativeBuildInputs = [
+          bpf-linker
+          pkgs.llvmPackages_22.llvm
+        ];
 
         # Skip cargo check — heimdall-ebpf has no host-runnable tests
         # (no_std bpfel binary).
@@ -269,6 +290,11 @@
           fi
           echo "Installing $artifact"
           cp "$artifact" $out/heimdall-ebpf
+          # Why: bpf-linker needs DWARF as input to synthesize BTF, but the
+          # kernel loader only needs the resulting BTF/BTF.ext sections.
+          # LLVM understands the BPF ELF architecture and removes only the
+          # now-redundant debug sections before userspace embeds the object.
+          llvm-objcopy --strip-debug $out/heimdall-ebpf
           runHook postInstall
         '';
       };
@@ -280,6 +306,7 @@
         src = heimdallSrc;
 
         cargoLock.lockFile = ./Cargo.lock;
+        RUSTFLAGS = releaseRustFlags;
 
         # Place the eBPF object at the path used by include_bytes!.
         preBuild = ''
@@ -316,6 +343,7 @@
         src = heimdallSrc;
 
         cargoLock.lockFile = ./Cargo.lock;
+        RUSTFLAGS = releaseRustFlags;
         preBuild = ''
           mkdir -p heimdall/embedded
           cp ${heimdall-ebpf}/heimdall-ebpf \
@@ -343,6 +371,7 @@
         src = heimdallSrc;
 
         cargoLock.lockFile = ./Cargo.lock;
+        RUSTFLAGS = releaseRustFlags;
         preBuild = ''
           mkdir -p heimdall/embedded
           cp ${heimdall-ebpf}/heimdall-ebpf \
@@ -358,6 +387,39 @@
 
         meta = with lib; {
           description = "Static aarch64 Heimdall Linux CLI with embedded eBPF";
+          mainProgram = "heimdall";
+          platforms = [ "aarch64-linux" ];
+          license = licenses.asl20;
+        };
+      };
+
+      # This package is intentionally a native aarch64 derivation rather than
+      # the x86_64 release host's cross build. It gives an ARM Linux machine a
+      # self-contained input for current/LTS real-eBPF acceptance. The checked
+      # in object is byte-compared with the canonical Nix eBPF build by the
+      # ordinary release gate, which must cover the same release commit.
+      heimdall-static-native-aarch64 = nativeAarch64StaticRustPlatform.buildRustPackage {
+        pname = "heimdall-static-native-aarch64";
+        version = heimdallVersion;
+        src = heimdallSrc;
+
+        cargoLock.lockFile = ./Cargo.lock;
+        RUSTFLAGS = releaseRustFlags;
+        preBuild = ''
+          mkdir -p heimdall/embedded
+          cp ${./heimdall/embedded/heimdall-ebpf} \
+             heimdall/embedded/heimdall-ebpf
+        '';
+        cargoBuildFlags = [
+          "--bin"
+          "heimdall"
+          "--package"
+          "heimdall-egress"
+        ];
+        doCheck = false;
+
+        meta = with nativeAarch64Lib; {
+          description = "Native aarch64 static Heimdall CLI for real-eBPF acceptance";
           mainProgram = "heimdall";
           platforms = [ "aarch64-linux" ];
           license = licenses.asl20;
@@ -425,7 +487,8 @@
             ];
           }
           ''
-            sh ${./tests/package/run-acceptance.sh} ${releaseBundle} ${heimdallVersion} x86_64 'Advanced Micro Devices X86-64'
+            ${./tests/package}/check-artifact-hygiene.sh ${heimdall-ebpf}/heimdall-ebpf ebpf
+            sh ${./tests/package}/run-acceptance.sh ${releaseBundle} ${heimdallVersion} x86_64 'Advanced Micro Devices X86-64'
             touch "$out"
           '';
 
@@ -443,7 +506,8 @@
             ];
           }
           ''
-            sh ${./tests/package/run-acceptance.sh} \
+            ${./tests/package}/check-artifact-hygiene.sh ${heimdall-ebpf}/heimdall-ebpf ebpf
+            sh ${./tests/package}/run-acceptance.sh \
               ${releaseBundleAarch64} ${heimdallVersion} aarch64 AArch64 \
               ${pkgs.qemu}/bin/qemu-aarch64
             touch "$out"
@@ -452,16 +516,20 @@
       vmProxyTest =
         {
           name,
+          pkgsFor ? pkgs,
+          libFor ? lib,
+          heimdallPackage ? heimdall-static,
+          expectedArchitecture ? "x86_64",
           kernelPackages ? null,
         }:
-        pkgs.testers.runNixOSTest {
+        pkgsFor.testers.runNixOSTest {
           inherit name;
           nodes.machine = {
             imports = [
               ./tests/vm/heimdall-proxy.nix
             ]
-            ++ lib.optional (kernelPackages != null) { boot.kernelPackages = kernelPackages; };
-            _module.args.heimdallPackage = heimdall-static;
+            ++ libFor.optional (kernelPackages != null) { boot.kernelPackages = kernelPackages; };
+            _module.args = { inherit heimdallPackage; };
             virtualisation = {
               memorySize = 2048;
               cores = 2;
@@ -469,6 +537,7 @@
           };
           testScript = ''
             machine.start()
+            assert machine.succeed("uname -m").strip() == "${expectedArchitecture}"
             machine.wait_until_succeeds("test -e /run/heimdall-test/ready")
             machine.succeed("/etc/heimdall-test/run-acceptance.sh")
           '';
@@ -551,6 +620,11 @@
         release-aarch64 = releaseBundleAarch64;
       };
 
+      packages.${nativeAarch64System} = {
+        heimdall-static = heimdall-static-native-aarch64;
+        default = heimdall-static-native-aarch64;
+      };
+
       checks.${system} = {
         release = releaseCheck;
         release-aarch64 = releaseCheckAarch64;
@@ -564,6 +638,28 @@
           name = "heimdall-benchmark-lts";
           kernelPackages = pkgs.linuxPackages_6_6;
         };
+      };
+
+      checks.${nativeAarch64System} = {
+        vm-proxy = vmProxyTest {
+          name = "heimdall-proxy-aarch64";
+          pkgsFor = nativeAarch64Pkgs;
+          libFor = nativeAarch64Lib;
+          heimdallPackage = heimdall-static-native-aarch64;
+          expectedArchitecture = "aarch64";
+        };
+        vm-proxy-lts = vmProxyTest {
+          name = "heimdall-proxy-aarch64-lts";
+          pkgsFor = nativeAarch64Pkgs;
+          libFor = nativeAarch64Lib;
+          heimdallPackage = heimdall-static-native-aarch64;
+          expectedArchitecture = "aarch64";
+          kernelPackages = nativeAarch64Pkgs.linuxPackages_6_6;
+        };
+      };
+
+      devShells.${nativeAarch64System}.acceptance = nativeAarch64Pkgs.mkShell {
+        packages = [ nativeAarch64Pkgs.just ];
       };
 
       # `nix develop` shell with everything needed to iterate locally —

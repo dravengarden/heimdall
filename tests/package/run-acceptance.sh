@@ -8,6 +8,11 @@ elf_machine=${4:?usage: run-acceptance.sh RELEASE_DIRECTORY VERSION ARCHITECTURE
 runner=${5:-}
 archive_name=heimdall-egress-$version-$architecture-linux-musl.tar.gz
 archive=$release_dir/$archive_name
+script_dir=$(
+  CDPATH=''
+  cd -- "$(dirname -- "$0")"
+  pwd
+)
 
 (cd "$release_dir" && sha256sum -c "$archive_name.sha256")
 
@@ -27,14 +32,7 @@ actual_entries=$(find "$bundle" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
   exit 1
 }
 
-if readelf -l "$bundle/heimdall" | grep -q 'interpreter'; then
-  echo "release binary has a dynamic ELF interpreter" >&2
-  exit 1
-fi
-if readelf -d "$bundle/heimdall" | grep -q 'NEEDED'; then
-  echo "release binary has dynamic library dependencies" >&2
-  exit 1
-fi
+"$script_dir/check-artifact-hygiene.sh" "$bundle/heimdall" linux-executable
 readelf -h "$bundle/heimdall" | grep -F "Machine:" | grep -Fq "$elf_machine" || {
   echo "release binary has the wrong ELF architecture" >&2
   exit 1

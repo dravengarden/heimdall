@@ -59,8 +59,8 @@ for checksum verification, setup authorization, upgrade, and rollback.
 ## Verification
 
 The release host completed the authoritative local source checks, current and
-Linux 6.6 LTS real-eBPF VM suites sequentially, and native, npm, PyPI, and Cargo
-package gates before the tag or assets were published.
+Linux 6.6 LTS real-eBPF VM suites sequentially, and Linux archive, npm, PyPI,
+and Cargo package gates before the tag or assets were published.
 
 ## Full changelog
 

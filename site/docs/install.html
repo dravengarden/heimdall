@@ -39,7 +39,7 @@ cd "heimdall-egress-$version-$architecture-linux-musl"
 sudo ./heimdall-install install
 heimdall --version
 heimdall init</code></pre>
-        <div class="callout"><strong>No service is installed.</strong>The installer atomically writes a regular <code>/usr/local/bin/heimdall</code> and keeps one prior executable for rollback. It never edits sudoers.</div>
+        <div class="callout"><strong>No service is installed.</strong> The installer atomically writes a regular <code>/usr/local/bin/heimdall</code> and keeps one prior executable for rollback. It never edits sudoers. Release gates reject dynamic linkage, private/build paths, and ELF debug sections while preserving the embedded eBPF BTF metadata.</div>
 
         <h2 id="npm">Install through npm</h2>
         <pre><code>npm install --global heimdall-egress

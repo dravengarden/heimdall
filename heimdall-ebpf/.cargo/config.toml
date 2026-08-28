@@ -6,9 +6,14 @@ target = "bpfel-unknown-none"
 # debuginfo=2 generates DWARF; link-arg=--btf tells bpf-linker to convert
 # DWARF into BTF (BPF Type Format) and embed it in the output ELF.
 # aya requires BTF to determine map key/value types at load time.
+# Why: BTF.ext retains source file names after DWARF is removed. Remap Nix's
+# build roots before linking so the published object keeps useful line
+# metadata without exposing a builder path or a store-shaped dependency path.
 rustflags = [
     "-C", "debuginfo=2",
     "-C", "link-arg=--btf",
+    "--remap-path-prefix=/build/heimdall-ebpf-src=/source/heimdall",
+    "--remap-path-prefix=/nix/store=/source/deps",
 ]
 
 [unstable]

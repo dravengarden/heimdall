@@ -11,12 +11,16 @@ that executable. They do not install or start a daemon.
 - `sudo` for the narrow per-run setup worker;
 - a reachable SOCKS5 server for proxied policies.
 
-The release binary has no dynamic libc dependency. Kernel, cgroup, privilege,
-and TLS-library compatibility requirements still apply. The x86_64 package is
-covered by native install and real-eBPF VM acceptance. The aarch64 package is
-checked for static linkage and architecture and executes CLI acceptance under
-emulation; native aarch64 real-eBPF acceptance remains active compatibility
-work.
+The release binary has no dynamic libc dependency. Package acceptance also
+rejects private/build paths and ELF debug sections; the embedded eBPF object
+retains BTF/BTF.ext after its redundant DWARF is removed. Kernel, cgroup,
+privilege, and TLS-library compatibility requirements still apply.
+
+The x86_64 package is covered by native install and current/Linux 6.6 LTS
+real-eBPF VM acceptance. The aarch64 package is checked for static linkage and
+architecture and executes CLI acceptance under emulation. The repository now
+defines the same current/LTS data-path gate for an aarch64 Linux execution
+host, but that native result is not yet part of the completed release matrix.
 
 ## Install through npm
 
