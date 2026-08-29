@@ -156,23 +156,38 @@ kill -0 "$fixture_pid" 2>/dev/null || {
   cat "$work_dir/fixture.log" >&2
   fail "loopback fixture did not start"
 }
-if [[ $run_benchmark == 1 ]]; then
-  python3 "$socks_fixture" >"$work_dir/socks.log" 2>&1 &
-  socks_pid=$!
-  for _ in $(seq 1 100); do
-    ss -Hlnpt | grep -Eq '127\.0\.0\.1:1080\b' && break
-    sleep 0.02
-  done
-  kill -0 "$socks_pid" 2>/dev/null || {
-    cat "$work_dir/socks.log" >&2
-    fail "SOCKS5 benchmark fixture did not start"
-  }
-  ss -Hlnpt | grep -Eq '127\.0\.0\.1:1080\b' \
-    || fail "SOCKS5 benchmark fixture did not listen"
-fi
+python3 "$socks_fixture" >"$work_dir/socks.log" 2>&1 &
+socks_pid=$!
+for _ in $(seq 1 100); do
+  ss -Hlnpt | grep -Eq '127\.0\.0\.1:1080\b' && break
+  sleep 0.02
+done
+kill -0 "$socks_pid" 2>/dev/null || {
+  cat "$work_dir/socks.log" >&2
+  fail "SOCKS5 fixture did not start"
+}
+ss -Hlnpt | grep -Eq '127\.0\.0\.1:1080\b' \
+  || fail "SOCKS5 fixture did not listen"
 python3 "$fixture" tcp >/dev/null
 python3 "$fixture" udp >/dev/null
 ss -Hlnptu | sort >"$work_dir/listeners-before"
+
+# Ubuntu 24.04 must retain its default AppArmor user-namespace restriction.
+# The stock `files dns` NSS path reaches port 53 directly, so Heimdall's
+# cgroup hook can provide fake DNS without a private resolver mount.
+[[ $(</sys/module/apparmor/parameters/enabled) == Y ]] \
+  || fail "AppArmor is not enabled"
+[[ $(</proc/sys/kernel/apparmor_restrict_unprivileged_userns) == 1 ]] \
+  || fail "Ubuntu unprivileged user-namespace restriction was relaxed"
+: > /run/heimdall-test/socks.log
+[[ $(heimdall run --policy fake -- \
+  python3 "$fixture" http fake.fixture.test) == ubuntu-tcp-ok ]]
+fake_run_id=$(heimdall logs list --json | python3 "$fixture" latest-run)
+heimdall logs query --run "$fake_run_id" --jsonl \
+  | python3 "$fixture" verify-fake-dns fake.fixture.test 18080
+grep -F '"atyp": 3, "host": "fake.fixture.test", "port": 18080' \
+  /run/heimdall-test/socks.log >/dev/null \
+  || fail "fake DNS did not preserve the domain through SOCKS5"
 
 [[ $(heimdall run --policy direct -- python3 "$fixture" tcp) == ubuntu-tcp-ok ]]
 tcp_run_id=$(heimdall logs list --json | python3 "$fixture" latest-run)
@@ -360,6 +375,7 @@ if [[ $run_benchmark == 1 ]]; then
     --udp-throughput "$udp_throughput" \
     --udp-response-prefix ubuntu-udp: \
     --proxy-policy proxy \
+    --proxy-host fake.fixture.test \
     --rss-source procfs)
   python3 "$fixture" verify-benchmark <<<"$benchmark_json"
   printf 'HEIMDALL_BENCHMARK_JSON=%s\n' "$benchmark_json"

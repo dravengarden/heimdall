@@ -158,6 +158,12 @@ may re-enter through `systemd-run --user --scope`; the resolved global config
 path and argv are preserved. It returns the immediate child's status but keeps
 interception alive until every descendant leaves the cgroup.
 
+For fake DNS, never relax a host-wide user-namespace or AppArmor setting. A
+plain `hosts: files dns` NSS path is redirected at port 53 without a namespace.
+If Heimdall reports an NSS bypass, inspect nsswitch and nscd, then either use
+system DNS when domain identity is unnecessary or authorize `userns,` only for
+the exact installed Heimdall path through a scoped AppArmor profile.
+
 Read the `heimdall.logs.summary/v1` document before scanning payload evidence.
 Use its missing/out-of-order sequence counts, active flows, failure codes,
 capture truncation, and protocol counters to choose a bounded query. Summary

@@ -83,6 +83,15 @@ Fake DNS maps names to synthetic addresses so the relay can recover a hostname
 and issue a SOCKS5 domain request. Pool exhaustion returns `SERVFAIL`; an
 address is never silently reassigned during the run.
 
+When the host `hosts` NSS database contains only `files` and `dns` and nscd is
+absent, Heimdall leaves the resolver files untouched: the cgroup eBPF hooks
+redirect every UDP/TCP port-53 request, including a systemd-resolved loopback
+stub, to the run's fake-DNS listener. This path needs no user or mount
+namespace and is exercised with Ubuntu 24.04's AppArmor restriction enabled.
+NSS modules and caches that can bypass port 53 retain the private resolver-mount
+fallback; if the host forbids that scoped user namespace, setup fails before
+the requested command executes rather than silently using system DNS.
+
 TCP and connected IPv6 relay keys include address family and ephemeral source
 port. IPv4 UDP assigns a distinct loopback token to each socket-and-destination
 flow, and the receive hook restores the real peer address. This supports

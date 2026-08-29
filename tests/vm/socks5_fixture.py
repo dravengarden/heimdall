@@ -49,7 +49,11 @@ class Handler(socketserver.BaseRequestHandler):
         with open(LOG_PATH, "a", encoding="utf-8") as log:
             log.write(json.dumps({"atyp": atyp, "host": host, "port": port}) + "\n")
 
-        connect_host = "127.0.0.1" if host == "fixture.test" else host
+        connect_host = (
+            "127.0.0.1"
+            if host in {"fixture.test", "fake.fixture.test"}
+            else host
+        )
         try:
             upstream = socket.create_connection((connect_host, port), timeout=5)
         except OSError:
@@ -149,7 +153,9 @@ def parse_udp_frame(packet):
     offset += 2
     with open(LOG_PATH, "a", encoding="utf-8") as log:
         log.write(json.dumps({"udp": True, "atyp": atyp, "host": host, "port": port}) + "\n")
-    connect_host = "127.0.0.1" if host == "fixture.test" else host
+    connect_host = (
+        "127.0.0.1" if host in {"fixture.test", "fake.fixture.test"} else host
+    )
     return (connect_host, port), packet[3:offset], packet[offset:]
 
 

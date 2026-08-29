@@ -40,7 +40,7 @@ sudo ./heimdall-install install
 heimdall --version
 heimdall init</code></pre>
         <div class="callout"><strong>No service is installed.</strong> The installer atomically writes a regular <code>/usr/local/bin/heimdall</code> and keeps one prior executable for rollback. It never edits sudoers. Release gates reject dynamic linkage, private/build paths, and ELF debug sections while preserving the embedded eBPF BTF metadata.</div>
-        <p>The x86_64 archive is covered by the full current/Linux 6.6 LTS NixOS real-eBPF matrix and a pinned Ubuntu 24.04 guest that installs this exact bundle and proves exact authorization, direct TCP/UDP, descendant and signal lifecycle, concurrent isolation, parent-death recovery, runtime and relay TLS, JSONL integrity, and daemonless cleanup. Native aarch64 real-eBPF execution remains an explicit pending gate.</p>
+        <p>The x86_64 archive is covered by the full current/Linux 6.6 LTS NixOS real-eBPF matrix and a pinned Ubuntu 24.04 guest that installs this exact bundle and proves exact authorization, fake DNS without relaxing AppArmor's user-namespace restriction, direct TCP/UDP, descendant and signal lifecycle, concurrent isolation, parent-death recovery, runtime and relay TLS, JSONL integrity, and daemonless cleanup. Native aarch64 real-eBPF execution remains an explicit pending gate.</p>
 
         <h2 id="npm">Install through npm</h2>
         <pre><code>npm install --global heimdall-egress

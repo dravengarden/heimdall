@@ -255,6 +255,7 @@ def main():
     )
     parser.add_argument("--udp-response-prefix", default="udp-v4:")
     parser.add_argument("--proxy-policy", default="fake")
+    parser.add_argument("--proxy-host", default="fixture.test")
     parser.add_argument("--udp-policy", default="udp")
     parser.add_argument(
         "--rss-source", choices=("gnu-time", "procfs"), default="gnu-time"
@@ -279,16 +280,16 @@ def main():
 
     if args.fixture:
         direct_tcp_client = command("python3", args.fixture, "http", "127.0.0.1")
-        proxy_tcp_client = command("python3", args.fixture, "http", "fixture.test")
-        proxy_udp_client = command("python3", args.fixture, "udp-host", "fixture.test")
+        proxy_tcp_client = command("python3", args.fixture, "http", args.proxy_host)
+        proxy_udp_client = command("python3", args.fixture, "udp-host", args.proxy_host)
         relay_tls_client = command("python3", args.fixture, "tls", relay_ca)
     else:
         direct_tcp_client = command("curl", "-fsS", "http://127.0.0.1:18080/")
-        proxy_tcp_client = command("curl", "-fsS", "http://fixture.test:18080/")
+        proxy_tcp_client = command("curl", "-fsS", f"http://{args.proxy_host}:18080/")
         proxy_udp_client = command(
             "python3",
             args.udp_client,
-            "fixture.test",
+            args.proxy_host,
             "18082",
             f"{args.udp_response_prefix}probe",
         )
@@ -384,7 +385,7 @@ def main():
             "python3", args.fixture, "http-bytes", "127.0.0.1", tcp_bytes
         )
         proxy_tcp_transfer = command(
-            "python3", args.fixture, "http-bytes", "fixture.test", tcp_bytes
+            "python3", args.fixture, "http-bytes", args.proxy_host, tcp_bytes
         )
         relay_tls_transfer = command(
             "python3", args.fixture, "tls-bytes", relay_ca, tcp_bytes
@@ -394,7 +395,7 @@ def main():
             "curl", *curl_output, f"http://127.0.0.1:18080{tcp_path}"
         )
         proxy_tcp_transfer = command(
-            "curl", *curl_output, f"http://fixture.test:18080{tcp_path}"
+            "curl", *curl_output, f"http://{args.proxy_host}:18080{tcp_path}"
         )
         relay_tls_transfer = command(
             "curl",

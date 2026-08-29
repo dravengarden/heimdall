@@ -256,6 +256,9 @@ Available now:
   lifecycle;
 - per-run ports, cgroup, maps, FD-owned links, and mutable policy state;
 - the narrow `heimdall.setup/v2` authorization path with privilege drop;
+- namespace-free fake DNS when the host NSS path is `files dns`, with the
+  private resolver mount retained only for NSS modules or caches that bypass
+  port-53 interception;
 - concurrent-session, descendant, all foreground-signal, authorization-denial,
   normal-cleanup, parent-death recovery, and both TLS-mode acceptance in the
   current/LTS NixOS and pinned Ubuntu 24.04 real-eBPF guests;

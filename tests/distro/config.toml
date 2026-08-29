@@ -3,6 +3,20 @@ version = 1
 [proxy]
 default_policy = "direct"
 
+[proxy.outbounds.default]
+type = "socks5"
+server = "127.0.0.1"
+server_port = 1080
+network = ["tcp", "udp"]
+connect_timeout = "2s"
+
+[proxy.policies.fake.dns]
+mode = "fake"
+
+[proxy.policies.fake.final]
+tcp = { type = "route", outbound = "default" }
+udp = { type = "reject", method = "refused" }
+
 [proxy.policies.direct.dns]
 mode = "system"
 

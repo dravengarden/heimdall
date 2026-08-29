@@ -285,6 +285,38 @@ def verify_events(network: str, port: int) -> None:
         raise RuntimeError("run did not close completely")
 
 
+def verify_fake_dns(host: str, port: int) -> None:
+    events = read_events()
+    exchanges = {
+        event.get("data", {}).get("exchange_id")
+        for event in events
+        if event.get("kind") == "dns.query"
+        and any(
+            question.get("name") == host
+            for question in event.get("data", {}).get("questions", [])
+            if isinstance(question, dict)
+        )
+    }
+    exchanges.discard(None)
+    answered = any(
+        event.get("kind") == "dns.answer"
+        and event.get("data", {}).get("exchange_id") in exchanges
+        and event.get("data", {}).get("boundary") == "fake"
+        and event.get("data", {}).get("answers")
+        for event in events
+    )
+    routed = any(
+        event.get("kind") == "policy.decision"
+        and event.get("data", {}).get("network") == "tcp"
+        and event.get("data", {}).get("destination", {}).get("host") == host
+        and event.get("data", {}).get("destination", {}).get("port") == port
+        and event.get("data", {}).get("action", {}).get("type") == "route"
+        for event in events
+    )
+    if not exchanges or not answered or not routed:
+        raise RuntimeError(f"missing fake-DNS route evidence for {host}:{port}: {events!r}")
+
+
 def run_dir() -> None:
     value = read_document()
     path = value.get("run_dir")
@@ -527,6 +559,8 @@ def main() -> None:
         run_dir()
     elif command == "verify-events":
         verify_events(sys.argv[2], int(sys.argv[3]))
+    elif command == "verify-fake-dns":
+        verify_fake_dns(sys.argv[2], int(sys.argv[3]))
     elif command == "verify-log":
         verify_log(sys.argv[2] if len(sys.argv) > 2 else "closed")
     elif command == "verify-close":

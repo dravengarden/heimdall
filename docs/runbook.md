@@ -33,12 +33,14 @@ This boots the content-hashed Ubuntu 24.04 cloud image with QEMU user-mode
 networking, installs the same native archive used for release, and grants an
 ordinary user only the exact setup-worker sudo rule. It proves cgroup v2 and
 systemd-user integration, copied-binary authorization denial, direct TCP/UDP,
-descendant lifetime, all four forwarded owner signals, concurrent isolation,
-parent-death cleanup and recovery, runtime and relay TLS, JSONL verification,
-exit propagation, and return to the pre-run process, listener, command-cgroup,
-and BPF-pin state. The harness also rejects any change to host links, routes,
-or rules. It is focused distribution coverage, not a substitute for the broader
-NixOS protocol/stress matrix or native aarch64 execution.
+fake DNS through SOCKS5 while AppArmor and its default user-namespace
+restriction remain enabled, descendant lifetime, all four forwarded owner
+signals, concurrent isolation, parent-death cleanup and recovery, runtime and
+relay TLS, JSONL verification, exit propagation, and return to the pre-run
+process, listener, command-cgroup, and BPF-pin state. The harness also rejects
+any change to host links, routes, or rules. It is focused distribution
+coverage, not a substitute for the broader NixOS protocol/stress matrix or
+native aarch64 execution.
 
 On an aarch64 Linux execution host, run the architecture-equivalent current
 and LTS guests with:
@@ -98,10 +100,11 @@ unprivileged helper removes the workload cgroup and BPF links.
 
 The Ubuntu guest proves the release artifact and narrow authorization work on
 a non-NixOS system without installing a service. It independently exercises
-descendants, signals, concurrent runs, owner-death recovery, and runtime and
-relay TLS. Its focused direct path intentionally does not duplicate the NixOS
-suite's SOCKS5, fake DNS, QUIC, broad runtime-client, capture/rotation,
-retention, and stress coverage.
+one fake-DNS SOCKS5 TCP route under Ubuntu's default AppArmor restriction,
+direct TCP/UDP, descendants, signals, concurrent runs, owner-death recovery,
+and runtime and relay TLS. It intentionally does not duplicate the NixOS
+suite's SOCKS5 UDP, QUIC, broad runtime-client, capture/rotation, retention,
+and stress coverage.
 
 ## Install the daemonless path
 
@@ -282,11 +285,11 @@ proxied TCP, proxied UDP, full transport capture, and relay TLS plaintext
 capture, with transferred bytes, elapsed nanoseconds, bytes per second, and
 the active capture/decrypt boundary. Event integrity requires zero incomplete
 runs, sequence gaps, out-of-order records, active or failed flows, and error
-events. The NixOS guests use GNU time resource accounting and retain fake-DNS
-coverage. Ubuntu uses its default system DNS with SOCKS5 routing, procfs RSS
-sampling, and an 8 GiB guest so the 50-run batch does not turn into a memory
-pressure test; the gate does not weaken Ubuntu's default user-namespace
-restrictions. Treat every result as specific to the reported distribution,
+events. The NixOS guests use GNU time resource accounting. Ubuntu uses fake DNS
+with SOCKS5 routing, procfs RSS sampling, and an 8 GiB guest so the 50-run batch
+does not turn into a memory pressure test; the gate does not weaken Ubuntu's
+default AppArmor user-namespace restriction. Treat every result as specific to
+the reported distribution,
 architecture, kernel, CPU count, memory, and RSS source. These commands are
 explicit performance checks, not part of `release-check`, and their output is
 an environment baseline rather than a universal throughput claim.
@@ -354,8 +357,13 @@ heimdall run -- curl https://example.com
   grant broader sudo access.
 - cgroup permission error: ensure the systemd user manager is running; Heimdall
   re-enters a delegated `systemd-run --user --scope` and preserves `--config`.
-- fake-DNS lookup failure: verify unprivileged user namespaces are enabled so
-  the child can receive its private resolver mount.
+- fake-DNS lookup failure: a host with a plain `hosts: files dns` NSS path uses
+  direct cgroup port-53 interception and needs no user namespace. If the error
+  reports that NSS bypasses port 53, inspect `/etc/nsswitch.conf` and nscd;
+  either select `dns.mode = "system"` or grant only the exact installed
+  Heimdall path `userns,` through a scoped AppArmor profile. Do not disable
+  Ubuntu's system-wide restriction. See the
+  [Ubuntu 24.04 security notes](https://documentation.ubuntu.com/release-notes/24.04/#unprivileged-user-namespace-restrictions).
 - relay CA key permission error: generate the key as the invoking user and keep
   its containing directory 0700 and key 0600.
 - another transparent proxy catches relay traffic: exempt the exact loopback

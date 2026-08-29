@@ -261,14 +261,12 @@ async fn run_registered(
         return Err(error);
     }
 
-    // For dns=fake we need to short-circuit nss-resolve / systemd-resolved
-    // so the child's getaddrinfo actually issues UDP to the resolver
-    // (where eBPF can hijack it). Drop two tmp files and bind-mount them
-    // over /etc/nsswitch.conf + /etc/resolv.conf inside the child's
-    // private mount namespace. Cleaned up by the parent after waitpid.
+    // When the host NSS path already reaches a conventional port-53 resolver,
+    // the cgroup hooks can redirect it directly. Only create a private resolver
+    // mount for NSS modules or caches that can bypass those hooks.
     let dns_shim = if decision.dns == "fake" {
         match prepare_dns_shim(cgroup_id) {
-            Ok(shim) => Some(shim),
+            Ok(shim) => shim,
             Err(error) => {
                 session.shutdown().await;
                 cleanup_before_exec(&cgroup_path, args.keep_cgroup);
@@ -323,16 +321,26 @@ struct DnsShim {
     resolv: PathBuf,
 }
 
-/// Generate per-invocation `nsswitch.conf` and `resolv.conf` in /tmp.
-/// The child unshares a mount namespace and bind-mounts these over
-/// `/etc/nsswitch.conf` and `/etc/resolv.conf` so:
+/// Return no shim when the host NSS configuration already sends hostname
+/// lookups through ordinary DNS. Every UDP/TCP destination on port 53 is
+/// redirected by the run's cgroup hooks, including systemd-resolved's
+/// `127.0.0.53` stub. This avoids an unnecessary user namespace on Ubuntu
+/// 24.04, where AppArmor deliberately restricts capabilities gained inside
+/// unprivileged user namespaces.
+///
+/// Otherwise generate per-invocation `nsswitch.conf` and `resolv.conf` files.
+/// The child bind-mounts them in a private namespace so:
 ///
 /// - NSS doesn't dispatch hostname lookups to nss-resolve / D-Bus
 ///   (which would talk to systemd-resolved, returning NXDOMAIN for
 ///   hosts only heimdall's fake-IP DNS knows about)
 /// - libc's nss-dns falls back to UDP `127.0.0.1:53` queries that
 ///   the eBPF DNS-hijack rewrites to heimdall's fake-IP DNS port
-fn prepare_dns_shim(cgroup_id: u64) -> Result<DnsShim> {
+fn prepare_dns_shim(cgroup_id: u64) -> Result<Option<DnsShim>> {
+    if host_resolver_uses_interceptable_dns() {
+        return Ok(None);
+    }
+
     let nsswitch = PathBuf::from(format!("/tmp/heimdall-cli-nsswitch-{cgroup_id}.conf"));
     let resolv = PathBuf::from(format!("/tmp/heimdall-cli-resolv-{cgroup_id}.conf"));
 
@@ -365,7 +373,56 @@ fn prepare_dns_shim(cgroup_id: u64) -> Result<DnsShim> {
     )
     .with_context(|| format!("write {}", resolv.display()))?;
 
-    Ok(DnsShim { nsswitch, resolv })
+    Ok(Some(DnsShim { nsswitch, resolv }))
+}
+
+fn host_resolver_uses_interceptable_dns() -> bool {
+    let Ok(nsswitch) = fs::read_to_string("/etc/nsswitch.conf") else {
+        return false;
+    };
+    // Why: nscd serves cached answers over a Unix socket outside the command
+    // cgroup's DNS hooks. A stale socket is cheap to handle conservatively via
+    // the existing private mount path.
+    let nscd_present = ["/run/nscd/socket", "/var/run/nscd/socket"]
+        .iter()
+        .any(|path| Path::new(path).exists());
+    !nscd_present && nsswitch_hosts_use_interceptable_dns(&nsswitch)
+}
+
+fn nsswitch_hosts_use_interceptable_dns(contents: &str) -> bool {
+    let mut hosts_line = None;
+    for line in contents.lines() {
+        let line = line.split_once('#').map_or(line, |(value, _)| value).trim();
+        let Some((database, sources)) = line.split_once(':') else {
+            continue;
+        };
+        if database.trim() != "hosts" {
+            continue;
+        }
+        if hosts_line.is_some() {
+            return false;
+        }
+        hosts_line = Some(sources.trim());
+    }
+
+    let Some(sources) = hosts_line else {
+        return false;
+    };
+    // Why: bracketed status actions can stop before `dns`, and arbitrary NSS
+    // modules may use D-Bus, multicast, or another socket. Only `files` and
+    // `dns` provide a deterministic path to the cgroup port-53 hooks.
+    if sources.contains(['[', ']']) {
+        return false;
+    }
+    let mut saw_dns = false;
+    for source in sources.split_whitespace() {
+        match source {
+            "files" => {}
+            "dns" => saw_dns = true,
+            _ => return false,
+        }
+    }
+    saw_dns
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -566,7 +623,9 @@ fn fork_into_cgroup_and_exec(
             if let Some(shim) = dns_shim
                 && let Err(e) = apply_dns_shim(shim)
             {
-                eprintln!("heimdall run: dns shim failed: {e:#}");
+                eprintln!(
+                    "heimdall run: dns shim failed: {e:#}; the host NSS path bypasses port-53 interception, so fake DNS needs a private resolver mount; allow user namespaces for this installed Heimdall path with a scoped AppArmor profile, or select dns.mode = \"system\""
+                );
                 std::process::exit(127);
             }
 
@@ -748,7 +807,9 @@ fn wait_for_child(child: Pid) -> i32 {
 mod tests {
     use std::{ffi::OsString, path::Path};
 
-    use super::{RunArgs, cgroup_is_populated, reentry_command_args};
+    use super::{
+        RunArgs, cgroup_is_populated, nsswitch_hosts_use_interceptable_dns, reentry_command_args,
+    };
 
     #[test]
     fn parses_cgroup_population_without_field_order_assumptions() {
@@ -760,6 +821,29 @@ mod tests {
     fn rejects_missing_or_invalid_population_state() {
         assert!(cgroup_is_populated("frozen 0\n").is_err());
         assert!(cgroup_is_populated("populated maybe\n").is_err());
+    }
+
+    #[test]
+    fn accepts_a_direct_files_and_dns_nss_path() {
+        let ubuntu = "passwd: files systemd\ngroup: files systemd\nhosts: files dns\n";
+        assert!(nsswitch_hosts_use_interceptable_dns(ubuntu));
+        assert!(nsswitch_hosts_use_interceptable_dns(
+            "hosts: dns files # local overrides remain supported\n"
+        ));
+    }
+
+    #[test]
+    fn rejects_nss_paths_that_can_bypass_or_stop_before_dns() {
+        for contents in [
+            "hosts: files resolve [!UNAVAIL=return] dns\n",
+            "hosts: files mdns4_minimal dns\n",
+            "hosts: files [NOTFOUND=return] dns\n",
+            "hosts: files\n",
+            "hosts: files dns\nhosts: dns\n",
+            "passwd: files\n",
+        ] {
+            assert!(!nsswitch_hosts_use_interceptable_dns(contents));
+        }
     }
 
     #[test]

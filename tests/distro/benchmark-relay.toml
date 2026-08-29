@@ -11,7 +11,7 @@ network = ["tcp", "udp"]
 connect_timeout = "2s"
 
 [proxy.policies.proxy.dns]
-mode = "system"
+mode = "fake"
 
 [proxy.policies.proxy.final]
 tcp = { type = "route", outbound = "default" }
@@ -25,7 +25,7 @@ tcp = { type = "direct" }
 udp = { type = "direct" }
 
 [proxy.policies.udp.dns]
-mode = "system"
+mode = "fake"
 
 [proxy.policies.udp.final]
 tcp = { type = "reject", method = "refused" }

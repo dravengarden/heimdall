@@ -61,10 +61,11 @@ acceptance path are documented and tested.
   behavior, and both TLS paths.
 - A pinned Ubuntu 24.04 x86_64 KVM gate that installs the native release
   archive, grants only the setup-worker sudo rule, rejects copied-binary
-  authorization, and proves direct TCP/UDP, descendant lifetime, all four owner
-  signals, concurrent isolation, parent-death cleanup and recovery, runtime and
-  relay TLS evidence, JSONL integrity, daemonless cleanup, and host-network
-  isolation.
+  authorization, and proves fake DNS through SOCKS5 without relaxing AppArmor's
+  user-namespace restriction, direct TCP/UDP, descendant lifetime, all four
+  owner signals, concurrent isolation, parent-death cleanup and recovery,
+  runtime and relay TLS evidence, JSONL integrity, daemonless cleanup, and
+  host-network isolation.
 - Machine-readable current/LTS NixOS and pinned Ubuntu 24.04 real-eBPF
   benchmarks covering daemonless latency, RSS, 1/10/50 concurrent starts,
   sustained TCP/UDP and capture throughput, and event integrity without
@@ -126,10 +127,13 @@ integrity, and distinguish opaque transport from actual TLS plaintext. See
 
 ### 3. Proxy compatibility and diagnostics
 
-- Make fake DNS compatible with Ubuntu 24.04's default unprivileged
-  user-namespace restrictions without requiring a host-wide security
-  relaxation. The available Ubuntu performance gate deliberately uses system
-  DNS while current/LTS NixOS retains fake-DNS acceptance.
+- Keep the available namespace-free fake-DNS path for `files dns` NSS hosts
+  configurations covered on pinned Ubuntu 24.04. The cgroup hook redirects the
+  host resolver's port-53 traffic directly while AppArmor's default
+  user-namespace restriction remains enabled.
+- Expand namespace-free compatibility across NSS stacks that currently need
+  the private resolver-mount fallback, without silently accepting D-Bus,
+  multicast, or nscd paths that bypass cgroup DNS interception.
 - Expand the available current/LTS NixOS and pinned Ubuntu 24.04 coverage
   across more distributions, libc behaviors, socket API variants, and
   process-tree edge cases.

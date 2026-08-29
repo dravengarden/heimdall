@@ -194,13 +194,18 @@ JSON result as deletion evidence, and verify the retained runs. A false
 3. Preview the same policy and destination with `config explain`.
 4. If foreground setup fails, verify the exact sudoers binary path and
    `heimdall __setup-worker` authorization.
-5. For runtime TLS setup failures, confirm a representative OpenSSL image was
+5. If fake DNS reports an NSS bypass, inspect the `hosts` line in
+   `/etc/nsswitch.conf` and `/run/nscd/socket`. A `files dns` path needs no user
+   namespace. Do not disable a system-wide user-namespace restriction; choose
+   system DNS or grant `userns,` only to the exact installed Heimdall path with
+   a scoped AppArmor profile.
+6. For runtime TLS setup failures, confirm a representative OpenSSL image was
    mapped before invocation and preserve the pre-exec error.
-6. For relay TLS, distinguish `tls_upstream_certificate_invalid` from
+7. For relay TLS, distinguish `tls_upstream_certificate_invalid` from
    `tls_downstream_certificate_rejected` and
    `tls_downstream_closed_without_close_notify`; preserve child stderr for an
    unclean close and never disable upstream verification.
-7. Reproduce with the smallest command that uses the same protocol and policy.
+8. Reproduce with the smallest command that uses the same protocol and policy.
 
 Do not equate config validity with connectivity. A real acceptance check must
 exercise `heimdall run`.

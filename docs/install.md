@@ -19,8 +19,9 @@ privilege, and TLS-library compatibility requirements still apply.
 The x86_64 package is covered by native install, the current/Linux 6.6 LTS
 NixOS real-eBPF matrix, and a pinned Ubuntu 24.04 guest that installs the
 release archive and proves exact authorization, direct TCP/UDP, descendant and
-signal lifecycle, concurrent isolation, parent-death recovery, runtime and
-relay TLS, JSONL integrity, and daemonless cleanup. The aarch64 package is
+signal lifecycle, fake DNS without relaxing Ubuntu's AppArmor user-namespace
+restriction, concurrent isolation, parent-death recovery, runtime and relay
+TLS, JSONL integrity, and daemonless cleanup. The aarch64 package is
 checked for static linkage and architecture and executes CLI acceptance under
 emulation. The repository defines the same current/LTS data-path gate for an
 aarch64 Linux execution host, but that native result is not yet part of the
@@ -155,6 +156,13 @@ sudo visudo -cf /etc/sudoers.d/heimdall
 This authorization permits one hidden setup mode, not arbitrary Heimdall
 arguments and not a shell. Do not add file capabilities or setuid to the
 binary.
+
+Fake DNS needs no additional authorization when the host NSS `hosts` line uses
+only `files` and `dns`; cgroup eBPF redirects the resolver's port-53 traffic
+directly. Hosts with nss-resolve, mDNS, nscd, or another bypass path use a
+private resolver mount. If AppArmor rejects that fallback, authorize `userns,`
+only for the exact installed Heimdall path or choose system DNS. Never disable
+the system-wide Ubuntu restriction for Heimdall.
 
 ## Upgrade and rollback
 

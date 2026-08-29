@@ -60,6 +60,14 @@ for runbook in docs/runbook.md site/docs/runbook.html; do
     printf '%s does not expose Ubuntu TLS-mode acceptance\n' "$runbook" >&2
     exit 1
   }
+  grep -Fq 'fake DNS' "$runbook" || {
+    printf '%s does not expose Ubuntu fake-DNS acceptance\n' "$runbook" >&2
+    exit 1
+  }
+  grep -Fq 'user-namespace restriction' "$runbook" || {
+    printf '%s does not preserve the Ubuntu security boundary\n' "$runbook" >&2
+    exit 1
+  }
   grep -Fq 'just benchmark-vm-ubuntu' "$runbook" || {
     printf '%s does not expose the Ubuntu performance baseline\n' "$runbook" >&2
     exit 1
