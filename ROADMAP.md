@@ -52,8 +52,11 @@ acceptance path are documented and tested.
   signal evidence, plus deterministic non-interactive setup authorization.
 - Correlated fake-DNS query/answer evidence, ordered policy-decision evidence,
   and explicit OpenSSL runtime-observation metadata.
-- Relay TLS termination and startup-discovered OpenSSL runtime TLS probes in
-  the foreground path.
+- Relay TLS termination and bounded setup-discovered OpenSSL runtime TLS probes
+  in the foreground path.
+- Runtime TLS pre-attachment for OpenSSL images found in active mappings,
+  standard library directories, and `/etc/ld.so.conf`; a loader-known image
+  may map after child exec without a privileged runtime broker.
 - Stable relay TLS failure evidence distinguishes invalid upstream
   certificates, explicit downstream certificate alerts, and downstream closes
   that reveal no certificate-specific reason.
@@ -106,8 +109,9 @@ modes, release installation, user-manager re-entry without a required session
 D-Bus service, exact authorization, direct TCP/UDP, logs, and normal cleanup
 outside NixOS.
 
-- Evaluate run-scoped dynamic attachment for `libssl` images loaded only after
-  child exec without introducing a persistent broker.
+- Keep runtime image discovery bounded and pre-exec. Images outside active
+  mappings and system loader paths remain unsupported unless they can be
+  covered without retaining setup privilege or injecting a tracer.
 - Extend the available NixOS, Ubuntu, and Debian lifecycle matrix across additional
   distributions and process-tree edge cases.
 - Keep any persistent acceleration mode explicit and opt-in; never start it

@@ -368,7 +368,7 @@ impl ForegroundSession {
             Some(report) => {
                 anyhow::ensure!(
                     report.attached_images > 0,
-                    "runtime TLS found no attachable loaded OpenSSL images; start a representative OpenSSL process before `heimdall run`, or use decrypt.mode = relay"
+                    "runtime TLS found no attachable OpenSSL images in active mappings or system loader directories; install a supported OpenSSL shared library in a standard loader path, or use decrypt.mode = relay"
                 );
                 anyhow::ensure!(
                     installed.buffers.len() == report.perf_cpus.len(),
@@ -1319,7 +1319,7 @@ fn setup_worker_run(socket: &mut std::os::unix::net::UnixStream) -> Result<()> {
                 .context("prepare daemonless runtime TLS probes")?;
             anyhow::ensure!(
                 runtime.report.attached_images > 0,
-                "runtime TLS found no attachable loaded OpenSSL images; start a representative OpenSSL process before `heimdall run`, or use decrypt.mode = relay"
+                "runtime TLS found no attachable OpenSSL images in active mappings or system loader directories; install a supported OpenSSL shared library in a standard loader path, or use decrypt.mode = relay"
             );
             Ok::<_, anyhow::Error>(runtime)
         })

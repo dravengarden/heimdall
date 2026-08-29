@@ -135,6 +135,9 @@ pub mod agent {
         runtime_apis: &'static [&'static str],
         runtime_evidence: &'static str,
         runtime_discovery: &'static str,
+        runtime_loader_discovery: &'static str,
+        runtime_loader_images_can_map_after_exec: bool,
+        runtime_privileged_dynamic_attachment: bool,
         runtime_max_bytes_per_event: usize,
         runtime_requires_attached_image: bool,
         runtime_requires_ca_trust: bool,
@@ -735,6 +738,9 @@ pub mod agent {
                 runtime_apis: &["SSL_read", "SSL_read_ex", "SSL_write", "SSL_write_ex"],
                 runtime_evidence: "tls.runtime+flow.data",
                 runtime_discovery: "loaded_images_at_run_start",
+                runtime_loader_discovery: "standard_directories_and_ld_so_conf",
+                runtime_loader_images_can_map_after_exec: true,
+                runtime_privileged_dynamic_attachment: false,
                 runtime_max_bytes_per_event: crate::heimdall_common::TAP_DATA_LEN,
                 runtime_requires_attached_image: true,
                 runtime_requires_ca_trust: false,
@@ -859,6 +865,16 @@ pub mod agent {
                 capabilities().decrypt.runtime_discovery,
                 "loaded_images_at_run_start"
             );
+            assert_eq!(
+                capabilities().decrypt.runtime_loader_discovery,
+                "standard_directories_and_ld_so_conf"
+            );
+            assert!(
+                capabilities()
+                    .decrypt
+                    .runtime_loader_images_can_map_after_exec
+            );
+            assert!(!capabilities().decrypt.runtime_privileged_dynamic_attachment);
             assert_eq!(
                 capabilities().decrypt.runtime_apis,
                 ["SSL_read", "SSL_read_ex", "SSL_write", "SSL_write_ex"]

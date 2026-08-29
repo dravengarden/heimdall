@@ -172,14 +172,18 @@ Only when the client uses a reported OpenSSL API:
 heimdall agent | jq -e '
   .ready and (.execution.daemon_required | not) and
   .execution.owner == "heimdall-run" and
-  .capabilities.decrypt.runtime_discovery == "loaded_images_at_run_start"'
+  .capabilities.decrypt.runtime_discovery == "loaded_images_at_run_start" and
+  .capabilities.decrypt.runtime_loader_discovery ==
+    "standard_directories_and_ld_so_conf" and
+  .capabilities.decrypt.runtime_loader_images_can_map_after_exec and
+  (.capabilities.decrypt.runtime_privileged_dynamic_attachment | not)'
 heimdall run -- curl https://example.com
 ```
 
-Runtime mode discovers loaded OpenSSL images at run startup. Keep a
-representative image mapped before invoking the run. Do not infer coverage for
-Go TLS, rustls, BoringSSL, JVM TLS, later-loaded images, or static/stripped
-implementations.
+Runtime mode discovers mapped and system-loader OpenSSL images during setup.
+It may pre-attach an image that the child maps after exec. Do not infer
+coverage for Go TLS, rustls, BoringSSL, JVM TLS, private images outside the
+reported loader boundary, or static/stripped implementations.
 
 ## Rotate and retain
 
@@ -210,8 +214,9 @@ JSON result as deletion evidence, and verify the retained runs. A false
    `fake_dns_user_namespace_disabled` requires system DNS or a compatible host,
    while `apparmor_policy_check` may use an exact-path `userns,` profile only
    when authorized.
-6. For runtime TLS setup failures, confirm a representative OpenSSL image was
-   mapped before invocation and preserve the pre-exec error.
+6. For runtime TLS setup failures, confirm a supported OpenSSL image exists in
+   an active mapping, standard library directory, or `/etc/ld.so.conf` path,
+   and preserve the pre-exec error. Do not add a privileged runtime monitor.
 7. For relay TLS, distinguish `tls_upstream_certificate_invalid` from
    `tls_downstream_certificate_rejected` and
    `tls_downstream_closed_without_close_notify`; preserve child stderr for an

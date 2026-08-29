@@ -252,7 +252,7 @@ set -euo pipefail
 archive_name=$1
 distro_id=$2
 cd /tmp
-for command in openssl /usr/sbin/update-ca-certificates; do
+for command in ldd openssl /usr/sbin/update-ca-certificates; do
   command -v "$command" >/dev/null || {
     echo "$distro_id image is missing required TLS command: $command" >&2
     exit 1
@@ -309,6 +309,24 @@ sudo install -o tester -g tester -m 0644 \
   /tmp/heimdall-tls/server.pem /opt/heimdall-acceptance/tls/server.pem
 sudo install -o tester -g tester -m 0600 \
   /tmp/heimdall-tls/server-key.pem /opt/heimdall-acceptance/tls/server-key.pem
+
+# Why: the server already maps the distribution's original libssl. This
+# separate inode is discoverable through the loader configuration but remains
+# unmapped until the wrapped Python process imports _ssl after exec.
+ssl_module=$(python3 -c 'import _ssl; print(_ssl.__file__)')
+libssl=$(ldd "$ssl_module" | awk '$1 ~ /^libssl\.so/ {print $3; exit}')
+libcrypto=$(ldd "$ssl_module" | awk '$1 ~ /^libcrypto\.so/ {print $3; exit}')
+[[ -f $libssl && -f $libcrypto ]] || {
+  echo "$distro_id image did not expose Python's OpenSSL libraries" >&2
+  exit 1
+}
+late_tls_dir=/opt/heimdall-acceptance/late-openssl
+sudo install -d -m 0755 "$late_tls_dir" /etc/ld.so.conf.d
+sudo install -m 0644 "$libssl" "$late_tls_dir/$(basename "$libssl")"
+sudo install -m 0644 "$libcrypto" "$late_tls_dir/$(basename "$libcrypto")"
+printf '%s\n' "$late_tls_dir" \
+  | sudo tee /etc/ld.so.conf.d/heimdall-acceptance.conf >/dev/null
+
 sudo install -m 0644 /tmp/heimdall-tls/ca.pem \
   /usr/local/share/ca-certificates/heimdall-acceptance-upstream.crt
 sudo /usr/sbin/update-ca-certificates >/dev/null

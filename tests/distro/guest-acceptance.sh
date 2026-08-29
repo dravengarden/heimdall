@@ -13,6 +13,7 @@ benchmark_relay_capture_config=/opt/heimdall-acceptance/benchmark-relay-capture.
 udp_throughput=/opt/heimdall-acceptance/udp-throughput.py
 socks_fixture=/opt/heimdall-acceptance/socks5-fixture.py
 tls_dir=/opt/heimdall-acceptance/tls
+late_tls_dir=/opt/heimdall-acceptance/late-openssl
 uid=$(id -u)
 : "${HEIMDALL_EXPECTED_VERSION:?expected release version is required}"
 : "${HEIMDALL_DISTRO_ID:?expected distribution identifier is required}"
@@ -341,14 +342,24 @@ heimdall logs recover --run "$parent_run_id" --apply --json \
 heimdall logs verify --run "$parent_run_id" --json \
   | python3 "$fixture" verify-log failed
 
-# Runtime and relay TLS remain foreground run modes on the distribution's
-# conventional OpenSSL layout. Selecting either mode is accepted only after
-# its emitted evidence proves the actual plaintext boundary.
+# Runtime and relay TLS remain foreground run modes. Runtime discovery must
+# pre-attach the loader-configured copy before Python maps that distinct inode
+# after exec; no representative process may map it during setup.
 heimdall --config "$runtime_config" config validate --json \
   | python3 "$fixture" verify-config
 heimdall --config "$runtime_config" agent \
   | python3 "$fixture" verify-agent runtime
-[[ $(heimdall --config "$runtime_config" run --policy direct -- \
+ssl_module=$(python3 -c 'import _ssl; print(_ssl.__file__)')
+late_libssl=$(find "$late_tls_dir" -maxdepth 1 -type f -name 'libssl.so*' -print -quit)
+[[ -n $late_libssl ]] || fail "late-load OpenSSL fixture is missing"
+LD_LIBRARY_PATH="$late_tls_dir" ldd "$ssl_module" \
+  | grep -F "$late_libssl" >/dev/null \
+  || fail "Python did not select the late-load OpenSSL fixture"
+if grep -F -l "$late_libssl" /proc/[0-9]*/maps >/dev/null 2>&1; then
+  fail "late-load OpenSSL fixture was mapped before Heimdall setup"
+fi
+[[ $(LD_LIBRARY_PATH="$late_tls_dir" \
+  heimdall --config "$runtime_config" run --policy direct -- \
   python3 "$fixture" tls "$tls_dir/upstream-ca.pem") == heimdall-tls-ok ]]
 runtime_run_id=$(heimdall logs list --json | python3 "$fixture" latest-run)
 runtime_run_dir=$(heimdall logs path --run "$runtime_run_id" --json \

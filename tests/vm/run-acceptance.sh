@@ -118,6 +118,9 @@ as_tester heimdall agent \
     and .capabilities.decrypt.runtime_apis == ["SSL_read", "SSL_read_ex", "SSL_write", "SSL_write_ex"]
     and .capabilities.decrypt.runtime_evidence == "tls.runtime+flow.data"
     and .capabilities.decrypt.runtime_discovery == "loaded_images_at_run_start"
+    and .capabilities.decrypt.runtime_loader_discovery == "standard_directories_and_ld_so_conf"
+    and .capabilities.decrypt.runtime_loader_images_can_map_after_exec
+    and (.capabilities.decrypt.runtime_privileged_dynamic_attachment | not)
     and .capabilities.decrypt.runtime_max_bytes_per_event == 256
     and .capabilities.decrypt.runtime_requires_attached_image
     and .capabilities.decrypt.relay_library_independent

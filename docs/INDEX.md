@@ -40,7 +40,7 @@ stable contracts, planning, design material, and operational guidance.
 
 ### Design documents
 
-- [`design/daemonless-runtime.md`](design/daemonless-runtime.md) — Implemented foreground replacement for all decrypt modes, including startup-discovered OpenSSL probes
+- [`design/daemonless-runtime.md`](design/daemonless-runtime.md) — Implemented foreground replacement for all decrypt modes, including bounded pre-exec discovery of active and system-loader OpenSSL images
 - [`design/agent-event-log.md`](design/agent-event-log.md) — Agent-first event storage and offline event/run/summary contracts with lifecycle, DNS/policy/TLS observations, provenance-linked HTTP/1 headers, payload allowlists/redaction, content-addressed blobs, and orphan recovery
 - [`../skills/heimdall/references/commands.md`](../skills/heimdall/references/commands.md) — Agent operating and diagnosis workflow, including daemonless setup, scoped fake-DNS resolver fallback, TLS boundaries, and log lifecycle
 - [`../skills/heimdall/references/events.md`](../skills/heimdall/references/events.md) — Agent-facing schema map, bounded provenance joins, and non-disclosing blob verification recipes

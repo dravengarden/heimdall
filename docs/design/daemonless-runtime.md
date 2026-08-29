@@ -1,7 +1,8 @@
 # Daemonless runtime design
 
 Status: implemented for all Linux decrypt modes. Runtime OpenSSL coverage is
-startup-discovered: a representative `libssl` image must already be mapped.
+setup-discovered from active mappings and bounded system loader paths; a
+loader-known image may map after exec without retaining setup privilege.
 
 ## Decision
 
@@ -90,15 +91,17 @@ installed binary:
 - it cannot open the capture directory, parse SOCKS credentials, terminate
   TLS, execute the child, or keep a listener alive.
 
-Runtime TLS discovers already mapped `libssl` images during privileged setup.
-The worker attaches those probes globally, but the per-run `CGROUP_POLICY` map
-causes the eBPF programs to emit only for the wrapped command cgroup. It
-opens the per-CPU perf rings and transfers those ring FDs and the uprobe links
-to the foreground owner. Aya's complete probe state must remain alive, so the
-now-unprivileged helper waits for the session socket to close and is reaped by
-the foreground owner. A library loaded only after child exec is outside the current coverage;
-dynamic run-scoped attachment remains a possible future extension, not a
-reason to keep a persistent broker.
+Runtime TLS discovers `libssl` images in active mappings, standard library
+directories, and `/etc/ld.so.conf` during privileged setup. The worker
+pre-attaches those inode-backed probes globally, but the per-run
+`CGROUP_POLICY` map causes the eBPF programs to emit only for the wrapped
+command cgroup. It opens the per-CPU perf rings and transfers those ring FDs
+and the uprobe links to the foreground owner. Aya's complete probe state must
+remain alive, so the now-unprivileged helper waits for the session socket to
+close and is reaped by the foreground owner. A loader-known library may map
+only after child exec and still use its pre-attached probes. A private image
+outside the discovered paths remains unsupported; Heimdall does not retain
+setup privilege or inject a tracer to discover it dynamically.
 
 The authorization mechanism may be `sudo` initially and Polkit later. Both are
 per-run authorization paths, not persistent Heimdall services. Installing a
@@ -184,9 +187,10 @@ fails before child execution instead of prompting or starting a daemon.
 TLS remains an explicit run mode, not a daemon feature.
 
 - `off`: proxy bytes without plaintext inspection.
-- `runtime`: observe supported OpenSSL APIs through startup-discovered probes
-  owned by the foreground session. It changes no trust, but does not observe
-  unsupported or later-loaded TLS libraries.
+- `runtime`: observe supported OpenSSL APIs through setup-discovered probes
+  owned by the foreground session. Loader-known images may map after exec. It
+  changes no trust, but does not observe private images outside the discovered
+  paths or unsupported TLS libraries.
 - `relay`: terminate TLS in the per-run relay using explicitly initialized and
   trusted CA material.
 

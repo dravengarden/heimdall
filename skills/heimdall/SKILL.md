@@ -98,12 +98,14 @@ in the explicitly wrapped client when authorized.
 Treat `tls_downstream_closed_without_close_notify` as ambiguous until the
 wrapped command's stderr and exit status identify a trust failure.
 
-Choose `runtime` only when the client uses a reported OpenSSL API. Ensure a
-representative `libssl` image is already mapped when the run starts; the
-  setup helper fails before exec if no image can be attached. It drops
-  privilege before the workload starts and exits with the run. It changes no
-  trust and can coexist with pinning/mTLS, but later-loaded or absent
-libraries and APIs have no plaintext guarantee.
+Choose `runtime` only when the client uses a reported OpenSSL API. Read
+`runtime_discovery`, `runtime_loader_discovery`,
+`runtime_loader_images_can_map_after_exec`, and
+`runtime_privileged_dynamic_attachment` together. The setup helper pre-attaches
+active and system-loader images, then drops privilege before the workload
+starts. A loader-known image may map after exec. It changes no trust and can
+coexist with pinning/mTLS, but private images outside those paths and
+unsupported libraries or APIs have no plaintext guarantee.
 
 ## Validate and repair configuration
 

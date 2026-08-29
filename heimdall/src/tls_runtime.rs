@@ -7,7 +7,7 @@ use std::{
         fd::{AsRawFd, OwnedFd, RawFd},
         unix::fs::MetadataExt,
     },
-    path::PathBuf,
+    path::{Path, PathBuf},
     ptr,
     sync::atomic::{self, Ordering},
 };
@@ -38,6 +38,18 @@ struct Event {
 }
 
 const MAX_SETUP_IMAGES: usize = 8;
+const MAX_DISCOVERED_IMAGES: usize = 64;
+const MAX_LOADER_CONFIGS: usize = 64;
+const MAX_LOADER_DIRECTORIES: usize = 64;
+const MAX_LOADER_CONFIG_BYTES: u64 = 64 * 1024;
+const DEFAULT_LIBRARY_DIRECTORIES: [&str; 6] = [
+    "/lib",
+    "/lib64",
+    "/usr/lib",
+    "/usr/lib64",
+    "/usr/local/lib",
+    "/usr/local/lib64",
+];
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct StartReport {
@@ -453,7 +465,12 @@ fn load_and_attach(bpf: &mut Ebpf, image_limit: usize) -> Result<(StartReport, V
     let images = scan_libssl();
     let mut attached_images = 0usize;
     let mut attached = Vec::new();
-    for image in images.iter().take(image_limit) {
+    let mut capped = false;
+    for image in &images {
+        if attached_images == image_limit {
+            capped = true;
+            break;
+        }
         match attach_image(bpf, image) {
             Ok(mut links) => {
                 attached_images += 1;
@@ -466,7 +483,7 @@ fn load_and_attach(bpf: &mut Ebpf, image_limit: usize) -> Result<(StartReport, V
             ),
         }
     }
-    if images.len() > image_limit {
+    if capped {
         warn!(
             discovered = images.len(),
             limit = image_limit,
@@ -566,37 +583,349 @@ fn detach_links(bpf: &mut Ebpf, links: Vec<AttachedLink>) {
 }
 
 fn scan_libssl() -> Vec<PathBuf> {
-    let mut identities = HashSet::new();
-    let mut images = Vec::new();
-    let Ok(processes) = fs::read_dir("/proc") else {
-        return images;
+    let mut images = ImageSet::default();
+    scan_mapped_libssl(Path::new("/proc"), &mut images);
+    // Why: an inode-backed uprobe may be attached before the image is mapped.
+    // Pre-attaching loader-known libraries covers ordinary post-exec dlopen
+    // without retaining setup privilege after the workload starts.
+    for directory in loader_directories(
+        Path::new("/etc/ld.so.conf"),
+        DEFAULT_LIBRARY_DIRECTORIES.iter().map(Path::new),
+    ) {
+        scan_library_directory(&directory, 1, &mut images);
+    }
+    images.paths
+}
+
+#[derive(Default)]
+struct ImageSet {
+    identities: HashSet<(u64, u64)>,
+    paths: Vec<PathBuf>,
+}
+
+impl ImageSet {
+    fn insert(&mut self, path: PathBuf) {
+        if self.paths.len() == MAX_DISCOVERED_IMAGES {
+            return;
+        }
+        let Ok(metadata) = fs::metadata(&path) else {
+            return;
+        };
+        if metadata.is_file() && self.identities.insert((metadata.dev(), metadata.ino())) {
+            self.paths.push(path);
+        }
+    }
+
+    const fn is_full(&self) -> bool {
+        self.paths.len() == MAX_DISCOVERED_IMAGES
+    }
+}
+
+fn scan_mapped_libssl(proc_root: &Path, images: &mut ImageSet) {
+    let Ok(processes) = fs::read_dir(proc_root) else {
+        return;
     };
-    for process in processes.flatten() {
-        let Some(pid) = process
+    let mut processes = processes.flatten().collect::<Vec<_>>();
+    processes.sort_by_key(std::fs::DirEntry::file_name);
+    for process in processes {
+        if images.is_full() {
+            return;
+        }
+        let Some(_pid) = process
             .file_name()
             .to_str()
             .and_then(|value| value.parse::<u32>().ok())
         else {
             continue;
         };
-        let Ok(maps) = fs::read_to_string(format!("/proc/{pid}/maps")) else {
+        let Ok(maps) = fs::read_to_string(process.path().join("maps")) else {
             continue;
         };
         for line in maps.lines() {
             let Some(path) = line.split_whitespace().nth(5) else {
                 continue;
             };
-            if !path.contains("libssl.so") {
+            let path = Path::new(path);
+            if !path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(is_libssl_name)
+            {
                 continue;
             }
-            let host_path = PathBuf::from(format!("/proc/{pid}/root{path}"));
-            let Ok(metadata) = fs::metadata(&host_path) else {
-                continue;
-            };
-            if identities.insert((metadata.dev(), metadata.ino())) {
-                images.push(host_path);
+            images.insert(
+                process
+                    .path()
+                    .join("root")
+                    .join(path.strip_prefix("/").unwrap_or(path)),
+            );
+            if images.is_full() {
+                return;
             }
         }
     }
-    images
+}
+
+fn scan_library_directory(directory: &Path, remaining_depth: usize, images: &mut ImageSet) {
+    if images.is_full() {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    let mut entries = entries.flatten().collect::<Vec<_>>();
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in entries {
+        if images.is_full() {
+            return;
+        }
+        let path = entry.path();
+        let name_matches = entry.file_name().to_str().is_some_and(is_libssl_name);
+        if name_matches {
+            images.insert(path);
+            continue;
+        }
+        if remaining_depth > 0 && entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            scan_library_directory(&path, remaining_depth - 1, images);
+        }
+    }
+}
+
+fn is_libssl_name(name: &str) -> bool {
+    name == "libssl.so"
+        || name.strip_prefix("libssl.so.").is_some_and(|suffix| {
+            !suffix.is_empty()
+                && suffix
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || byte == b'.')
+        })
+}
+
+fn loader_directories<'a>(
+    config: &Path,
+    defaults: impl IntoIterator<Item = &'a Path>,
+) -> Vec<PathBuf> {
+    let mut directories = Vec::new();
+    let mut seen_directories = HashSet::new();
+    for directory in defaults {
+        insert_loader_directory(
+            directory.to_path_buf(),
+            &mut directories,
+            &mut seen_directories,
+        );
+    }
+    let mut seen_configs = HashSet::new();
+    collect_loader_config(
+        config,
+        &mut directories,
+        &mut seen_directories,
+        &mut seen_configs,
+    );
+    directories
+}
+
+fn insert_loader_directory(
+    directory: PathBuf,
+    directories: &mut Vec<PathBuf>,
+    seen: &mut HashSet<PathBuf>,
+) {
+    if directories.len() < MAX_LOADER_DIRECTORIES && seen.insert(directory.clone()) {
+        directories.push(directory);
+    }
+}
+
+fn collect_loader_config(
+    config: &Path,
+    directories: &mut Vec<PathBuf>,
+    seen_directories: &mut HashSet<PathBuf>,
+    seen_configs: &mut HashSet<PathBuf>,
+) {
+    if seen_configs.len() == MAX_LOADER_CONFIGS {
+        return;
+    }
+    let Ok(identity) = fs::canonicalize(config) else {
+        return;
+    };
+    if !seen_configs.insert(identity) {
+        return;
+    }
+    let Ok(metadata) = fs::metadata(config) else {
+        return;
+    };
+    if metadata.len() > MAX_LOADER_CONFIG_BYTES {
+        return;
+    }
+    let Ok(contents) = fs::read_to_string(config) else {
+        return;
+    };
+    let base = config.parent().unwrap_or_else(|| Path::new("/"));
+    for line in contents.lines() {
+        let line = line.split_once('#').map_or(line, |(value, _)| value).trim();
+        if line.is_empty() {
+            continue;
+        }
+        let mut fields = line.split_whitespace();
+        let Some(first) = fields.next() else {
+            continue;
+        };
+        if first == "include" {
+            for pattern in fields {
+                let pattern = resolve_loader_path(base, Path::new(pattern));
+                for included in expand_loader_include(&pattern) {
+                    collect_loader_config(&included, directories, seen_directories, seen_configs);
+                }
+            }
+        } else if fields.next().is_none() {
+            insert_loader_directory(
+                resolve_loader_path(base, Path::new(first)),
+                directories,
+                seen_directories,
+            );
+        }
+    }
+}
+
+fn resolve_loader_path(base: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base.join(path)
+    }
+}
+
+fn expand_loader_include(pattern: &Path) -> Vec<PathBuf> {
+    let Some(file_pattern) = pattern.file_name().and_then(|name| name.to_str()) else {
+        return Vec::new();
+    };
+    if !file_pattern.contains('*') {
+        return vec![pattern.to_path_buf()];
+    }
+    let Some(parent) = pattern.parent() else {
+        return Vec::new();
+    };
+    let Ok(entries) = fs::read_dir(parent) else {
+        return Vec::new();
+    };
+    let mut matches = entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| wildcard_matches(file_pattern, name))
+        })
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    matches.sort();
+    matches
+}
+
+fn wildcard_matches(pattern: &str, value: &str) -> bool {
+    if !pattern.contains('*') {
+        return pattern == value;
+    }
+    let parts = pattern.split('*').collect::<Vec<_>>();
+    let mut cursor = 0;
+    for (index, part) in parts.iter().enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+        if index == 0 && !pattern.starts_with('*') {
+            let Some(rest) = value.get(cursor..).and_then(|rest| rest.strip_prefix(part)) else {
+                return false;
+            };
+            cursor = value.len() - rest.len();
+        } else if index + 1 == parts.len() && !pattern.ends_with('*') {
+            return value.get(cursor..).is_some_and(|rest| rest.ends_with(part));
+        } else {
+            let Some(position) = value.get(cursor..).and_then(|rest| rest.find(part)) else {
+                return false;
+            };
+            cursor += position + part.len();
+        }
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::symlink;
+
+    use super::*;
+
+    struct TestTree(PathBuf);
+
+    impl TestTree {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "heimdall-runtime-discovery-{}-{}",
+                std::process::id(),
+                uuid::Uuid::now_v7()
+            ));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TestTree {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn libssl_name_rejects_debug_and_prefix_matches() {
+        assert!(is_libssl_name("libssl.so"));
+        assert!(is_libssl_name("libssl.so.3"));
+        assert!(is_libssl_name("libssl.so.60.1.0"));
+        assert!(!is_libssl_name("libssl.so.debug"));
+        assert!(!is_libssl_name("libssl.so.3.backup"));
+        assert!(!is_libssl_name("not-libssl.so.3"));
+    }
+
+    #[test]
+    fn loader_config_expands_includes_without_cycles() {
+        let tree = TestTree::new();
+        let snippets = tree.0.join("conf.d");
+        let libraries = tree.0.join("libraries");
+        fs::create_dir_all(&snippets).unwrap();
+        fs::create_dir_all(&libraries).unwrap();
+        let config = tree.0.join("ld.so.conf");
+        fs::write(&config, "include conf.d/*.conf\n").unwrap();
+        fs::write(
+            snippets.join("runtime.conf"),
+            "../libraries\ninclude ../ld.so.conf\n",
+        )
+        .unwrap();
+
+        let directories = loader_directories(&config, std::iter::empty());
+        assert_eq!(directories, vec![snippets.join("../libraries")]);
+    }
+
+    #[test]
+    fn library_scan_is_bounded_and_deduplicates_symlinks() {
+        let tree = TestTree::new();
+        let root = tree.0.join("lib");
+        let arch = root.join("x86_64-linux-gnu");
+        let too_deep = arch.join("nested");
+        fs::create_dir_all(&too_deep).unwrap();
+        fs::write(arch.join("libssl.so.3"), b"fixture").unwrap();
+        symlink("libssl.so.3", arch.join("libssl.so")).unwrap();
+        fs::write(arch.join("libssl.so.debug"), b"debug").unwrap();
+        fs::write(too_deep.join("libssl.so.9"), b"deep").unwrap();
+
+        let mut images = ImageSet::default();
+        scan_library_directory(&root, 1, &mut images);
+
+        assert_eq!(images.paths.len(), 1);
+        assert!(images.paths[0].ends_with("libssl.so"));
+    }
+
+    #[test]
+    fn wildcard_matching_is_anchored() {
+        assert!(wildcard_matches("*.conf", "runtime.conf"));
+        assert!(wildcard_matches("lib*.so.*", "libssl.so.3"));
+        assert!(!wildcard_matches("*.conf", "runtime.conf.backup"));
+        assert!(!wildcard_matches("lib*.so", "prefix-libssl.so"));
+    }
 }

@@ -199,8 +199,24 @@ def verify_agent(mode: str) -> None:
         raise RuntimeError("agent document is missing execution or config")
     capture = config.get("capture")
     decrypt = config.get("decrypt")
-    if not isinstance(capture, dict) or not isinstance(decrypt, dict):
+    capabilities = value.get("capabilities")
+    decrypt_capabilities = (
+        capabilities.get("decrypt") if isinstance(capabilities, dict) else None
+    )
+    if not (
+        isinstance(capture, dict)
+        and isinstance(decrypt, dict)
+        and isinstance(decrypt_capabilities, dict)
+    ):
         raise RuntimeError("agent document is missing capture or decrypt")
+    runtime_capabilities_ready = mode != "runtime" or (
+        decrypt_capabilities.get("runtime_discovery")
+        == "loaded_images_at_run_start"
+        and decrypt_capabilities.get("runtime_loader_discovery")
+        == "standard_directories_and_ld_so_conf"
+        and decrypt_capabilities.get("runtime_loader_images_can_map_after_exec") is True
+        and decrypt_capabilities.get("runtime_privileged_dynamic_attachment") is False
+    )
     expected = (
         value.get("contract") == "heimdall.agent/v8"
         and value.get("ready") is True
@@ -210,6 +226,7 @@ def verify_agent(mode: str) -> None:
         and execution.get("web_ui_required") is False
         and capture.get("mode") == ("off" if mode == "off" else "on")
         and decrypt.get("mode") == mode
+        and runtime_capabilities_ready
     )
     if not expected:
         raise RuntimeError(f"unexpected agent contract: {value!r}")

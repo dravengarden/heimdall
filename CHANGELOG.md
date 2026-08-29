@@ -46,6 +46,10 @@ guide.
 - Generate relay CAs with explicit `keyCertSign`/`cRLSign` usage and intercepted
   leaves with an Authority Key Identifier; reject older incompatible CA
   material during agent and run preflight with a replacement-trust hint.
+- Pre-attach runtime TLS probes to OpenSSL images found in active mappings,
+  standard library directories, and `/etc/ld.so.conf`, allowing a
+  loader-configured image to be mapped after child exec without retaining
+  setup privilege or starting a broker.
 
 ### Known limitations
 

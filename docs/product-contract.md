@@ -53,8 +53,10 @@ Proxying, payload retention, and plaintext inspection are independent choices:
 
 - `decrypt.mode = "off"` proxies TLS as opaque transport.
 - `decrypt.mode = "runtime"` observes supported OpenSSL APIs already
-  discoverable at startup. It changes no trust and makes no claim for other TLS
-  libraries or images loaded later.
+  mapped or discoverable through standard system loader paths during setup. It
+  changes no trust. A loader-configured image may map after child exec because
+  its inode-backed probes are pre-attached; private images outside those paths
+  and other TLS libraries remain outside the claim.
 - `decrypt.mode = "relay"` terminates TLS in the per-run relay using explicit
   invoking-user-owned CA material. Certificate pinning and client-certificate
   mTLS are outside this boundary. `tls init-ca` and `heimdall agent` expose the

@@ -58,7 +58,7 @@ need compatibility hardening.
 | Strict configuration and agent contract | Available | TOML, YAML, JSON; generated offline schema/examples; `heimdall.agent/v8` with execution ownership, resolver strategy/userns preflight, shell-safe inspection argv, and repairable diagnostics |
 | Daemonless Linux execution | Available | All decrypt modes own per-run relay, DNS, maps, links, and logs; runtime TLS keeps one unprivileged session helper, never a service |
 | Agent event logs and capture | Available | Per-run lifecycle, low-cardinality health summaries, fake-DNS, policy, TCP/UDP and TLS evidence plus coalesced bounded blobs with pre-storage allowlists/redaction |
-| Runtime TLS decryption | Available daemonless with alpha limits | Startup-discovered OpenSSL images; no CA injection; unsupported TLS libraries remain opaque |
+| Runtime TLS decryption | Available daemonless with alpha limits | Active and system-loader OpenSSL images are pre-attached; loader-known images may map after exec; no CA injection or privileged runtime broker |
 | Relay TLS decryption | Available daemonless with alpha limits | Local CA plus per-host leaves; upstream certificate failures and downstream alerts/unclean closes remain distinct evidence |
 | Static Linux packaging | Available | Reproducible x86_64/aarch64 musl archives, checksums, local release gates, atomic install, one-level rollback, and BTF-preserving artifact-hygiene checks |
 | Runtime and kernel compatibility | In development | The full real-eBPF suite covers current and Linux 6.6 LTS NixOS guests on x86_64; pinned Ubuntu 24.04 and Debian 13 guests install the release archive and prove both namespace-free and private-mount fake-DNS strategies, exact authorization, direct TCP/UDP, lifecycle, both TLS modes, logs, and cleanup; native aarch64 still awaits an ARM Linux result |
@@ -202,8 +202,11 @@ The three decryption modes are intentionally separate:
 
 - `off` keeps TLS opaque.
 - `runtime` observes supported OpenSSL calls inside the client process without
-  changing certificate trust. Its setup helper attaches images already loaded
-  when the run starts, drops privilege, and exits with that run.
+  changing certificate trust. Its setup helper pre-attaches images found in
+  active mappings, standard library directories, and `/etc/ld.so.conf`, then
+  drops privilege before the workload starts. A loader-known image may map
+  after exec; arbitrary private images and unsupported TLS libraries remain
+  opaque.
 - `relay` terminates and re-issues TLS at the local relay; clients must trust
   the explicit Heimdall CA created by `heimdall tls init-ca`.
 

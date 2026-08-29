@@ -102,10 +102,13 @@ With decrypt off, payload is opaque transport. Runtime
 mode is CA-free but currently covers only the TLS libraries listed by
 `agent.capabilities.decrypt.runtime_libraries`. Relay mode is TLS-library-independent
 but requires client trust and does not support pinning or client-certificate
-mTLS. `runtime_discovery` reports when OpenSSL images are scanned: the current
-boundary is images already loaded when the run starts. Require
-`execution.daemon_required = false` and a positive attached-image result before
-the workload starts.
+mTLS. `runtime_discovery` retains the active-mapping source;
+`runtime_loader_discovery` adds standard directories and `/etc/ld.so.conf`.
+When `runtime_loader_images_can_map_after_exec` is true, those inode-backed
+probes may be attached before the child maps the library. Require
+`runtime_privileged_dynamic_attachment = false`,
+`execution.daemon_required = false`, and a positive attached-image result
+before the workload starts.
 `runtime_apis` and `runtime_max_bytes_per_event` define the exact
 probe boundary. Both decrypt modes require capture on.
 

@@ -199,8 +199,10 @@ following is an excerpt):
 ```
 
 With `decrypt.mode = "runtime"`, the same foreground backend uses the setup
-helper to discover and attach already loaded OpenSSL images. A
-missing representative image fails before the wrapped command starts.
+helper to discover and pre-attach OpenSSL images from active mappings,
+standard library directories, and `/etc/ld.so.conf`. A loader-known image may
+map after exec; if no supported image can be attached, setup fails before the
+wrapped command starts.
 
 Treat every `actions.*` command as an argv array; never concatenate or
 shell-evaluate it. Consumers may rely on existing v8 field semantics and must
@@ -368,8 +370,10 @@ library-independent but is incompatible with certificate pinning and
 client-certificate mTLS.
 
 Runtime mode changes no trust and currently observes only the reported OpenSSL
-APIs. Ensure a representative `libssl` image is already mapped before starting
-the run; setup fails before exec if no image can be attached:
+APIs. Setup pre-attaches active and system-loader `libssl` images before
+dropping privilege. A loader-known image may map after exec, but a private
+image outside those paths remains opaque. Setup fails before exec if no image
+can be attached:
 
 ```bash
 heimdall agent | jq '{execution, capabilities: .capabilities.decrypt}'
@@ -404,5 +408,7 @@ heimdall run -- curl https://example.com
   CA that clients still trust.
 - another transparent proxy catches relay traffic: exempt the exact loopback
   endpoint reported for the run from that proxy's interception.
-- runtime TLS has no attachable image: start a representative process using
-  the same OpenSSL image before `heimdall run`, or use relay mode.
+- runtime TLS has no attachable image: install the supported OpenSSL shared
+  library in a standard loader directory or declare its directory through the
+  host's loader configuration; otherwise use relay mode. Heimdall will not keep
+  a privileged runtime monitor merely to discover a private image.

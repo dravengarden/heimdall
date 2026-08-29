@@ -29,11 +29,12 @@ in the default path. It accepts one `heimdall.setup/v2` request over an
 inherited Unix socket, authenticates the caller and cgroup identity, creates
 fresh unpinned maps, attaches eleven eBPF links to that cgroup, transfers four
 map FDs and all link FDs with `SCM_RIGHTS`; runtime mode additionally returns
-one already-opened perf ring per online CPU and startup-discovered OpenSSL
-uprobe links. It then irrevocably drops to the authenticated caller and waits
-only for its inherited socket. A marked close is normal teardown; an unmarked
-EOF means the owner died, so the helper kills and removes that run's cgroup
-before exiting. Runtime TLS also relies on the helper retaining complete Aya
+one already-opened perf ring per online CPU and OpenSSL uprobe links discovered
+from active mappings and system loader paths. It then irrevocably drops to the
+authenticated caller and waits only for its inherited socket. A marked close
+is normal teardown; an unmarked EOF means the owner died, so the helper kills
+and removes that run's cgroup before exiting. Runtime TLS also relies on the
+helper retaining complete Aya
 probe state.
 It never parses proxy credentials, opens event or blob files, terminates TLS, executes the workload, or
 listens on a persistent socket.
@@ -135,13 +136,14 @@ TLS modes are explicit:
   fails. Client trust is required; pinning and client-certificate mTLS are
   incompatible boundaries.
 - `runtime` observes supported OpenSSL APIs without changing trust. The setup
-  worker discovers already mapped `libssl` images at run startup, attaches
+  worker discovers `libssl` images in active mappings, standard library
+  directories, and `/etc/ld.so.conf` during setup. It pre-attaches inode-backed
   probes globally while the per-run policy map filters events to the command
-  cgroup, opens the per-CPU perf rings, and transfers those ring and link FDs.
-  The unprivileged foreground owner only maps and reads the inherited
-  rings. Every observed call emits `tls.runtime` plus a same-flow
-  `flow.data` reference. Libraries loaded later or unsupported TLS
-  implementations remain opaque.
+  cgroup, then opens the per-CPU perf rings and transfers those ring and link
+  FDs. The unprivileged foreground owner only maps and reads the inherited
+  rings. Every observed call emits `tls.runtime` plus a same-flow `flow.data`
+  reference. A loader-known image may map after exec; private images outside
+  those paths and unsupported TLS implementations remain opaque.
 
 The event or capture record identifies the actual observation boundary. A
 selected TLS mode alone is never proof that plaintext was observed.
