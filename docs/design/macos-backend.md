@@ -162,11 +162,31 @@ require user approval.
 No setup instruction may ask a user to disable System Integrity Protection,
 weaken signature validation, or install a permanent host-wide proxy.
 
+## Current implementation status
+
+The initial compile boundary is implemented:
+
+- the crate selects separate Linux and Darwin roots while preserving the
+  available Linux implementation unchanged;
+- Linux-only aya, cgroup, relay, capture, and TLS dependencies are excluded
+  from the Darwin target;
+- Darwin shares strict `init`, config schema, validation, and policy
+  explanation behavior;
+- `heimdall agent` validates that shared config but reports both backends as
+  unavailable, leaves `execution` and `actions.execute_prefix` null, and exits
+  1;
+- `heimdall run` exits 1 without executing the supplied command; and
+- `just check-macos` type-checks the CLI for pinned
+  `aarch64-apple-darwin` as part of `just verify`.
+
+This is build scaffolding, not a macOS package or transport implementation. No
+explicit proxy, companion app, system extension, TCP/UDP forwarding, capture,
+or TLS path is available yet.
+
 ## Implementation sequence
 
-1. Split the Rust workspace into platform-neutral CLI/config/policy/log/relay
-   code and target-specific Linux eBPF code. A macOS build must initially report
-   both backends unavailable rather than compile Linux assumptions.
+1. Keep the completed target/dependency split and unavailable machine contract
+   covered while extracting the platform-neutral relay and log ownership.
 2. Implement and accept `macos-explicit` as an opt-in reduced mode.
 3. Add the signed containing app, system extension, minimal session helper, and
    versioned authenticated registration protocol.

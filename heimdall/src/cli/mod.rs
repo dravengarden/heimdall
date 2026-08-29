@@ -3,9 +3,12 @@
 //! The handlers share the same strict configuration loader. `heimdall run`
 //! owns its complete data plane and persistent services are out of scope.
 
+#[cfg(target_os = "linux")]
 pub mod logs;
+#[cfg(target_os = "linux")]
 pub mod tls;
 
+#[cfg(target_os = "linux")]
 pub mod agent {
     //! Stable, side-effect-free machine contract for AI agents and automation.
 
@@ -991,6 +994,16 @@ pub mod agent {
         }
     }
 }
+
+#[cfg(target_os = "macos")]
+#[path = "agent_macos.rs"]
+pub mod agent;
+
+#[cfg(all(test, not(target_os = "macos")))]
+#[path = "agent_macos.rs"]
+mod agent_macos;
+
 pub mod config;
 pub mod init;
+#[cfg(target_os = "linux")]
 pub mod run;

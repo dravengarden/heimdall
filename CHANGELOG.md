@@ -13,6 +13,10 @@ guide.
   `NETransparentProxyProvider` system extension that is active only for
   registered runs, with no released macOS support or persistent Heimdall
   daemon claim.
+- Add a target-selected Darwin CLI scaffold that shares strict config/init
+  behavior, emits additive `heimdall.agent/v8` platform and unavailable-backend
+  evidence, refuses `run` without executing its command, excludes Linux-only
+  dependencies, and passes a pinned `aarch64-apple-darwin` type-check.
 - Add a strict offline `heimdall.logs.flow/v1` contract and `heimdall logs
   flow` command that explain one flow's route, transport result, bounded
   capture by direction and boundary, observed plaintext, TLS/HTTP evidence,

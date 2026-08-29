@@ -19,6 +19,9 @@ settings or an implicit `proxychains` invocation. The in-development
 `macos-explicit` and `macos-transparent` backends remain unavailable until
 `heimdall agent` reports a concrete backend and its accepted scope, TCP, UDP,
 DNS, QUIC, and TLS boundaries.
+The development Darwin scaffold permits shared config inspection, but its
+agent report has `ready = false`, `execution = null`, both backend entries
+unavailable, and no execution prefix. Its `run` command refuses before exec.
 
 ## Inspect without mutation
 

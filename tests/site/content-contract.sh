@@ -55,6 +55,34 @@ for macos_page in \
   done
 done
 
+grep -Fq 'aarch64-apple-darwin' rust-toolchain.toml || {
+  printf 'the pinned toolchain does not include the Darwin check target\n' >&2
+  exit 1
+}
+
+grep -A6 '^check-macos:' justfile | grep -Fq 'aarch64-apple-darwin' || {
+  printf 'check-macos does not type-check the pinned Darwin target\n' >&2
+  exit 1
+}
+
+grep '^verify:' justfile | grep -Fq 'check-macos' || {
+  printf 'verify does not include the Darwin compile boundary\n' >&2
+  exit 1
+}
+
+for macos_runbook in docs/runbook.md site/docs/runbook.html; do
+  grep -Fq 'just check-macos' "$macos_runbook" || {
+    printf '%s does not expose the Darwin compile boundary\n' \
+      "$macos_runbook" >&2
+    exit 1
+  }
+  grep -Fq 'aarch64-apple-darwin' "$macos_runbook" || {
+    printf '%s does not name the pinned Darwin target\n' \
+      "$macos_runbook" >&2
+    exit 1
+  }
+done
+
 for evidence_page in \
   docs/design/agent-event-log.md \
   docs/runbook.md \

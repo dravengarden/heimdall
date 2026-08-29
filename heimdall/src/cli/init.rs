@@ -178,8 +178,14 @@ pub fn run(args: InitArgs) -> Result<()> {
             .unwrap_or_default()
             .to_string_lossy()
     );
+    #[cfg(target_os = "linux")]
     println!(
         "  2. Run `heimdall run -- <command>`. No service is required.\n     Pass --config <PATH> only if the file lives elsewhere than {}.",
+        main_target.display()
+    );
+    #[cfg(target_os = "macos")]
+    println!(
+        "  2. Run `heimdall agent` to inspect backend status. macOS execution is not available yet.\n     Pass --config <PATH> only if the file lives elsewhere than {}.",
         main_target.display()
     );
 

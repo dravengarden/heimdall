@@ -92,8 +92,8 @@ acceptance path are documented and tested.
   aarch64 package has structural and emulated CLI acceptance; native aarch64
   real-eBPF execution remains in the compatibility track.
 
-The current available implementation is Linux-only. macOS support is planned
-below and is not part of the available contract yet.
+The current available implementation is Linux-only. macOS support is in
+development below and is not part of the available contract yet.
 
 ## In development
 
@@ -250,8 +250,12 @@ architecture.
 The architecture contract is now in development, but no macOS backend is
 available in a release. The two paths remain deliberately separate:
 
-- Split platform-neutral CLI, config, policy, relay, log, and agent contracts
-  from Linux-only aya/eBPF setup before adding a Darwin build.
+- Keep the available initial platform split green: shared strict config/init
+  behavior, a Darwin CLI that refuses `run`, additive unavailable-backend
+  `heimdall.agent/v8` evidence, Linux-only dependency isolation, and the pinned
+  `aarch64-apple-darwin` type-check in `just verify`.
+- Continue extracting platform-neutral relay and event-log ownership from the
+  Linux aya/eBPF root without changing the available Linux binary or schema.
 - Add an opt-in `macos-explicit` compatibility backend for cooperative proxy
   clients. It must never change system-wide settings or claim transparent UDP,
   fake DNS, QUIC, runtime TLS, strict command scope, or fail-closed coverage.

@@ -8,7 +8,7 @@
 - [design/macos-backend.md](design/macos-backend.md) — in-development explicit-wrapper and signed transparent-provider contracts; no released macOS support yet
 - [config.md](config.md) — the strict TOML/YAML/JSON configuration
 - [install.md](install.md) — native, npm, PyPI, and Cargo Linux releases, artifact hygiene, compatibility, checksum verification, setup authorization, upgrade, and rollback
-- [runbook.md](runbook.md) — build, x86_64 NixOS/Ubuntu/Debian functional and performance VM gates, native-aarch64 acceptance, agent JSON contract, lifecycle, and troubleshooting
+- [runbook.md](runbook.md) — build, Darwin type-check, x86_64 NixOS/Ubuntu/Debian functional and performance VM gates, native-aarch64 acceptance, agent JSON contract, lifecycle, and troubleshooting
 - [releasing.md](releasing.md) — curated changelog, artifact hygiene and native-ARM claims, local release assets, registry OIDC publication, and verification standard
 
 Agent workflows live in [`../skills/heimdall/`](../skills/heimdall/). The

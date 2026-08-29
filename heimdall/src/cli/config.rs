@@ -123,11 +123,11 @@ impl ExplainNetwork {
     }
 }
 
-pub async fn run(config_path: &Path, cmd: ConfigCmd) -> Result<()> {
+pub fn run(config_path: &Path, cmd: ConfigCmd) -> Result<()> {
     match cmd {
         ConfigCmd::Schema(args) => schema(args),
         ConfigCmd::Example(args) => example(args),
-        ConfigCmd::Validate(args) => validate(config_path, args).await,
+        ConfigCmd::Validate(args) => validate(config_path, args),
         ConfigCmd::Explain(args) => explain(config_path, args),
         ConfigCmd::Show(args) => show(config_path, args),
         ConfigCmd::Path => {
@@ -244,7 +244,7 @@ struct ValidateJson<'a> {
     diagnostics: &'a [crate::heimdall_config::ConfigDiagnostic],
 }
 
-async fn validate(config_path: &Path, args: ValidateArgs) -> Result<()> {
+fn validate(config_path: &Path, args: ValidateArgs) -> Result<()> {
     let result = HeimdallConfig::load(config_path);
     let (ok, diagnostics) = match &result {
         Ok(_) => (true, Vec::new()),

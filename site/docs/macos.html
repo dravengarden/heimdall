@@ -28,6 +28,7 @@
 
         <h2 id="status">One CLI, no always-on service</h2>
         <p>The <code>heimdall</code> CLI remains the only command users invoke. Transparent operation will require an optional signed companion and system extension, but it will not install a persistent user-managed Heimdall daemon. The provider is enabled only while at least one transparent run is active.</p>
+        <p class="callout"><strong>Compile scaffold available.</strong> Shared <code>init</code>, config validation, and policy explanation now type-check for pinned <code>aarch64-apple-darwin</code>. The additive agent report keeps both backends unavailable with <code>execution = null</code> and <code>execute_prefix = null</code>; <code>run</code> refuses without executing the command. This is not a package or native backend acceptance.</p>
         <p class="callout"><strong>No implicit fallback.</strong> A failed transparent run never switches to an explicit proxy or the normal network path. The command starts only after registration succeeds.</p>
 
         <h2 id="backends">Two backends with different claims</h2>

@@ -10,6 +10,17 @@ nix develop -c just sync-ebpf
 nix develop -c just verify
 ```
 
+`just verify` includes this explicit Darwin compile boundary:
+
+```bash
+nix develop -c just check-macos
+```
+
+It type-checks only the target-selected CLI for pinned
+`aarch64-apple-darwin`. It proves that shared config/init and the unavailable
+agent contract do not compile Linux-only aya/cgroup code. It does not link a
+macOS app, exercise a Network Extension, or establish macOS support.
+
 Run the real kernel acceptance after changes to eBPF, cgroups, DNS, relay,
 capture, TLS, setup privilege, or lifecycle behavior:
 
@@ -208,6 +219,14 @@ Treat every `actions.*` command as an argv array; never concatenate or
 shell-evaluate it. Consumers may rely on existing v8 field semantics and must
 ignore additive unknown fields. Renaming or changing an existing semantic
 requires a new contract version.
+
+The in-development Darwin target preserves that rule while remaining not
+ready: `platform.os = "macos"`, both entries in additive `backends` have
+`available = false`, `execution = null`, and `actions.execute_prefix = null`.
+Only shared config/init actions are exposed. `heimdall run` deterministically
+exits 1 without executing the supplied command. A successful
+`aarch64-apple-darwin` type-check is not native backend acceptance.
+
 `actions.config_schema` and `actions.config_example_toml` are read-only and do
 not require a valid or discoverable config file.
 `capabilities.logs.flow_summary_contract`, `actions.logs_schema_flow`, and
