@@ -218,6 +218,8 @@ UI has no effect on a run. Starting a run has no effect on the UI.
 - selected backend and whether per-run authorization is required;
 - the explicit `daemon_required = false` foreground ownership boundary;
 - supported TCP, UDP, DNS, and TLS boundaries;
+- the selected resolver strategy, NSS/nscd evidence, private-mount status,
+  relevant AppArmor/userns settings, and shell-safe inspection argv;
 - event and run-manifest schema versions;
 - argv arrays for schema, list, query, tail, rotate, and prune commands;
 - whether an active run can accept a manual rotate request;
@@ -259,6 +261,8 @@ Available now:
 - namespace-free fake DNS when the host NSS path is `files dns`, with the
   private resolver mount retained only for NSS modules or caches that bypass
   port-53 interception;
+- shared run/agent resolver classification with a deterministic pre-run error
+  when host settings disable a required private resolver namespace;
 - concurrent-session, descendant, all foreground-signal, authorization-denial,
   normal-cleanup, parent-death recovery, and both TLS-mode acceptance in the
   current/LTS NixOS and pinned Ubuntu 24.04 real-eBPF guests;

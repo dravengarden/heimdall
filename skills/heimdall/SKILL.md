@@ -34,6 +34,16 @@ Use `execution` before running a command:
   mode. Heimdall has no persistent daemon or health endpoint.
 - `web_ui_required` must remain false for every executable path.
 
+Use `decision.resolver` before executing a fake-DNS policy:
+
+- `strategy = port53_intercept` needs no user or mount namespace;
+- `strategy = private_mount` requires the reported fallback and its runtime
+  policy check;
+- if `resolver.ready` is false, stop and process `resolver.error.code`; the
+  agent deliberately withholds `actions.execute_prefix`;
+- execute each `actions.resolver_inspect[]` item as its own argv array. These
+  actions are read-only evidence, not permission to change host security.
+
 Use `heimdall help -v` only when deeper command discovery is needed.
 
 ## Select evidence boundaries
@@ -158,11 +168,13 @@ may re-enter through `systemd-run --user --scope`; the resolved global config
 path and argv are preserved. It returns the immediate child's status but keeps
 interception alive until every descendant leaves the cgroup.
 
-For fake DNS, never relax a host-wide user-namespace or AppArmor setting. A
-plain `hosts: files dns` NSS path is redirected at port 53 without a namespace.
-If Heimdall reports an NSS bypass, inspect nsswitch and nscd, then either use
-system DNS when domain identity is unnecessary or authorize `userns,` only for
-the exact installed Heimdall path through a scoped AppArmor profile.
+For fake DNS, never relax a host-wide user-namespace or AppArmor setting. Read
+`decision.resolver.strategy`, `reason`, `private_mount_status`, and `error`
+before running. A plain `hosts: files dns` NSS path is redirected at port 53
+without a namespace. For `fake_dns_user_namespace_disabled`, use system DNS
+when domain identity is unnecessary or move the workload to a compatible host.
+For `apparmor_policy_check`, authorize `userns,` only for the exact installed
+Heimdall path through a scoped profile when the user permits that host change.
 
 Read the `heimdall.logs.summary/v1` document before scanning payload evidence.
 Use its missing/out-of-order sequence counts, active flows, failure codes,

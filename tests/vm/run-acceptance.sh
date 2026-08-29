@@ -72,6 +72,13 @@ as_tester heimdall agent \
     and .execution.privilege_setup == "sudo-then-unprivileged-session-helper"
     and (.execution.daemon_required | not)
     and (.execution.web_ui_required | not)
+    and .decision.dns == "fake"
+    and .decision.resolver.strategy == "private_mount"
+    and .decision.resolver.private_mount_required
+    and .decision.resolver.ready
+    and .decision.resolver.error == null
+    and .decision.resolver.nsswitch_path == "/etc/nsswitch.conf"
+    and (.decision.resolver.hosts_sources | length) > 0
     and .config.capture.mode == "on"
     and .config.capture.max_bytes_per_flow == 512
     and .config.capture.block_max_bytes == 32
@@ -156,6 +163,44 @@ as_tester heimdall agent \
     and .capabilities.lifecycle.setup_helper_drops_privileges
     and .capabilities.lifecycle.web_ui_optional
     and .capabilities.lifecycle.concurrent_runs_isolated'
+as_tester heimdall agent --policy system \
+  | jq -e '.ready
+    and .decision.dns == "system"
+    and .decision.resolver.strategy == "system"
+    and (.decision.resolver.private_mount_required | not)
+    and .decision.resolver.private_mount_status == "not_required"'
+
+# A deterministic host-level user-namespace disablement must be visible in the
+# read-only agent contract and must stop fake DNS before a run or workload is
+# created. This changes only the disposable guest and restores it immediately.
+max_user_namespaces_path=/proc/sys/user/max_user_namespaces
+saved_max_user_namespaces="$(<"$max_user_namespaces_path")"
+test "$saved_max_user_namespaces" -gt 0
+blocked_runs_before="$(as_tester heimdall logs list --json | jq '.runs | length')"
+rm -f /tmp/heimdall-disabled-userns-workload
+printf '0\n' > "$max_user_namespaces_path"
+set +e
+blocked_agent_report="$(as_tester heimdall agent)"
+blocked_agent_status=$?
+blocked_run_error="$(as_tester heimdall run --policy fake -- \
+  sh -c 'touch /tmp/heimdall-disabled-userns-workload' 2>&1)"
+blocked_run_status=$?
+set -e
+printf '%s\n' "$saved_max_user_namespaces" > "$max_user_namespaces_path"
+test "$blocked_agent_status" -eq 1
+printf '%s\n' "$blocked_agent_report" \
+  | jq -e '(.ready | not)
+    and .decision.resolver.strategy == "private_mount"
+    and .decision.resolver.private_mount_status == "disabled"
+    and (.decision.resolver.ready | not)
+    and .decision.resolver.error.code == "fake_dns_user_namespace_disabled"
+    and .actions.execute_prefix == null'
+test "$blocked_run_status" -ne 0
+printf '%s\n' "$blocked_run_error" \
+  | grep -q 'fake_dns_user_namespace_disabled'
+test ! -e /tmp/heimdall-disabled-userns-workload
+test "$(as_tester heimdall logs list --json | jq '.runs | length')" \
+  -eq "$blocked_runs_before"
 # The public CLI has no persistent service, status endpoint, or pin lifecycle.
 if heimdall help -v | grep -Eq '^  (daemon|status|ebpf)( |$)'; then
   echo "persistent compatibility command leaked into the CLI" >&2
@@ -366,7 +411,7 @@ fi
 test "$(as_tester heimdall run --policy system -- \
   curl -4fsS --max-time 5 http://127.0.0.1:18080/)" = "fixture-v4"
 test "$(as_tester heimdall run --policy system -- \
-  curl -gfsS --max-time 5 http://[::1]:18081/)" = "fixture-v6"
+  curl -gfsS --max-time 5 'http://[::1]:18081/')" = "fixture-v6"
 grep -q '"atyp": 1, "host": "127.0.0.1", "port": 18080' \
   /run/heimdall-test/socks.log
 grep -q '"atyp": 4, "host": "::1", "port": 18081' \

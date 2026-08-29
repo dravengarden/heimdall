@@ -42,6 +42,10 @@ any change to host links, routes, or rules. It is focused distribution
 coverage, not a substitute for the broader NixOS protocol/stress matrix or
 native aarch64 execution.
 
+The same guest asserts that `heimdall agent --policy fake` selects
+`port53_intercept`, reports the still-enabled AppArmor restriction, and needs
+no private resolver mount.
+
 On an aarch64 Linux execution host, run the architecture-equivalent current
 and LTS guests with:
 
@@ -197,6 +201,10 @@ Before execution, inspect:
   redaction-value readiness, and stable diagnostics;
 - `execution.backend`, `daemon_required`, and `privilege_setup`;
 - `decision` for the selected policy and terminal TCP/UDP actions;
+- `decision.resolver` for the selected DNS strategy, NSS/nscd reason,
+  private-mount status, userns settings, readiness, and stable error code;
+- every `actions.resolver_inspect[]` entry as an independent argv array, never
+  as shell text;
 - per-family `capabilities.udp` instead of aggregate booleans;
 - protocol-specific `runtime_acceptance` and `cli_acceptance` evidence;
 - `capabilities.lifecycle.foreground_modes` and resource ownership.
@@ -358,11 +366,13 @@ heimdall run -- curl https://example.com
 - cgroup permission error: ensure the systemd user manager is running; Heimdall
   re-enters a delegated `systemd-run --user --scope` and preserves `--config`.
 - fake-DNS lookup failure: a host with a plain `hosts: files dns` NSS path uses
-  direct cgroup port-53 interception and needs no user namespace. If the error
-  reports that NSS bypasses port 53, inspect `/etc/nsswitch.conf` and nscd;
-  either select `dns.mode = "system"` or grant only the exact installed
-  Heimdall path `userns,` through a scoped AppArmor profile. Do not disable
-  Ubuntu's system-wide restriction. See the
+  direct cgroup port-53 interception and needs no user namespace. Read
+  `decision.resolver` first and execute each `actions.resolver_inspect[]` argv
+  independently. `fake_dns_user_namespace_disabled` fails before run state or
+  the workload exists; choose `dns.mode = "system"` or use a compatible host.
+  For an `apparmor_policy_check`, grant only the exact installed Heimdall path
+  `userns,` through a scoped profile when authorized. Do not relax Ubuntu's
+  system-wide restriction. See the
   [Ubuntu 24.04 security notes](https://documentation.ubuntu.com/release-notes/24.04/#unprivileged-user-namespace-restrictions).
 - relay CA key permission error: generate the key as the invoking user and keep
   its containing directory 0700 and key 0600.

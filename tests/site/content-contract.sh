@@ -68,12 +68,35 @@ for runbook in docs/runbook.md site/docs/runbook.html; do
     printf '%s does not preserve the Ubuntu security boundary\n' "$runbook" >&2
     exit 1
   }
+  grep -Fq 'decision.resolver' "$runbook" || {
+    printf '%s does not expose resolver preflight\n' "$runbook" >&2
+    exit 1
+  }
+  grep -Fq 'actions.resolver_inspect' "$runbook" || {
+    printf '%s does not expose shell-safe resolver inspection\n' "$runbook" >&2
+    exit 1
+  }
+  grep -Fq 'fake_dns_user_namespace_disabled' "$runbook" || {
+    printf '%s does not expose the stable userns blocker\n' "$runbook" >&2
+    exit 1
+  }
   grep -Fq 'just benchmark-vm-ubuntu' "$runbook" || {
     printf '%s does not expose the Ubuntu performance baseline\n' "$runbook" >&2
     exit 1
   }
   grep -Fq 'not part of' "$runbook" || {
     printf '%s does not separate performance from release gates\n' "$runbook" >&2
+    exit 1
+  }
+done
+
+for contract_page in docs/product-contract.md site/docs/product-contract.html; do
+  grep -Fq 'decision.resolver' "$contract_page" || {
+    printf '%s does not define resolver decision evidence\n' "$contract_page" >&2
+    exit 1
+  }
+  grep -Fq 'actions.resolver_inspect' "$contract_page" || {
+    printf '%s does not preserve argv-safe resolver inspection\n' "$contract_page" >&2
     exit 1
   }
 done

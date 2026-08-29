@@ -200,6 +200,7 @@ pub mod agent {
     struct DecisionReport {
         policy: String,
         dns: String,
+        resolver: Option<crate::resolver::ResolverReport>,
         tcp_final: String,
         udp_final: String,
         error: Option<MachineError>,
@@ -218,6 +219,7 @@ pub mod agent {
         config_schema: Vec<String>,
         config_example_toml: Vec<String>,
         execute_prefix: Option<Vec<String>>,
+        resolver_inspect: Vec<Vec<String>>,
         tls_ca_init: Option<Vec<String>>,
         logs_schema_event: Vec<String>,
         logs_schema_run: Vec<String>,
@@ -286,6 +288,7 @@ pub mod agent {
                     config_schema: config_argv(&["schema", "--version", "v1"]),
                     config_example_toml: config_argv(&["example", "--format", "toml"]),
                     execute_prefix: None,
+                    resolver_inspect: Vec::new(),
                     tls_ca_init: None,
                     logs_schema_event: vec![
                         "heimdall".into(),
@@ -368,7 +371,14 @@ pub mod agent {
         });
         let daemon_required = false;
         let redaction_error = capture_redaction_error(&config.capture.redact_env);
-        let ready = decision_error.is_none() && redaction_error.is_none();
+        let resolver =
+            selected.map(|selected| crate::resolver::ResolverReport::inspect(selected.dns.mode));
+        let resolver_ready = resolver.as_ref().is_none_or(|report| report.ready);
+        let resolver_inspect = resolver.as_ref().map_or_else(
+            Vec::new,
+            crate::resolver::ResolverReport::inspection_actions,
+        );
+        let ready = decision_error.is_none() && redaction_error.is_none() && resolver_ready;
         let execute_prefix = ready.then(|| {
             let mut argv = argv_for(&path, &["run", "--policy", &policy]);
             argv.push("--".into());
@@ -433,6 +443,7 @@ pub mod agent {
             decision: Some(DecisionReport {
                 policy,
                 dns,
+                resolver,
                 tcp_final,
                 udp_final,
                 error: decision_error,
@@ -444,6 +455,7 @@ pub mod agent {
                 config_schema: config_argv(&["schema", "--version", "v1"]),
                 config_example_toml: config_argv(&["example", "--format", "toml"]),
                 execute_prefix,
+                resolver_inspect,
                 tls_ca_init: relay_ca_init_argv(&config.decrypt),
                 logs_schema_event: vec![
                     "heimdall".into(),

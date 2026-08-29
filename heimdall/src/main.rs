@@ -37,6 +37,7 @@ mod event_log;
 mod heimdall_common;
 mod heimdall_config;
 mod http;
+mod resolver;
 mod setup;
 mod tls_relay;
 mod tls_runtime;

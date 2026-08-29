@@ -215,6 +215,47 @@ def verify_agent(mode: str) -> None:
         raise RuntimeError(f"unexpected agent contract: {value!r}")
 
 
+def verify_resolver(strategy: str) -> None:
+    value = read_document()
+    decision = value.get("decision")
+    if not isinstance(decision, dict):
+        raise RuntimeError("agent document is missing its selected decision")
+    resolver = decision.get("resolver")
+    if not isinstance(resolver, dict):
+        raise RuntimeError("agent document is missing resolver preflight")
+
+    expected = (
+        value.get("ready") is True
+        and resolver.get("strategy") == strategy
+        and resolver.get("ready") is True
+        and resolver.get("error") is None
+    )
+    if strategy == "system":
+        expected = (
+            expected
+            and resolver.get("private_mount_required") is False
+            and resolver.get("private_mount_status") == "not_required"
+        )
+    elif strategy == "port53_intercept":
+        expected = (
+            expected
+            and resolver.get("reason") == "files_dns"
+            and set(resolver.get("hosts_sources", [])) == {"files", "dns"}
+            and resolver.get("private_mount_required") is False
+            and resolver.get("private_mount_status") == "not_required"
+            and resolver.get("apparmor_enabled") is True
+            and resolver.get("apparmor_restrict_unprivileged_userns") is True
+            and ["cat", "/sys/module/apparmor/parameters/enabled"]
+            in value.get("actions", {}).get("resolver_inspect", [])
+            and ["cat", "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"]
+            in value.get("actions", {}).get("resolver_inspect", [])
+        )
+    else:
+        raise RuntimeError(f"unsupported expected resolver strategy: {strategy}")
+    if not expected:
+        raise RuntimeError(f"unexpected resolver preflight: {value!r}")
+
+
 def latest_run() -> None:
     value = read_document()
     runs = value.get("runs")
@@ -547,6 +588,8 @@ def main() -> None:
         verify_config()
     elif command == "verify-agent":
         verify_agent(sys.argv[2] if len(sys.argv) > 2 else "off")
+    elif command == "verify-resolver":
+        verify_resolver(sys.argv[2])
     elif command == "latest-run":
         latest_run()
     elif command == "latest-running-run":

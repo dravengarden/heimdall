@@ -32,6 +32,9 @@ heimdall logs summary --run RUN_ID --json
 ready, 1 means not ready, and 2 is CLI usage error. It never mutates state.
 Require the foreground execution owner and `daemon_required = false`. There is
 no persistent service or health endpoint.
+For fake DNS, inspect `decision.resolver` before `actions.execute_prefix`.
+Execute every `actions.resolver_inspect[]` entry as a separate argv array;
+never join it into shell text. A false resolver readiness withholds execution.
 When capture is on, require
 `config.capture.redaction_values_ready = true`, then inspect its explicit
 boundary/direction allowlists before using `actions.execute_prefix`.
@@ -194,11 +197,13 @@ JSON result as deletion evidence, and verify the retained runs. A false
 3. Preview the same policy and destination with `config explain`.
 4. If foreground setup fails, verify the exact sudoers binary path and
    `heimdall __setup-worker` authorization.
-5. If fake DNS reports an NSS bypass, inspect the `hosts` line in
-   `/etc/nsswitch.conf` and `/run/nscd/socket`. A `files dns` path needs no user
-   namespace. Do not disable a system-wide user-namespace restriction; choose
-   system DNS or grant `userns,` only to the exact installed Heimdall path with
-   a scoped AppArmor profile.
+5. For fake DNS, branch on `decision.resolver.strategy`, `reason`,
+   `private_mount_status`, and `error.code`. Run each
+   `actions.resolver_inspect[]` argv independently. A `files dns` path needs no
+   user namespace. Do not disable a system-wide restriction;
+   `fake_dns_user_namespace_disabled` requires system DNS or a compatible host,
+   while `apparmor_policy_check` may use an exact-path `userns,` profile only
+   when authorized.
 6. For runtime TLS setup failures, confirm a representative OpenSSL image was
    mapped before invocation and preserve the pre-exec error.
 7. For relay TLS, distinguish `tls_upstream_certificate_invalid` from

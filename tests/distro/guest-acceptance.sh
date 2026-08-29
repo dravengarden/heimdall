@@ -125,6 +125,7 @@ fi
 
 heimdall config validate --json | python3 "$fixture" verify-config
 heimdall agent | python3 "$fixture" verify-agent
+heimdall agent | python3 "$fixture" verify-resolver system
 
 # Why: sudoers authorizes one immutable installation path plus one private
 # subcommand. A copied binary must fail before child execution rather than
@@ -179,6 +180,8 @@ ss -Hlnptu | sort >"$work_dir/listeners-before"
   || fail "AppArmor is not enabled"
 [[ $(</proc/sys/kernel/apparmor_restrict_unprivileged_userns) == 1 ]] \
   || fail "Ubuntu unprivileged user-namespace restriction was relaxed"
+heimdall agent --policy fake \
+  | python3 "$fixture" verify-resolver port53_intercept
 : > /run/heimdall-test/socks.log
 [[ $(heimdall run --policy fake -- \
   python3 "$fixture" http fake.fixture.test) == ubuntu-tcp-ok ]]

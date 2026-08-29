@@ -18,6 +18,9 @@ guide.
   `heimdall.benchmark/v1` contract for latency, procfs RSS, 1/10/50 concurrent
   starts, SOCKS5 TCP/UDP, transport and relay capture throughput, and event
   integrity.
+- Add resolver compatibility preflight to `heimdall.agent/v8`, including the
+  selected fake-DNS strategy, NSS/nscd evidence, user-namespace settings,
+  shell-safe inspection argv, and a stable blocking diagnostic.
 
 ### Changed
 
@@ -31,6 +34,8 @@ guide.
 - Reuse host resolver files when NSS is limited to `files dns`, allowing cgroup
   port-53 interception to provide fake DNS without a user namespace; retain the
   private resolver-mount fallback for NSS modules and caches that bypass DNS.
+- Reject a deterministically disabled private resolver namespace before
+  creating run state, attaching eBPF, or executing the requested command.
 
 ### Known limitations
 

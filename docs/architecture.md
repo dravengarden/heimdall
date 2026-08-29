@@ -92,6 +92,13 @@ NSS modules and caches that can bypass port 53 retain the private resolver-mount
 fallback; if the host forbids that scoped user namespace, setup fails before
 the requested command executes rather than silently using system DNS.
 
+The read-only `heimdall agent` path runs the same classification before a run.
+`decision.resolver` records the strategy, reason, parsed hosts sources, nscd
+socket, relevant AppArmor/userns settings, and private-mount status. A known
+system-wide disablement makes readiness false and withholds `execute_prefix`;
+an AppArmor restriction remains a runtime policy check because an exact-path
+profile may authorize this binary without weakening the host globally.
+
 TCP and connected IPv6 relay keys include address family and ephemeral source
 port. IPv4 UDP assigns a distinct loopback token to each socket-and-destination
 flow, and the receive hook restores the real peer address. This supports

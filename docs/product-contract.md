@@ -42,6 +42,10 @@ VPN or an application control plane.
    back to unproxied egress because interception or relay setup failed.
 5. `heimdall agent` reports concrete IPv4, IPv6, UDP, QUIC, runtime, and CLI
    acceptance evidence. A feature name alone is not a support claim.
+6. For the selected policy, `decision.resolver` reports system DNS, direct
+   port-53 interception, or a private resolver mount plus its NSS/nscd and
+   user-namespace evidence. A deterministically disabled required namespace
+   makes preflight not ready and withholds command execution argv.
 
 ## Capture and TLS contract
 
@@ -75,6 +79,9 @@ the reported capability and event boundary.
 
 1. `heimdall agent` is read-only, emits exactly one `heimdall.agent/v8` JSON
    document, and represents executable actions as argv arrays.
+   `actions.resolver_inspect` is a list of shell-safe argv arrays for the host
+   files that produced `decision.resolver`; it never changes resolver or
+   security state.
 2. Each run writes one `heimdall.run/v1` manifest and ordered append-only
    `heimdall.event/v1` JSONL segments owned by the invoking user. Fake-DNS
    exchanges, policy decisions, flow boundaries, and TLS observations are

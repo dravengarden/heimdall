@@ -26,6 +26,9 @@ acceptance path are documented and tested.
   starter examples in every supported syntax.
 - `heimdall agent` as a read-only `heimdall.agent/v8` preflight with argv-safe
   actions, selected execution ownership, and capability evidence.
+- Additive `heimdall.agent/v8` resolver preflight that reports system DNS,
+  direct port-53 interception, or private-mount fallback; NSS/nscd evidence;
+  AppArmor/userns settings; and deterministic pre-exec blockers.
 - Daemonless foreground execution for all decrypt modes:
   each run owns isolated relay/DNS ports, maps, links, cgroup, event state, and
   a setup helper that drops privilege before the workload starts.
@@ -130,7 +133,9 @@ integrity, and distinguish opaque transport from actual TLS plaintext. See
 - Keep the available namespace-free fake-DNS path for `files dns` NSS hosts
   configurations covered on pinned Ubuntu 24.04. The cgroup hook redirects the
   host resolver's port-53 traffic directly while AppArmor's default
-  user-namespace restriction remains enabled.
+  user-namespace restriction remains enabled. Keep its agent-readable resolver
+  strategy, fallback reason, host settings, inspection argv, and blocking
+  diagnostics aligned with the runtime decision.
 - Expand namespace-free compatibility across NSS stacks that currently need
   the private resolver-mount fallback, without silently accepting D-Bus,
   multicast, or nscd paths that bypass cgroup DNS interception.

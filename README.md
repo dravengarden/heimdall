@@ -55,7 +55,7 @@ need compatibility hardening.
 | --- | --- | --- |
 | Command-scoped TCP and UDP proxying | Available | IPv4/IPv6, SOCKS5 and direct egress, fake DNS, ordered policies |
 | macOS support | Planned | Wrapper fallback and Network Extension backend are roadmap items; not currently available |
-| Strict configuration and agent contract | Available | TOML, YAML, JSON; generated offline schema/examples; `heimdall.agent/v8` with execution ownership and repairable diagnostics |
+| Strict configuration and agent contract | Available | TOML, YAML, JSON; generated offline schema/examples; `heimdall.agent/v8` with execution ownership, resolver strategy/userns preflight, shell-safe inspection argv, and repairable diagnostics |
 | Daemonless Linux execution | Available | All decrypt modes own per-run relay, DNS, maps, links, and logs; runtime TLS keeps one unprivileged session helper, never a service |
 | Agent event logs and capture | Available | Per-run lifecycle, low-cardinality health summaries, fake-DNS, policy, TCP/UDP and TLS evidence plus coalesced bounded blobs with pre-storage allowlists/redaction |
 | Runtime TLS decryption | Available daemonless with alpha limits | Startup-discovered OpenSSL images; no CA injection; unsupported TLS libraries remain opaque |

@@ -18,11 +18,11 @@ stable contracts, planning, design material, and operational guidance.
 - [`Documentation map`](README.md) — Compact links to the normative, design, install, runbook, and release documents
 - [`product-contract.md`](product-contract.md) — Normative product, lifecycle, network, TLS, capture safety, agent evidence, optional UI, and platform requirements
 - [`ROADMAP.md`](../ROADMAP.md) — Public status, active development tracks, NixOS/Ubuntu lifecycle and fake-DNS compatibility, TLS and performance acceptance, release artifact hygiene, native ARM acceptance, planned macOS support, and non-goals
-- [`architecture.md`](architecture.md) — Foreground CLI ownership, setup privilege drop, namespace-free and private-mount fake DNS, per-run eBPF/relay lifecycle, fail-closed UDP correlation, capture, and TLS boundaries
+- [`architecture.md`](architecture.md) — Foreground CLI ownership, setup privilege drop, agent-readable namespace-free/private-mount resolver preflight, per-run eBPF/relay lifecycle, fail-closed UDP correlation, capture, and TLS boundaries
 - [`design/daemonless-runtime.md`](design/daemonless-runtime.md) — Foreground per-run architecture and implementation status for session-owned data-plane and kernel resources
 - [`design/agent-event-log.md`](design/agent-event-log.md) — Daemonless event/run/summary schemas, DNS/policy/TLS evidence, content-addressed blobs, rotation, orphan recovery, and CLI
 - [`install.md`](install.md) — Versioned native, npm, PyPI, and Cargo `heimdall-egress` Linux installation, narrow setup authorization, upgrade, and one-level rollback
-- [`runbook.md`](runbook.md) — Build, x86_64 NixOS/Ubuntu lifecycle and restricted-userns fake DNS, TLS, real-eBPF and performance acceptance, host-guarded aarch64 acceptance, native/npm/PyPI/Cargo package gates, operation, and diagnosis
+- [`runbook.md`](runbook.md) — Build, resolver/userns preflight, x86_64 NixOS/Ubuntu lifecycle and restricted-userns fake DNS, TLS, real-eBPF and performance acceptance, host-guarded aarch64 acceptance, native/npm/PyPI/Cargo package gates, operation, and diagnosis
 - [`releasing.md`](releasing.md) — Curated changelog, artifact hygiene, native ARM claim boundary, local GitHub assets, release-triggered registry publication, and post-publication verification
 
 ## Documents
