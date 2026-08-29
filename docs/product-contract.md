@@ -116,27 +116,36 @@ the data plane.
 
 ## Platform scope
 
-The available backend is Linux cgroup v2 plus eBPF. The macOS architecture is
-in development. macOS is not available in a release. Its two paths have
-separate capability contracts:
+Linux cgroup v2 plus eBPF is the complete transparent backend and the only
+backend shipped in official packages. Apple-silicon macOS has a source-built
+explicit backend with native acceptance; the transparent architecture and
+official macOS packages remain in development. Its two paths have separate
+capability contracts:
 
 - `macos-explicit` is an opt-in CLI-only compatibility path for cooperative
-  proxy clients. It never changes system-wide proxy settings and cannot claim
-  transparent UDP, fake DNS, QUIC, runtime TLS, strict command scope, or
-  fail-closed coverage.
+  SOCKS-aware TCP clients. It owns a kernel-assigned loopback SOCKS5 CONNECT
+  listener for one foreground run, evaluates shared TCP policy, sets only the
+  child `ALL_PROXY` and `all_proxy`, and emits policy/flow metadata with
+  `source={backend:"macos-explicit",scope:"cooperative_environment"}`. It
+  never changes system-wide proxy settings and cannot claim transparent UDP,
+  fake DNS, QUIC, capture, TLS inspection, strict command scope, process
+  attribution, or fail-closed coverage. The user must select it explicitly;
+  incompatible config fails before child execution.
 - `macos-transparent` requires an optional signed companion containing an
   `NETransparentProxyProvider` system extension. It attributes flows to a
   registered process group and reuses the CLI-owned per-run relay, policy,
   JSONL, capture, and relay-TLS boundaries. `NEAppProxyProvider` is reserved
   for a possible managed per-app deployment.
 
-The operating system may run the transparent provider while a run is active,
+The operating system may run the future transparent provider while a run is active,
 and a run-owned helper handles registration and owner-death cleanup. Neither
 component is a persistent user-managed Heimdall daemon: the final unregister
 operation disables the provider and no helper survives the last run. This path
 may not claim Linux-equivalent descendant scope, UDP, DNS, QUIC, or relay TLS
 until each platform-specific acceptance target passes. Runtime TLS is
-unavailable on macOS. See
+unavailable on macOS. Official macOS release artifacts remain unavailable
+until their own packaging, install, upgrade, rollback, and clean-machine gates
+pass. See
 [design/macos-backend.md](design/macos-backend.md).
 
 ## Acceptance rule

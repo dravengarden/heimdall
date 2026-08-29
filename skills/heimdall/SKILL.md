@@ -13,24 +13,28 @@ Treat [`../../docs/product-contract.md`](../../docs/product-contract.md) as the
 normative product boundary. This skill supplies operating procedure and must
 not broaden that contract.
 
-## Gate on the released platform
+## Gate on the platform
 
-The current release is Linux-only. On macOS, stop before `heimdall run`: do
-not modify system proxy settings, start `proxychains`, install trust, or infer
-support from the presence of a CLI binary. The `macos-explicit` and
-`macos-transparent` contracts are in development and unavailable until a
-released `heimdall agent` document names the selected backend and proves its
-capabilities. See
+Official packages currently execute on Linux only. On macOS, do not infer
+support from a binary alone and never modify system proxy settings, start
+`proxychains`, or install trust. A source-built Apple-silicon CLI may expose
+the reduced `macos-explicit` backend. Run `heimdall agent --policy <name>` and
+continue only when it exits 0, reports that exact backend, and supplies
+`actions.execute_prefix`. Execute that prefix as an argv array before appending
+the command argv.
+
+For `macos-explicit`, require `scope.model = cooperative_proxy_environment`,
+`strict_command_scope = false`, `client_can_bypass = true`, and only
+`ALL_PROXY`/`all_proxy` environment ownership. It supports cooperative TCP
+metadata only: no UDP, fake DNS, capture, TLS inspection, process attribution,
+or fail-closed coverage. A run deliberately reports incomplete descendant
+cleanup. Do not broaden those claims from a successful request. The backend
+starts no daemon and changes no system proxy setting.
+
+`macos-transparent` remains unavailable. Never infer Network Extension,
+transparent process scope, or official macOS packaging from explicit-backend
+readiness. See
 [`../../docs/design/macos-backend.md`](../../docs/design/macos-backend.md).
-
-An in-development Darwin build may compile shared outbound SOCKS5 transport and
-expose `init`, `config`, `agent`, and offline `logs` commands for portable
-inspection. Require `ready = false`, `execution = null`, both
-`backends[].available = false`, and
-`actions.execute_prefix = null`. Log action argv may inspect a compatible
-existing JSONL store, but no listener or macOS backend emits traffic evidence.
-Never run its supplied command or treat the cross-target compile gate as native
-support.
 
 ## Start with the machine contract
 
@@ -45,12 +49,15 @@ means the document explains why, and exit 2 is invalid CLI usage. Read stable
 error `code` values before messages. Execute `actions` as argv arrays; never
 join or evaluate them as shell text.
 
-Use `execution` before running a command:
+Use `platform` and `execution` before running a command:
 
-- Require `backend = linux-ebpf-foreground`, `daemon_required = false`,
-  `owner = heimdall-run`, and
+- On Linux, require `backend = linux-ebpf-foreground`,
+  `daemon_required = false`, `owner = heimdall-run`, and
   `privilege_setup = sudo-then-unprivileged-session-helper` for every decrypt
-  mode. Heimdall has no persistent daemon or health endpoint.
+  mode.
+- On macOS, require `backend = macos-explicit`, `daemon_required = false`,
+  `privilege_setup = none`, and the reduced capability boundary above.
+- Heimdall has no persistent daemon or health endpoint.
 - `web_ui_required` must remain false for every executable path.
 
 Use `decision.resolver` before executing a fake-DNS policy:

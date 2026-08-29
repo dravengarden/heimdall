@@ -65,6 +65,25 @@
         }
       ]
     },
+    "source": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["cgroup_id"],
+          "properties": { "cgroup_id": { "$ref": "#/$defs/uint_zero" } },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["backend", "scope"],
+          "properties": {
+            "backend": { "const": "macos-explicit" },
+            "scope": { "const": "cooperative_environment" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
     "action": {
       "oneOf": [
         { "type": "object", "required": ["type"], "properties": { "type": { "const": "direct" } }, "additionalProperties": false },
@@ -243,7 +262,7 @@
           "type": "object",
           "required": ["source", "policy", "network", "destination", "rule", "action"],
           "properties": {
-            "source": { "type": "object", "required": ["cgroup_id"], "properties": { "cgroup_id": { "$ref": "#/$defs/uint_zero" } }, "additionalProperties": false },
+            "source": { "$ref": "#/$defs/source" },
             "policy": { "type": "string" },
             "network": { "enum": ["tcp", "udp"] },
             "destination": { "$ref": "#/$defs/destination" },
@@ -264,7 +283,7 @@
           "required": ["network", "source", "destination", "action", "policy", "boundary"],
           "properties": {
             "network": { "enum": ["tcp", "udp"] },
-            "source": { "type": "object", "required": ["cgroup_id"], "properties": { "cgroup_id": { "$ref": "#/$defs/uint_zero" } }, "additionalProperties": false },
+            "source": { "$ref": "#/$defs/source" },
             "destination": { "$ref": "#/$defs/destination" },
             "action": { "$ref": "#/$defs/action" },
             "policy": { "type": "string" },

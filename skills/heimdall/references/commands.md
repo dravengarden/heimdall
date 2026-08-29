@@ -13,18 +13,25 @@
 
 ## Gate on the platform
 
-Released Heimdall execution is Linux-only. A Darwin host is not ready even if
-an installer placed `heimdall` on `PATH`; do not substitute system-wide proxy
-settings or an implicit `proxychains` invocation. The in-development
-`macos-explicit` and `macos-transparent` backends remain unavailable until
-`heimdall agent` reports a concrete backend and its accepted scope, TCP, UDP,
-DNS, QUIC, and TLS boundaries.
-The development Darwin scaffold compiles shared outbound SOCKS5 transport and
-permits shared config plus offline JSONL inspection, but its agent report has
-`ready = false`, `execution = null`, both backend entries unavailable, and no
-execution prefix. Its `run` command refuses before exec. No relay listener is
-started. `actions.logs_*` may inspect or verify a compatible existing store;
-their presence is not macOS traffic-capture evidence.
+Official packages currently execute on Linux only. A source-built
+Apple-silicon CLI can expose `macos-explicit`; do not substitute system-wide
+proxy settings or an implicit `proxychains` invocation. Run:
+
+```bash
+heimdall agent --policy default
+```
+
+Continue only when it exits 0, selects `macos-explicit`, and returns an
+`actions.execute_prefix` argv array. Append the command argv to that array.
+Readiness requires system DNS, rejected UDP, capture off, decrypt off, and
+readable outbound credentials. The backend sets only child `ALL_PROXY` and
+`all_proxy`, so a client can bypass it. Its evidence is cooperative TCP
+policy/flow metadata, not strict process attribution or payload capture.
+
+`macos-transparent`, UDP, fake DNS, capture, TLS inspection, and official
+macOS packages remain unavailable. Never infer them from explicit readiness or
+from `actions.logs_*`. No macOS path changes system proxy settings or requires
+a persistent daemon.
 
 ## Inspect without mutation
 
@@ -77,12 +84,23 @@ heimdall agent --policy default
 heimdall run --policy default -- curl https://example.com
 ```
 
-The command may re-enter through `systemd-run --user --scope`. The resolved
+On macOS, use the exact agent action instead; its equivalent shape is:
+
+```bash
+heimdall --config /path/to/config.toml run \
+  --backend macos-explicit --policy default -- \
+  curl https://example.com
+```
+
+Do not omit `--backend macos-explicit`; omission fails before exec by design.
+Do not rewrite this as HTTP/HTTPS proxy variables or a system proxy change.
+
+On Linux, the command may re-enter through `systemd-run --user --scope`. The resolved
 global config path and exact argv survive re-entry. An authorized setup helper
 attaches one transient cgroup and drops privilege before the child starts.
 Every mode keeps that unprivileged helper only until the run exits so an
 unexpected owner death can kill the command cgroup before links disappear.
-The foreground process owns relay/DNS listeners, maps, links, and logs until
+The Linux foreground process owns relay/DNS listeners, maps, links, and logs until
 the complete descendant tree exits.
 
 For two independent runs, execute them normally in parallel; do not share a

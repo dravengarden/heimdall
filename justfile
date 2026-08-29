@@ -3,12 +3,21 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 toolchain-check:
     required="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].rust_version')"; actual="$(rustc --version --verbose | awk '/^release:/ { print $2 }')"; test "$required" = "$actual" || { echo "rust-version $required does not match pinned stable rustc $actual" >&2; exit 1; }
 
-# Type-check the target-selected CLI and its portable protocol tests without
+# Type-check the target-selected CLI and portable explicit-proxy tests without
 # linking against a macOS SDK. This proves Linux-only dependencies do not leak
-# into the Darwin entry point; a signed Network Extension still requires
-# separate native acceptance.
+# into Darwin; `test-macos-native` remains the real cooperative-backend gate.
 check-macos:
     cargo check --package heimdall-egress --all-targets --target aarch64-apple-darwin --locked
+
+# Runs only on native Apple silicon. The gate proves the cooperative SOCKS
+# environment, TCP route, evidence, exit status, explicit selection, and
+# foreground listener teardown without making a transparent-scope claim.
+test-macos-native:
+    test "$(uname -s)" = Darwin || { echo "macos-explicit native acceptance requires macOS" >&2; exit 1; }
+    test "$(uname -m)" = arm64 || { echo "macos-explicit native acceptance requires Apple silicon" >&2; exit 1; }
+    cargo test --package heimdall-egress --all-targets --locked --release
+    cargo build --package heimdall-egress --locked --release
+    tests/macos/run-explicit-acceptance.sh
 
 fmt:
     cargo fmt --all
@@ -62,8 +71,8 @@ test-cargo:
 
 test-release-tooling:
     actionlint .github/workflows/docs-pages.yml .github/workflows/publish-cargo.yml .github/workflows/publish-npm.yml .github/workflows/publish-pypi.yml
-    shellcheck scripts/build-cargo-release-assets scripts/build-npm-package scripts/build-npm-release-assets scripts/build-pypi-release-assets scripts/publish-github-release scripts/render-release-notes scripts/sync-ebpf-object tests/cargo/run-acceptance.sh tests/distro/guest-acceptance.sh tests/distro/run-cloud-acceptance.sh tests/npm/run-acceptance.sh tests/package/check-artifact-hygiene.sh tests/package/run-acceptance.sh tests/pypi/run-acceptance.sh tests/release/cargo-workflow.sh tests/release/npm-workflow.sh tests/release/pypi-workflow.sh tests/release/render-notes.sh tests/site/content-contract.sh
-    python3 -c 'paths = ("tests/distro/fixture.py", "tests/perf/udp-throughput.py", "tests/perf/vm-baseline.py", "tests/vm/socks5_fixture.py"); [compile(open(path, encoding="utf-8").read(), path, "exec") for path in paths]'
+    shellcheck scripts/build-cargo-release-assets scripts/build-npm-package scripts/build-npm-release-assets scripts/build-pypi-release-assets scripts/publish-github-release scripts/render-release-notes scripts/sync-ebpf-object tests/cargo/run-acceptance.sh tests/distro/guest-acceptance.sh tests/distro/run-cloud-acceptance.sh tests/macos/run-explicit-acceptance.sh tests/npm/run-acceptance.sh tests/package/check-artifact-hygiene.sh tests/package/run-acceptance.sh tests/pypi/run-acceptance.sh tests/release/cargo-workflow.sh tests/release/npm-workflow.sh tests/release/pypi-workflow.sh tests/release/render-notes.sh tests/site/content-contract.sh
+    python3 -c 'paths = ("tests/distro/fixture.py", "tests/macos/fixture.py", "tests/perf/udp-throughput.py", "tests/perf/vm-baseline.py", "tests/vm/socks5_fixture.py"); [compile(open(path, encoding="utf-8").read(), path, "exec") for path in paths]'
     tests/release/cargo-workflow.sh
     tests/release/npm-workflow.sh
     tests/release/pypi-workflow.sh

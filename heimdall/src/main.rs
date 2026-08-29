@@ -14,6 +14,8 @@ mod cli;
     )
 )]
 mod event_log;
+#[cfg(any(target_os = "macos", test))]
+mod explicit_proxy;
 mod heimdall_config;
 #[cfg_attr(
     target_os = "macos",

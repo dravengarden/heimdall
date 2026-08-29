@@ -185,7 +185,7 @@ pub fn run(args: InitArgs) -> Result<()> {
     );
     #[cfg(target_os = "macos")]
     println!(
-        "  2. Run `heimdall agent` to inspect backend status. macOS execution is not available yet.\n     Pass --config <PATH> only if the file lives elsewhere than {}.",
+        "  2. For macos-explicit, set system DNS, reject UDP, and keep capture/decrypt off.\n     Run `heimdall agent` and use its actions.execute_prefix only when ready.\n     Pass --config <PATH> only if the file lives elsewhere than {}.",
         main_target.display()
     );
 

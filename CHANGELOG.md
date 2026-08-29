@@ -8,25 +8,36 @@ guide.
 
 ### Added
 
-- Define the in-development macOS backend contract: an opt-in reduced
-  CLI-only explicit proxy and an optional signed
-  `NETransparentProxyProvider` system extension that is active only for
-  registered runs, with no released macOS support or persistent Heimdall
-  daemon claim.
-- Add a target-selected Darwin CLI scaffold that shares strict config/init
-  behavior, emits additive `heimdall.agent/v8` platform and unavailable-backend
-  evidence, refuses `run` without executing its command, excludes Linux-only
-  dependencies, and passes a pinned `aarch64-apple-darwin` type-check.
+- Add the opt-in Apple-silicon `macos-explicit` source backend: a foreground,
+  kernel-assigned loopback SOCKS5 CONNECT frontend for cooperative TCP clients
+  that evaluates the shared policy, routes through SOCKS5/direct/reject,
+  injects only child `ALL_PROXY`/`all_proxy`, preserves child exit status, and
+  never changes system proxy settings or starts a daemon.
+- Extend `heimdall.agent/v8` with truthful macOS execution, capability,
+  diagnostic, and argv-safe action evidence. Preflight rejects fake DNS,
+  non-rejected UDP, capture, and both TLS inspection modes before the command
+  executes; omission of `--backend macos-explicit` also remains fail-closed.
+- Emit cooperative macOS policy and TCP flow metadata under the additive
+  `source={backend:"macos-explicit",scope:"cooperative_environment"}` event
+  boundary, without claiming payload capture or process attribution. Native
+  Apple-silicon acceptance covers upstream routing, domain preservation,
+  evidence integrity, listener cleanup, and exit propagation.
+- Keep the optional signed `NETransparentProxyProvider` backend as a separate
+  in-development path with no released support or persistent Heimdall daemon
+  claim.
 - Extract a platform-neutral `RunEvidence` owner for writer/control-socket
   lifetime and finalization, use it from the unchanged Linux foreground path,
   and compile the same JSONL store plus offline `heimdall logs` inspection,
-  verification, recovery, and retention tools into the Darwin scaffold without
-  enabling a macOS execution backend.
+  verification, recovery, and retention tools in the Darwin CLI and use that
+  owner from the explicit backend.
 - Extract the platform-neutral `relay_transport` core for one-time outbound
   credential resolution, SOCKS5 TCP CONNECT, UDP ASSOCIATE, destination
   encoding, frame validation, and bounded setup timeouts. Linux now uses that
-  shared implementation, and the Darwin all-targets check compiles its protocol
-  tests without enabling a macOS listener or execution backend.
+  shared implementation; the Darwin all-targets check compiles its protocol
+  tests, and `macos-explicit` uses the TCP CONNECT path behind its per-run
+  loopback listener.
+- Keep macOS Unix event/control sockets within Darwin's path limit and reset
+  accepted streams to blocking mode before the portable JSONL owner uses them.
 - Add a strict offline `heimdall.logs.flow/v1` contract and `heimdall logs
   flow` command that explain one flow's route, transport result, bounded
   capture by direction and boundary, observed plaintext, TLS/HTTP evidence,

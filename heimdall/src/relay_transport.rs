@@ -405,7 +405,7 @@ async fn socks5_connect(
     Ok(())
 }
 
-fn valid_socks5_domain(host: &str) -> bool {
+pub(crate) fn valid_socks5_domain(host: &str) -> bool {
     let host = host.strip_suffix('.').unwrap_or(host);
     !host.is_empty()
         && host.is_ascii()

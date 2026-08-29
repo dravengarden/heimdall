@@ -36,6 +36,7 @@ heimdall config example --format toml
 heimdall config example --format yaml
 heimdall config example --format json</code></pre>
         <p>The JSON Schema is generated from the canonical Rust/Serde model, and each example is the same complete starter used by <code>heimdall init</code>. Both commands are read-only and work without a config file. Schema validation covers structure; finish with <code>heimdall config validate --json</code> for references and runtime capability checks.</p>
+        <p class="callout"><strong>macOS explicit profile.</strong> On Apple silicon, <code>macos-explicit</code> additionally requires system DNS, rejected UDP, capture off, decrypt off, and TCP-capable referenced outbounds. Run <code>heimdall agent</code> and use its exact <code>actions.execute_prefix</code>; incompatible configuration fails before exec.</p>
 
         <h2 id="minimal">Minimal configuration</h2>
         <div class="code-card"><div class="code-card-head"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>config.toml</span><button class="copy-button" type="button" data-copy="#minimal-config">Copy</button></div><pre id="minimal-config"><code>version = 1&#10;&#10;[proxy]&#10;default_policy = "default"&#10;&#10;[proxy.outbounds.default]&#10;type = "socks5"&#10;server = "127.0.0.1"&#10;server_port = 1080&#10;network = ["tcp"]&#10;&#10;[proxy.policies.default.dns]&#10;mode = "fake"&#10;&#10;[proxy.policies.default.final]&#10;tcp = { type = "route", outbound = "default" }&#10;udp = { type = "reject", method = "refused" }&#10;&#10;[capture]&#10;mode = "off"&#10;&#10;[decrypt]&#10;mode = "off"</code></pre></div>
@@ -51,6 +52,7 @@ heimdall config example --format json</code></pre>
 
         <h2 id="dns">DNS modes</h2>
         <table><thead><tr><th>Mode</th><th>Behavior</th><th>Policy identity</th></tr></thead><tbody><tr><td><code>fake</code></td><td>Redirects DNS to Heimdall and preserves the hostname through the relay.</td><td>Domain rules allowed.</td></tr><tr><td><code>system</code></td><td>Allows the host resolver to answer; the relay sees resolved IPs.</td><td>Use IP, port, or protocol rules.</td></tr></tbody></table>
+        <p><code>macos-explicit</code> requires <code>system</code>. Its <code>socks5h</code> child URL lets a cooperative client pass an original hostname to the local listener, but it is not universal DNS interception.</p>
         <p>Use <code>heimdall config explain --network udp ... --json</code> to inspect a UDP decision. Without <code>--network</code>, the command explains TCP.</p>
 
         <h2 id="capture">Capture and decrypt</h2>

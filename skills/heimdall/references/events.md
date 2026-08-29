@@ -122,6 +122,12 @@ producer version mismatch.
 
 `network` is `tcp` or `udp`. DNS `transport` is `udp` or `tcp`. DNS
 `boundary` is `fake` or `system`. TLS `mode` is `runtime` or `relay`.
+`policy.decision.data.source` and `flow.open.data.source` identify the producer
+boundary. Linux uses `{ "cgroup_id": N }`. `macos-explicit` uses
+`{ "backend": "macos-explicit", "scope": "cooperative_environment" }`.
+Treat the latter only as evidence that a cooperative client reached the
+per-run loopback listener; it is not process identity, descendant attribution,
+or proof that the client could not bypass the proxy.
 The `run.open.data.capture` object contains `profile` and
 `payload_storage = "content_addressed"`; payload references are ordinary
 `flow.data` records in the event segments.

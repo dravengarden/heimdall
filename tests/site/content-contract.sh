@@ -42,14 +42,24 @@ for macos_page in \
   site/docs/macos.html \
   site/docs/product-contract.html; do
   for boundary in \
+    'macos-explicit' \
+    'cooperative' \
+    'macos-transparent' \
     'NETransparentProxyProvider' \
-    'NEAppProxyProvider' \
-    'process group' \
-    'persistent user-managed Heimdall daemon' \
-    'not available'; do
+    'persistent user-managed Heimdall daemon'; do
     grep -Fq "$boundary" "$macos_page" || {
       printf '%s does not preserve the macOS boundary: %s\n' \
         "$macos_page" "$boundary" >&2
+      exit 1
+    }
+  done
+done
+
+for macos_design in docs/design/macos-backend.md site/docs/macos.html; do
+  for boundary in 'NEAppProxyProvider' 'process group' 'official macOS'; do
+    grep -Fiq "$boundary" "$macos_design" || {
+      printf '%s does not preserve the deep macOS boundary: %s\n' \
+        "$macos_design" "$boundary" >&2
       exit 1
     }
   done
@@ -97,7 +107,7 @@ if grep -Fq 'async fn socks5_connect' heimdall/src/main_linux.rs; then
 fi
 
 grep -Fq 'Logs(crate::cli::logs::LogsCmd)' heimdall/src/main_macos.rs || {
-  printf 'the Darwin scaffold does not expose portable log inspection\n' >&2
+  printf 'the Darwin backend does not expose portable log inspection\n' >&2
   exit 1
 }
 
@@ -105,6 +115,37 @@ grep -Fq '"offline_schema_validation": true' heimdall/src/cli/agent_macos.rs || 
   printf 'the Darwin agent does not advertise offline log validation\n' >&2
   exit 1
 }
+
+grep -Fq 'mod explicit_proxy;' heimdall/src/main.rs || {
+  printf 'the shared target root does not own the explicit proxy backend\n' >&2
+  exit 1
+}
+
+grep -Fq 'TcpListener::bind((Ipv4Addr::LOCALHOST, 0))' heimdall/src/explicit_proxy.rs || {
+  printf 'macos-explicit does not bind a kernel-assigned loopback listener\n' >&2
+  exit 1
+}
+
+grep -Fq 'MacBackend::Explicit' heimdall/src/main_macos.rs || {
+  printf 'Darwin run does not require explicit backend selection\n' >&2
+  exit 1
+}
+
+grep -Fq '"execute_prefix": execute_prefix' heimdall/src/cli/agent_macos.rs || {
+  printf 'the Darwin agent does not publish its guarded execution action\n' >&2
+  exit 1
+}
+
+grep -Fq '"scope": { "const": "cooperative_environment" }' \
+  heimdall/schemas/heimdall.event.v1.schema.json || {
+  printf 'the event schema does not encode the cooperative source boundary\n' >&2
+  exit 1
+}
+
+if rg -q 'Command::new\("(networksetup|scutil)"' heimdall/src; then
+  printf 'the macOS backend attempts to modify system proxy settings\n' >&2
+  exit 1
+fi
 
 for macos_runbook in docs/runbook.md site/docs/runbook.html; do
   grep -Fq 'just check-macos' "$macos_runbook" || {
@@ -124,6 +165,16 @@ for macos_runbook in docs/runbook.md site/docs/runbook.html; do
   }
   grep -Fq 'relay_transport' "$macos_runbook" || {
     printf '%s does not document the portable transport boundary\n' \
+      "$macos_runbook" >&2
+    exit 1
+  }
+  grep -Fq 'just test-macos-native' "$macos_runbook" || {
+    printf '%s does not expose the native explicit acceptance gate\n' \
+      "$macos_runbook" >&2
+    exit 1
+  }
+  grep -Fq 'cooperative' "$macos_runbook" || {
+    printf '%s does not preserve the reduced explicit scope\n' \
       "$macos_runbook" >&2
     exit 1
   }

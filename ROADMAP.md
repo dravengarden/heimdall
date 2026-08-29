@@ -66,6 +66,10 @@ acceptance path are documented and tested.
   that reveal no certificate-specific reason.
 - No background service, machine-wide control plane, or persistent kernel
   state in the shipped CLI.
+- A source-built Apple-silicon `macos-explicit` backend for cooperative
+  SOCKS-aware TCP clients, with explicit selection, shared route/direct/reject
+  policy, metadata-only JSONL, no system proxy mutation, and native acceptance.
+  Official macOS packages and transparent scope remain unavailable.
 - A real-eBPF NixOS acceptance matrix on the current and Linux 6.6 LTS kernels,
   covering dual-stack TCP/UDP, QUIC, common CLI/runtime clients, lifecycle
   behavior, and both TLS paths.
@@ -92,8 +96,10 @@ acceptance path are documented and tested.
   aarch64 package has structural and emulated CLI acceptance; native aarch64
   real-eBPF execution remains in the compatibility track.
 
-The current available implementation is Linux-only. macOS support is in
-development below and is not part of the available contract yet.
+Official release packages and the transparent implementation remain
+Linux-only. The Apple-silicon `macos-explicit` source backend is available as
+the reduced cooperative contract described below; it is not equivalent to the
+Linux cgroup boundary.
 
 ## In development
 
@@ -247,22 +253,26 @@ architecture.
 
 ### 8. macOS backend
 
-The architecture contract is now in development, but no macOS backend is
-available in a release. The two paths remain deliberately separate:
+The Apple-silicon source-built explicit backend has native acceptance, but no
+official macOS package or transparent backend is available. The two paths
+remain deliberately separate:
 
-- Keep the available initial platform split green: shared strict config/init
-  behavior and portable JSONL tooling, a Darwin CLI that refuses `run`,
-  additive unavailable-backend `heimdall.agent/v8` evidence, Linux-only
-  dependency isolation, and the pinned `aarch64-apple-darwin` type-check in
-  `just verify`.
+- Keep the platform split green: shared strict config/init behavior, portable
+  JSONL tooling, Linux-only dependency isolation, and the pinned
+  `aarch64-apple-darwin` all-targets check in `just verify`.
 - Keep the shared `RunEvidence` writer/control/finalization owner and
   `relay_transport` SOCKS5 TCP/UDP protocol used by Linux green. Original
   destination correlation, listeners, session attribution, capture, and TLS
   remain backend-owned; the extraction does not change the available Linux
   binary or event schema.
-- Add an opt-in `macos-explicit` compatibility backend for cooperative proxy
-  clients. It must never change system-wide settings or claim transparent UDP,
-  fake DNS, QUIC, runtime TLS, strict command scope, or fail-closed coverage.
+- Maintain the implemented opt-in `macos-explicit` compatibility backend and
+  its `just test-macos-native` Apple-silicon gate. It owns one foreground
+  loopback SOCKS5 CONNECT listener, evaluates shared TCP policy, emits
+  cooperative metadata evidence, and never changes system-wide settings or
+  claims transparent UDP, fake DNS, QUIC, capture, TLS inspection, strict
+  command scope, or fail-closed coverage.
+- Publish official Apple-silicon macOS artifacts only after release packaging,
+  checksum, install/upgrade/rollback, and fresh-machine acceptance are present.
 - Add an optional signed companion and `NETransparentProxyProvider` system
   extension for transparent TCP/UDP. Keep `NEAppProxyProvider` limited to a
   future managed per-app deployment rather than treating it as a cgroup
@@ -278,9 +288,10 @@ available in a release. The two paths remain deliberately separate:
   JSONL integrity, install/approval, upgrade, rollback, uninstall, and cleanup.
 
 Acceptance target: both paths report separate machine-readable capabilities;
-the signed transparent path passes the native matrix in
-[docs/design/macos-backend.md](docs/design/macos-backend.md); and no package,
-website, or release note claims macOS availability before that evidence exists.
+the explicit source backend remains native-gated; the signed transparent path
+passes its full matrix in [docs/design/macos-backend.md](docs/design/macos-backend.md);
+and no package or release note claims more macOS coverage than its artifacts
+and native evidence establish.
 
 ## Deferred product boundaries
 

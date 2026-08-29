@@ -1,10 +1,13 @@
 # macOS backend design
 
-Status: **in development; no macOS backend is available in a release yet**.
+Status: **the reduced Apple-silicon explicit backend is available from source;
+official macOS packages and the transparent backend are not available**.
 
-This document fixes the product and architecture boundaries for macOS before
-implementation. It does not turn a successful cross-compile, an unsigned
-extension, or a cooperative proxy environment into a support claim.
+This document records the implemented cooperative backend and fixes the
+architecture boundaries for future transparent support. Native explicit
+acceptance does not turn a proxy environment into strict process scope, and a
+successful cross-compile or unsigned extension is never a transparent support
+claim.
 
 ## Decisions
 
@@ -29,14 +32,59 @@ extension, or a cooperative proxy environment into a support claim.
 
 | Backend | Installation | Intended coverage | Explicit limits |
 | --- | --- | --- | --- |
-| `macos-explicit` | `heimdall` CLI only | Cooperative clients that honor an explicit SOCKS or proxy environment | Client-dependent TCP; no transparent UDP, fake DNS, QUIC, runtime TLS, or strict command-scope claim |
+| `macos-explicit` | Source-built `heimdall` CLI only; official package pending | Cooperative clients that honor a SOCKS proxy environment | Client-dependent TCP; no transparent UDP, fake DNS, QUIC, capture, TLS inspection, fail-closed, or strict command-scope claim |
 | `macos-transparent` | `heimdall` plus signed companion/system extension | Transparently attributed TCP and UDP flows from the wrapped process group | Not Linux cgroup-equivalent until descendant attribution, escape behavior, and race handling pass native acceptance |
 
-`macos-explicit` must not modify machine-wide network settings. The CLI prints
-the exact environment or wrapper mechanism it selected, records the reduced
-capability set, and rejects policies that need unavailable behavior. A client
-can ignore a proxy environment or open another socket path, so this backend
-cannot promise that every connection is proxied or rejected.
+`macos-explicit` does not modify machine-wide network settings. `heimdall
+agent` prints an argv-safe execution prefix and the exact reduced capability
+set. The run command rejects policies that need unavailable behavior before
+exec. A client can ignore a proxy environment or open another socket path, so
+this backend cannot promise that every connection is proxied or rejected.
+
+## Implemented explicit architecture
+
+```text
+heimdall run --backend macos-explicit -- command
+  |-- validates config and reduced backend capabilities
+  |-- creates the private run store and JSONL owner
+  |-- binds 127.0.0.1:<kernel-assigned> SOCKS5 CONNECT
+  |     `-- shared TCP policy -> SOCKS5, direct, or reject
+  `-- executes command with only:
+        ALL_PROXY=socks5h://127.0.0.1:<port>
+        all_proxy=socks5h://127.0.0.1:<port>
+```
+
+The foreground CLI removes inherited HTTP, HTTPS, FTP, ALL, and NO proxy
+variables before adding those two values. It never exports configured upstream
+credentials; they are resolved once inside Heimdall and used by the shared
+SOCKS5 transport. The frontend accepts only unauthenticated loopback SOCKS5
+CONNECT. UDP ASSOCIATE is rejected.
+
+Shared TCP rules select `route`, `direct`, or `reject`. Preflight requires:
+
+- Apple silicon;
+- `dns.mode = "system"`;
+- every UDP rule/final action to reject;
+- `capture.mode = "off"`; and
+- `decrypt.mode = "off"`.
+
+The command must name `--backend macos-explicit`; there is no default or
+implicit fallback. `heimdall agent` returns `ready=false`, stable diagnostics,
+and no `actions.execute_prefix` when any condition is unmet or an outbound
+credential cannot be read.
+
+Policy decisions and TCP flow open/close records use:
+
+```json
+{"backend":"macos-explicit","scope":"cooperative_environment"}
+```
+
+This source field means the client reached the local listener. It does not
+prove operating-system process attribution. No payload, DNS, TLS, or UDP event
+is emitted. The foreground owner aborts listener tasks and closes the port
+when the child exits. Child exit status is preserved, but the run manifest
+sets `result.complete=false` and `descendants_cleaned=false` because a proxy
+environment cannot prove or clean an entire descendant network scope.
 
 Dynamic-loader interposition may be evaluated as a separately named explicit
 backend, but it cannot broaden this contract. System Integrity Protection,
@@ -164,8 +212,7 @@ weaken signature validation, or install a permanent host-wide proxy.
 
 ## Current implementation status
 
-The compile boundary, evidence ownership, and outbound transport extraction are
-implemented:
+The explicit source backend and its platform boundary are implemented:
 
 - the crate selects separate Linux and Darwin roots while preserving the
   available Linux implementation unchanged;
@@ -176,34 +223,36 @@ implemented:
 - one platform-neutral `RunEvidence` value owns the JSONL writer, rotation/event
   control sockets, and finalization order; the available Linux foreground path
   now uses that same owner;
-- the Darwin scaffold compiles the same event store and exposes `logs` schema,
+- the Darwin CLI compiles the same event store and exposes `logs` schema,
   list, path, summary, flow, query, tail, rotate, verify, recovery, and retention
   commands for existing run data;
 - one platform-neutral `relay_transport` module resolves outbound credentials
   and implements SOCKS5 TCP CONNECT, UDP ASSOCIATE, destination encoding,
   response validation, and setup timeouts; the available Linux relay now uses
   that implementation while retaining its Linux-only listeners and flow
-  correlation;
-- `heimdall agent` validates that shared config but reports both backends as
-  unavailable, leaves `execution` and `actions.execute_prefix` null, exposes
-  argv-safe offline log actions, and exits 1;
-- `heimdall run` exits 1 without executing the supplied command; and
+  correlation; the explicit backend uses its TCP CONNECT path;
+- `heimdall agent` reports `macos-explicit` available on Apple silicon,
+  publishes its cooperative scope and exact limitations, and exposes an
+  execution prefix only after config and credential preflight;
+- `heimdall run` requires explicit backend selection, owns a loopback listener,
+  emits cooperative TCP metadata, preserves child exit status, and closes all
+  foreground resources; and
 - `just check-macos` type-checks the CLI and portable protocol test targets for
-  pinned `aarch64-apple-darwin` as part of `just verify`.
+  pinned `aarch64-apple-darwin` as part of `just verify`; native Apple-silicon
+  `just test-macos-native` exercises `curl`, a fixture SOCKS5 upstream, JSONL
+  integrity, listener cleanup, and pre-exec refusal.
 
-This remains build scaffolding, not a macOS package, listener, or execution
-backend. The shared outbound protocol is compiled but never selected by the
-Darwin `run` command. Darwin log commands can inspect a compatible existing
-store, but no macOS backend creates traffic events yet. No explicit proxy,
-companion app, system extension, TCP/UDP forwarding, capture, or TLS path is
-available.
+Official macOS archives and registry packages are not yet published. The
+companion app, system extension, transparent TCP/UDP, capture, and TLS paths
+remain unavailable.
 
 ## Implementation sequence
 
 1. Keep the completed target/dependency split, shared evidence owner, offline
-   log tooling, outbound relay transport, and unavailable machine contract
-   covered.
-2. Implement and accept `macos-explicit` as an opt-in reduced mode.
+   log tooling, outbound relay transport, and reduced machine contract covered.
+2. Package and accept the implemented `macos-explicit` CLI on clean Apple
+   silicon machines, including checksum, install, upgrade, rollback, and
+   uninstall evidence.
 3. Add the signed containing app, system extension, minimal session helper, and
    versioned authenticated registration protocol.
 4. Accept transparent TCP and process attribution before adding UDP.
@@ -215,9 +264,16 @@ available.
 
 ## Native acceptance matrix
 
-Compilation and simulator-style unit tests are necessary but insufficient.
-Availability requires a signed, entitled installation on native Apple silicon
-covering:
+The explicit source gate is implemented as `just test-macos-native` on native
+Apple silicon. It covers a cooperative `curl` request through a fixture SOCKS5
+upstream, domain preservation, route evidence, JSONL verification, per-run
+listener cleanup, normal and non-zero child exit propagation, and refusal to
+execute when backend selection is omitted. It does not claim packaging or any
+transparent capability.
+
+Compilation and simulator-style unit tests are insufficient for the future
+transparent backend. Availability of that backend requires a signed, entitled
+installation on native Apple silicon covering:
 
 - IPv4/IPv6 TCP and UDP, direct/proxy/reject policy, and unrelated-process
   non-interference;
@@ -234,8 +290,10 @@ covering:
 - companion install, approval, upgrade, rollback, uninstall, and no enabled
   extension after the final run.
 
-Until this matrix passes, README, package pages, `heimdall agent`, and release
-notes must say that macOS is not available.
+Until the packaging gate passes, package pages and release notes must say that
+official macOS packages are not available. Until the transparent matrix passes,
+README, `heimdall agent`, package pages, and release notes must keep every
+transparent capability unavailable.
 
 ## Apple references
 

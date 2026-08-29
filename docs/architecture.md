@@ -26,10 +26,10 @@ the session.
 
 The platform-neutral `relay_transport` module resolves outbound credentials
 once, validates and encodes destinations, and implements bounded SOCKS5 TCP
-CONNECT and UDP ASSOCIATE setup. The Linux root still owns cgroup interception,
-kernel-map correlation, relay listeners, per-socket UDP identity, policy/event
-context, capture, and TLS. Compiling this outbound transport for Darwin does
-not create a macOS listener or execution backend.
+CONNECT and UDP ASSOCIATE setup. The Linux root owns cgroup interception,
+kernel-map correlation, its TCP/UDP listeners, per-socket UDP identity,
+capture, and TLS. The Apple-silicon `macos-explicit` root uses only the shared
+TCP CONNECT path behind its own per-run cooperative listener.
 
 The hidden `heimdall __setup-worker` process is the only privileged component
 in the default path. It accepts one `heimdall.setup/v2` request over an
@@ -53,6 +53,40 @@ runs do not share policy maps or listeners.
 
 An optional viewer is only a reader of run manifests and JSONL files. It is not
 an interception owner or a prerequisite for any run.
+
+## macOS explicit path
+
+```text
+heimdall run --backend macos-explicit -- command
+        |
+        +-- private run store + JSONL writer
+        +-- 127.0.0.1:<kernel-assigned> SOCKS5 CONNECT listener
+        |       `-- shared TCP policy -> SOCKS5, direct, or reject
+        `-- child ALL_PROXY/all_proxy=socks5h://127.0.0.1:<port>
+```
+
+This source-built Apple-silicon backend is foreground-only and starts no
+daemon, setup helper, Network Extension, or Web UI. It removes inherited proxy
+variables and supplies only `ALL_PROXY` and `all_proxy` to the child. It does
+not modify system proxy settings. A cooperative client such as `curl` can use
+the listener; a client that ignores or removes those variables can bypass it.
+That is why its machine contract says `strict_command_scope=false`,
+`transparent=false`, and `client_can_bypass=true`.
+
+Preflight requires system DNS, rejected UDP, capture off, decrypt off, and
+Apple silicon. The user must name `--backend macos-explicit`; omission or an
+incompatible policy fails before exec. The listener records TCP policy and
+flow metadata under
+`source={backend:"macos-explicit",scope:"cooperative_environment"}` but no
+payload, DNS, TLS, or process-attribution evidence. Closing the foreground run
+aborts remaining listener tasks and closes the port. Because the environment
+cannot prove or clean an entire descendant network scope, its run manifest
+intentionally reports `result.complete=false` and
+`descendants_cleaned=false` even after a normal child exit.
+
+Official packages remain Linux-only. The future `macos-transparent` signed
+companion is a separate backend and may not inherit the explicit backend's
+acceptance claims.
 
 ## Connection lifecycle
 

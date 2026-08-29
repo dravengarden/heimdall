@@ -59,6 +59,7 @@ heimdall run -- curl https://example.com
 heimdall agent --policy corp
 heimdall run --policy corp -- curl https://internal.example.com</code></pre>
         <p>The selected policy owns DNS, ordered rules, and final TCP/UDP actions. The wrapped process may re-enter through <code>systemd-run --user --scope</code>; the resolved global config path and exact argv are preserved. No decrypt mode uses a persistent Heimdall daemon.</p>
+        <p>On Apple silicon, a source build may return a <code>macos-explicit</code> action. Use that exact argv prefix and append the command: <code>heimdall --config /path/to/config.toml run --backend macos-explicit --policy default -- curl https://example.com</code>. It is cooperative TCP only, changes no system proxy settings, and has no UDP, fake DNS, capture, TLS inspection, strict scope, or fail-closed claim. Official macOS packages and <code>macos-transparent</code> remain unavailable.</p>
         <p>Relay failures preserve the trust boundary: <code>tls_upstream_certificate_invalid</code> rejects the remote peer, <code>tls_upstream_client_auth_required</code> identifies an upstream mTLS boundary relay mode cannot forward, <code>tls_downstream_certificate_rejected</code> records an explicit client certificate alert, and <code>tls_downstream_closed_without_close_notify</code> remains ambiguous until correlated with child stderr and exit status.</p>
 
         <h2 id="explain">Explain a decision</h2>

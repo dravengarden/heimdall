@@ -20,6 +20,13 @@ works offline. It catches field shape, enum, required-field, unknown-field, and
 config-version errors. It cannot prove references or runtime capabilities, so
 always finish with `heimdall config validate --json`.
 
+On Apple-silicon macOS, also run `heimdall agent` and use its exact
+`actions.execute_prefix`. The reduced `macos-explicit` backend accepts only a
+policy with `dns.mode = "system"`, rejected UDP, `capture.mode = "off"`, and
+`decrypt.mode = "off"`. Any route referenced by TCP must use a TCP-capable
+outbound. These are backend preflight constraints, not a second configuration
+schema; incompatible input fails before the child executes.
+
 ## Minimal configuration
 
 ```toml
@@ -156,6 +163,11 @@ domain request. Domain rules therefore require fake DNS.
 `dns.mode = "system"` explicitly allows UDP/TCP port 53 to reach the host
 resolver. The relay then sees resolved IPs, so domain rules are rejected and
 policies must use `ip_cidr`, `port`, or protocol matchers.
+
+`macos-explicit` requires system DNS because it has no transparent DNS or fake
+IP path. Its local URL uses the `socks5h` scheme so a cooperative client may
+still pass an original hostname to the loopback frontend. This is
+client-dependent behavior, not universal DNS interception.
 
 Use `heimdall config explain --network udp ... --json` to inspect a UDP policy
 decision. Without `--network`, the command explains TCP.

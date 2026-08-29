@@ -1,19 +1,26 @@
-// macOS CLI surface while both native backends remain unavailable.
+// macOS CLI surface with one cooperative explicit backend. The transparent
+// Network Extension path remains unavailable.
 
-use std::{path::PathBuf, process::ExitCode};
+use std::{
+    os::unix::process::ExitStatusExt,
+    path::{Path, PathBuf},
+    process::{ExitCode, ExitStatus},
+};
 
-use anyhow::Result;
-use clap::{CommandFactory, Parser};
+use anyhow::{Context, Result};
+use clap::{CommandFactory, Parser, ValueEnum};
+use serde_json::json;
+use tokio::process::Command;
 
-/// Inspect Heimdall configuration without claiming a working macOS backend.
+/// Run cooperative clients through an explicit loopback proxy on macOS.
 #[derive(Parser, Debug)]
 #[command(
     name = "heimdall",
     version,
-    about = "Command-scoped egress proxy (macOS backends are not available yet)",
+    about = "Command-scoped egress proxy (cooperative macOS explicit mode)",
     arg_required_else_help = true,
     disable_help_subcommand = true,
-    after_help = "Tip: `heimdall agent` prints the machine-readable macOS backend status."
+    after_help = "Tip: `heimdall agent` prints the exact reduced macOS capability set and argv."
 )]
 struct Cli {
     /// Config path (.toml, .yaml/.yml, or .json).
@@ -26,21 +33,21 @@ struct Cli {
 
 #[derive(clap::Subcommand, Debug)]
 enum Cmd {
-    /// Emit the stable JSON preflight. It exits 1 while no backend is available.
+    /// Emit the stable JSON preflight for the selected policy.
     Agent(crate::cli::agent_macos::AgentArgs),
 
     /// Inspect or validate the shared policy configuration.
     #[command(subcommand)]
     Config(crate::cli::config::ConfigCmd),
 
-    /// Write a shared-format starter config without enabling a backend.
+    /// Write a shared-format starter config.
     Init(crate::cli::init::InitArgs),
 
-    /// Inspect or maintain portable JSONL evidence without enabling a backend.
+    /// Inspect or maintain portable JSONL evidence.
     #[command(subcommand)]
     Logs(crate::cli::logs::LogsCmd),
 
-    /// Refuse command execution until a macOS backend passes native acceptance.
+    /// Run a cooperative client through an explicitly selected backend.
     Run(MacRunArgs),
 
     /// Print concise help for the root or one subcommand.
@@ -57,11 +64,15 @@ enum Cmd {
 
 #[derive(clap::Args, Debug)]
 struct MacRunArgs {
-    /// Named policy to use after a backend becomes available.
+    /// Backend selection. macOS never selects a reduced fallback silently.
+    #[arg(long, value_enum)]
+    backend: Option<MacBackend>,
+
+    /// Named policy; defaults to proxy.default_policy.
     #[arg(short = 'p', long)]
     policy: Option<String>,
 
-    /// Command that would be wrapped. It is never executed by this build.
+    /// Command to wrap with the selected cooperative proxy environment.
     #[arg(
         trailing_var_arg = true,
         allow_hyphen_values = true,
@@ -71,8 +82,15 @@ struct MacRunArgs {
     command: Vec<String>,
 }
 
-fn main() -> ExitCode {
-    match dispatch(Cli::parse()) {
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum MacBackend {
+    #[value(name = "macos-explicit")]
+    Explicit,
+}
+
+#[tokio::main]
+async fn main() -> ExitCode {
+    match dispatch(Cli::parse()).await {
         Ok(code) => code,
         Err(error) => {
             eprintln!("error: {error:#}");
@@ -81,7 +99,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn dispatch(cli: Cli) -> Result<ExitCode> {
+async fn dispatch(cli: Cli) -> Result<ExitCode> {
     match cli.cmd {
         Cmd::Agent(args) => {
             let ready = crate::cli::agent_macos::run(cli.config.as_deref(), args)?;
@@ -109,20 +127,162 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Run(args) => {
-            let _ = (args.policy, args.command);
-            eprintln!(
-                "error[macos_backend_unavailable]: macOS backends are in development and not available"
-            );
-            eprintln!(
-                "fix: run `heimdall agent` for exact backend status; use Linux for execution"
-            );
-            Ok(ExitCode::FAILURE)
+            if args.backend != Some(MacBackend::Explicit) {
+                eprintln!(
+                    "error[macos_backend_required]: macOS never selects a reduced proxy backend implicitly"
+                );
+                eprintln!(
+                    "fix: inspect `heimdall agent`, then pass `--backend macos-explicit` only for a cooperative SOCKS-aware client"
+                );
+                return Ok(ExitCode::FAILURE);
+            }
+            let config_path = resolve_config_path(cli.config.as_deref())?;
+            let exit_code = run_explicit(&config_path, args).await?;
+            Ok(process_exit_code(exit_code))
         }
         Cmd::Help { path, verbose } => {
             print_help(&path, verbose)?;
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+async fn run_explicit(config_path: &Path, args: MacRunArgs) -> Result<i32> {
+    let config = crate::heimdall_config::HeimdallConfig::load(config_path)?;
+    let policy_name = args
+        .policy
+        .clone()
+        .unwrap_or_else(|| config.proxy.default_policy.clone());
+    let diagnostics = crate::explicit_proxy::diagnostics(&config, &policy_name);
+    if let Some(diagnostic) = diagnostics.first() {
+        anyhow::bail!(
+            "{} at {}: {}; fix: {}",
+            diagnostic.code,
+            diagnostic.path,
+            diagnostic.message,
+            diagnostic.hint
+        );
+    }
+    if let Some(diagnostic) = crate::explicit_proxy::outbound_diagnostic(&config) {
+        anyhow::bail!(
+            "{} at {}: {}; fix: {}",
+            diagnostic.code,
+            diagnostic.path,
+            diagnostic.message,
+            diagnostic.hint
+        );
+    }
+
+    let evidence = crate::run_evidence::RunEvidence::start(
+        &args.command,
+        &policy_name,
+        "macos-explicit",
+        &config.capture,
+    )?;
+    let outcome = run_explicit_registered(&config, &policy_name, &args.command, &evidence).await;
+    match outcome {
+        Ok(exit_code) => {
+            // macos-explicit owns the listener but cannot prove or clean a
+            // complete descendant tree after the immediate child exits.
+            evidence.finish(exit_code, false)?;
+            Ok(exit_code)
+        }
+        Err(error) => {
+            let _ = evidence.fail(
+                "macos_explicit_run_failed",
+                "the macos-explicit foreground run failed before completion",
+            );
+            Err(error)
+        }
+    }
+}
+
+async fn run_explicit_registered(
+    config: &crate::heimdall_config::HeimdallConfig,
+    policy_name: &str,
+    command: &[String],
+    evidence: &crate::run_evidence::RunEvidence,
+) -> Result<i32> {
+    let events =
+        crate::event_log::EventClient::connect(evidence.event_socket_path().to_path_buf())?;
+    let proxy = crate::explicit_proxy::ExplicitProxy::start(config, policy_name, events).await?;
+    let proxy_url = proxy.proxy_url();
+    evidence.log().emit(
+        "run.warning",
+        None,
+        json!({
+            "code": "macos_explicit_cooperative_scope",
+            "message": "the wrapped client can ignore or replace the injected explicit proxy environment",
+            "phase": "preflight",
+            "context": {
+                "backend": "macos-explicit",
+                "scope": "cooperative_environment",
+                "environment": ["ALL_PROXY", "all_proxy"],
+                "proxy": proxy_url
+            }
+        }),
+    )?;
+    if let Err(error) = evidence.ready("heimdall-run", None, &["transport"]) {
+        proxy.shutdown().await?;
+        return Err(error);
+    }
+
+    eprintln!(
+        "heimdall run: backend=macos-explicit scope=cooperative_environment ALL_PROXY={proxy_url} all_proxy={proxy_url}"
+    );
+    let mut child_command = Command::new(&command[0]);
+    child_command.args(&command[1..]).kill_on_drop(true);
+    for variable in [
+        "http_proxy",
+        "HTTP_PROXY",
+        "https_proxy",
+        "HTTPS_PROXY",
+        "all_proxy",
+        "ALL_PROXY",
+        "no_proxy",
+        "NO_PROXY",
+        "ftp_proxy",
+        "FTP_PROXY",
+    ] {
+        child_command.env_remove(variable);
+    }
+    child_command
+        .env("ALL_PROXY", &proxy_url)
+        .env("all_proxy", &proxy_url);
+    let mut child = match child_command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            proxy.shutdown().await?;
+            return Err(error).with_context(|| format!("execute {}", command[0]));
+        }
+    };
+    let child_pid = child.id().context("wrapped command has no process ID")?;
+    evidence.log().emit(
+        "run.exec",
+        Some(child_pid),
+        json!({
+            "child_pid": child_pid,
+            "executable": command[0],
+            "argv_count": command.len()
+        }),
+    )?;
+
+    let status = child.wait().await;
+    let shutdown = proxy.shutdown().await;
+    let status = status.context("wait for macos-explicit command")?;
+    shutdown?;
+    Ok(status_exit_code(status))
+}
+
+fn status_exit_code(status: ExitStatus) -> i32 {
+    status
+        .code()
+        .or_else(|| status.signal().map(|signal| 128 + signal))
+        .unwrap_or(1)
+}
+
+fn process_exit_code(code: i32) -> ExitCode {
+    u8::try_from(code).map_or(ExitCode::FAILURE, ExitCode::from)
 }
 
 fn resolve_config_path(explicit: Option<&std::path::Path>) -> Result<PathBuf> {
@@ -162,8 +322,8 @@ fn print_help(path: &[String], _verbose: bool) -> Result<()> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn logs_are_inspectable_while_run_still_refuses_before_exec() {
+    #[tokio::test]
+    async fn logs_are_inspectable_while_run_requires_an_explicit_backend() {
         let parsed = Cli::try_parse_from(["heimdall", "logs", "schema", "--event", "v1"]).unwrap();
         assert!(matches!(parsed.cmd, Cmd::Logs(_)));
 
@@ -180,10 +340,12 @@ mod tests {
         let code = dispatch(Cli {
             config: None,
             cmd: Cmd::Run(MacRunArgs {
+                backend: None,
                 policy: None,
                 command,
             }),
         })
+        .await
         .unwrap();
 
         assert_eq!(code, ExitCode::FAILURE);

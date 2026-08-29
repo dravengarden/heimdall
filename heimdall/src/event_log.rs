@@ -645,7 +645,15 @@ impl RotationServer {
             while !thread_stop.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
-                        if let Err(error) = serve_control(&control_log, &mut stream) {
+                        // Why: Darwin accept inherits O_NONBLOCK from the
+                        // listener, while Linux accept does not. Each bounded
+                        // request is synchronous and must not fail merely
+                        // because the client has not written its first byte.
+                        let result = stream
+                            .set_nonblocking(false)
+                            .context("set accepted log control socket blocking")
+                            .and_then(|()| serve_control(&control_log, &mut stream));
+                        if let Err(error) = result {
                             let _ = write_control_error(&mut stream, "control_failed", &error);
                         }
                     }
@@ -661,7 +669,11 @@ impl RotationServer {
             while !event_stop.load(Ordering::Acquire) {
                 match event_listener.accept() {
                     Ok((mut stream, _)) => {
-                        if let Err(error) = serve_event(&log, &mut stream) {
+                        let result = stream
+                            .set_nonblocking(false)
+                            .context("set accepted event socket blocking")
+                            .and_then(|()| serve_event(&log, &mut stream));
+                        if let Err(error) = result {
                             let code = classify_event_error(&error);
                             let _ = write_control_error(&mut stream, code, &error);
                         }
@@ -1076,10 +1088,30 @@ pub fn runs_root() -> Result<PathBuf> {
 }
 
 pub fn runtime_root() -> Result<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        // Why: Darwin's sockaddr_un path is substantially shorter than the
+        // default per-user temporary directory. A private UID-scoped /tmp
+        // root leaves room for two UUID socket names without moving run data
+        // out of XDG_STATE_HOME.
+        return Ok(macos_runtime_root());
+    }
+    #[cfg(not(target_os = "macos"))]
     if let Some(path) = absolute_env_path("XDG_RUNTIME_DIR") {
         return Ok(path.join("heimdall"));
     }
+    #[cfg(not(target_os = "macos"))]
     Ok(state_home()?.join("heimdall/runtime"))
+}
+
+#[cfg(target_os = "macos")]
+#[allow(
+    unsafe_code,
+    reason = "libc geteuid has no safety preconditions and only reads process credentials"
+)]
+fn macos_runtime_root() -> PathBuf {
+    let uid = unsafe { libc::geteuid() };
+    Path::new("/tmp").join(format!("heimdall-{uid}"))
 }
 
 fn state_home() -> Result<PathBuf> {

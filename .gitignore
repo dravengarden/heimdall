@@ -6,3 +6,5 @@ heimdall-ui/dist/
 heimdall-ui/node_modules/
 heimdall-ui/.vite/
 npm-dist/
+__pycache__/
+*.py[cod]

@@ -9,10 +9,10 @@ implemented for explicit TLS plaintext. Strict low-cardinality run and
 per-flow explanation documents are implemented without replacing JSONL as the
 evidence source of truth.
 
-The writer/control/finalization owner and offline log CLI now compile in the
-in-development Darwin scaffold as well as Linux. This is a storage portability
-boundary only: no macOS backend emits network events until its separate native
-transport and attribution gates pass.
+The writer/control/finalization owner and offline log CLI run on Linux and
+Darwin. The Apple-silicon `macos-explicit` backend emits cooperative TCP policy
+and flow metadata, but no payload, DNS, TLS, or process-attribution evidence.
+The future transparent backend has a separate native acceptance boundary.
 
 This document defines the unified storage and CLI contract. The goals are direct Linux-tool usability, strict
 machine discovery, bounded storage, and loss-aware rotation. The event log is
@@ -138,12 +138,17 @@ fields cannot reinterpret an existing kind.
 - `dns.query`: exchange UUID, transport, question array, and policy.
 - `dns.answer`: matching exchange UUID, rcode, answers, fake boundary, and
   latency.
-- `policy.decision`: cgroup source, policy, network, destination identity,
-  matched rule or final action, and selected action.
+- `policy.decision`: source boundary, policy, network, destination identity,
+  matched rule or final action, and selected action. Linux identifies
+  `{cgroup_id}`; `macos-explicit` identifies
+  `{backend:"macos-explicit",scope:"cooperative_environment"}`. The latter
+  proves only that a client reached the cooperative listener, not which process
+  originated every socket.
 
 ### Flows
 
-- `flow.open`: network, source metadata, destination, and selected action.
+- `flow.open`: network, the same platform-specific source metadata,
+  destination, and selected action.
 - `flow.data`: direction, observation boundary, original length, stored length,
   truncation state, and optional blob reference.
 - `flow.close`: byte counters, duration, status, and error code when present.

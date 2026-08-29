@@ -16,10 +16,12 @@
   <a href="ROADMAP.md"><img src="https://img.shields.io/badge/status-alpha-E6B52A.svg" alt="Alpha status and roadmap"></a>
 </p>
 
-Heimdall runs one command, and its entire descendant process tree, through a
-named SOCKS5 egress policy. It is designed for terminal workflows where a
-single command needs controlled routing without changing shell-wide proxy
-environment variables or using `LD_PRELOAD`.
+On Linux, Heimdall runs one command and its entire descendant process tree
+through a named SOCKS5 egress policy. On Apple silicon macOS, the source-built
+`macos-explicit` backend offers a deliberately smaller path for cooperative
+SOCKS-aware TCP clients. It is designed for terminal workflows where a single
+command needs controlled routing without changing system-wide proxy settings
+or using `LD_PRELOAD`.
 
 The mark uses Bifröst as a boundary metaphor: the navy arch is the guarded
 crossing, and the spectrum path is the route selected by policy. It describes
@@ -54,7 +56,7 @@ need compatibility hardening.
 | Area | Status | Current boundary |
 | --- | --- | --- |
 | Command-scoped TCP and UDP proxying | Available | IPv4/IPv6, SOCKS5 and direct egress, fake DNS, ordered policies |
-| macOS support | In development, not available | Darwin config/init, portable JSONL inspection, shared SOCKS5 outbound transport, and an unavailable `heimdall.agent/v8` preflight now type-check without Linux interception dependencies; no listener or backend emits macOS traffic evidence yet, and proxy execution, packaging, the signed companion, and native acceptance remain incomplete |
+| macOS support | Explicit source backend available; packages pending | Apple-silicon native acceptance covers an opt-in loopback SOCKS5 CONNECT frontend for cooperative TCP clients. It sets only child `ALL_PROXY`/`all_proxy`, emits truthful metadata evidence, and needs no daemon; strict command scope, UDP, fake DNS, capture, TLS inspection, official macOS packages, and the signed transparent companion remain unavailable |
 | Strict configuration and agent contract | Available | TOML, YAML, JSON; generated offline schema/examples; `heimdall.agent/v8` with execution ownership, resolver strategy/userns preflight, shell-safe inspection argv, and repairable diagnostics |
 | Daemonless Linux execution | Available | All decrypt modes own per-run relay, DNS, maps, links, and logs; runtime TLS keeps one unprivileged session helper, never a service |
 | Agent event logs and capture | Available | Per-run health and per-flow explanation summaries, fake-DNS, policy, TCP/UDP and TLS evidence plus coalesced bounded blobs with pre-storage allowlists/redaction |
@@ -67,8 +69,8 @@ need compatibility hardening.
 
 See [docs/product-contract.md](docs/product-contract.md) for the normative
 requirements, [docs/design/macos-backend.md](docs/design/macos-backend.md) for
-the in-development macOS boundary, and [ROADMAP.md](ROADMAP.md) for status and
-planned work.
+the reduced macOS source backend and future transparent boundary, and
+[ROADMAP.md](ROADMAP.md) for status and planned work.
 
 ## Architecture
 
@@ -113,7 +115,24 @@ npm install --global heimdall-egress
 heimdall --version
 ```
 
-To build from source instead:
+Official packages remain Linux-only. An Apple-silicon source build can run a
+cooperative TCP client through the reduced explicit backend after
+`heimdall agent` reports `ready: true`:
+
+```bash
+heimdall agent
+heimdall --config /path/to/config.toml run \
+  --backend macos-explicit --policy default -- \
+  curl https://example.com
+```
+
+Use the exact `actions.execute_prefix` argv returned by `heimdall agent` in
+automation. This path sets only child `ALL_PROXY` and `all_proxy`; clients may
+ignore those variables, so it is not a transparent or fail-closed boundary.
+See the [macOS backend contract](docs/design/macos-backend.md) for its required
+system DNS, rejected UDP, disabled capture/decrypt settings, and native gate.
+
+To build the full Linux backend from source instead:
 
 ### Requirements
 

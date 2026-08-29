@@ -19,9 +19,23 @@ nix develop -c just check-macos
 It type-checks the target-selected CLI and portable unit-test targets for
 pinned `aarch64-apple-darwin`. It proves that shared config/init,
 `RunEvidence`, `relay_transport`, the JSONL store and offline log CLI, and the
-unavailable agent contract do not compile Linux-only aya/cgroup code. It does
-not link a macOS app, start a relay listener, exercise a Network Extension,
-generate macOS traffic evidence, or establish macOS support.
+reduced explicit-agent contract do not compile Linux-only aya/cgroup code. It
+does not link or execute a native binary and is not the macOS acceptance gate.
+
+On a native Apple-silicon Mac, run:
+
+```bash
+just test-macos-native
+```
+
+This pinned release-mode gate runs the Darwin unit tests, builds the source
+CLI, then routes `curl` through the `macos-explicit` loopback SOCKS5 CONNECT
+listener and a fixture upstream. It verifies domain preservation, shared
+policy routing, cooperative `policy.decision`/`flow.open`/`flow.close` JSONL,
+offline integrity, listener teardown, exit-code passthrough, and fail-closed
+backend selection. It does not accept strict process scope, UDP, fake DNS,
+capture, TLS inspection, the future Network Extension, or official macOS
+packaging.
 
 Run the real kernel acceptance after changes to eBPF, cgroups, DNS, relay,
 capture, TLS, setup privilege, or lifecycle behavior:

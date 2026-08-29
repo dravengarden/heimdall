@@ -79,9 +79,10 @@ mod tests {
 
     #[test]
     fn evidence_owner_finalizes_before_releasing_control_sockets() {
-        let suffix = format!("{}-{}", std::process::id(), uuid::Uuid::now_v7().simple());
-        let runs = Path::new("/tmp").join(format!("heimdall-evidence-runs-{suffix}"));
-        let runtime = Path::new("/tmp").join(format!("heimdall-evidence-runtime-{suffix}"));
+        let uuid = uuid::Uuid::now_v7().simple().to_string();
+        let suffix = format!("{}-{}", std::process::id(), &uuid[..8]);
+        let runs = Path::new("/tmp").join(format!("her-{suffix}"));
+        let runtime = Path::new("/tmp").join(format!("het-{suffix}"));
         let evidence = RunEvidence::start_at(
             &runs,
             &runtime,
