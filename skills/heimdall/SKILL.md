@@ -58,12 +58,12 @@ Read [references/events.md](references/events.md) before consuming run logs.
 `heimdall.event/v1` records lifecycle, fake-DNS exchanges, policy decisions,
 TCP/UDP and TLS metadata, bounded blob references, and provenance-linked
 HTTP/1 header evidence in user-owned JSONL.
-Use `heimdall logs schema`, `list`, `path`, `summary`,
+Use `heimdall logs schema`, `list`, `path`, `summary`, `flow`,
 `query`, `tail`, `rotate`, `verify`, `recover`, and `prune`; standard `jq`, `rg`, `sed`,
 `sort`, `sha256sum`, and `wc` are valid consumers. Do not require or start a
 Web UI.
-Export all three evidence contracts before writing a parser:
-`logs schema --event v1`, `--run v1`, and `--summary v1`.
+Export all four evidence contracts before writing a parser:
+`logs schema --event v1`, `--run v1`, `--summary v1`, and `--flow v1`.
 
 If capture is requested, inspect `config.capture`, `config.decrypt`,
 `capabilities.capture`, and `capabilities.decrypt`. Require capture `mode: on`
@@ -170,6 +170,7 @@ Require lifecycle fields appropriate to the workflow:
 heimdall run --policy <policy> -- curl https://example.com
 heimdall logs list --json
 heimdall logs summary --run RUN_ID --json
+heimdall logs flow --run RUN_ID --flow FLOW_ID --json
 heimdall logs query --run RUN_ID --kind flow.close --jsonl
 heimdall logs verify --run RUN_ID --json
 heimdall logs recover --run RUN_ID --json
@@ -193,6 +194,12 @@ Use its missing/out-of-order sequence counts, active flows, failure codes,
 capture truncation, and protocol counters to choose a bounded query. Summary
 is operational aggregation; require `logs verify` before making an integrity
 claim.
+
+After selecting a flow, read its `heimdall.logs.flow/v1` explanation before
+opening payload blobs. Require the exact run/flow IDs, inspect
+`capture.plaintext.observed` and its boundaries instead of inferring plaintext,
+and execute `actions.query`/`actions.verify` as argv arrays. The flow document
+does not contain payload, headers, or SNI and does not itself prove integrity.
 
 Read [references/commands.md](references/commands.md) for diagnosis and
 [references/events.md](references/events.md) for direct Linux-tool recipes.

@@ -92,12 +92,17 @@ the reported capability and event boundary.
    explicit records rather than filename or port inferences. Derived HTTP/1
    records point back to the exact plaintext event sequences used to parse
    them.
-3. JSONL files are the evidence source of truth. `jq`, `rg`, `sed`, `sort`,
-   `wc`, and the `heimdall logs` commands are supported analysis paths.
+3. JSONL files are the evidence source of truth. Strict
+   `heimdall.logs.summary/v1` and `heimdall.logs.flow/v1` documents provide
+   bounded read-only aggregation for a run or selected flow; they do not
+   replace `logs verify` and never copy payload, derived headers, or SNI.
+   `jq`, `rg`, `sed`, `sort`, `wc`, and the `heimdall logs` commands are
+   supported analysis paths.
 4. Heimdall owns active-file rotation and orphan recovery. Agents use `logs
    rotate`, `tail`, `query`, `verify`, `recover`, and `prune`; external rename
    and `copytruncate` are not safe for active segments.
-5. Schemas are bundled and available offline. The Heimdall skill documents
+5. Event, manifest, run-summary, and flow-summary schemas are bundled and
+   available offline. The Heimdall skill documents
    field meanings, safe queries, rotation, integrity checks, and capability
    gates.
 

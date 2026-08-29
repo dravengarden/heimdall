@@ -35,6 +35,37 @@ for heading in \
   }
 done
 
+for evidence_page in \
+  docs/design/agent-event-log.md \
+  docs/runbook.md \
+  skills/heimdall/references/commands.md \
+  skills/heimdall/references/events.md \
+  site/docs/commands.html; do
+  grep -Fq 'heimdall.logs.flow/v1' "$evidence_page" || {
+    printf '%s does not name the per-flow evidence contract\n' \
+      "$evidence_page" >&2
+    exit 1
+  }
+  grep -Fq 'logs schema --flow v1' "$evidence_page" || {
+    printf '%s does not expose the offline flow schema\n' \
+      "$evidence_page" >&2
+    exit 1
+  }
+  grep -Fq 'logs flow --run' "$evidence_page" || {
+    printf '%s does not expose bounded flow explanation\n' \
+      "$evidence_page" >&2
+    exit 1
+  }
+done
+
+for contract_page in docs/product-contract.md site/docs/product-contract.html; do
+  grep -Fq 'heimdall.logs.flow/v1' "$contract_page" || {
+    printf '%s does not preserve the per-flow evidence boundary\n' \
+      "$contract_page" >&2
+    exit 1
+  }
+done
+
 for runbook in docs/runbook.md site/docs/runbook.html; do
   grep -Fq 'just sync-ebpf' "$runbook" || {
     printf '%s does not expose the canonical eBPF sync command\n' "$runbook" >&2

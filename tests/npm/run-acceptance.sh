@@ -59,6 +59,8 @@ npm install --global --ignore-scripts --prefix "$prefix" "$work_dir/$tarball" \
   --no-audit --no-fund
 [[ "$("$prefix/bin/heimdall" --version)" == "heimdall $version" ]]
 [[ "$("$prefix/bin/heimdall-egress" --version)" == "heimdall $version" ]]
+flow_schema=$("$prefix/bin/heimdall" logs schema --flow v1)
+grep -Eq '"const"[[:space:]]*:[[:space:]]*"heimdall\.logs\.flow/v1"' <<<"$flow_schema"
 native_path=$("$prefix/bin/heimdall-egress" --print-native-path)
 [[ "$native_path" == "$prefix/lib/node_modules/heimdall-egress/vendor/linux-x64/heimdall" ]]
 [[ -x "$native_path" && ! -L "$native_path" ]]

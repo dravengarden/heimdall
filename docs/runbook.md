@@ -210,6 +210,9 @@ ignore additive unknown fields. Renaming or changing an existing semantic
 requires a new contract version.
 `actions.config_schema` and `actions.config_example_toml` are read-only and do
 not require a valid or discoverable config file.
+`capabilities.logs.flow_summary_contract`, `actions.logs_schema_flow`, and
+`actions.logs_flow` expose the bounded per-flow explanation contract and its
+parameterized argv without changing the v8 semantics.
 
 Before execution, inspect:
 
@@ -239,8 +242,10 @@ Discover schemas and paths instead of hard-coding fields:
 heimdall logs schema --event v1
 heimdall logs schema --run v1
 heimdall logs schema --summary v1
+heimdall logs schema --flow v1
 heimdall logs list --json
 heimdall logs summary --run RUN_ID --json
+heimdall logs flow --run RUN_ID --flow FLOW_ID --json
 heimdall logs path --run RUN_ID --json
 ```
 
@@ -264,6 +269,16 @@ capture-truncation totals, and DNS/policy/TLS/HTTP counters. Export its strict
 offline contract with `logs schema --summary v1`. The summary is an operational
 aggregation, not a substitute for `logs verify`, which validates schemas,
 segment digests, sequences, and referenced blobs.
+
+`logs flow` emits one `heimdall.logs.flow/v1` document for an exact run/flow
+pair. It explains route and transport outcome, capture by fixed direction and
+boundary, whether plaintext bytes were actually observed, TLS/HTTP counters,
+and error evidence without copying payload, headers, or SNI. Its `actions`
+remain argv arrays. Error-code counts are evidence-record counts: one failure
+may appear in both `tls.error.data.code` and the correlated
+`flow.close.data.error_code`. Export the offline contract with
+`logs schema --flow v1`, and run the returned `actions.verify` before making an
+integrity claim.
 
 Derived HTTP records contain only the first bounded HTTP/1 header per
 direction from explicit TLS plaintext. Resolve `source_seq` before trusting

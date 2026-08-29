@@ -43,6 +43,8 @@ uv pip install --python "$work_dir/venv/bin/python" --no-cache \
   "$work_dir/dist/$x86_wheel"
 [[ "$("$work_dir/venv/bin/heimdall" --version)" == "heimdall $version" ]]
 [[ "$("$work_dir/venv/bin/heimdall-egress" --version)" == "heimdall $version" ]]
+flow_schema=$("$work_dir/venv/bin/heimdall" logs schema --flow v1)
+grep -Eq '"const"[[:space:]]*:[[:space:]]*"heimdall\.logs\.flow/v1"' <<<"$flow_schema"
 native_path=$("$work_dir/venv/bin/heimdall-egress" --print-native-path)
 [[ "$native_path" == "$work_dir/venv/lib/python"*/site-packages/heimdall_egress/native/heimdall ]]
 [[ -x "$native_path" && ! -L "$native_path" ]]

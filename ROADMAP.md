@@ -39,6 +39,10 @@ acceptance path are documented and tested.
   append-only evidence, including sequence loss, active flows, failures,
   capture truncation, and protocol-boundary counters, with a strict offline
   schema for agent validation.
+- Bounded `heimdall.logs.flow/v1` explanations for one selected flow, including
+  route and transport outcome, capture by fixed direction and boundary, actual
+  plaintext observation, TLS/HTTP counters, error evidence, and argv-safe
+  query/verification actions, with no payload, header, or SNI copy.
 - Payload boundary/direction allowlists and environment-backed exact-value
   redaction before hashing or blob publication.
 - Per-flow/direction bounded payload block coalescing with explicit size,
@@ -130,12 +134,13 @@ normal cleanup, and fail-closed owner-death cleanup. See
   and atomic blob publication.
 - Keep the available rotation writer-owned and loss-aware; do not support
   external `copytruncate` against active logs.
-- Keep exhaustive event, run, and summary schemas plus bounded Linux-tool
+- Keep exhaustive event, run, summary, and flow schemas plus bounded Linux-tool
   recipes in the bundled Heimdall skill.
 
 Acceptance target: an agent can discover paths and schemas without guessing,
-follow a run across rotation, select flows with `jq`, verify blobs and segment
-integrity, and distinguish opaque transport from actual TLS plaintext. See
+follow a run across rotation, select and explain one flow, verify blobs and
+segment integrity, and distinguish opaque transport from actual TLS plaintext.
+See
 [docs/design/agent-event-log.md](docs/design/agent-event-log.md).
 
 ### 3. Proxy compatibility and diagnostics
@@ -186,9 +191,9 @@ trusted.
 
 ### 5. Capture analysis workflow
 
-- Extend the available boundary/direction/blob filters and HTTP/1 header
-  evidence with bounded inspection that does not weaken strict private
-  ownership.
+- Extend the available flow explanation, boundary/direction/blob filters, and
+  HTTP/1 header evidence with bounded inspection that does not weaken strict
+  private ownership.
 - Expand the available pre-storage allowlist and exact-value redaction model
   only where the failure boundary remains deterministic and agent-readable.
 - Expand production-like private run-store retention beyond the available

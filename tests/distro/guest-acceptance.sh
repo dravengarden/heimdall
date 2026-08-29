@@ -135,6 +135,7 @@ fi
 heimdall config validate --json | python3 "$fixture" verify-config
 heimdall agent | python3 "$fixture" verify-agent
 heimdall agent | python3 "$fixture" verify-resolver system
+heimdall logs schema --flow v1 | python3 "$fixture" verify-flow-schema
 
 # Why: sudoers authorizes one immutable installation path plus one private
 # subcommand. A copied binary must fail before child execution rather than
@@ -387,6 +388,9 @@ relay_run_dir=$(heimdall logs path --run "$relay_run_id" --json \
 heimdall logs verify --run "$relay_run_id" --json \
   | python3 "$fixture" verify-log closed
 python3 "$fixture" verify-tls relay "$relay_run_dir"
+relay_flow_id=$(python3 "$fixture" first-flow "$relay_run_dir")
+heimdall logs flow --run "$relay_run_id" --flow "$relay_flow_id" --json \
+  | python3 "$fixture" verify-flow relay "$relay_run_id" "$relay_flow_id"
 
 if [[ $run_benchmark == 1 ]]; then
   benchmark_ca_dir=$HOME/.local/state/heimdall/benchmark-ca

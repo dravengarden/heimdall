@@ -57,7 +57,7 @@ need compatibility hardening.
 | macOS support | Planned | Wrapper fallback and Network Extension backend are roadmap items; not currently available |
 | Strict configuration and agent contract | Available | TOML, YAML, JSON; generated offline schema/examples; `heimdall.agent/v8` with execution ownership, resolver strategy/userns preflight, shell-safe inspection argv, and repairable diagnostics |
 | Daemonless Linux execution | Available | All decrypt modes own per-run relay, DNS, maps, links, and logs; runtime TLS keeps one unprivileged session helper, never a service |
-| Agent event logs and capture | Available | Per-run lifecycle, low-cardinality health summaries, fake-DNS, policy, TCP/UDP and TLS evidence plus coalesced bounded blobs with pre-storage allowlists/redaction |
+| Agent event logs and capture | Available | Per-run health and per-flow explanation summaries, fake-DNS, policy, TCP/UDP and TLS evidence plus coalesced bounded blobs with pre-storage allowlists/redaction |
 | Runtime TLS decryption | Available daemonless with alpha limits | Active and system-loader OpenSSL images are pre-attached; loader-known images may map after exec; no CA injection or privileged runtime broker |
 | Relay TLS decryption | Available daemonless with alpha limits | Local CA plus per-host leaves; upstream certificate failures and downstream alerts/unclean closes remain distinct evidence |
 | Static Linux packaging | Available | Reproducible x86_64/aarch64 musl archives, checksums, local release gates, atomic install, one-level rollback, and BTF-preserving artifact-hygiene checks |
@@ -155,6 +155,7 @@ Inspect the resulting run without a Web UI:
 ```bash
 heimdall logs list --json
 heimdall logs summary --run RUN_ID --json
+heimdall logs flow --run RUN_ID --flow FLOW_ID --json
 heimdall logs query --run RUN_ID --kind flow.close --jsonl
 heimdall logs verify --run RUN_ID --json
 heimdall logs recover --run RUN_ID --json # preview only
@@ -247,6 +248,11 @@ inferring support from a language or command name. `heimdall agent` never
 writes configuration, starts a service, attaches a cgroup, or executes a
 workload.
 
+For event analysis, require
+`capabilities.logs.flow_summary_contract = "heimdall.logs.flow/v1"`, then use
+`actions.logs_schema_flow` and parameterize the placeholder IDs in
+`actions.logs_flow`. Every returned action is an argv array, not shell text.
+
 ## Command surface
 
 ```text
@@ -254,7 +260,7 @@ heimdall run [--policy NAME] -- COMMAND [ARGS...]
 heimdall agent [--policy NAME]
 heimdall config schema|example|validate|explain|show|path
 heimdall tls init-ca [--json]
-heimdall logs schema|list|path|summary|query|tail|rotate|verify|recover|prune
+heimdall logs schema|list|path|summary|flow|query|tail|rotate|verify|recover|prune
 heimdall init [--dir PATH] [--format toml|yaml|json] [--force]
 ```
 

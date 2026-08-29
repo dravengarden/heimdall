@@ -5,7 +5,9 @@ payload-aware queries, byte/age rotation, and integrity verification are
 implemented. Correlated fake-DNS, policy-decision, OpenSSL runtime-observation,
 relay ClientHello, and relay TLS handshake/error metadata are implemented.
 Bounded provenance-linked HTTP/1 request/response header records are
-implemented for explicit TLS plaintext.
+implemented for explicit TLS plaintext. Strict low-cardinality run and
+per-flow explanation documents are implemented without replacing JSONL as the
+evidence source of truth.
 
 This document defines the unified storage and CLI contract. The goals are direct Linux-tool usability, strict
 machine discovery, bounded storage, and loss-aware rotation. The event log is
@@ -299,8 +301,10 @@ stream.
 heimdall logs schema --event v1
 heimdall logs schema --run v1
 heimdall logs schema --summary v1
+heimdall logs schema --flow v1
 heimdall logs list --json
 heimdall logs summary --run RUN_ID --json
+heimdall logs flow --run RUN_ID --flow FLOW_ID --json
 heimdall logs path --run RUN_ID --json
 heimdall logs query --run RUN_ID [filters] --jsonl
 heimdall logs tail --run RUN_ID [--follow] --jsonl
@@ -319,6 +323,20 @@ authenticate evidence; use `verify` for schema, digest, sequence, and blob
 integrity. `logs schema --summary v1` exports its strict JSON Schema Draft
 2020-12 contract offline.
 
+`flow` returns exactly one `heimdall.logs.flow/v1` document for an exact
+run/flow pair. It contains the run and flow completion states, selected
+transport metadata, fixed capture counters by direction and boundary, actual
+plaintext observation, TLS/HTTP counters, error evidence, and argv-safe
+`query`/`verify` actions. It never embeds payload bytes, HTTP headers, or SNI.
+`capture.plaintext.observed` becomes true only when a selected `flow.data`
+record reports non-zero original bytes at a `tls_plaintext.*` boundary; a
+configured decrypt mode or transport boundary alone is not proof. Error-code
+counts are evidence-record counts, so one failure may appear once in
+`tls.error.data.code` and again in its correlated
+`flow.close.data.error_code`. The document is an index into the evidence, not
+an integrity result; run its returned `actions.verify` before an integrity
+claim. `logs schema --flow v1` exports the strict contract offline.
+
 Contract rules:
 
 - exit `0`: requested operation completed;
@@ -333,7 +351,8 @@ Contract rules:
 
 Query filters are `--kind`, `--flow`, `--since-seq`, `--until-seq`, repeated
 `--direction`, repeated `--boundary`, repeated `--error-code`, and
-`--has-blob[=true|false]`. This deliberately does not invent a second
+`--has-blob[=true|false]`. `--error-code` matches stable codes stored in either
+`data.code` or `data.error_code`. This deliberately does not invent a second
 general-purpose query language; agents can use `jq` for arbitrary projection.
 
 ## Standard Linux-tool recipes
@@ -357,6 +376,13 @@ Summarize flow outcomes:
 jq -r 'select(.kind == "flow.close") |
   [.flow_id, .data.network, .data.status, (.data.error_code // "-")] | @tsv' \
   "$run_dir"/events-*.jsonl
+```
+
+Explain one selected flow without reading payload bytes:
+
+```bash
+heimdall logs flow --run "$run_id" --flow "$flow_id" --json |
+  jq '{transport, plaintext: .capture.plaintext, tls, http, errors, actions}'
 ```
 
 Find flows with captured TLS plaintext:

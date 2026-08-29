@@ -18,6 +18,7 @@ This reference is the agent-facing schema map.
 - [`heimdall.event/v1`](#heimdalleventv1)
 - [`heimdall.run/v1`](#heimdallrunv1)
 - [`heimdall.logs.summary/v1`](#heimdalllogssummaryv1)
+- [`heimdall.logs.flow/v1`](#heimdalllogsflowv1)
 - [Rotation and querying](#rotation-and-querying)
 - [Retention safety](#retention-safety)
 
@@ -30,13 +31,16 @@ Never hard-code an XDG path. Discover the active contracts and paths from
 heimdall logs schema --event v1
 heimdall logs schema --run v1
 heimdall logs schema --summary v1
+heimdall logs schema --flow v1
 heimdall logs summary --run RUN_ID --json
+heimdall logs flow --run RUN_ID --flow FLOW_ID --json
 heimdall logs path --run RUN_ID --json
 ```
 
-The three schema commands each print one JSON Schema Draft 2020-12 document.
+The four schema commands each print one JSON Schema Draft 2020-12 document.
 `logs summary` prints one `heimdall.logs.summary/v1` operational aggregation;
-it does not replace integrity verification. `logs path` prints one result
+`logs flow` prints one bounded `heimdall.logs.flow/v1` explanation for an exact
+run/flow pair. Neither replaces integrity verification. `logs path` prints one result
 document containing an absolute `run_dir`.
 
 ## `heimdall.event/v1`
@@ -294,6 +298,34 @@ A live run may legitimately be incomplete with active flows. A clean summary
 does not prove segment/blob integrity; always use `logs verify` before an
 integrity claim.
 
+## `heimdall.logs.flow/v1`
+
+Export its strict offline contract with `heimdall logs schema --flow v1`, then
+request one selected flow:
+
+```bash
+flow="$(heimdall logs flow --run "$run_id" --flow "$flow_id" --json)"
+jq '{transport, plaintext: .capture.plaintext, tls, http, errors, actions}' \
+  <<<"$flow"
+```
+
+Every document includes exact run/flow IDs, completion state and sequence
+range, selected route and transport result, capture totals split across fixed
+directions and boundaries, actual plaintext observation, TLS/HTTP counters,
+error evidence, and argv-safe query/verify actions. It contains no payload,
+HTTP header, or SNI value.
+
+`capture.plaintext.observed` is true only when selected `flow.data` evidence
+reports non-zero original bytes at a `tls_plaintext.runtime` or
+`tls_plaintext.relay` boundary. A configured TLS mode, handshake, destination
+port, or byte shape is not plaintext proof. `errors.by_code` counts evidence
+records, not unique incidents: a single TLS failure may appear in both
+`tls.error.data.code` and correlated `flow.close.data.error_code`.
+
+The flow summary does not authenticate JSONL or blobs. Execute its
+`actions.verify` argv before making an integrity claim; use `actions.query` to
+retrieve the selected raw records.
+
 ## Rotation and querying
 
 For an active run, request rotation from its writer:
@@ -321,6 +353,9 @@ jq -r 'select(.kind == "flow.close") |
   [.flow_id, .data.status, (.data.error_code // "-")] | @tsv' \
   "$run_dir"/events-*.jsonl
 ```
+
+`logs query --error-code CODE` selects stable error evidence from either
+`data.code` or `data.error_code`.
 
 Before trusting a closed run, execute:
 

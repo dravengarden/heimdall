@@ -8,6 +8,14 @@ guide.
 
 ### Added
 
+- Add a strict offline `heimdall.logs.flow/v1` contract and `heimdall logs
+  flow` command that explain one flow's route, transport result, bounded
+  capture by direction and boundary, observed plaintext, TLS/HTTP evidence,
+  error evidence, and argv-safe follow-up actions without copying payloads,
+  headers, or SNI into the summary.
+- Advertise the flow-summary schema and parameterized inspection action through
+  additive `heimdall.agent/v8` fields, with unit, current/LTS NixOS, Ubuntu,
+  and Debian acceptance coverage.
 - Add a pinned Ubuntu 24.04 x86_64 KVM release gate for native archive
   installation, exact positive and negative setup authorization, fake DNS
   without relaxing AppArmor's user-namespace restriction, direct TCP/UDP
@@ -31,6 +39,9 @@ guide.
 
 ### Changed
 
+- Make `logs query --error-code` match stable error evidence stored as either
+  `data.code` or `data.error_code`, including TLS errors and their correlated
+  flow-close records.
 - Include the Ubuntu and Debian compatibility guests in the authoritative local
   release transaction while keeping the broader SOCKS5, fake-DNS, QUIC,
   runtime-client, capture, rotation, retention, and stress matrix in the

@@ -41,11 +41,17 @@ readelf -h "$bundle/heimdall" | grep -F "Machine:" | grep -Fq "$elf_machine" || 
 if [ -n "$runner" ]; then
   [ "$("$runner" "$bundle/heimdall" --version)" = "heimdall $version" ]
   "$runner" "$bundle/heimdall" --help >/dev/null
+  flow_schema=$("$runner" "$bundle/heimdall" logs schema --flow v1)
+  printf '%s\n' "$flow_schema" |
+    grep -Eq '"const"[[:space:]]*:[[:space:]]*"heimdall\.logs\.flow/v1"'
   echo "release package structural and emulated CLI acceptance OK"
   exit 0
 fi
 
 [ "$("$bundle/heimdall" --version)" = "heimdall $version" ]
+flow_schema=$("$bundle/heimdall" logs schema --flow v1)
+printf '%s\n' "$flow_schema" |
+  grep -Eq '"const"[[:space:]]*:[[:space:]]*"heimdall\.logs\.flow/v1"'
 
 prefix=$work_dir/prefix
 "$bundle/heimdall-install" install --prefix "$prefix"
@@ -61,5 +67,8 @@ mv "$bundle/heimdall.next" "$bundle/heimdall"
 "$prefix/lib/heimdall/heimdall-install" rollback --prefix "$prefix"
 cmp -s "$prefix/bin/heimdall" "$work_dir/original"
 "$prefix/bin/heimdall" --help >/dev/null
+flow_schema=$("$prefix/bin/heimdall" logs schema --flow v1)
+printf '%s\n' "$flow_schema" |
+  grep -Eq '"const"[[:space:]]*:[[:space:]]*"heimdall\.logs\.flow/v1"'
 
 echo "release package acceptance OK"

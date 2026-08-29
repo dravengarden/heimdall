@@ -19,9 +19,9 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
 use crate::event_log::{
-    BlobSummary, EVENT_CONTRACT, EVENT_SCHEMA, Event, RUN_SCHEMA, RunManifest, RunResult,
-    SUMMARY_CONTRACT, SUMMARY_SCHEMA, SegmentManifest, persist_manifest, read_manifest,
-    request_rotation, run_is_active, runs_root,
+    BlobSummary, EVENT_CONTRACT, EVENT_SCHEMA, Event, FLOW_SUMMARY_CONTRACT, FLOW_SUMMARY_SCHEMA,
+    RUN_SCHEMA, RunManifest, RunResult, SUMMARY_CONTRACT, SUMMARY_SCHEMA, SegmentManifest,
+    persist_manifest, read_manifest, request_rotation, run_is_active, runs_root,
 };
 
 #[derive(Subcommand, Debug)]
@@ -34,6 +34,8 @@ pub enum LogsCmd {
     Path(RunJsonArgs),
     /// Summarize low-cardinality health and evidence counters for one run.
     Summary(RunJsonArgs),
+    /// Explain one flow as a bounded machine-readable evidence summary.
+    Flow(FlowArgs),
     /// Stream matching event objects as JSONL.
     Query(QueryArgs),
     /// Read a run and optionally follow it across segment rotation.
@@ -54,26 +56,34 @@ pub struct SchemaArgs {
     #[arg(
         long,
         value_name = "VERSION",
-        conflicts_with_all = ["run", "summary"],
-        required_unless_present_any = ["run", "summary"]
+        conflicts_with_all = ["run", "summary", "flow"],
+        required_unless_present_any = ["run", "summary", "flow"]
     )]
     event: Option<String>,
     /// Print the heimdall.run schema version (currently v1).
     #[arg(
         long,
         value_name = "VERSION",
-        conflicts_with_all = ["event", "summary"],
-        required_unless_present_any = ["event", "summary"]
+        conflicts_with_all = ["event", "summary", "flow"],
+        required_unless_present_any = ["event", "summary", "flow"]
     )]
     run: Option<String>,
     /// Print the heimdall.logs.summary schema version (currently v1).
     #[arg(
         long,
         value_name = "VERSION",
-        conflicts_with_all = ["event", "run"],
-        required_unless_present_any = ["event", "run"]
+        conflicts_with_all = ["event", "run", "flow"],
+        required_unless_present_any = ["event", "run", "flow"]
     )]
     summary: Option<String>,
+    /// Print the heimdall.logs.flow schema version (currently v1).
+    #[arg(
+        long,
+        value_name = "VERSION",
+        conflicts_with_all = ["event", "run", "summary"],
+        required_unless_present_any = ["event", "run", "summary"]
+    )]
+    flow: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -88,6 +98,19 @@ pub struct RunJsonArgs {
     /// UUIDv7 run identifier.
     #[arg(long)]
     run: Uuid,
+    /// Emit one machine-readable JSON document.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct FlowArgs {
+    /// UUIDv7 run identifier.
+    #[arg(long)]
+    run: Uuid,
+    /// UUIDv7 flow identifier from flow-scoped event evidence.
+    #[arg(long)]
+    flow: Uuid,
     /// Emit one machine-readable JSON document.
     #[arg(long)]
     json: bool,
@@ -188,6 +211,7 @@ pub fn run(command: LogsCmd) -> Result<()> {
         LogsCmd::List(args) => list(args),
         LogsCmd::Path(args) => path(args),
         LogsCmd::Summary(args) => summary(args),
+        LogsCmd::Flow(args) => flow(args),
         LogsCmd::Query(args) => query(&args, 0).map(|_| ()),
         LogsCmd::Tail(args) => tail(args),
         LogsCmd::Rotate(args) => rotate(args),
@@ -202,16 +226,27 @@ fn schema(args: SchemaArgs) -> Result<()> {
         args.event.as_deref(),
         args.run.as_deref(),
         args.summary.as_deref(),
+        args.flow.as_deref(),
     ) {
-        (Some("v1"), None, None) => EVENT_SCHEMA,
-        (None, Some("v1"), None) => RUN_SCHEMA,
-        (None, None, Some("v1")) => SUMMARY_SCHEMA,
-        (Some(version), None, None) => anyhow::bail!("unsupported event schema `{version}`"),
-        (None, Some(version), None) => anyhow::bail!("unsupported run schema `{version}`"),
-        (None, None, Some(version)) => {
+        (Some("v1"), None, None, None) => EVENT_SCHEMA,
+        (None, Some("v1"), None, None) => RUN_SCHEMA,
+        (None, None, Some("v1"), None) => SUMMARY_SCHEMA,
+        (None, None, None, Some("v1")) => FLOW_SUMMARY_SCHEMA,
+        (Some(version), None, None, None) => {
+            anyhow::bail!("unsupported event schema `{version}`")
+        }
+        (None, Some(version), None, None) => {
+            anyhow::bail!("unsupported run schema `{version}`")
+        }
+        (None, None, Some(version), None) => {
             anyhow::bail!("unsupported summary schema `{version}`")
         }
-        _ => anyhow::bail!("select exactly one of --event v1, --run v1, or --summary v1"),
+        (None, None, None, Some(version)) => {
+            anyhow::bail!("unsupported flow schema `{version}`")
+        }
+        _ => {
+            anyhow::bail!("select exactly one of --event v1, --run v1, --summary v1, or --flow v1")
+        }
     };
     let value: Value = serde_json::from_str(raw).context("decode bundled JSON Schema")?;
     println!("{}", serde_json::to_string(&value)?);
@@ -255,6 +290,12 @@ fn path(args: RunJsonArgs) -> Result<()> {
 fn summary(args: RunJsonArgs) -> Result<()> {
     let (run_dir, manifest) = find_run(args.run)?;
     let value = summarize_run(&run_dir, &manifest)?;
+    print_document(&value, args.json)
+}
+
+fn flow(args: FlowArgs) -> Result<()> {
+    let (run_dir, manifest) = find_run(args.run)?;
+    let value = summarize_flow(&run_dir, &manifest, args.flow)?;
     print_document(&value, args.json)
 }
 
@@ -450,6 +491,260 @@ fn value_u64(data: &Value, key: &str) -> u64 {
     data.get(key).and_then(Value::as_u64).unwrap_or(0)
 }
 
+#[derive(Default)]
+struct FlowCaptureCounters {
+    records: u64,
+    original_bytes: u64,
+    stored_bytes: u64,
+    blob_records: u64,
+    truncated_records: u64,
+}
+
+impl FlowCaptureCounters {
+    fn observe(&mut self, data: &Value) {
+        self.records = self.records.saturating_add(1);
+        self.original_bytes = self
+            .original_bytes
+            .saturating_add(value_u64(data, "original_bytes"));
+        self.stored_bytes = self
+            .stored_bytes
+            .saturating_add(value_u64(data, "stored_bytes"));
+        if data.get("blob").is_some_and(|blob| !blob.is_null()) {
+            self.blob_records = self.blob_records.saturating_add(1);
+        }
+        if data.get("truncated").and_then(Value::as_bool) == Some(true) {
+            self.truncated_records = self.truncated_records.saturating_add(1);
+        }
+    }
+}
+
+#[derive(Default)]
+struct FlowCounters {
+    records: u64,
+    first_seq: Option<u64>,
+    last_seq: u64,
+    by_kind: BTreeMap<String, u64>,
+    open: Option<Value>,
+    close: Option<Value>,
+    capture: FlowCaptureCounters,
+    capture_by_direction: BTreeMap<String, FlowCaptureCounters>,
+    capture_by_boundary: BTreeMap<String, FlowCaptureCounters>,
+    tls_runtime: u64,
+    tls_client_hellos: u64,
+    tls_handshakes: u64,
+    tls_errors: u64,
+    http_requests: u64,
+    http_responses: u64,
+    error_events: u64,
+    errors_by_code: BTreeMap<String, u64>,
+}
+
+impl FlowCounters {
+    fn observe(&mut self, event: &Event) {
+        self.records = self.records.saturating_add(1);
+        self.first_seq.get_or_insert(event.seq);
+        self.last_seq = self.last_seq.max(event.seq);
+        increment(&mut self.by_kind, &event.kind);
+
+        match event.kind.as_str() {
+            "flow.open" => {
+                self.open.get_or_insert_with(|| event.data.clone());
+            }
+            "flow.data" => {
+                self.capture.observe(&event.data);
+                if let Some(direction) = event.data.get("direction").and_then(Value::as_str) {
+                    self.capture_by_direction
+                        .entry(direction.to_owned())
+                        .or_default()
+                        .observe(&event.data);
+                }
+                if let Some(boundary) = event.data.get("boundary").and_then(Value::as_str) {
+                    self.capture_by_boundary
+                        .entry(boundary.to_owned())
+                        .or_default()
+                        .observe(&event.data);
+                }
+            }
+            "flow.close" => {
+                if let Some(code) = event.data.get("error_code").and_then(Value::as_str) {
+                    increment(&mut self.errors_by_code, code);
+                }
+                self.close = Some(event.data.clone());
+            }
+            "tls.runtime" => self.tls_runtime = self.tls_runtime.saturating_add(1),
+            "tls.client_hello" => {
+                self.tls_client_hellos = self.tls_client_hellos.saturating_add(1);
+            }
+            "tls.handshake" => self.tls_handshakes = self.tls_handshakes.saturating_add(1),
+            "tls.error" => {
+                self.tls_errors = self.tls_errors.saturating_add(1);
+                self.error_events = self.error_events.saturating_add(1);
+                if let Some(code) = event.data.get("code").and_then(Value::as_str) {
+                    increment(&mut self.errors_by_code, code);
+                }
+            }
+            "http.request" => self.http_requests = self.http_requests.saturating_add(1),
+            "http.response" => self.http_responses = self.http_responses.saturating_add(1),
+            _ => {}
+        }
+    }
+}
+
+fn summarize_flow(run_dir: &Path, manifest: &RunManifest, flow_id: Uuid) -> Result<Value> {
+    let mut counters = FlowCounters::default();
+    for segment in segment_paths(run_dir)? {
+        let file = File::open(&segment).with_context(|| format!("open {}", segment.display()))?;
+        for (line_number, line) in BufReader::new(file).lines().enumerate() {
+            let line = line
+                .with_context(|| format!("read {} line {}", segment.display(), line_number + 1))?;
+            let event: Event = serde_json::from_str(&line).with_context(|| {
+                format!("decode {} line {}", segment.display(), line_number + 1)
+            })?;
+            if event.flow_id == Some(flow_id) {
+                counters.observe(&event);
+            }
+        }
+    }
+    flow_document(manifest, flow_id, counters)
+}
+
+fn flow_document(manifest: &RunManifest, flow_id: Uuid, counters: FlowCounters) -> Result<Value> {
+    anyhow::ensure!(
+        counters.records > 0,
+        "flow {flow_id} was not found in run {}",
+        manifest.run_id
+    );
+    let open = counters.open.as_ref();
+    let close = counters.close.as_ref();
+    let flow_complete = open.is_some() && close.is_some();
+    let run_terminal = matches!(manifest.state.as_str(), "closed" | "failed");
+    let flow_state = if flow_complete {
+        "closed"
+    } else if open.is_some() && !run_terminal {
+        "open"
+    } else {
+        "incomplete"
+    };
+    let network = open
+        .and_then(|data| data.get("network"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            close
+                .and_then(|data| data.get("network"))
+                .and_then(Value::as_str)
+        });
+    let error_code = close
+        .and_then(|data| data.get("error_code"))
+        .and_then(Value::as_str);
+
+    let mut plaintext_boundaries = Vec::new();
+    let mut plaintext_original_bytes = 0u64;
+    let mut plaintext_stored_bytes = 0u64;
+    for boundary in ["tls_plaintext.runtime", "tls_plaintext.relay"] {
+        if let Some(counts) = counters.capture_by_boundary.get(boundary)
+            && counts.original_bytes > 0
+        {
+            plaintext_boundaries.push(boundary);
+            plaintext_original_bytes =
+                plaintext_original_bytes.saturating_add(counts.original_bytes);
+            plaintext_stored_bytes = plaintext_stored_bytes.saturating_add(counts.stored_bytes);
+        }
+    }
+
+    Ok(json!({
+        "contract": FLOW_SUMMARY_CONTRACT,
+        "run_id": manifest.run_id,
+        "flow_id": flow_id,
+        "run": {
+            "state": manifest.state,
+            "complete": manifest.result.as_ref().is_some_and(|result| result.complete)
+        },
+        "flow": {
+            "state": flow_state,
+            "complete": flow_complete,
+            "sequence": {
+                "first": counters.first_seq.context("flow summary lost its first sequence")?,
+                "last": counters.last_seq,
+                "records": counters.records
+            },
+            "events": {"by_kind": counters.by_kind}
+        },
+        "transport": {
+            "network": network,
+            "source": open.and_then(|data| data.get("source")).filter(|value| value.is_object()),
+            "destination": open.and_then(|data| data.get("destination")).filter(|value| value.is_object()),
+            "action": open.and_then(|data| data.get("action")).filter(|value| value.is_object()),
+            "policy": open.and_then(|data| data.get("policy")).and_then(Value::as_str),
+            "boundary": open.and_then(|data| data.get("boundary")).and_then(Value::as_str),
+            "status": close.and_then(|data| data.get("status")).and_then(Value::as_str),
+            "error_code": error_code,
+            "duration_us": close.and_then(|data| data.get("duration_us")).and_then(Value::as_u64),
+            "bytes": {
+                "client_to_remote": close.and_then(|data| data.get("client_to_remote_bytes")).and_then(Value::as_u64),
+                "remote_to_client": close.and_then(|data| data.get("remote_to_client_bytes")).and_then(Value::as_u64)
+            }
+        },
+        "capture": {
+            "records": counters.capture.records,
+            "original_bytes": counters.capture.original_bytes,
+            "stored_bytes": counters.capture.stored_bytes,
+            "blob_records": counters.capture.blob_records,
+            "truncated_records": counters.capture.truncated_records,
+            "by_direction": {
+                "client_to_remote": flow_capture_json(counters.capture_by_direction.get("client_to_remote")),
+                "remote_to_client": flow_capture_json(counters.capture_by_direction.get("remote_to_client"))
+            },
+            "by_boundary": {
+                "transport": flow_capture_json(counters.capture_by_boundary.get("transport")),
+                "tls_plaintext.runtime": flow_capture_json(counters.capture_by_boundary.get("tls_plaintext.runtime")),
+                "tls_plaintext.relay": flow_capture_json(counters.capture_by_boundary.get("tls_plaintext.relay"))
+            },
+            "plaintext": {
+                "observed": plaintext_original_bytes > 0,
+                "boundaries": plaintext_boundaries,
+                "original_bytes": plaintext_original_bytes,
+                "stored_bytes": plaintext_stored_bytes
+            }
+        },
+        "tls": {
+            "runtime_records": counters.tls_runtime,
+            "client_hellos": counters.tls_client_hellos,
+            "handshakes": counters.tls_handshakes,
+            "errors": counters.tls_errors
+        },
+        "http": {
+            "requests": counters.http_requests,
+            "responses": counters.http_responses
+        },
+        "errors": {
+            "event_records": counters.error_events,
+            "flow_close": error_code.is_some(),
+            "by_code": counters.errors_by_code
+        },
+        "actions": {
+            "query": [
+                "heimdall", "logs", "query", "--run", manifest.run_id.to_string(),
+                "--flow", flow_id.to_string(), "--jsonl"
+            ],
+            "verify": [
+                "heimdall", "logs", "verify", "--run", manifest.run_id.to_string(), "--json"
+            ]
+        }
+    }))
+}
+
+fn flow_capture_json(counters: Option<&FlowCaptureCounters>) -> Value {
+    let zero = FlowCaptureCounters::default();
+    let counters = counters.unwrap_or(&zero);
+    json!({
+        "records": counters.records,
+        "original_bytes": counters.original_bytes,
+        "stored_bytes": counters.stored_bytes,
+        "blob_records": counters.blob_records,
+        "truncated_records": counters.truncated_records
+    })
+}
+
 fn rotate(args: RunJsonArgs) -> Result<()> {
     let response = match request_rotation(args.run) {
         Ok(response) => response,
@@ -519,7 +814,7 @@ fn matches_query(event: &Event, args: &QueryArgs) -> bool {
         && args.until_seq.is_none_or(|seq| event.seq <= seq)
         && matches_data_string(&event.data, "direction", &args.direction)
         && matches_data_string(&event.data, "boundary", &args.boundary)
-        && matches_data_string(&event.data, "error_code", &args.error_code)
+        && matches_error_code(&event.data, &args.error_code)
         && args.has_blob.is_none_or(|expected| {
             event.data.get("blob").is_some_and(|blob| !blob.is_null()) == expected
         })
@@ -531,6 +826,15 @@ fn matches_data_string(data: &Value, key: &str, selected: &[String]) -> bool {
             .get(key)
             .and_then(Value::as_str)
             .is_some_and(|value| selected.iter().any(|selected| selected == value))
+}
+
+fn matches_error_code(data: &Value, selected: &[String]) -> bool {
+    selected.is_empty()
+        || ["error_code", "code"].iter().any(|key| {
+            data.get(*key)
+                .and_then(Value::as_str)
+                .is_some_and(|value| selected.iter().any(|selected| selected == value))
+        })
 }
 
 fn verify(args: RunJsonArgs) -> Result<()> {
@@ -1309,7 +1613,7 @@ fn print_document(value: &impl Serialize, json: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event_log::RunLog;
+    use crate::event_log::{CommandManifest, RUN_CONTRACT, RunLog};
 
     fn test_root(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -1380,6 +1684,179 @@ mod tests {
         assert!(!matches_query(&event_without_blob, &args));
         args.has_blob = Some(false);
         assert!(matches_query(&event_without_blob, &args));
+    }
+
+    #[test]
+    fn error_code_filter_matches_flow_and_tls_error_fields() {
+        let run_id = Uuid::now_v7();
+        let flow_id = Uuid::now_v7();
+        let mut args = QueryArgs {
+            run: run_id,
+            kind: Vec::new(),
+            flow: Some(flow_id),
+            since_seq: None,
+            until_seq: None,
+            direction: Vec::new(),
+            boundary: Vec::new(),
+            error_code: vec!["tls_upstream_certificate_invalid".into()],
+            has_blob: None,
+            jsonl: true,
+        };
+        let event = |kind: &str, data| Event {
+            schema: EVENT_CONTRACT.into(),
+            run_id,
+            seq: 1,
+            ts: "2026-08-29T00:00:00.000000Z".into(),
+            monotonic_ns: 1,
+            kind: kind.into(),
+            flow_id: Some(flow_id),
+            pid: None,
+            data,
+        };
+
+        assert!(matches_query(
+            &event(
+                "tls.error",
+                json!({"code": "tls_upstream_certificate_invalid"})
+            ),
+            &args
+        ));
+        assert!(matches_query(
+            &event(
+                "flow.close",
+                json!({"error_code": "tls_upstream_certificate_invalid"})
+            ),
+            &args
+        ));
+        args.error_code = vec!["different".into()];
+        assert!(!matches_query(
+            &event(
+                "tls.error",
+                json!({"code": "tls_upstream_certificate_invalid"})
+            ),
+            &args
+        ));
+    }
+
+    #[test]
+    fn flow_document_matches_schema_and_explains_plaintext_evidence() {
+        let run_id = Uuid::now_v7();
+        let flow_id = Uuid::now_v7();
+        let event = |seq, kind: &str, data| Event {
+            schema: EVENT_CONTRACT.into(),
+            run_id,
+            seq,
+            ts: "2026-08-29T00:00:00.000000Z".into(),
+            monotonic_ns: seq * 100,
+            kind: kind.into(),
+            flow_id: Some(flow_id),
+            pid: None,
+            data,
+        };
+        let mut counters = FlowCounters::default();
+        for event in [
+            event(
+                1,
+                "flow.open",
+                json!({
+                    "network": "tcp",
+                    "source": {"cgroup_id": 42},
+                    "destination": {"host": "example.com", "port": 443},
+                    "action": {"type": "route", "outbound": "default"},
+                    "policy": "default",
+                    "boundary": "transport"
+                }),
+            ),
+            event(
+                2,
+                "flow.data",
+                json!({
+                    "direction": "client_to_remote",
+                    "boundary": "tls_plaintext.relay",
+                    "original_bytes": 12,
+                    "stored_bytes": 8,
+                    "truncated": true,
+                    "blob": {"digest": "fixture"}
+                }),
+            ),
+            event(
+                3,
+                "flow.data",
+                json!({
+                    "direction": "remote_to_client",
+                    "boundary": "transport",
+                    "original_bytes": 20,
+                    "stored_bytes": 0,
+                    "truncated": false,
+                    "blob": null
+                }),
+            ),
+            event(4, "tls.client_hello", json!({})),
+            event(5, "tls.handshake", json!({})),
+            event(
+                6,
+                "tls.error",
+                json!({"code": "tls_downstream_closed_without_close_notify"}),
+            ),
+            event(7, "http.request", json!({})),
+            event(
+                8,
+                "flow.close",
+                json!({
+                    "network": "tcp",
+                    "status": "error",
+                    "error_code": "tls_downstream_closed_without_close_notify",
+                    "client_to_remote_bytes": 12,
+                    "remote_to_client_bytes": 20,
+                    "duration_us": 500
+                }),
+            ),
+        ] {
+            counters.observe(&event);
+        }
+        let manifest = RunManifest {
+            schema: RUN_CONTRACT.into(),
+            run_id,
+            state: "closed".into(),
+            started_at: "2026-08-29T00:00:00.000000Z".into(),
+            closed_at: Some("2026-08-29T00:00:01.000000Z".into()),
+            command: CommandManifest {
+                executable: "fixture".into(),
+                argv_count: 1,
+                argv: None,
+            },
+            policy: "default".into(),
+            backend: "foreground".into(),
+            capture: json!({}),
+            segments: Vec::new(),
+            blobs: BlobSummary::default(),
+            result: Some(RunResult {
+                exit_code: Some(1),
+                signal: None,
+                error_code: None,
+                complete: true,
+            }),
+        };
+
+        let document = flow_document(&manifest, flow_id, counters).unwrap();
+        let schema: Value = serde_json::from_str(FLOW_SUMMARY_SCHEMA).unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let errors = validator
+            .iter_errors(&document)
+            .map(|error| error.to_string())
+            .collect::<Vec<_>>();
+
+        assert!(errors.is_empty(), "{errors:#?}");
+        assert_eq!(document["contract"], FLOW_SUMMARY_CONTRACT);
+        assert_eq!(document["flow"]["state"], "closed");
+        assert_eq!(document["capture"]["plaintext"]["observed"], true);
+        assert_eq!(document["capture"]["plaintext"]["original_bytes"], 12);
+        assert_eq!(document["capture"]["plaintext"]["stored_bytes"], 8);
+        assert_eq!(
+            document["errors"]["by_code"]["tls_downstream_closed_without_close_notify"],
+            2
+        );
+        assert_eq!(document["actions"]["query"][6], flow_id.to_string());
     }
 
     #[test]

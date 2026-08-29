@@ -1,0 +1,288 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ravengarden.github.io/heimdall/schemas/heimdall.logs.flow.v1.schema.json",
+  "title": "Heimdall flow summary",
+  "type": "object",
+  "required": [
+    "contract", "run_id", "flow_id", "run", "flow", "transport",
+    "capture", "tls", "http", "errors", "actions"
+  ],
+  "properties": {
+    "contract": { "const": "heimdall.logs.flow/v1" },
+    "run_id": { "$ref": "#/$defs/uuid_v7" },
+    "flow_id": { "$ref": "#/$defs/uuid_v7" },
+    "run": {
+      "type": "object",
+      "required": ["state", "complete"],
+      "properties": {
+        "state": { "enum": ["starting", "running", "closing", "closed", "failed"] },
+        "complete": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "flow": {
+      "type": "object",
+      "required": ["state", "complete", "sequence", "events"],
+      "properties": {
+        "state": { "enum": ["open", "closed", "incomplete"] },
+        "complete": { "type": "boolean" },
+        "sequence": {
+          "type": "object",
+          "required": ["first", "last", "records"],
+          "properties": {
+            "first": { "$ref": "#/$defs/uint" },
+            "last": { "$ref": "#/$defs/uint" },
+            "records": { "$ref": "#/$defs/uint" }
+          },
+          "additionalProperties": false
+        },
+        "events": {
+          "type": "object",
+          "required": ["by_kind"],
+          "properties": {
+            "by_kind": { "$ref": "#/$defs/string_counts" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "transport": {
+      "type": "object",
+      "required": [
+        "network", "source", "destination", "action", "policy", "boundary",
+        "status", "error_code", "duration_us", "bytes"
+      ],
+      "properties": {
+        "network": { "type": ["string", "null"], "enum": ["tcp", "udp", null] },
+        "source": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "required": ["cgroup_id"],
+              "properties": { "cgroup_id": { "$ref": "#/$defs/uint_zero" } },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "destination": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/destination" }
+          ]
+        },
+        "action": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/action" }
+          ]
+        },
+        "policy": { "type": ["string", "null"] },
+        "boundary": {
+          "type": ["string", "null"],
+          "enum": ["transport", "tls_plaintext.runtime", "tls_plaintext.relay", null]
+        },
+        "status": { "type": ["string", "null"] },
+        "error_code": { "type": ["string", "null"] },
+        "duration_us": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/uint_zero" }
+          ]
+        },
+        "bytes": {
+          "type": "object",
+          "required": ["client_to_remote", "remote_to_client"],
+          "properties": {
+            "client_to_remote": {
+              "oneOf": [
+                { "type": "null" },
+                { "$ref": "#/$defs/uint_zero" }
+              ]
+            },
+            "remote_to_client": {
+              "oneOf": [
+                { "type": "null" },
+                { "$ref": "#/$defs/uint_zero" }
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "capture": {
+      "type": "object",
+      "required": [
+        "records", "original_bytes", "stored_bytes", "blob_records",
+        "truncated_records", "by_direction", "by_boundary", "plaintext"
+      ],
+      "properties": {
+        "records": { "$ref": "#/$defs/uint_zero" },
+        "original_bytes": { "$ref": "#/$defs/uint_zero" },
+        "stored_bytes": { "$ref": "#/$defs/uint_zero" },
+        "blob_records": { "$ref": "#/$defs/uint_zero" },
+        "truncated_records": { "$ref": "#/$defs/uint_zero" },
+        "by_direction": {
+          "type": "object",
+          "required": ["client_to_remote", "remote_to_client"],
+          "properties": {
+            "client_to_remote": { "$ref": "#/$defs/capture_counts" },
+            "remote_to_client": { "$ref": "#/$defs/capture_counts" }
+          },
+          "additionalProperties": false
+        },
+        "by_boundary": {
+          "type": "object",
+          "required": ["transport", "tls_plaintext.runtime", "tls_plaintext.relay"],
+          "properties": {
+            "transport": { "$ref": "#/$defs/capture_counts" },
+            "tls_plaintext.runtime": { "$ref": "#/$defs/capture_counts" },
+            "tls_plaintext.relay": { "$ref": "#/$defs/capture_counts" }
+          },
+          "additionalProperties": false
+        },
+        "plaintext": {
+          "type": "object",
+          "required": ["observed", "boundaries", "original_bytes", "stored_bytes"],
+          "properties": {
+            "observed": { "type": "boolean" },
+            "boundaries": {
+              "type": "array",
+              "items": { "enum": ["tls_plaintext.runtime", "tls_plaintext.relay"] },
+              "uniqueItems": true
+            },
+            "original_bytes": { "$ref": "#/$defs/uint_zero" },
+            "stored_bytes": { "$ref": "#/$defs/uint_zero" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "tls": {
+      "type": "object",
+      "required": ["runtime_records", "client_hellos", "handshakes", "errors"],
+      "properties": {
+        "runtime_records": { "$ref": "#/$defs/uint_zero" },
+        "client_hellos": { "$ref": "#/$defs/uint_zero" },
+        "handshakes": { "$ref": "#/$defs/uint_zero" },
+        "errors": { "$ref": "#/$defs/uint_zero" }
+      },
+      "additionalProperties": false
+    },
+    "http": {
+      "type": "object",
+      "required": ["requests", "responses"],
+      "properties": {
+        "requests": { "$ref": "#/$defs/uint_zero" },
+        "responses": { "$ref": "#/$defs/uint_zero" }
+      },
+      "additionalProperties": false
+    },
+    "errors": {
+      "type": "object",
+      "required": ["event_records", "flow_close", "by_code"],
+      "properties": {
+        "event_records": { "$ref": "#/$defs/uint_zero" },
+        "flow_close": { "type": "boolean" },
+        "by_code": { "$ref": "#/$defs/string_counts" }
+      },
+      "additionalProperties": false
+    },
+    "actions": {
+      "type": "object",
+      "required": ["query", "verify"],
+      "properties": {
+        "query": { "$ref": "#/$defs/argv" },
+        "verify": { "$ref": "#/$defs/argv" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "uint": { "type": "integer", "minimum": 1 },
+    "uint_zero": { "type": "integer", "minimum": 0 },
+    "uuid_v7": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "string_counts": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/uint_zero" }
+    },
+    "capture_counts": {
+      "type": "object",
+      "required": [
+        "records", "original_bytes", "stored_bytes", "blob_records",
+        "truncated_records"
+      ],
+      "properties": {
+        "records": { "$ref": "#/$defs/uint_zero" },
+        "original_bytes": { "$ref": "#/$defs/uint_zero" },
+        "stored_bytes": { "$ref": "#/$defs/uint_zero" },
+        "blob_records": { "$ref": "#/$defs/uint_zero" },
+        "truncated_records": { "$ref": "#/$defs/uint_zero" }
+      },
+      "additionalProperties": false
+    },
+    "destination": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["host", "port"],
+          "properties": {
+            "host": { "type": "string" },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["ip", "port"],
+          "properties": {
+            "ip": { "type": "string" },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "action": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type"],
+          "properties": { "type": { "const": "direct" } },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "method"],
+          "properties": {
+            "type": { "const": "reject" },
+            "method": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "outbound"],
+          "properties": {
+            "type": { "const": "route" },
+            "outbound": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "argv": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1
+    }
+  }
+}

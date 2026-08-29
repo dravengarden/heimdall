@@ -99,6 +99,7 @@ as_tester heimdall agent \
     and .capabilities.capture.environment_redaction
     and .capabilities.logs.event_contract == "heimdall.event/v1"
     and .capabilities.logs.summary_contract == "heimdall.logs.summary/v1"
+    and .capabilities.logs.flow_summary_contract == "heimdall.logs.flow/v1"
     and .capabilities.logs.run_contract == "heimdall.run/v1"
     and .capabilities.logs.format == "jsonl"
     and .capabilities.logs.lifecycle_events
@@ -150,9 +151,11 @@ as_tester heimdall agent \
     and .capabilities.lifecycle.exit_code_passthrough
     and .actions.logs_schema_event == ["heimdall", "logs", "schema", "--event", "v1"]
     and .actions.logs_schema_summary == ["heimdall", "logs", "schema", "--summary", "v1"]
+    and .actions.logs_schema_flow == ["heimdall", "logs", "schema", "--flow", "v1"]
     and .actions.config_schema == ["heimdall", "config", "schema", "--version", "v1"]
     and .actions.config_example_toml == ["heimdall", "config", "example", "--format", "toml"]
     and .actions.logs_summary == ["heimdall", "logs", "summary", "--run", "<RUN_ID>", "--json"]
+    and .actions.logs_flow == ["heimdall", "logs", "flow", "--run", "<RUN_ID>", "--flow", "<FLOW_ID>", "--json"]
     and .actions.logs_schema_run == ["heimdall", "logs", "schema", "--run", "v1"]
     and .actions.logs_list == ["heimdall", "logs", "list", "--json"]
     and .actions.logs_recover_preview == ["heimdall", "logs", "recover", "--run", "<RUN_ID>", "--json"]
@@ -318,6 +321,12 @@ as_tester heimdall logs schema --summary v1 \
       and .properties.contract.const == "heimdall.logs.summary/v1"
       and (.required | index("sequence")) != null
       and (.required | index("error_events")) != null' >/dev/null
+as_tester heimdall logs schema --flow v1 \
+  | jq -e '
+      ."$schema" == "https://json-schema.org/draft/2020-12/schema"
+      and .properties.contract.const == "heimdall.logs.flow/v1"
+      and (.required | index("capture")) != null
+      and (.required | index("actions")) != null' >/dev/null
 
 as_tester heimdall run --policy direct -- sleep 1 &
 rotation_process=$!
@@ -739,6 +748,35 @@ as_tester heimdall logs summary --run "$relay_run_id" --json \
       and .http.requests == 1
       and .http.responses == 1
       and .error_events.total == 0' >/dev/null
+relay_flow_id="$(jq -er -s '
+    first(.[] | select(.kind == "flow.open" and .data.network == "tcp")).flow_id' \
+  "$relay_run_dir"/events-*.jsonl)"
+as_tester heimdall logs flow --run "$relay_run_id" --flow "$relay_flow_id" --json \
+  | jq -e --arg run_id "$relay_run_id" --arg flow_id "$relay_flow_id" '
+      .contract == "heimdall.logs.flow/v1"
+      and .run_id == $run_id
+      and .flow_id == $flow_id
+      and .run.state == "closed"
+      and .run.complete
+      and .flow.state == "closed"
+      and .flow.complete
+      and .transport.network == "tcp"
+      and .transport.destination == {"host":"fixture.test","port":18444}
+      and .transport.action.type == "route"
+      and .transport.error_code == null
+      and .capture.by_boundary["tls_plaintext.relay"].records >= 2
+      and .capture.plaintext.observed
+      and .capture.plaintext.original_bytes > 0
+      and (.capture.plaintext.boundaries | index("tls_plaintext.relay")) != null
+      and .tls.client_hellos >= 1
+      and .tls.handshakes >= 1
+      and .tls.errors == 0
+      and .http.requests == 1
+      and .http.responses == 1
+      and .errors.event_records == 0
+      and (.errors.flow_close | not)
+      and .actions.query == ["heimdall", "logs", "query", "--run", $run_id, "--flow", $flow_id, "--jsonl"]
+      and .actions.verify == ["heimdall", "logs", "verify", "--run", $run_id, "--json"]' >/dev/null
 
 # Keep the two certificate trust boundaries distinguishable. An IP name fails
 # upstream identity verification before Heimdall presents a leaf, while the
@@ -758,6 +796,10 @@ jq -e -s 'any(.[]; .kind == "tls.error"
     and any(.[]; .kind == "flow.close"
       and .data.error_code == "tls_upstream_certificate_invalid")' \
   "$upstream_cert_run_dir"/events-*.jsonl >/dev/null
+as_tester heimdall logs query --run "$upstream_cert_run_id" \
+  --error-code tls_upstream_certificate_invalid --jsonl \
+  | jq -e -s 'any(.[]; .kind == "tls.error")
+      and any(.[]; .kind == "flow.close")' >/dev/null
 
 if as_tester heimdall --config /etc/heimdall-test/relay.toml run --policy fake -- \
   curl -fsS --max-time 5 https://fixture.test:18444/ >/dev/null 2>&1; then

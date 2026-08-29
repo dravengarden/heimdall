@@ -52,6 +52,8 @@ CARGO_TARGET_DIR="$work_dir/install-target" cargo install \
   --locked \
   --root "$work_dir/install-root"
 [[ "$("$work_dir/install-root/bin/heimdall" --version)" == "heimdall $version" ]]
+flow_schema=$("$work_dir/install-root/bin/heimdall" logs schema --flow v1)
+grep -Eq '"const"[[:space:]]*:[[:space:]]*"heimdall\.logs\.flow/v1"' <<<"$flow_schema"
 installed_bins=$(find "$work_dir/install-root/bin" -maxdepth 1 -type f -printf '%f\n')
 [[ "$installed_bins" == heimdall ]] || {
   echo 'Cargo package installed an unexpected executable set:' >&2

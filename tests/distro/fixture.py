@@ -203,12 +203,18 @@ def verify_agent(mode: str) -> None:
     decrypt_capabilities = (
         capabilities.get("decrypt") if isinstance(capabilities, dict) else None
     )
+    logs_capabilities = (
+        capabilities.get("logs") if isinstance(capabilities, dict) else None
+    )
+    actions = value.get("actions")
     if not (
         isinstance(capture, dict)
         and isinstance(decrypt, dict)
         and isinstance(decrypt_capabilities, dict)
+        and isinstance(logs_capabilities, dict)
+        and isinstance(actions, dict)
     ):
-        raise RuntimeError("agent document is missing capture or decrypt")
+        raise RuntimeError("agent document is missing capture, decrypt, logs, or actions")
     runtime_capabilities_ready = mode != "runtime" or (
         decrypt_capabilities.get("runtime_discovery")
         == "loaded_images_at_run_start"
@@ -226,6 +232,20 @@ def verify_agent(mode: str) -> None:
         and execution.get("web_ui_required") is False
         and capture.get("mode") == ("off" if mode == "off" else "on")
         and decrypt.get("mode") == mode
+        and logs_capabilities.get("flow_summary_contract") == "heimdall.logs.flow/v1"
+        and actions.get("logs_schema_flow")
+        == ["heimdall", "logs", "schema", "--flow", "v1"]
+        and actions.get("logs_flow")
+        == [
+            "heimdall",
+            "logs",
+            "flow",
+            "--run",
+            "<RUN_ID>",
+            "--flow",
+            "<FLOW_ID>",
+            "--json",
+        ]
         and runtime_capabilities_ready
     )
     if not expected:
@@ -479,6 +499,91 @@ def load_run_events(path: pathlib.Path) -> list[dict[str, object]]:
     return events
 
 
+def first_flow(path: pathlib.Path) -> None:
+    for event in load_run_events(path):
+        if event.get("kind") == "flow.open" and isinstance(event.get("flow_id"), str):
+            print(event["flow_id"])
+            return
+    raise RuntimeError(f"run has no flow.open evidence: {path}")
+
+
+def verify_flow_schema() -> None:
+    value = read_document()
+    properties = value.get("properties")
+    required = value.get("required")
+    if not (
+        value.get("$schema") == "https://json-schema.org/draft/2020-12/schema"
+        and isinstance(properties, dict)
+        and properties.get("contract", {}).get("const") == "heimdall.logs.flow/v1"
+        and isinstance(required, list)
+        and "capture" in required
+        and "actions" in required
+    ):
+        raise RuntimeError(f"unexpected flow schema: {value!r}")
+
+
+def verify_flow(mode: str, run_id: str, flow_id: str) -> None:
+    value = read_document()
+    run = value.get("run")
+    flow = value.get("flow")
+    transport = value.get("transport")
+    capture = value.get("capture")
+    tls = value.get("tls")
+    http = value.get("http")
+    errors = value.get("errors")
+    actions = value.get("actions")
+    boundary = f"tls_plaintext.{mode}"
+    expected = (
+        value.get("contract") == "heimdall.logs.flow/v1"
+        and value.get("run_id") == run_id
+        and value.get("flow_id") == flow_id
+        and isinstance(run, dict)
+        and run.get("state") == "closed"
+        and run.get("complete") is True
+        and isinstance(flow, dict)
+        and flow.get("state") == "closed"
+        and flow.get("complete") is True
+        and isinstance(transport, dict)
+        and transport.get("network") == "tcp"
+        and transport.get("error_code") is None
+        and isinstance(capture, dict)
+        and capture.get("plaintext", {}).get("observed") is True
+        and boundary in capture.get("plaintext", {}).get("boundaries", [])
+        and capture.get("plaintext", {}).get("original_bytes", 0) > 0
+        and capture.get("by_boundary", {}).get(boundary, {}).get("records", 0) > 0
+        and isinstance(tls, dict)
+        and tls.get("errors") == 0
+        and isinstance(http, dict)
+        and isinstance(errors, dict)
+        and errors.get("event_records") == 0
+        and errors.get("flow_close") is False
+        and isinstance(actions, dict)
+        and actions.get("query")
+        == [
+            "heimdall",
+            "logs",
+            "query",
+            "--run",
+            run_id,
+            "--flow",
+            flow_id,
+            "--jsonl",
+        ]
+        and actions.get("verify")
+        == ["heimdall", "logs", "verify", "--run", run_id, "--json"]
+    )
+    if mode == "relay":
+        expected = (
+            expected
+            and tls.get("client_hellos", 0) > 0
+            and tls.get("handshakes", 0) > 0
+            and http.get("requests") == 1
+            and http.get("responses") == 1
+        )
+    if not expected:
+        raise RuntimeError(f"unexpected {mode} flow summary: {value!r}")
+
+
 def verify_tls(mode: str, path: pathlib.Path) -> None:
     boundary = f"tls_plaintext.{mode}"
     events = load_run_events(path)
@@ -658,6 +763,12 @@ def main() -> None:
         verify_recovery_apply()
     elif command == "verify-ca":
         verify_ca()
+    elif command == "first-flow":
+        first_flow(pathlib.Path(sys.argv[2]))
+    elif command == "verify-flow-schema":
+        verify_flow_schema()
+    elif command == "verify-flow":
+        verify_flow(sys.argv[2], sys.argv[3], sys.argv[4])
     elif command == "verify-tls":
         verify_tls(sys.argv[2], pathlib.Path(sys.argv[3]))
     elif command == "verify-benchmark":

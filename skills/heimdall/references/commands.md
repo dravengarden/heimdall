@@ -24,8 +24,10 @@ heimdall config explain --policy default --network udp --domain example.com --po
 heimdall logs schema --event v1
 heimdall logs schema --run v1
 heimdall logs schema --summary v1
+heimdall logs schema --flow v1
 heimdall logs list --json
 heimdall logs summary --run RUN_ID --json
+heimdall logs flow --run RUN_ID --flow FLOW_ID --json
 ```
 
 `agent` is the primary `heimdall.agent/v8` machine contract. Exit 0 means
@@ -48,8 +50,8 @@ capability checks. `config explain` evaluates one destination and returns the
 first rule plus structured action; use `--network udp` and either `--domain`
 or `--ip` as appropriate.
 
-The three `logs schema` actions export the strict event, manifest, and summary
-contracts without network access. Validate stored or generated documents
+The four `logs schema` actions export the strict event, manifest, run-summary,
+and flow-summary contracts without network access. Validate stored or generated documents
 against those schemas instead of copying field lists from prose.
 
 ## Run through a policy
@@ -113,6 +115,22 @@ opened/closed/active flows, network/status/failure-code counts, durations,
 bytes, capture truncation/boundaries, protocol counters, segments, and blobs.
 It can describe a live incomplete run and does not replace `logs verify`.
 
+After selecting a flow ID, request its bounded explanation before opening any
+blob:
+
+```bash
+heimdall logs flow --run "$run_id" --flow "$flow_id" --json | jq '{
+  transport, plaintext: .capture.plaintext, tls, http, errors, actions
+}'
+```
+
+The strict `heimdall.logs.flow/v1` document includes route/result metadata,
+fixed capture counters by direction and boundary, actual plaintext observation,
+TLS/HTTP counters, error evidence, and argv-safe query/verify actions. It copies
+no payload, header, or SNI. Error counts are evidence-record counts, so a TLS
+failure may be represented by both `tls.error.data.code` and
+`flow.close.data.error_code`. Run `actions.verify` before an integrity claim.
+
 For a closed run expected to be clean, use a bounded gate before selecting
 detailed evidence:
 
@@ -131,6 +149,9 @@ reference. Before reading one, run `logs verify`, resolve its path with
 `realpath`, prove it remains below the discovered `run_dir/blobs`, and compare
 both `stat -c '%s'` and `sha256sum` with the reference. The complete
 non-disclosing recipe is in [events.md](events.md#flow-data).
+
+`logs query --error-code CODE` matches stable error evidence in either
+`data.code` or `data.error_code`.
 
 For a live stream across writer-owned rotation:
 
