@@ -15,9 +15,9 @@ HOST = "127.0.0.1"
 TCP_PORT = 18080
 UDP_PORT = 18082
 TLS_PORT = 18444
-TCP_BODY = b"ubuntu-tcp-ok"
-UDP_BODY = b"ubuntu-udp:probe"
-TLS_BODY = b"ubuntu-tls-ok"
+TCP_BODY = b"heimdall-tcp-ok"
+UDP_BODY = b"heimdall-udp:probe"
+TLS_BODY = b"heimdall-tls-ok"
 STREAM_CHUNK = b"0123456789abcdef" * 4096
 MAX_STREAM_BYTES = 32 * 1024 * 1024
 
@@ -72,7 +72,7 @@ def serve_udp() -> None:
         sock.bind((HOST, UDP_PORT))
         while True:
             payload, peer = sock.recvfrom(65535)
-            sock.sendto(b"ubuntu-udp:" + payload, peer)
+            sock.sendto(b"heimdall-udp:" + payload, peer)
 
 
 def serve_http() -> None:
@@ -215,7 +215,7 @@ def verify_agent(mode: str) -> None:
         raise RuntimeError(f"unexpected agent contract: {value!r}")
 
 
-def verify_resolver(strategy: str) -> None:
+def verify_resolver(strategy: str, profile: str | None = None) -> None:
     value = read_document()
     decision = value.get("decision")
     if not isinstance(decision, dict):
@@ -243,12 +243,33 @@ def verify_resolver(strategy: str) -> None:
             and set(resolver.get("hosts_sources", [])) == {"files", "dns"}
             and resolver.get("private_mount_required") is False
             and resolver.get("private_mount_status") == "not_required"
+        )
+        if profile == "apparmor-restricted":
+            expected = (
+                expected
+                and resolver.get("apparmor_enabled") is True
+                and resolver.get("apparmor_restrict_unprivileged_userns") is True
+                and ["cat", "/sys/module/apparmor/parameters/enabled"]
+                in value.get("actions", {}).get("resolver_inspect", [])
+                and ["cat", "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"]
+                in value.get("actions", {}).get("resolver_inspect", [])
+            )
+        else:
+            raise RuntimeError(f"unsupported resolver profile: {profile}")
+    elif strategy == "private_mount":
+        expected = (
+            expected
+            and profile == "private-mount"
+            and resolver.get("reason") == "nss_status_action"
+            and resolver.get("hosts_sources")
+            == ["files", "myhostname", "resolve", "[!UNAVAIL=return]", "dns"]
+            and resolver.get("unsupported_sources") == ["[!UNAVAIL=return]"]
+            and resolver.get("private_mount_required") is True
+            and resolver.get("private_mount_status") == "runtime_check"
             and resolver.get("apparmor_enabled") is True
-            and resolver.get("apparmor_restrict_unprivileged_userns") is True
-            and ["cat", "/sys/module/apparmor/parameters/enabled"]
-            in value.get("actions", {}).get("resolver_inspect", [])
-            and ["cat", "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"]
-            in value.get("actions", {}).get("resolver_inspect", [])
+            and resolver.get("apparmor_restrict_unprivileged_userns") is None
+            and resolver.get("unprivileged_userns_clone") is True
+            and resolver.get("max_user_namespaces", 0) > 0
         )
     else:
         raise RuntimeError(f"unsupported expected resolver strategy: {strategy}")
@@ -490,7 +511,7 @@ def verify_tls(mode: str, path: pathlib.Path) -> None:
         )
 
 
-def verify_benchmark() -> None:
+def verify_benchmark(distro_id: str) -> None:
     value = read_document()
     environment = value.get("environment")
     aggregates = value.get("aggregates")
@@ -532,14 +553,20 @@ def verify_benchmark() -> None:
         "proxy_tcp_capture",
         "relay_tls_capture",
     }
+    distribution_fragments = {
+        "ubuntu": "Ubuntu 24.04",
+        "debian": "Debian GNU/Linux 13",
+    }
+    if distro_id not in distribution_fragments:
+        raise RuntimeError(f"unsupported benchmark distribution: {distro_id}")
     valid = (
         value.get("contract") == "heimdall.benchmark/v1"
-        and value.get("scope") == "disposable-ubuntu-vm"
+        and value.get("scope") == f"disposable-{distro_id}-vm"
         and environment.get("architecture") == "x86_64"
         and environment.get("memory_bytes", 0) >= 7 * 1024 * 1024 * 1024
         and environment.get("rss_source") == "procfs-heimdall-processes"
         and isinstance(environment.get("distribution"), str)
-        and "Ubuntu 24.04" in environment["distribution"]
+        and distribution_fragments[distro_id] in environment["distribution"]
         and isinstance(iterations, int)
         and 1 <= iterations <= 20
         and aggregate_scenarios
@@ -563,7 +590,7 @@ def verify_benchmark() -> None:
         and integrity == expected_integrity
     )
     if not valid:
-        raise RuntimeError(f"unexpected Ubuntu benchmark contract: {value!r}")
+        raise RuntimeError(f"unexpected {distro_id} benchmark contract: {value!r}")
 
 
 def main() -> None:
@@ -589,7 +616,7 @@ def main() -> None:
     elif command == "verify-agent":
         verify_agent(sys.argv[2] if len(sys.argv) > 2 else "off")
     elif command == "verify-resolver":
-        verify_resolver(sys.argv[2])
+        verify_resolver(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None)
     elif command == "latest-run":
         latest_run()
     elif command == "latest-running-run":
@@ -617,7 +644,7 @@ def main() -> None:
     elif command == "verify-tls":
         verify_tls(sys.argv[2], pathlib.Path(sys.argv[3]))
     elif command == "verify-benchmark":
-        verify_benchmark()
+        verify_benchmark(sys.argv[2])
     else:
         raise SystemExit(f"unknown command: {command}")
 

@@ -207,42 +207,62 @@ impl std::fmt::Display for RelayCopyError {
 
 impl std::error::Error for RelayCopyError {}
 
+struct RelayCaMaterial {
+    certificate: Certificate,
+    key: KeyPair,
+}
+
+pub(crate) fn validate_ca_material(ca_cert: &Path, ca_key: &Path) -> Result<()> {
+    load_ca_material(ca_cert, ca_key).map(drop)
+}
+
+fn load_ca_material(ca_cert: &Path, ca_key: &Path) -> Result<RelayCaMaterial> {
+    let key_metadata = fs::symlink_metadata(ca_key)
+        .with_context(|| format!("inspect relay TLS CA key {}", ca_key.display()))?;
+    anyhow::ensure!(
+        key_metadata.is_file(),
+        "relay TLS CA key must be a regular file"
+    );
+    anyhow::ensure!(
+        key_metadata.permissions().mode() & 0o077 == 0,
+        "relay TLS CA key {} must not grant group or other permissions; use mode 0600",
+        ca_key.display()
+    );
+    let cert_pem = fs::read_to_string(ca_cert)
+        .with_context(|| format!("read relay TLS CA certificate {}", ca_cert.display()))?;
+    let key_pem = fs::read_to_string(ca_key)
+        .with_context(|| format!("read relay TLS CA key {}", ca_key.display()))?;
+    let key = KeyPair::from_pem(&key_pem).context("parse relay TLS CA private key PEM")?;
+    let (_, pem) = parse_x509_pem(cert_pem.as_bytes()).context("decode relay TLS CA PEM")?;
+    let (_, parsed_ca) = parse_x509_certificate(&pem.contents).context("parse relay TLS CA DER")?;
+    anyhow::ensure!(
+        parsed_ca
+            .basic_constraints()
+            .context("read relay TLS CA basic constraints")?
+            .is_some_and(|constraint| constraint.value.ca),
+        "relay TLS CA certificate is not authorized to sign certificates"
+    );
+    anyhow::ensure!(
+        parsed_ca
+            .key_usage()
+            .context("read relay TLS CA key usage")?
+            .is_some_and(|usage| usage.value.key_cert_sign()),
+        "relay TLS CA certificate must include keyCertSign key usage; generate replacement material in an empty private directory with `heimdall tls init-ca`, update command-scoped client trust, then update both config paths"
+    );
+    anyhow::ensure!(
+        parsed_ca.public_key().raw == key.public_key_der(),
+        "relay TLS CA certificate and private key do not match"
+    );
+    let certificate = CertificateParams::from_ca_cert_pem(&cert_pem)
+        .context("parse relay TLS CA certificate PEM")?
+        .self_signed(&key)
+        .context("reconstruct relay TLS CA signer")?;
+    Ok(RelayCaMaterial { certificate, key })
+}
+
 impl RelayTls {
     pub fn load(ca_cert: &Path, ca_key: &Path) -> Result<Self> {
-        let key_metadata = fs::symlink_metadata(ca_key)
-            .with_context(|| format!("inspect relay TLS CA key {}", ca_key.display()))?;
-        anyhow::ensure!(
-            key_metadata.is_file(),
-            "relay TLS CA key must be a regular file"
-        );
-        anyhow::ensure!(
-            key_metadata.permissions().mode() & 0o077 == 0,
-            "relay TLS CA key {} must not grant group or other permissions; use mode 0600",
-            ca_key.display()
-        );
-        let cert_pem = fs::read_to_string(ca_cert)
-            .with_context(|| format!("read relay TLS CA certificate {}", ca_cert.display()))?;
-        let key_pem = fs::read_to_string(ca_key)
-            .with_context(|| format!("read relay TLS CA key {}", ca_key.display()))?;
-        let ca_key = KeyPair::from_pem(&key_pem).context("parse relay TLS CA private key PEM")?;
-        let (_, pem) = parse_x509_pem(cert_pem.as_bytes()).context("decode relay TLS CA PEM")?;
-        let (_, parsed_ca) =
-            parse_x509_certificate(&pem.contents).context("parse relay TLS CA DER")?;
-        anyhow::ensure!(
-            parsed_ca
-                .basic_constraints()
-                .context("read relay TLS CA basic constraints")?
-                .is_some_and(|constraint| constraint.value.ca),
-            "relay TLS CA certificate is not authorized to sign certificates"
-        );
-        anyhow::ensure!(
-            parsed_ca.public_key().raw == ca_key.public_key_der(),
-            "relay TLS CA certificate and private key do not match"
-        );
-        let ca = CertificateParams::from_ca_cert_pem(&cert_pem)
-            .context("parse relay TLS CA certificate PEM")?
-            .self_signed(&ca_key)
-            .context("reconstruct relay TLS CA signer")?;
+        let material = load_ca_material(ca_cert, ca_key)?;
 
         let native = rustls_native_certs::load_native_certs();
         let mut roots = RootCertStore::empty();
@@ -261,8 +281,8 @@ impl RelayTls {
             .with_root_certificates(roots)
             .with_no_client_auth();
         Ok(Self {
-            ca,
-            ca_key,
+            ca: material.certificate,
+            ca_key: material.key,
             client_config: Arc::new(client_config),
         })
     }
@@ -392,6 +412,10 @@ impl RelayTls {
         let key = KeyPair::generate().context("generate intercepted TLS leaf key")?;
         let mut params = CertificateParams::new(vec![server_name.to_owned()])
             .context("create intercepted TLS certificate parameters")?;
+        // Why: strict OpenSSL verifiers reject a non-self-signed leaf without
+        // an Authority Key Identifier even when its signature and root trust
+        // are otherwise valid.
+        params.use_authority_key_identifier_extension = true;
         params.key_usages.push(KeyUsagePurpose::DigitalSignature);
         params
             .extended_key_usages
@@ -507,12 +531,36 @@ mod tests {
         assert_eq!(silent_close.phase(), "stream");
     }
 
+    #[test]
+    fn ca_without_signing_key_usage_is_rejected() {
+        let root = std::env::temp_dir().join(format!(
+            "heimdall-relay-ca-test-{}-{}",
+            std::process::id(),
+            uuid::Uuid::now_v7()
+        ));
+        fs::create_dir(&root).unwrap();
+        let cert_path = root.join("ca.pem");
+        let key_path = root.join("ca-key.pem");
+        let key = KeyPair::generate().unwrap();
+        let mut params = CertificateParams::default();
+        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let certificate = params.self_signed(&key).unwrap();
+        fs::write(&cert_path, certificate.pem()).unwrap();
+        fs::write(&key_path, key.serialize_pem()).unwrap();
+        fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let error = validate_ca_material(&cert_path, &key_path).unwrap_err();
+        assert!(error.to_string().contains("keyCertSign"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[tokio::test]
-    async fn generated_leaf_is_trusted_and_preserves_alpn() {
+    async fn generated_leaf_has_authority_key_identifier_and_preserves_alpn() {
         let ca_key = KeyPair::generate().unwrap();
         let mut ca_params = CertificateParams::default();
         ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
         let ca = ca_params.self_signed(&ca_key).unwrap();
+        let expected_authority_key_identifier = ca.key_identifier();
         let ca_der = CertificateDer::from(ca.der().to_vec());
 
         let mut roots = RootCertStore::empty();
@@ -545,6 +593,22 @@ mod tests {
             .connect(name, client_io)
             .await
             .unwrap();
+        let (_, leaf) =
+            parse_x509_certificate(tls.get_ref().1.peer_certificates().unwrap()[0].as_ref())
+                .unwrap();
+        let authority_key_identifier = leaf
+            .iter_extensions()
+            .find_map(|extension| match extension.parsed_extension() {
+                x509_parser::extensions::ParsedExtension::AuthorityKeyIdentifier(identifier) => {
+                    identifier
+                        .key_identifier
+                        .as_ref()
+                        .map(|value| value.0.to_vec())
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(authority_key_identifier, expected_authority_key_identifier);
         let mut response = [0u8; 2];
         tls.read_exact(&mut response).await.unwrap();
         assert_eq!(&response, b"ok");

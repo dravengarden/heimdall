@@ -16,6 +16,7 @@
 
 - [ ] `nix develop -c just verify`
 - [ ] `nix develop -c just test-vm` (when proxy, lifecycle, or TLS behavior changed)
+- [ ] `just test-vm-ubuntu && just test-vm-debian` (when distro, resolver, lifecycle, or TLS behavior changed)
 
 ## Contract and documentation review
 

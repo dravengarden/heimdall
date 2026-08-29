@@ -15,11 +15,12 @@ socks_fixture=/opt/heimdall-acceptance/socks5-fixture.py
 tls_dir=/opt/heimdall-acceptance/tls
 uid=$(id -u)
 : "${HEIMDALL_EXPECTED_VERSION:?expected release version is required}"
+: "${HEIMDALL_DISTRO_ID:?expected distribution identifier is required}"
+: "${HEIMDALL_RESOLVER_PROFILE:?expected resolver profile is required}"
 run_benchmark=${HEIMDALL_RUN_BENCHMARK:-0}
 benchmark_iterations=${HEIMDALL_BENCHMARK_ITERATIONS:-3}
 export HOME=${HOME:-/home/tester}
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$uid}
-export DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}
 export PATH=/usr/local/bin:/usr/bin:/bin
 
 work_dir=$(mktemp -d)
@@ -39,7 +40,7 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 fail() {
-  echo "Ubuntu acceptance failed: $*" >&2
+  echo "$HEIMDALL_DISTRO_ID acceptance failed: $*" >&2
   exit 1
 }
 
@@ -99,6 +100,13 @@ assert_signal_forwarded() {
 }
 
 [[ $(uname -m) == x86_64 ]] || fail "guest architecture is not x86_64"
+guest_distro_id=$(sed -n 's/^ID=//p' /etc/os-release | tr -d '"')
+[[ $guest_distro_id == "$HEIMDALL_DISTRO_ID" ]] \
+  || fail "guest distribution is ${guest_distro_id:-unknown}, expected $HEIMDALL_DISTRO_ID"
+case "$HEIMDALL_RESOLVER_PROFILE" in
+  apparmor-restricted | private-mount) ;;
+  *) fail "unsupported resolver profile: $HEIMDALL_RESOLVER_PROFILE" ;;
+esac
 [[ $run_benchmark == 0 || $run_benchmark == 1 ]] \
   || fail "HEIMDALL_RUN_BENCHMARK must be 0 or 1"
 if [[ ! $benchmark_iterations =~ ^[0-9]+$ ]] \
@@ -173,18 +181,25 @@ python3 "$fixture" tcp >/dev/null
 python3 "$fixture" udp >/dev/null
 ss -Hlnptu | sort >"$work_dir/listeners-before"
 
-# Ubuntu 24.04 must retain its default AppArmor user-namespace restriction.
-# The stock `files dns` NSS path reaches port 53 directly, so Heimdall's
-# cgroup hook can provide fake DNS without a private resolver mount.
-[[ $(</sys/module/apparmor/parameters/enabled) == Y ]] \
-  || fail "AppArmor is not enabled"
-[[ $(</proc/sys/kernel/apparmor_restrict_unprivileged_userns) == 1 ]] \
-  || fail "Ubuntu unprivileged user-namespace restriction was relaxed"
+# Ubuntu must retain its AppArmor user-namespace restriction and use direct
+# port-53 interception. Debian's stock nss-resolve/status-action chain must use
+# the private resolver mount without changing its host-wide NSS configuration.
+if [[ $HEIMDALL_RESOLVER_PROFILE == apparmor-restricted ]]; then
+  [[ $(</sys/module/apparmor/parameters/enabled) == Y ]] \
+    || fail "AppArmor is not enabled"
+  [[ $(</proc/sys/kernel/apparmor_restrict_unprivileged_userns) == 1 ]] \
+    || fail "the unprivileged user-namespace restriction was relaxed"
+fi
+resolver_strategy=private_mount
+if [[ $HEIMDALL_RESOLVER_PROFILE == apparmor-restricted ]]; then
+  resolver_strategy=port53_intercept
+fi
 heimdall agent --policy fake \
-  | python3 "$fixture" verify-resolver port53_intercept
+  | python3 "$fixture" verify-resolver "$resolver_strategy" \
+    "$HEIMDALL_RESOLVER_PROFILE"
 : > /run/heimdall-test/socks.log
 [[ $(heimdall run --policy fake -- \
-  python3 "$fixture" http fake.fixture.test) == ubuntu-tcp-ok ]]
+  python3 "$fixture" http fake.fixture.test) == heimdall-tcp-ok ]]
 fake_run_id=$(heimdall logs list --json | python3 "$fixture" latest-run)
 heimdall logs query --run "$fake_run_id" --jsonl \
   | python3 "$fixture" verify-fake-dns fake.fixture.test 18080
@@ -192,14 +207,14 @@ grep -F '"atyp": 3, "host": "fake.fixture.test", "port": 18080' \
   /run/heimdall-test/socks.log >/dev/null \
   || fail "fake DNS did not preserve the domain through SOCKS5"
 
-[[ $(heimdall run --policy direct -- python3 "$fixture" tcp) == ubuntu-tcp-ok ]]
+[[ $(heimdall run --policy direct -- python3 "$fixture" tcp) == heimdall-tcp-ok ]]
 tcp_run_id=$(heimdall logs list --json | python3 "$fixture" latest-run)
 heimdall logs query --run "$tcp_run_id" --jsonl \
   | python3 "$fixture" verify-events tcp 18080
 heimdall logs verify --run "$tcp_run_id" --json \
   | python3 "$fixture" verify-log
 
-[[ $(heimdall run --policy direct -- python3 "$fixture" udp) == ubuntu-udp:probe ]]
+[[ $(heimdall run --policy direct -- python3 "$fixture" udp) == heimdall-udp:probe ]]
 udp_run_id=$(heimdall logs list --json | python3 "$fixture" latest-run)
 [[ "$udp_run_id" != "$tcp_run_id" ]]
 heimdall logs query --run "$udp_run_id" --jsonl \
@@ -222,7 +237,7 @@ set -e
 descendant_output="$work_dir/descendant.out"
 heimdall run --policy direct -- sh -c \
   "(sleep 0.2; python3 '$fixture' tcp >'$descendant_output') &" descendant
-[[ $(<"$descendant_output") == ubuntu-tcp-ok ]] \
+[[ $(<"$descendant_output") == heimdall-tcp-ok ]] \
   || fail "background descendant did not complete through Heimdall"
 descendant_run_id=$(heimdall logs list --json | python3 "$fixture" latest-run)
 heimdall logs query --run "$descendant_run_id" --jsonl \
@@ -326,15 +341,15 @@ heimdall logs recover --run "$parent_run_id" --apply --json \
 heimdall logs verify --run "$parent_run_id" --json \
   | python3 "$fixture" verify-log failed
 
-# Runtime and relay TLS remain foreground run modes on a conventional Ubuntu
-# OpenSSL layout. Selecting either mode is accepted only after its emitted
-# evidence proves the actual plaintext boundary.
+# Runtime and relay TLS remain foreground run modes on the distribution's
+# conventional OpenSSL layout. Selecting either mode is accepted only after
+# its emitted evidence proves the actual plaintext boundary.
 heimdall --config "$runtime_config" config validate --json \
   | python3 "$fixture" verify-config
 heimdall --config "$runtime_config" agent \
   | python3 "$fixture" verify-agent runtime
 [[ $(heimdall --config "$runtime_config" run --policy direct -- \
-  python3 "$fixture" tls "$tls_dir/upstream-ca.pem") == ubuntu-tls-ok ]]
+  python3 "$fixture" tls "$tls_dir/upstream-ca.pem") == heimdall-tls-ok ]]
 runtime_run_id=$(heimdall logs list --json | python3 "$fixture" latest-run)
 runtime_run_dir=$(heimdall logs path --run "$runtime_run_id" --json \
   | python3 "$fixture" run-dir)
@@ -354,7 +369,7 @@ heimdall --config "$relay_config" config validate --json \
 heimdall --config "$relay_config" agent \
   | python3 "$fixture" verify-agent relay
 [[ $(heimdall --config "$relay_config" run --policy direct -- \
-  python3 "$fixture" tls "$relay_dir/ca.pem") == ubuntu-tls-ok ]]
+  python3 "$fixture" tls "$relay_dir/ca.pem") == heimdall-tls-ok ]]
 relay_run_id=$(heimdall logs list --json | python3 "$fixture" latest-run)
 relay_run_dir=$(heimdall logs path --run "$relay_run_id" --json \
   | python3 "$fixture" run-dir)
@@ -367,7 +382,7 @@ if [[ $run_benchmark == 1 ]]; then
   rm -rf "$benchmark_ca_dir"
   benchmark_json=$(python3 "$benchmark_script" \
     --iterations "$benchmark_iterations" \
-    --scope disposable-ubuntu-vm \
+    --scope "disposable-$HEIMDALL_DISTRO_ID-vm" \
     --config "$benchmark_config" \
     --relay-config "$benchmark_relay_config" \
     --no-capture-config "$benchmark_no_capture_config" \
@@ -376,11 +391,11 @@ if [[ $run_benchmark == 1 ]]; then
     --relay-ca-dir "$benchmark_ca_dir" \
     --fixture "$fixture" \
     --udp-throughput "$udp_throughput" \
-    --udp-response-prefix ubuntu-udp: \
+    --udp-response-prefix heimdall-udp: \
     --proxy-policy proxy \
     --proxy-host fake.fixture.test \
     --rss-source procfs)
-  python3 "$fixture" verify-benchmark <<<"$benchmark_json"
+  python3 "$fixture" verify-benchmark "$HEIMDALL_DISTRO_ID" <<<"$benchmark_json"
   printf 'HEIMDALL_BENCHMARK_JSON=%s\n' "$benchmark_json"
 fi
 
@@ -404,4 +419,4 @@ ss -Hlnptu | sort >"$work_dir/listeners-after"
 cmp "$work_dir/listeners-before" "$work_dir/listeners-after" \
   || fail "a listener survived run exit"
 
-echo "heimdall Ubuntu acceptance OK"
+echo "heimdall $HEIMDALL_DISTRO_ID acceptance OK"

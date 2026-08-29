@@ -81,6 +81,7 @@ pub mod agent {
         ca_cert_sha256: Option<String>,
         ca_key: Option<String>,
         ca_material_ready: bool,
+        ca_material_error: Option<MachineError>,
     }
 
     #[derive(Debug, Serialize)]
@@ -378,7 +379,11 @@ pub mod agent {
             Vec::new,
             crate::resolver::ResolverReport::inspection_actions,
         );
-        let ready = decision_error.is_none() && redaction_error.is_none() && resolver_ready;
+        let decrypt = decrypt_report(&config.decrypt);
+        let ready = decision_error.is_none()
+            && redaction_error.is_none()
+            && resolver_ready
+            && decrypt.ca_material_ready;
         let execute_prefix = ready.then(|| {
             let mut argv = argv_for(&path, &["run", "--policy", &policy]);
             argv.push("--".into());
@@ -429,7 +434,7 @@ pub mod agent {
                     redaction_values_ready: redaction_error.is_none(),
                     redaction_error,
                 }),
-                decrypt: Some(decrypt_report(&config.decrypt)),
+                decrypt: Some(decrypt),
                 error: None,
             },
             execution: Some(ExecutionReport {
@@ -608,6 +613,7 @@ pub mod agent {
                 ca_cert_sha256: None,
                 ca_key: None,
                 ca_material_ready: true,
+                ca_material_error: None,
             },
             crate::heimdall_config::DecryptMode::Runtime => DecryptConfigReport {
                 mode: "runtime",
@@ -615,25 +621,51 @@ pub mod agent {
                 ca_cert_sha256: None,
                 ca_key: None,
                 ca_material_ready: true,
+                ca_material_error: None,
             },
-            crate::heimdall_config::DecryptMode::Relay => DecryptConfigReport {
-                mode: "relay",
-                ca_cert: config
-                    .ca_cert
-                    .as_ref()
-                    .map(|path| path.display().to_string()),
-                ca_cert_sha256: config
-                    .ca_cert
-                    .as_deref()
-                    .and_then(super::tls::certificate_sha256),
-                ca_key: config
-                    .ca_key
-                    .as_ref()
-                    .map(|path| path.display().to_string()),
-                ca_material_ready: config.ca_cert.as_ref().is_some_and(|path| path.is_file())
-                    && config.ca_key.as_ref().is_some_and(|path| path.is_file()),
-            },
+            crate::heimdall_config::DecryptMode::Relay => {
+                let ca_material_error = relay_ca_material_error(config);
+                DecryptConfigReport {
+                    mode: "relay",
+                    ca_cert: config
+                        .ca_cert
+                        .as_ref()
+                        .map(|path| path.display().to_string()),
+                    ca_cert_sha256: config
+                        .ca_cert
+                        .as_deref()
+                        .and_then(super::tls::certificate_sha256),
+                    ca_key: config
+                        .ca_key
+                        .as_ref()
+                        .map(|path| path.display().to_string()),
+                    ca_material_ready: ca_material_error.is_none(),
+                    ca_material_error,
+                }
+            }
         }
+    }
+
+    fn relay_ca_material_error(config: &DecryptConfig) -> Option<MachineError> {
+        let result = match (&config.ca_cert, &config.ca_key) {
+            (Some(ca_cert), Some(ca_key)) => {
+                crate::tls_relay::validate_ca_material(ca_cert, ca_key)
+            }
+            _ => Err(anyhow::anyhow!(
+                "relay TLS requires both CA certificate and private key paths"
+            )),
+        };
+        result.err().map(|error| MachineError {
+            code: "relay_ca_material_invalid",
+            message: error.to_string(),
+            diagnostics: vec![ConfigDiagnostic {
+                code: "relay_ca_material_invalid".into(),
+                path: "$.decrypt".into(),
+                message: error.to_string(),
+                hint: "Generate replacement CA material in an empty private directory, update command-scoped client trust, then update decrypt.ca_cert and decrypt.ca_key."
+                    .into(),
+            }],
+        })
     }
 
     fn relay_ca_init_argv(config: &DecryptConfig) -> Option<Vec<String>> {
@@ -848,6 +880,21 @@ pub mod agent {
             let error = capture_redaction_error(&names).unwrap();
             assert_eq!(error.code, "capture_redaction_not_ready");
             assert_eq!(error.diagnostics[0].code, "capture_redaction_env_unset");
+        }
+
+        #[test]
+        fn invalid_relay_ca_material_is_not_ready() {
+            let report = decrypt_report(&DecryptConfig {
+                mode: crate::heimdall_config::DecryptMode::Relay,
+                ca_cert: Some("/missing/ca.pem".into()),
+                ca_key: Some("/missing/ca-key.pem".into()),
+            });
+
+            assert!(!report.ca_material_ready);
+            assert_eq!(
+                report.ca_material_error.unwrap().code,
+                "relay_ca_material_invalid"
+            );
         }
 
         #[test]

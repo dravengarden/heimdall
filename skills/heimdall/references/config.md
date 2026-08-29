@@ -116,7 +116,10 @@ at `agent.capabilities.capture`/`agent.capabilities.decrypt`. Use
 weaken file permissions or expose `ca_key`; it must remain readable by the same
 user that invokes relay mode. Compare the returned `ca_cert_sha256` with
 `agent.config.decrypt.ca_cert_sha256` before granting command-scoped client
-trust. Heimdall never uploads captures; use
+trust. Require `ca_material_ready = true`; on
+`ca_material_error.code = relay_ca_material_invalid`, generate replacement
+material in a new private directory, update command-scoped trust, then change
+both config paths. Heimdall never uploads captures; use
 `heimdall logs prune` for explicit retention.
 
 ## DNS invariants

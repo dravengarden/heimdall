@@ -229,6 +229,14 @@ intentionally unsupported in this mode.
 command-scoped client options such as curl `--cacert`, Git
 `-c http.sslCAInfo=...`, `NODE_EXTRA_CA_CERTS`, or `REQUESTS_CA_BUNDLE` over a
 machine-wide trust-store change. Keep the signing key out of every client.
+New CA certificates carry explicit `keyCertSign` and `cRLSign` usage, and every
+intercepted leaf carries an Authority Key Identifier. Agent preflight uses the
+same material validation as `heimdall run`; an invalid or older incompatible CA
+sets `ca_material_ready=false`, reports
+`ca_material_error.code=relay_ca_material_invalid`, and withholds
+`actions.execute_prefix`. Generate replacement material in a new private
+directory, update command-scoped client trust, and only then change both config
+paths. Do not silently overwrite CA material that clients still trust.
 
 `capture.mode` is `off` or `on`; event metadata remains available in either
 case. `max_bytes_per_flow` defaults to 1 MiB and must be between 1 byte and

@@ -36,6 +36,10 @@ for heading in \
 done
 
 for runbook in docs/runbook.md site/docs/runbook.html; do
+  grep -Fq 'just sync-ebpf' "$runbook" || {
+    printf '%s does not expose the canonical eBPF sync command\n' "$runbook" >&2
+    exit 1
+  }
   grep -Fq 'native archive, npm, PyPI, and Cargo package' "$runbook" || {
     printf '%s does not describe all four package gates\n' "$runbook" >&2
     exit 1
@@ -50,6 +54,18 @@ for runbook in docs/runbook.md site/docs/runbook.html; do
   }
   grep -Fq 'Ubuntu 24.04' "$runbook" || {
     printf '%s does not identify the pinned compatibility guest\n' "$runbook" >&2
+    exit 1
+  }
+  grep -Fq 'just test-vm-debian' "$runbook" || {
+    printf '%s does not expose the Debian acceptance gate\n' "$runbook" >&2
+    exit 1
+  }
+  grep -Fq 'Debian 13' "$runbook" || {
+    printf '%s does not identify the pinned Debian guest\n' "$runbook" >&2
+    exit 1
+  }
+  grep -Fq 'private_mount' "$runbook" || {
+    printf '%s does not expose Debian private-mount acceptance\n' "$runbook" >&2
     exit 1
   }
   grep -Fq 'parent-death' "$runbook" || {
@@ -84,6 +100,18 @@ for runbook in docs/runbook.md site/docs/runbook.html; do
     printf '%s does not expose the Ubuntu performance baseline\n' "$runbook" >&2
     exit 1
   }
+  grep -Fq 'just benchmark-vm-debian' "$runbook" || {
+    printf '%s does not expose the Debian performance baseline\n' "$runbook" >&2
+    exit 1
+  }
+  grep -Fq 'ca_material_ready' "$runbook" || {
+    printf '%s does not expose relay CA preflight\n' "$runbook" >&2
+    exit 1
+  }
+  grep -Fq 'relay_ca_material_invalid' "$runbook" || {
+    printf '%s does not expose relay CA repair diagnostics\n' "$runbook" >&2
+    exit 1
+  }
   grep -Fq 'not part of' "$runbook" || {
     printf '%s does not separate performance from release gates\n' "$runbook" >&2
     exit 1
@@ -101,8 +129,13 @@ for contract_page in docs/product-contract.md site/docs/product-contract.html; d
   }
 done
 
-grep -A4 '^release-check:' justfile | grep -Fq 'just test-vm-ubuntu' || {
+grep -A5 '^release-check:' justfile | grep -Fq 'just test-vm-ubuntu' || {
   printf 'release-check does not include the Ubuntu acceptance gate\n' >&2
+  exit 1
+}
+
+grep -A5 '^release-check:' justfile | grep -Fq 'just test-vm-debian' || {
+  printf 'release-check does not include the Debian acceptance gate\n' >&2
   exit 1
 }
 
@@ -111,14 +144,23 @@ grep -Fq 'benchmark-vm-ubuntu:' justfile || {
   exit 1
 }
 
-if grep -A4 '^release-check:' justfile | grep -Fq 'benchmark-vm-ubuntu'; then
-  printf 'release-check unexpectedly includes the Ubuntu performance baseline\n' >&2
+grep -Fq 'benchmark-vm-debian:' justfile || {
+  printf 'justfile does not expose the Debian performance baseline\n' >&2
+  exit 1
+}
+
+if grep -A5 '^release-check:' justfile | grep -Fq 'benchmark-vm-'; then
+  printf 'release-check unexpectedly includes a performance baseline\n' >&2
   exit 1
 fi
 
 for status_page in README.md ROADMAP.md site/docs/roadmap.html; do
   grep -Fq 'Ubuntu 24.04' "$status_page" || {
     printf '%s does not report Ubuntu compatibility coverage\n' "$status_page" >&2
+    exit 1
+  }
+  grep -Fq 'Debian 13' "$status_page" || {
+    printf '%s does not report Debian compatibility coverage\n' "$status_page" >&2
     exit 1
   }
 done

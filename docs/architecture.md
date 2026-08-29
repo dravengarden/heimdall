@@ -89,8 +89,10 @@ redirect every UDP/TCP port-53 request, including a systemd-resolved loopback
 stub, to the run's fake-DNS listener. This path needs no user or mount
 namespace and is exercised with Ubuntu 24.04's AppArmor restriction enabled.
 NSS modules and caches that can bypass port 53 retain the private resolver-mount
-fallback; if the host forbids that scoped user namespace, setup fails before
-the requested command executes rather than silently using system DNS.
+fallback; pinned Debian 13 exercises that path with its stock
+`files myhostname resolve [!UNAVAIL=return] dns` chain. If the host forbids that
+scoped user namespace, setup fails before the requested command executes rather
+than silently using system DNS.
 
 The read-only `heimdall agent` path runs the same classification before a run.
 `decision.resolver` records the strategy, reason, parsed hosts sources, nscd

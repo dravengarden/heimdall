@@ -55,7 +55,7 @@ test-cargo:
 
 test-release-tooling:
     actionlint .github/workflows/docs-pages.yml .github/workflows/publish-cargo.yml .github/workflows/publish-npm.yml .github/workflows/publish-pypi.yml
-    shellcheck scripts/build-cargo-release-assets scripts/build-npm-package scripts/build-npm-release-assets scripts/build-pypi-release-assets scripts/publish-github-release scripts/render-release-notes scripts/sync-ebpf-object tests/cargo/run-acceptance.sh tests/distro/guest-acceptance.sh tests/distro/run-ubuntu-acceptance.sh tests/npm/run-acceptance.sh tests/package/check-artifact-hygiene.sh tests/package/run-acceptance.sh tests/pypi/run-acceptance.sh tests/release/cargo-workflow.sh tests/release/npm-workflow.sh tests/release/pypi-workflow.sh tests/release/render-notes.sh tests/site/content-contract.sh
+    shellcheck scripts/build-cargo-release-assets scripts/build-npm-package scripts/build-npm-release-assets scripts/build-pypi-release-assets scripts/publish-github-release scripts/render-release-notes scripts/sync-ebpf-object tests/cargo/run-acceptance.sh tests/distro/guest-acceptance.sh tests/distro/run-cloud-acceptance.sh tests/npm/run-acceptance.sh tests/package/check-artifact-hygiene.sh tests/package/run-acceptance.sh tests/pypi/run-acceptance.sh tests/release/cargo-workflow.sh tests/release/npm-workflow.sh tests/release/pypi-workflow.sh tests/release/render-notes.sh tests/site/content-contract.sh
     python3 -c 'paths = ("tests/distro/fixture.py", "tests/perf/udp-throughput.py", "tests/perf/vm-baseline.py", "tests/vm/socks5_fixture.py"); [compile(open(path, encoding="utf-8").read(), path, "exec") for path in paths]'
     tests/release/cargo-workflow.sh
     tests/release/npm-workflow.sh
@@ -76,7 +76,12 @@ test-vm:
 # real TCP/UDP, lifecycle, runtime/relay TLS, and daemonless teardown outside
 # NixOS.
 test-vm-ubuntu:
-    nix develop .#ubuntu-acceptance -c tests/distro/run-ubuntu-acceptance.sh
+    nix develop .#ubuntu-acceptance -c tests/distro/run-cloud-acceptance.sh
+
+# Installs the same native archive in a pinned Debian 13 cloud guest and runs
+# the complete distro acceptance suite against its stock NSS and kernel.
+test-vm-debian:
+    nix develop .#debian-acceptance -c tests/distro/run-cloud-acceptance.sh
 
 # Runs the same current/LTS real-eBPF guests with an aarch64 userspace and
 # kernel. The host guard prevents the x86 release host's qemu-user CLI check
@@ -95,7 +100,11 @@ benchmark-vm:
 # Why: the 8 GiB benchmark guest is intentionally too expensive for the normal
 # release transaction; invoke its cross-distribution baseline explicitly.
 benchmark-vm-ubuntu:
-    HEIMDALL_UBUNTU_BENCHMARK=1 nix develop .#ubuntu-acceptance -c tests/distro/run-ubuntu-acceptance.sh
+    HEIMDALL_DISTRO_BENCHMARK=1 nix develop .#ubuntu-acceptance -c tests/distro/run-cloud-acceptance.sh
+
+# Runs the explicit performance contract in the pinned Debian guest.
+benchmark-vm-debian:
+    HEIMDALL_DISTRO_BENCHMARK=1 nix develop .#debian-acceptance -c tests/distro/run-cloud-acceptance.sh
 
 # Verifies static archives and the npm/PyPI/Cargo distributions, including
 # architecture/checksum/artifact hygiene, aarch64 inspection/emulation, and
@@ -112,6 +121,7 @@ release-check:
     nix develop -c just verify
     just test-vm
     just test-vm-ubuntu
+    just test-vm-debian
     just test-package
 
 release-github:

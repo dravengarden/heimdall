@@ -80,11 +80,11 @@ just release-github
 ```
 
 The command validates release notes before expensive gates, runs source, the
-current/LTS NixOS real-eBPF matrix, the pinned Ubuntu 24.04 archive,
-lifecycle, runtime/relay TLS, and data-path gate, and package acceptance
-locally, builds archives, verifies checksums, creates the annotated tag, pushes
-it, and publishes the generated notes and local artifacts. An existing Release
-or a tag pointing elsewhere is a hard failure.
+current/LTS NixOS real-eBPF matrix, the pinned Ubuntu 24.04 and Debian 13
+archive, lifecycle, runtime/relay TLS, and data-path gates, and package
+acceptance locally, builds archives, verifies checksums, creates the annotated
+tag, pushes it, and publishes the generated notes and local artifacts. An
+existing Release or a tag pointing elsewhere is a hard failure.
 
 After publication, independently verify the peeled remote tag, asset inventory,
 downloaded checksums, extracted file set, and `heimdall --version`. A failed

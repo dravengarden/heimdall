@@ -38,6 +38,8 @@ never join it into shell text. A false resolver readiness withholds execution.
 When capture is on, require
 `config.capture.redaction_values_ready = true`, then inspect its explicit
 boundary/direction allowlists before using `actions.execute_prefix`.
+For relay mode, also require `config.decrypt.ca_material_ready = true`; process
+`config.decrypt.ca_material_error.code` before attempting execution.
 
 `config schema` prints the generated structural contract offline. `config
 example` prints the same complete starter used by `init` without writing.
@@ -157,6 +159,10 @@ in the explicitly wrapped client. Prefer curl `--cacert`, Git
 `-c http.sslCAInfo=...`, `NODE_EXTRA_CA_CERTS`, or `REQUESTS_CA_BUNDLE` over
 machine-wide trust. Keep `ca_key` private, mode 0600, and owned by the same user
 that runs Heimdall. No daemon is required for relay TLS.
+If agent preflight reports `relay_ca_material_invalid`, create replacement
+material in a new private directory, move command-scoped client trust to the
+new public CA, and only then update both config paths. Do not use `--force`
+until every affected client is ready for the trust replacement.
 
 ## Runtime TLS
 

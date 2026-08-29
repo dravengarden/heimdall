@@ -265,7 +265,7 @@ Available now:
   when host settings disable a required private resolver namespace;
 - concurrent-session, descendant, all foreground-signal, authorization-denial,
   normal-cleanup, parent-death recovery, and both TLS-mode acceptance in the
-  current/LTS NixOS and pinned Ubuntu 24.04 real-eBPF guests;
+  current/LTS NixOS and pinned Ubuntu 24.04 and Debian 13 real-eBPF guests;
 - `heimdall.agent/v8` reporting only the foreground execution owner and its
   actual capability evidence.
 

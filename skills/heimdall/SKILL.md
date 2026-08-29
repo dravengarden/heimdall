@@ -44,6 +44,12 @@ Use `decision.resolver` before executing a fake-DNS policy:
 - execute each `actions.resolver_inspect[]` item as its own argv array. These
   actions are read-only evidence, not permission to change host security.
 
+For relay mode, require `config.decrypt.ca_material_ready = true` before using
+`actions.execute_prefix`. If false, branch on
+`config.decrypt.ca_material_error.code`; `relay_ca_material_invalid` means the
+certificate, key, permissions, signing usage, or key match failed the same
+validation used by the runtime.
+
 Use `heimdall help -v` only when deeper command discovery is needed.
 
 ## Select evidence boundaries
@@ -79,6 +85,10 @@ Choose `relay` only with authority to install local trust. Require
 and readable only by the invoking user, and reject pinned or client-certificate
 mTLS workflows. Compare `tls init-ca` `ca_cert_sha256` with
 `agent.config.decrypt.ca_cert_sha256` before granting command-scoped trust.
+If `ca_material_error` reports `relay_ca_material_invalid`, generate replacement
+material in a new private directory, update command-scoped client trust, and
+then update both config paths. Never silently overwrite CA material still
+trusted by a client.
 Branch on relay certificate errors: never repair
 `tls_upstream_certificate_invalid` by disabling remote verification; for
 `tls_upstream_client_auth_required`, switch to runtime mode or disable

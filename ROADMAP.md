@@ -69,7 +69,12 @@ acceptance path are documented and tested.
   owner signals, concurrent isolation, parent-death cleanup and recovery,
   runtime and relay TLS evidence, JSONL integrity, daemonless cleanup, and
   host-network isolation.
-- Machine-readable current/LTS NixOS and pinned Ubuntu 24.04 real-eBPF
+- A pinned Debian 13 x86_64 KVM gate that runs the same archive and lifecycle
+  suite against its stock nss-myhostname/nss-resolve status-action chain,
+  proves private resolver-mount fake DNS without changing host NSS state or
+  requiring a session D-Bus service, and exercises strict Python 3.13/OpenSSL
+  relay certificate verification.
+- Machine-readable current/LTS NixOS, Ubuntu 24.04, and Debian 13 real-eBPF
   benchmarks covering daemonless latency, RSS, 1/10/50 concurrent starts,
   sustained TCP/UDP and capture throughput, and event integrity without
   requiring a metrics service.
@@ -96,13 +101,14 @@ attaches FD-owned links through `heimdall.setup/v2`, and closes every resource
 when the command tree exits. The real-eBPF VM proves concurrent isolated runs,
 runtime and relay TLS, owner signal forwarding, normal cleanup, deterministic
 authorization denial, and parent-death cgroup teardown. The pinned Ubuntu 24.04
-gate independently proves those lifecycle boundaries, both TLS modes, release
-installation, user-manager re-entry, exact authorization, direct TCP/UDP, logs,
-and normal cleanup outside NixOS.
+and Debian 13 gates independently prove those lifecycle boundaries, both TLS
+modes, release installation, user-manager re-entry without a required session
+D-Bus service, exact authorization, direct TCP/UDP, logs, and normal cleanup
+outside NixOS.
 
 - Evaluate run-scoped dynamic attachment for `libssl` images loaded only after
   child exec without introducing a persistent broker.
-- Extend the available NixOS and Ubuntu lifecycle matrix across additional
+- Extend the available NixOS, Ubuntu, and Debian lifecycle matrix across additional
   distributions and process-tree edge cases.
 - Keep any persistent acceleration mode explicit and opt-in; never start it
   implicitly.
@@ -136,10 +142,13 @@ integrity, and distinguish opaque transport from actual TLS plaintext. See
   user-namespace restriction remains enabled. Keep its agent-readable resolver
   strategy, fallback reason, host settings, inspection argv, and blocking
   diagnostics aligned with the runtime decision.
+- Keep the private resolver-mount path covered on pinned Debian 13 with its
+  stock `files myhostname resolve [!UNAVAIL=return] dns` NSS line. It must leave
+  host resolver files unchanged and must not add a session D-Bus dependency.
 - Expand namespace-free compatibility across NSS stacks that currently need
   the private resolver-mount fallback, without silently accepting D-Bus,
   multicast, or nscd paths that bypass cgroup DNS interception.
-- Expand the available current/LTS NixOS and pinned Ubuntu 24.04 coverage
+- Expand the available current/LTS NixOS, Ubuntu 24.04, and Debian 13 coverage
   across more distributions, libc behaviors, socket API variants, and
   process-tree edge cases.
 - Turn more rejected or unsupported network shapes into stable agent-readable
@@ -160,9 +169,12 @@ test.
   failure diagnostics. Pinning and client-certificate mTLS remain explicit
   unsupported relay boundaries rather than compatibility claims.
 - Expand CA integration beyond the available certificate fingerprint matching
-  and command-scoped curl, Git, Node.js, and Python trust guidance. Some clients
-  close without an alert, so `tls_downstream_closed_without_close_notify` still
-  requires the wrapped command's stderr and exit status.
+  and command-scoped curl, Git, Node.js, and Python trust guidance. Generated
+  CAs have explicit signing usage, issued leaves have an Authority Key
+  Identifier, and agent preflight rejects incompatible CA material. Some
+  clients close without an alert, so
+  `tls_downstream_closed_without_close_notify` still requires the wrapped
+  command's stderr and exit status.
 
 Acceptance target: runtime and relay modes report their actual coverage and
 never claim plaintext visibility when the selected boundary was not attached or
@@ -185,7 +197,8 @@ from file names or process names.
 
 ### 6. Performance and observability
 
-The current and Linux 6.6 LTS NixOS VMs and pinned Ubuntu 24.04 guest emit a
+The current and Linux 6.6 LTS NixOS VMs and pinned Ubuntu 24.04 and Debian 13
+guests emit a
 machine-readable `heimdall.benchmark/v1` baseline for daemonless cold start,
 direct TCP, proxied TCP/UDP, relay TLS, maximum process RSS, event integrity,
 and 1/10/50 concurrent runs. They also record sustained direct and proxied TCP,
@@ -194,7 +207,7 @@ Results are explicitly environment-specific rather than product-wide
 performance claims.
 
 - Repeat the functional and performance contracts across distributions beyond
-  the current/6.6 LTS NixOS and Ubuntu 24.04 matrix.
+  the current/6.6 LTS NixOS, Ubuntu 24.04, and Debian 13 matrix.
 - Keep operational health low-cardinality and derived from the same per-run
   evidence used by agents; do not add a required metrics daemon.
 

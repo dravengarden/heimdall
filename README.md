@@ -61,9 +61,9 @@ need compatibility hardening.
 | Runtime TLS decryption | Available daemonless with alpha limits | Startup-discovered OpenSSL images; no CA injection; unsupported TLS libraries remain opaque |
 | Relay TLS decryption | Available daemonless with alpha limits | Local CA plus per-host leaves; upstream certificate failures and downstream alerts/unclean closes remain distinct evidence |
 | Static Linux packaging | Available | Reproducible x86_64/aarch64 musl archives, checksums, local release gates, atomic install, one-level rollback, and BTF-preserving artifact-hygiene checks |
-| Runtime and kernel compatibility | In development | The full real-eBPF suite covers current and Linux 6.6 LTS NixOS guests on x86_64; a pinned Ubuntu 24.04 guest independently proves native install, exact authorization, fake DNS without relaxing AppArmor, direct TCP/UDP, descendants, all owner signals, concurrency, parent-death recovery, both TLS modes, logs, and cleanup; native aarch64 still awaits an ARM Linux result |
+| Runtime and kernel compatibility | In development | The full real-eBPF suite covers current and Linux 6.6 LTS NixOS guests on x86_64; pinned Ubuntu 24.04 and Debian 13 guests install the release archive and prove both namespace-free and private-mount fake-DNS strategies, exact authorization, direct TCP/UDP, lifecycle, both TLS modes, logs, and cleanup; native aarch64 still awaits an ARM Linux result |
 | Capture analysis | In development | Allowlists, redaction, bounded blocks, orphan recovery, and provenance-linked HTTP/1 header evidence are available; broader analysis remains active work |
-| Performance and observability | In development | Repeatable current/6.6 LTS NixOS and pinned Ubuntu 24.04 real-eBPF latency, RSS, 1/10/50 concurrency, sustained TCP/UDP/capture throughput, and event-integrity baselines are available; broader distribution coverage remains active work |
+| Performance and observability | In development | Repeatable current/6.6 LTS NixOS, Ubuntu 24.04, and Debian 13 real-eBPF latency, RSS, 1/10/50 concurrency, sustained TCP/UDP/capture throughput, and event-integrity baselines are available; broader distribution coverage remains active work |
 
 See [docs/product-contract.md](docs/product-contract.md) for the normative
 requirements and [ROADMAP.md](ROADMAP.md) for status and planned work.
@@ -277,17 +277,25 @@ evidence, JSONL integrity, exit propagation, and complete process, listener,
 cgroup, and BPF-pin cleanup. QEMU uses user-mode networking and the gate rejects
 changes to host links, routes, or rules.
 
-`just benchmark-vm-ubuntu` runs the same `heimdall.benchmark/v1` scenario and
-integrity contract in that guest with 8 GiB of memory, procfs RSS sampling,
-fake DNS, and SOCKS5 TCP/UDP routing. It is an explicit performance gate, not
-part of `release-check`; it leaves Ubuntu's AppArmor and system-wide
-user-namespace restriction unchanged.
+A pinned Debian 13 guest runs the same archive and lifecycle suite against its
+stock `files myhostname resolve [!UNAVAIL=return] dns` NSS chain. It proves the
+private resolver-mount strategy without editing host NSS state or requiring a
+session D-Bus service, and exercises Python 3.13/OpenSSL's stricter relay
+certificate-chain verification.
 
-Both the NixOS and Ubuntu gates test OpenSSL runtime capture and relay TLS
-termination against a real TLS server. These results prove the checked-in
-acceptance paths; they do not claim that every language TLS implementation or
-every kernel release is supported. The current acceptance-matrix work is
-tracked in the [roadmap](ROADMAP.md).
+`just benchmark-vm-ubuntu` and `just benchmark-vm-debian` run the same
+`heimdall.benchmark/v1` scenario and integrity contract in those guests with 8
+GiB of memory, procfs RSS sampling, fake DNS, and SOCKS5 TCP/UDP routing. They
+are explicit performance gates, not part of `release-check`; the Ubuntu path
+leaves AppArmor and its system-wide user-namespace restriction unchanged.
+
+The NixOS, Ubuntu, and Debian gates test OpenSSL runtime capture and relay TLS
+termination against a real TLS server. Generated relay CAs carry explicit
+certificate-signing usage and issued leaves carry an Authority Key Identifier;
+agent preflight rejects older incompatible CA material before execution. These
+results prove the checked-in acceptance paths; they do not claim that every
+language TLS implementation or every kernel release is supported. The current
+acceptance-matrix work is tracked in the [roadmap](ROADMAP.md).
 
 ## Development
 
@@ -306,6 +314,7 @@ just test
 just verify
 just test-vm
 just test-vm-ubuntu
+just test-vm-debian
 ```
 
 Optional performance baselines:
@@ -313,6 +322,7 @@ Optional performance baselines:
 ```bash
 just benchmark-vm
 just benchmark-vm-ubuntu
+just benchmark-vm-debian
 ```
 
 The project has no hosted CI workflow by design; `just verify` and the

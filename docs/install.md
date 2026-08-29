@@ -17,11 +17,12 @@ retains BTF/BTF.ext after its redundant DWARF is removed. Kernel, cgroup,
 privilege, and TLS-library compatibility requirements still apply.
 
 The x86_64 package is covered by native install, the current/Linux 6.6 LTS
-NixOS real-eBPF matrix, and a pinned Ubuntu 24.04 guest that installs the
-release archive and proves exact authorization, direct TCP/UDP, descendant and
-signal lifecycle, fake DNS without relaxing Ubuntu's AppArmor user-namespace
-restriction, concurrent isolation, parent-death recovery, runtime and relay
-TLS, JSONL integrity, and daemonless cleanup. The aarch64 package is
+NixOS real-eBPF matrix, and pinned Ubuntu 24.04 and Debian 13 guests that install
+the release archive and prove exact authorization, direct TCP/UDP, descendant
+and signal lifecycle, both namespace-free and private-mount fake DNS,
+concurrent isolation, parent-death recovery, runtime and relay TLS, JSONL
+integrity, and daemonless cleanup. Ubuntu retains its AppArmor user-namespace
+restriction; Debian retains its stock nss-resolve chain. The aarch64 package is
 checked for static linkage and architecture and executes CLI acceptance under
 emulation. The repository defines the same current/LTS data-path gate for an
 aarch64 Linux execution host, but that native result is not yet part of the

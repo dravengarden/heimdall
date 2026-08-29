@@ -6,23 +6,36 @@ repo_root=$(CDPATH='' cd -- "$script_dir/../.." && pwd)
 cd "$repo_root"
 
 fail() {
-  echo "Ubuntu VM acceptance failed: $*" >&2
+  echo "${distro_id:-Cloud} VM acceptance failed: $*" >&2
   exit 1
 }
 
+: "${HEIMDALL_DISTRO_ID:?enter a distro acceptance Nix shell}"
+: "${HEIMDALL_RESOLVER_PROFILE:?resolver acceptance profile is required}"
+: "${HEIMDALL_CLOUD_IMAGE:?cloud image path is required}"
+distro_id=$HEIMDALL_DISTRO_ID
+resolver_profile=$HEIMDALL_RESOLVER_PROFILE
+cloud_image=$HEIMDALL_CLOUD_IMAGE
+case "$distro_id" in
+  ubuntu | debian) ;;
+  *) fail "unsupported distribution identifier: $distro_id" ;;
+esac
+case "$resolver_profile" in
+  apparmor-restricted | private-mount) ;;
+  *) fail "unsupported resolver profile: $resolver_profile" ;;
+esac
 [[ $(uname -s) == Linux ]] || fail "the execution host is not Linux"
 [[ $(uname -m) == x86_64 ]] || fail "the execution host is not x86_64"
 [[ -c /dev/kvm && -r /dev/kvm && -w /dev/kvm ]] \
   || fail "read/write access to /dev/kvm is required"
-: "${HEIMDALL_UBUNTU_IMAGE:?enter the ubuntu-acceptance Nix shell}"
-[[ -f "$HEIMDALL_UBUNTU_IMAGE" ]] || fail "the pinned Ubuntu image is missing"
-run_benchmark=${HEIMDALL_UBUNTU_BENCHMARK:-0}
-benchmark_iterations=${HEIMDALL_UBUNTU_BENCHMARK_ITERATIONS:-3}
+[[ -f "$cloud_image" ]] || fail "the pinned cloud image is missing"
+run_benchmark=${HEIMDALL_DISTRO_BENCHMARK:-0}
+benchmark_iterations=${HEIMDALL_DISTRO_BENCHMARK_ITERATIONS:-3}
 [[ $run_benchmark == 0 || $run_benchmark == 1 ]] \
-  || fail "HEIMDALL_UBUNTU_BENCHMARK must be 0 or 1"
+  || fail "HEIMDALL_DISTRO_BENCHMARK must be 0 or 1"
 if [[ ! $benchmark_iterations =~ ^[0-9]+$ ]] \
   || ((benchmark_iterations < 1 || benchmark_iterations > 20)); then
-  fail "HEIMDALL_UBUNTU_BENCHMARK_ITERATIONS must be between 1 and 20"
+  fail "HEIMDALL_DISTRO_BENCHMARK_ITERATIONS must be between 1 and 20"
 fi
 vm_memory_mib=2048
 if [[ $run_benchmark == 1 ]]; then
@@ -49,7 +62,7 @@ trap cleanup EXIT HUP INT TERM
 diagnose_error() {
   local status=$?
   trap - ERR
-  echo "Ubuntu VM acceptance failed during $phase (exit $status)" >&2
+  echo "$distro_id VM acceptance failed during $phase (exit $status)" >&2
   if [[ $phase == qemu-boot || $phase == cloud-init ]] \
     && [[ -f $work_dir/serial.log ]]; then
     if [[ -s $work_dir/qemu.log ]]; then
@@ -109,13 +122,13 @@ version=${version%-x86_64-linux-musl.tar.gz}
 [[ -n $version && $version != "$archive_name" ]] \
   || fail "release archive has an unexpected name"
 
-image_format=$(qemu-img info --output=json "$HEIMDALL_UBUNTU_IMAGE" \
+image_format=$(qemu-img info --output=json "$cloud_image" \
   | python3 -c 'import json, sys; print(json.load(sys.stdin)["format"])')
-[[ $image_format == qcow2 ]] || fail "the pinned Ubuntu image is not qcow2"
-qemu-img create -q -f qcow2 -F qcow2 -b "$HEIMDALL_UBUNTU_IMAGE" \
-  "$work_dir/ubuntu-overlay.qcow2"
+[[ $image_format == qcow2 ]] || fail "the pinned cloud image is not qcow2"
+qemu-img create -q -f qcow2 -F qcow2 -b "$cloud_image" \
+  "$work_dir/cloud-overlay.qcow2"
 
-ssh-keygen -q -t ed25519 -N '' -C heimdall-ubuntu-acceptance \
+ssh-keygen -q -t ed25519 -N '' -C "heimdall-$distro_id-acceptance" \
   -f "$work_dir/id_ed25519"
 public_key=$(<"$work_dir/id_ed25519.pub")
 cat >"$work_dir/user-data" <<EOF
@@ -143,17 +156,17 @@ runcmd:
   - [systemctl, start, user@1100.service]
   - [touch, /var/lib/cloud/instance/heimdall-acceptance-ready]
 EOF
-cat >"$work_dir/meta-data" <<'EOF'
-instance-id: heimdall-ubuntu-acceptance
-local-hostname: heimdall-ubuntu
+cat >"$work_dir/meta-data" <<EOF
+instance-id: heimdall-$distro_id-acceptance
+local-hostname: heimdall-$distro_id
 EOF
 cloud-localds "$work_dir/seed.img" "$work_dir/user-data" "$work_dir/meta-data"
 
-if [[ -n ${HEIMDALL_UBUNTU_VM_SSH_PORT:-} ]]; then
-  ssh_port=$HEIMDALL_UBUNTU_VM_SSH_PORT
+if [[ -n ${HEIMDALL_DISTRO_VM_SSH_PORT:-} ]]; then
+  ssh_port=$HEIMDALL_DISTRO_VM_SSH_PORT
   if [[ ! $ssh_port =~ ^[0-9]+$ ]] \
     || ((ssh_port < 1024 || ssh_port > 65535)); then
-    fail "HEIMDALL_UBUNTU_VM_SSH_PORT must be an unprivileged TCP port"
+    fail "HEIMDALL_DISTRO_VM_SSH_PORT must be an unprivileged TCP port"
   fi
 else
   ssh_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
@@ -172,7 +185,7 @@ qemu-system-x86_64 \
   -cpu host \
   -smp 2 \
   -m "$vm_memory_mib" \
-  -drive "if=virtio,format=qcow2,file=$work_dir/ubuntu-overlay.qcow2" \
+  -drive "if=virtio,format=qcow2,file=$work_dir/cloud-overlay.qcow2" \
   -drive "if=virtio,format=raw,readonly=on,file=$work_dir/seed.img" \
   -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$ssh_port-:22" \
   -device virtio-net-pci,netdev=net0 \
@@ -207,7 +220,7 @@ for _ in $(seq 1 120); do
 done
 if [[ $guest_ready != true ]]; then
   tail -n 120 "$work_dir/serial.log" >&2 || true
-  fail "Ubuntu SSH did not become ready"
+  fail "$distro_id SSH did not become ready"
 fi
 phase=cloud-init
 "${admin_ssh[@]}" sudo cloud-init status --wait >/dev/null
@@ -233,14 +246,15 @@ scp "${common_ssh_options[@]}" -P "$ssh_port" \
   provisioner@127.0.0.1:/tmp/
 
 phase=guest-provisioning
-"${admin_ssh[@]}" bash -s -- "$archive_name" <<'REMOTE'
+"${admin_ssh[@]}" bash -s -- "$archive_name" "$distro_id" <<'REMOTE'
 set -euo pipefail
 
 archive_name=$1
+distro_id=$2
 cd /tmp
 for command in openssl /usr/sbin/update-ca-certificates; do
   command -v "$command" >/dev/null || {
-    echo "Ubuntu image is missing required TLS command: $command" >&2
+    echo "$distro_id image is missing required TLS command: $command" >&2
     exit 1
   }
 done
@@ -273,7 +287,7 @@ rm -rf /tmp/heimdall-tls
 mkdir /tmp/heimdall-tls
 openssl req -x509 -newkey rsa:2048 -nodes \
   -keyout /tmp/heimdall-tls/ca-key.pem -out /tmp/heimdall-tls/ca.pem \
-  -subj /CN=Heimdall-Ubuntu-Upstream-CA -days 36500 \
+  -subj /CN=Heimdall-Acceptance-Upstream-CA -days 36500 \
   -addext basicConstraints=critical,CA:TRUE \
   -addext keyUsage=critical,keyCertSign,cRLSign >/dev/null 2>&1
 openssl req -newkey rsa:2048 -nodes \
@@ -306,27 +320,15 @@ sudo chmod 0440 /etc/sudoers.d/heimdall
 sudo visudo -cf /etc/sudoers.d/heimdall >/dev/null
 sudo loginctl enable-linger tester
 sudo systemctl start user@1100.service
-sudo -u tester env HOME=/home/tester XDG_RUNTIME_DIR=/run/user/1100 \
-  systemctl --user start dbus.socket
-for _ in $(seq 1 200); do
-  sudo test -S /run/user/1100/bus && break
-  sleep 0.05
-done
-if ! sudo test -S /run/user/1100/bus; then
-  echo "tester user bus did not start" >&2
-  sudo ls -la /run/user/1100 >&2
-  sudo -u tester env HOME=/home/tester XDG_RUNTIME_DIR=/run/user/1100 \
-    systemctl --user list-unit-files 'dbus*' --no-pager >&2 || true
-  exit 1
-fi
-echo "heimdall Ubuntu guest provisioning OK"
+echo "heimdall $distro_id guest provisioning OK"
 REMOTE
 
 phase=guest-data-path
 guest_output=$("${tester_ssh[@]}" env \
   HOME=/home/tester \
   XDG_RUNTIME_DIR=/run/user/1100 \
-  DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1100/bus \
+  HEIMDALL_DISTRO_ID="$distro_id" \
+  HEIMDALL_RESOLVER_PROFILE="$resolver_profile" \
   HEIMDALL_EXPECTED_VERSION="$version" \
   HEIMDALL_RUN_BENCHMARK="$run_benchmark" \
   HEIMDALL_BENCHMARK_ITERATIONS="$benchmark_iterations" \
@@ -334,7 +336,7 @@ guest_output=$("${tester_ssh[@]}" env \
 printf '%s\n' "$guest_output"
 if [[ $run_benchmark == 1 ]]; then
   grep -Fq 'HEIMDALL_BENCHMARK_JSON={"' <<<"$guest_output" \
-    || fail "Ubuntu guest did not emit the benchmark contract"
+    || fail "$distro_id guest did not emit the benchmark contract"
 fi
 
 phase=host-isolation-after-acceptance
@@ -342,7 +344,7 @@ network_snapshot "$work_dir/host-network-after"
 cmp "$work_dir/host-network-before" "$work_dir/host-network-after" \
   || fail "acceptance changed host links, routes, or rules"
 
-echo "heimdall pinned Ubuntu VM acceptance OK"
+echo "heimdall pinned $distro_id VM acceptance OK"
 if [[ $run_benchmark == 1 ]]; then
-  echo "heimdall pinned Ubuntu VM benchmark OK"
+  echo "heimdall pinned $distro_id VM benchmark OK"
 fi

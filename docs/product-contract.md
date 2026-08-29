@@ -59,7 +59,9 @@ Proxying, payload retention, and plaintext inspection are independent choices:
   invoking-user-owned CA material. Certificate pinning and client-certificate
   mTLS are outside this boundary. `tls init-ca` and `heimdall agent` expose the
   same public-certificate DER SHA-256 so command-scoped trust can be verified
-  without exposing the signing key.
+  without exposing the signing key. Agent readiness also requires the same CA
+  certificate/key, permissions, signing-usage, and key-match validation used by
+  the runtime.
 - `capture.mode = "on"` writes bounded private content-addressed blobs and
   `flow.data` references in `heimdall.event/v1`. The recorded boundary states
   whether bytes are opaque transport or observed plaintext.

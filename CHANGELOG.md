@@ -14,20 +14,27 @@ guide.
   interception, descendants, all four forwarded owner signals, concurrent
   sessions, parent-death cleanup and log recovery, runtime and relay TLS
   evidence, JSONL integrity, and daemonless cleanup.
-- Add an explicit pinned Ubuntu performance gate that emits the existing
-  `heimdall.benchmark/v1` contract for latency, procfs RSS, 1/10/50 concurrent
-  starts, SOCKS5 TCP/UDP, transport and relay capture throughput, and event
-  integrity.
+- Add a pinned Debian 13 x86_64 KVM release gate that exercises the stock
+  nss-myhostname/nss-resolve status-action chain through the private resolver
+  mount, the full daemonless archive/lifecycle suite, and strict Python
+  3.13/OpenSSL relay verification without requiring a session D-Bus service.
+- Add explicit pinned Ubuntu and Debian performance gates that emit the
+  existing `heimdall.benchmark/v1` contract for latency, procfs RSS, 1/10/50
+  concurrent starts, SOCKS5 TCP/UDP, transport and relay capture throughput,
+  and event integrity.
 - Add resolver compatibility preflight to `heimdall.agent/v8`, including the
   selected fake-DNS strategy, NSS/nscd evidence, user-namespace settings,
   shell-safe inspection argv, and a stable blocking diagnostic.
+- Add relay CA validation to `heimdall.agent/v8`; invalid material now reports
+  `config.decrypt.ca_material_error`, makes readiness false, and withholds the
+  execution prefix before a command starts.
 
 ### Changed
 
-- Include the Ubuntu compatibility guest in the authoritative local release
-  transaction while keeping the broader SOCKS5, fake-DNS, QUIC, runtime-client,
-  capture, rotation, retention, and stress matrix in the current/Linux 6.6 LTS
-  NixOS guests.
+- Include the Ubuntu and Debian compatibility guests in the authoritative local
+  release transaction while keeping the broader SOCKS5, fake-DNS, QUIC,
+  runtime-client, capture, rotation, retention, and stress matrix in the
+  current/Linux 6.6 LTS NixOS guests.
 - Generalize the disposable-VM benchmark runner across project-owned client,
   policy, configuration, CA, and RSS backends, and report the distribution,
   guest memory, and RSS source without changing its scenario names.
@@ -36,6 +43,9 @@ guide.
   private resolver-mount fallback for NSS modules and caches that bypass DNS.
 - Reject a deterministically disabled private resolver namespace before
   creating run state, attaching eBPF, or executing the requested command.
+- Generate relay CAs with explicit `keyCertSign`/`cRLSign` usage and intercepted
+  leaves with an Authority Key Identifier; reject older incompatible CA
+  material during agent and run preflight with a replacement-trust hint.
 
 ### Known limitations
 

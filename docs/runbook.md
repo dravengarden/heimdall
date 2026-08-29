@@ -27,6 +27,7 @@ Run the pinned non-NixOS compatibility gate on an x86_64 Linux KVM host:
 
 ```bash
 just test-vm-ubuntu
+just test-vm-debian
 ```
 
 This boots the content-hashed Ubuntu 24.04 cloud image with QEMU user-mode
@@ -45,6 +46,13 @@ native aarch64 execution.
 The same guest asserts that `heimdall agent --policy fake` selects
 `port53_intercept`, reports the still-enabled AppArmor restriction, and needs
 no private resolver mount.
+
+The content-hashed Debian 13 guest runs the same archive, authorization,
+lifecycle, TLS, log-integrity, cleanup, and host-isolation checks. Its stock
+`files myhostname resolve [!UNAVAIL=return] dns` NSS line must select
+`private_mount`, preserve the host resolver files, and complete fake DNS
+without a session D-Bus service. The strict Python 3.13/OpenSSL client also
+validates the generated relay CA and leaf extensions.
 
 On an aarch64 Linux execution host, run the architecture-equivalent current
 and LTS guests with:
@@ -76,11 +84,11 @@ just release-github
 ```
 
 This runs source verification, then the current and Linux 6.6 LTS NixOS
-real-eBPF guests and the pinned Ubuntu 24.04 compatibility guest sequentially,
-then the native archive, npm, PyPI, and Cargo package checks. Only after every
-gate passes does it create the version tag and GitHub Release with curated
-notes, archives, and checksums. The versioned changelog must include highlights
-and known limitations; see
+real-eBPF guests and the pinned Ubuntu 24.04 and Debian 13 compatibility guests
+sequentially, then the native archive, npm, PyPI, and Cargo package checks. Only
+after every gate passes does it create the version tag and GitHub Release with
+curated notes, archives, and checksums. The versioned changelog must include
+highlights and known limitations; see
 [releasing.md](releasing.md) for the complete release contract. GitHub Pages or
 Actions status is not release evidence.
 
@@ -109,6 +117,12 @@ direct TCP/UDP, descendants, signals, concurrent runs, owner-death recovery,
 and runtime and relay TLS. It intentionally does not duplicate the NixOS
 suite's SOCKS5 UDP, QUIC, broad runtime-client, capture/rotation, retention,
 and stress coverage.
+
+The Debian guest proves the same release and lifecycle boundary through the
+private resolver-mount fallback selected for its nss-resolve status-action
+chain. It also proves that the systemd user manager is sufficient without a
+session D-Bus daemon and that strict OpenSSL clients accept Heimdall's generated
+CA and leaves.
 
 ## Install the daemonless path
 
@@ -198,7 +212,8 @@ not require a valid or discoverable config file.
 Before execution, inspect:
 
 - `config.valid`, normalized capture/decrypt values, capture allowlists,
-  redaction-value readiness, and stable diagnostics;
+  redaction-value readiness, relay `ca_material_ready`/`ca_material_error`, and
+  stable diagnostics;
 - `execution.backend`, `daemon_required`, and `privilege_setup`;
 - `decision` for the selected policy and terminal TCP/UDP actions;
 - `decision.resolver` for the selected DNS strategy, NSS/nscd reason,
@@ -277,12 +292,13 @@ the complete schema and `jq` recipes.
 ## Performance baseline
 
 Run the repeatable current and Linux 6.6 LTS NixOS baselines and the pinned
-Ubuntu 24.04 baseline after changes that can affect setup, relay, capture, TLS,
-event writing, or teardown:
+Ubuntu 24.04 and Debian 13 baselines after changes that can affect setup, relay,
+capture, TLS, event writing, or teardown:
 
 ```bash
 nix develop -c just benchmark-vm
 just benchmark-vm-ubuntu
+just benchmark-vm-debian
 ```
 
 Each VM emits one `HEIMDALL_BENCHMARK_JSON=` line containing its
@@ -293,11 +309,11 @@ proxied TCP, proxied UDP, full transport capture, and relay TLS plaintext
 capture, with transferred bytes, elapsed nanoseconds, bytes per second, and
 the active capture/decrypt boundary. Event integrity requires zero incomplete
 runs, sequence gaps, out-of-order records, active or failed flows, and error
-events. The NixOS guests use GNU time resource accounting. Ubuntu uses fake DNS
-with SOCKS5 routing, procfs RSS sampling, and an 8 GiB guest so the 50-run batch
-does not turn into a memory pressure test; the gate does not weaken Ubuntu's
-default AppArmor user-namespace restriction. Treat every result as specific to
-the reported distribution,
+events. The NixOS guests use GNU time resource accounting. Ubuntu and Debian
+use fake DNS with SOCKS5 routing, procfs RSS sampling, and 8 GiB guests so the
+50-run batch does not turn into a memory pressure test; the Ubuntu gate does
+not weaken its default AppArmor user-namespace restriction. Treat every result
+as specific to the reported distribution,
 architecture, kernel, CPU count, memory, and RSS source. These commands are
 explicit performance checks, not part of `release-check`, and their output is
 an environment baseline rather than a universal throughput claim.
@@ -343,6 +359,11 @@ REQUESTS_CA_BUNDLE="$ca_cert" heimdall run -- python client.py
 Client-specific variables and flags are not universal; preserve native roots
 when the client replaces rather than extends its trust bundle. Keep
 `ca-key.pem` mode 0600 and never give it to the wrapped client. Relay mode is
+accepted only when `agent.config.decrypt.ca_material_ready` is true. If
+`ca_material_error.code` is `relay_ca_material_invalid`, generate replacement
+material in a new private directory, update command-scoped client trust, then
+change both config paths. Do not overwrite the trusted CA until every affected
+client is ready for the replacement. Relay mode is
 library-independent but is incompatible with certificate pinning and
 client-certificate mTLS.
 
@@ -365,6 +386,7 @@ heimdall run -- curl https://example.com
   grant broader sudo access.
 - cgroup permission error: ensure the systemd user manager is running; Heimdall
   re-enters a delegated `systemd-run --user --scope` and preserves `--config`.
+  A separate session D-Bus service is not required.
 - fake-DNS lookup failure: a host with a plain `hosts: files dns` NSS path uses
   direct cgroup port-53 interception and needs no user namespace. Read
   `decision.resolver` first and execute each `actions.resolver_inspect[]` argv
@@ -376,6 +398,10 @@ heimdall run -- curl https://example.com
   [Ubuntu 24.04 security notes](https://documentation.ubuntu.com/release-notes/24.04/#unprivileged-user-namespace-restrictions).
 - relay CA key permission error: generate the key as the invoking user and keep
   its containing directory 0700 and key 0600.
+- `relay_ca_material_invalid`: generate replacement CA material in a new
+  private directory, update command-scoped client trust, then update both relay
+  config paths. Do not weaken certificate validation or silently overwrite a
+  CA that clients still trust.
 - another transparent proxy catches relay traffic: exempt the exact loopback
   endpoint reported for the run from that proxy's interception.
 - runtime TLS has no attachable image: start a representative process using

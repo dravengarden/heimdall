@@ -54,6 +54,35 @@
         url = "https://cloud-images.ubuntu.com/releases/noble/release-20260814/ubuntu-24.04-server-cloudimg-amd64.img";
         hash = "sha256-bkDAeucV90T4SvC+x2QVzBmH3RFbS43kN4GFYfAaNzM=";
       };
+      # Why: use the immutable Debian 13 image directory rather than the
+      # moving `latest` symlink so one release transaction always tests the
+      # same userspace, kernel, and NSS defaults.
+      debianCloudImage = pkgs.fetchurl {
+        name = "debian-13-genericcloud-amd64-20260826-2582.qcow2";
+        url = "https://cloud.debian.org/images/cloud/trixie/20260826-2582/debian-13-genericcloud-amd64-20260826-2582.qcow2";
+        hash = "sha512-GEdhsNrQ+azgL5KYBQypbOPKo5pGGkdwbUf/lpi1mTORi5G0AXf71NOS9kRq+LTRjsuUysqYgWmxlkFga/NAAw==";
+      };
+      mkDistroAcceptanceShell =
+        {
+          cloudImage,
+          distroId,
+          resolverProfile,
+        }:
+        pkgs.mkShell {
+          packages = [
+            pkgs.cloud-utils
+            pkgs.coreutils
+            pkgs.findutils
+            pkgs.gnugrep
+            pkgs.iproute2
+            pkgs.openssh
+            pkgs.python3
+            pkgs.qemu
+          ];
+          HEIMDALL_CLOUD_IMAGE = cloudImage;
+          HEIMDALL_DISTRO_ID = distroId;
+          HEIMDALL_RESOLVER_PROFILE = resolverProfile;
+        };
       # Why: this nixpkgs revision still defaults importCargoLock to the old
       # crates.io API route, which rejects anonymous fetchurl clients. Limit
       # the compatibility override to Heimdall's Rust platforms and use the
@@ -670,6 +699,7 @@
         release = releaseBundle;
         release-aarch64 = releaseBundleAarch64;
         ubuntu-cloud-image = ubuntuCloudImage;
+        debian-cloud-image = debianCloudImage;
       };
 
       packages.${nativeAarch64System} = {
@@ -759,21 +789,18 @@
 
         };
 
-        # Keep the cloud image and VM tooling out of the ordinary Rust shell.
-        # This shell is used only by the explicit cross-distribution gate and
-        # still relies on the host Nix daemon for the release build.
-        ubuntu-acceptance = pkgs.mkShell {
-          packages = [
-            pkgs.cloud-utils
-            pkgs.coreutils
-            pkgs.findutils
-            pkgs.gnugrep
-            pkgs.iproute2
-            pkgs.openssh
-            pkgs.python3
-            pkgs.qemu
-          ];
-          HEIMDALL_UBUNTU_IMAGE = ubuntuCloudImage;
+        # Keep cloud images and VM tooling out of the ordinary Rust shell.
+        # These shells select an immutable distro profile while sharing one
+        # archive-install and real-data-path runner.
+        ubuntu-acceptance = mkDistroAcceptanceShell {
+          cloudImage = ubuntuCloudImage;
+          distroId = "ubuntu";
+          resolverProfile = "apparmor-restricted";
+        };
+        debian-acceptance = mkDistroAcceptanceShell {
+          cloudImage = debianCloudImage;
+          distroId = "debian";
+          resolverProfile = "private-mount";
         };
       };
 
