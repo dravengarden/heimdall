@@ -44,10 +44,8 @@ fn build_report(explicit_path: Option<&Path>, args: AgentArgs) -> Value {
         ),
     };
     let format = ConfigFormat::detect(&path).map(ConfigFormat::name);
-    let config_result = discovery_error.map_or_else(
-        || crate::heimdall_config::HeimdallConfig::load(&path),
-        Err,
-    );
+    let config_result =
+        discovery_error.map_or_else(|| crate::heimdall_config::HeimdallConfig::load(&path), Err);
 
     let (config, decision, policies, outbounds) = match config_result {
         Err(error) => (
@@ -175,19 +173,23 @@ fn build_report(explicit_path: Option<&Path>, args: AgentArgs) -> Value {
             "execute_prefix": null,
             "resolver_inspect": [],
             "tls_ca_init": null,
-            "logs_schema_event": [],
-            "logs_schema_run": [],
-            "logs_schema_summary": [],
-            "logs_schema_flow": [],
-            "logs_list": [],
-            "logs_summary": [],
-            "logs_flow": [],
-            "logs_query_prefix": [],
-            "logs_tail_prefix": [],
-            "logs_rotate": [],
-            "logs_verify": [],
-            "logs_recover_preview": [],
-            "logs_prune_preview": [],
+            "logs_schema_event": logs_argv(&["schema", "--event", "v1"]),
+            "logs_schema_run": logs_argv(&["schema", "--run", "v1"]),
+            "logs_schema_summary": logs_argv(&["schema", "--summary", "v1"]),
+            "logs_schema_flow": logs_argv(&["schema", "--flow", "v1"]),
+            "logs_list": logs_argv(&["list", "--json"]),
+            "logs_summary": logs_argv(&["summary", "--run", "<RUN_ID>", "--json"]),
+            "logs_flow": logs_argv(&[
+                "flow", "--run", "<RUN_ID>", "--flow", "<FLOW_ID>", "--json",
+            ]),
+            "logs_query_prefix": logs_argv(&["query", "--run", "<RUN_ID>", "--jsonl"]),
+            "logs_tail_prefix": logs_argv(&["tail", "--run", "<RUN_ID>", "--jsonl"]),
+            "logs_rotate": logs_argv(&["rotate", "--run", "<RUN_ID>", "--json"]),
+            "logs_verify": logs_argv(&["verify", "--run", "<RUN_ID>", "--json"]),
+            "logs_recover_preview": logs_argv(&["recover", "--run", "<RUN_ID>", "--json"]),
+            "logs_prune_preview": logs_argv(&[
+                "prune", "--older-than", "30d", "--keep-last", "20", "--json",
+            ]),
         },
         "exit_codes": {"ready": 0, "not_ready": 1, "usage": 2},
     })
@@ -211,7 +213,7 @@ fn unavailable_capabilities() -> Value {
             "run_contract": "heimdall.run/v1",
             "summary_contract": "heimdall.logs.summary/v1",
             "flow_summary_contract": "heimdall.logs.flow/v1",
-            "format": "unavailable",
+            "format": "jsonl",
             "lifecycle_events": false,
             "flow_events": "unavailable",
             "dns_events": "unavailable",
@@ -219,11 +221,11 @@ fn unavailable_capabilities() -> Value {
             "tls_events": "unavailable",
             "client_hello_events": false,
             "derived_http_records": "unavailable",
-            "offline_schema_validation": false,
+            "offline_schema_validation": true,
             "writer_owned_rotation": false,
             "content_addressed_blobs": false,
             "bounded_block_coalescing": false,
-            "incomplete_run_recovery": false,
+            "incomplete_run_recovery": true,
         },
         "decrypt": {
             "modes": [],
@@ -370,6 +372,12 @@ fn argv_for(path: &Path, suffix: &[&str]) -> Vec<String> {
     argv
 }
 
+fn logs_argv(suffix: &[&str]) -> Vec<String> {
+    let mut argv = vec!["heimdall".into(), "logs".into()];
+    argv.extend(suffix.iter().map(|value| (*value).to_string()));
+    argv
+}
+
 const fn dns_name(mode: DnsMode) -> &'static str {
     match mode {
         DnsMode::Fake => "fake",
@@ -409,7 +417,10 @@ mod tests {
         assert_eq!(report["platform"]["os"], "macos");
         assert!(report["execution"].is_null());
         assert!(report["actions"]["execute_prefix"].is_null());
-        assert_eq!(report["diagnostics"][0]["code"], "macos_backend_unavailable");
+        assert_eq!(
+            report["diagnostics"][0]["code"],
+            "macos_backend_unavailable"
+        );
         assert_eq!(report["backends"][0]["available"], false);
         assert_eq!(report["backends"][1]["available"], false);
         assert_eq!(
@@ -418,6 +429,20 @@ mod tests {
         );
         assert_eq!(report["capabilities"]["udp"]["connected"], false);
         assert_eq!(report["capabilities"]["decrypt"]["modes"], json!([]));
+        assert_eq!(report["capabilities"]["capture"]["format"], "unavailable");
+        assert_eq!(report["capabilities"]["logs"]["format"], "jsonl");
+        assert_eq!(
+            report["capabilities"]["logs"]["offline_schema_validation"],
+            true
+        );
+        assert_eq!(
+            report["actions"]["logs_schema_event"],
+            json!(["heimdall", "logs", "schema", "--event", "v1"])
+        );
+        assert_eq!(
+            report["actions"]["logs_recover_preview"],
+            json!(["heimdall", "logs", "recover", "--run", "<RUN_ID>", "--json"])
+        );
     }
 
     #[test]
@@ -426,11 +451,7 @@ mod tests {
             "heimdall-macos-agent-config-{}.toml",
             std::process::id()
         ));
-        std::fs::write(
-            &path,
-            crate::cli::init::InitFormat::Toml.template(),
-        )
-        .unwrap();
+        std::fs::write(&path, crate::cli::init::InitFormat::Toml.template()).unwrap();
 
         let report = build_report(Some(&path), AgentArgs { policy: None });
         std::fs::remove_file(path).unwrap();

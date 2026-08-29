@@ -9,6 +9,11 @@ implemented for explicit TLS plaintext. Strict low-cardinality run and
 per-flow explanation documents are implemented without replacing JSONL as the
 evidence source of truth.
 
+The writer/control/finalization owner and offline log CLI now compile in the
+in-development Darwin scaffold as well as Linux. This is a storage portability
+boundary only: no macOS backend emits network events until its separate native
+transport and attribution gates pass.
+
 This document defines the unified storage and CLI contract. The goals are direct Linux-tool usability, strict
 machine discovery, bounded storage, and loss-aware rotation. The event log is
 useful without a Web UI.

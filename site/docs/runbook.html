@@ -31,7 +31,7 @@
         <pre><code>nix develop -c just sync-ebpf
 nix develop -c just verify
 nix develop -c just check-macos</code></pre>
-        <p><code>check-macos</code> type-checks the target-selected CLI for pinned <code>aarch64-apple-darwin</code>. It proves Linux-only aya/cgroup code does not leak into shared config/init or the unavailable agent contract; it does not link an app or accept a Network Extension.</p>
+        <p><code>check-macos</code> type-checks the target-selected CLI for pinned <code>aarch64-apple-darwin</code>. It proves Linux-only aya/cgroup code does not leak into shared config/init, <code>RunEvidence</code>, the JSONL store and offline log CLI, or the unavailable agent contract. It does not link an app, generate macOS traffic evidence, or accept a Network Extension.</p>
         <p>Run the current and Linux 6.6 LTS disposable NixOS real-eBPF VMs when changing cgroups, DNS, relay correlation, routing, or kernel programs. Both execute the same static binary and full daemonless acceptance suite. Run both pinned distro gates to prove the release archive on non-NixOS systems:</p>
         <pre><code>nix develop -c just test-vm
 

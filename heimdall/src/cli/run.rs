@@ -204,31 +204,20 @@ pub async fn run(config_path: &Path, args: RunArgs) -> Result<()> {
     }
 
     let backend = "linux-ebpf-foreground";
-    let event_log = crate::event_log::RunLog::create_with_capture(
+    let evidence = crate::run_evidence::RunEvidence::start(
         &args.command,
         &decision.policy,
         backend,
         &cfg.capture,
     )?;
-    let rotation_server = crate::event_log::RotationServer::start(event_log.clone())?;
-    let outcome = run_registered(
-        &cfg,
-        &decision,
-        &resolver,
-        &args,
-        &event_log,
-        rotation_server.event_socket_path(),
-    )
-    .await;
+    let outcome = run_registered(&cfg, &decision, &resolver, &args, &evidence).await;
     match outcome {
         Ok((exit_code, descendants_cleaned)) => {
-            event_log.finish(exit_code, descendants_cleaned)?;
-            drop(rotation_server);
+            evidence.finish(exit_code, descendants_cleaned)?;
             std::process::exit(exit_code);
         }
         Err(error) => {
-            let _ = event_log.fail("run_failed", "heimdall run failed before completion");
-            drop(rotation_server);
+            let _ = evidence.fail("run_failed", "heimdall run failed before completion");
             Err(error)
         }
     }
@@ -239,8 +228,7 @@ async fn run_registered(
     decision: &RunDecision,
     resolver: &crate::resolver::ResolverReport,
     args: &RunArgs,
-    event_log: &crate::event_log::RunLog,
-    event_socket: &Path,
+    evidence: &crate::run_evidence::RunEvidence,
 ) -> Result<(i32, bool)> {
     let cgroup_path = create_sibling_cgroup()?;
     let cgroup_id = read_cgroup_id(&cgroup_path).inspect_err(|_| {
@@ -252,8 +240,8 @@ async fn run_registered(
         &decision.policy,
         cgroup_path.clone(),
         cgroup_id,
-        event_socket.to_path_buf(),
-        event_log.run_dir()?.join("fake-dns.json"),
+        evidence.event_socket_path().to_path_buf(),
+        evidence.run_dir()?.join("fake-dns.json"),
     )
     .await
     .inspect_err(|_| {
@@ -266,7 +254,7 @@ async fn run_registered(
         }
         crate::heimdall_config::DecryptMode::Relay => vec!["transport", "tls_plaintext.relay"],
     };
-    if let Err(error) = event_log.ready("heimdall-run", None, &boundaries) {
+    if let Err(error) = evidence.ready("heimdall-run", None, &boundaries) {
         session.shutdown().await;
         cleanup_before_exec(&cgroup_path, args.keep_cgroup);
         return Err(error);
@@ -288,8 +276,12 @@ async fn run_registered(
         None
     };
 
-    let exit_code =
-        fork_into_cgroup_and_exec(&cgroup_path, &args.command, dns_shim.as_ref(), event_log);
+    let exit_code = fork_into_cgroup_and_exec(
+        &cgroup_path,
+        &args.command,
+        dns_shim.as_ref(),
+        evidence.log(),
+    );
 
     // A shell or CLI can leave background descendants after its immediate
     // process exits. Closing the foreground links here would turn those

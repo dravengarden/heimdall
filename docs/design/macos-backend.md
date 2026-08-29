@@ -164,7 +164,7 @@ weaken signature validation, or install a permanent host-wide proxy.
 
 ## Current implementation status
 
-The initial compile boundary is implemented:
+The compile boundary and first evidence-ownership extraction are implemented:
 
 - the crate selects separate Linux and Darwin roots while preserving the
   available Linux implementation unchanged;
@@ -172,21 +172,29 @@ The initial compile boundary is implemented:
   from the Darwin target;
 - Darwin shares strict `init`, config schema, validation, and policy
   explanation behavior;
+- one platform-neutral `RunEvidence` value owns the JSONL writer, rotation/event
+  control sockets, and finalization order; the available Linux foreground path
+  now uses that same owner;
+- the Darwin scaffold compiles the same event store and exposes `logs` schema,
+  list, path, summary, flow, query, tail, rotate, verify, recovery, and retention
+  commands for existing run data;
 - `heimdall agent` validates that shared config but reports both backends as
-  unavailable, leaves `execution` and `actions.execute_prefix` null, and exits
-  1;
+  unavailable, leaves `execution` and `actions.execute_prefix` null, exposes
+  argv-safe offline log actions, and exits 1;
 - `heimdall run` exits 1 without executing the supplied command; and
 - `just check-macos` type-checks the CLI for pinned
   `aarch64-apple-darwin` as part of `just verify`.
 
-This is build scaffolding, not a macOS package or transport implementation. No
-explicit proxy, companion app, system extension, TCP/UDP forwarding, capture,
-or TLS path is available yet.
+This is build scaffolding, not a macOS package or transport implementation.
+The Darwin log commands can inspect a compatible existing store, but no macOS
+backend creates traffic events yet. No explicit proxy, companion app, system
+extension, TCP/UDP forwarding, capture, or TLS path is available.
 
 ## Implementation sequence
 
-1. Keep the completed target/dependency split and unavailable machine contract
-   covered while extracting the platform-neutral relay and log ownership.
+1. Keep the completed target/dependency split, shared evidence owner, offline
+   log tooling, and unavailable machine contract covered while extracting the
+   platform-neutral relay transport.
 2. Implement and accept `macos-explicit` as an opt-in reduced mode.
 3. Add the signed containing app, system extension, minimal session helper, and
    versioned authenticated registration protocol.

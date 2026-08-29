@@ -2,12 +2,9 @@
 // the established module paths and embedded eBPF data path remain unchanged.
 
 mod capture;
-mod cli;
 mod dns;
 mod ebpf;
-mod event_log;
 mod heimdall_common;
-mod heimdall_config;
 mod http;
 mod resolver;
 mod setup;

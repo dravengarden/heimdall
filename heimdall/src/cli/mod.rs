@@ -3,7 +3,6 @@
 //! The handlers share the same strict configuration loader. `heimdall run`
 //! owns its complete data plane and persistent services are out of scope.
 
-#[cfg(target_os = "linux")]
 pub mod logs;
 #[cfg(target_os = "linux")]
 pub mod tls;
@@ -995,13 +994,9 @@ pub mod agent {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 #[path = "agent_macos.rs"]
-pub mod agent;
-
-#[cfg(all(test, not(target_os = "macos")))]
-#[path = "agent_macos.rs"]
-mod agent_macos;
+pub mod agent_macos;
 
 pub mod config;
 pub mod init;

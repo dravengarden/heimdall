@@ -70,6 +70,21 @@ grep '^verify:' justfile | grep -Fq 'check-macos' || {
   exit 1
 }
 
+grep -Fq 'mod event_log;' heimdall/src/main.rs || {
+  printf 'the event store is not owned by the shared target root\n' >&2
+  exit 1
+}
+
+grep -Fq 'Logs(crate::cli::logs::LogsCmd)' heimdall/src/main_macos.rs || {
+  printf 'the Darwin scaffold does not expose portable log inspection\n' >&2
+  exit 1
+}
+
+grep -Fq '"offline_schema_validation": true' heimdall/src/cli/agent_macos.rs || {
+  printf 'the Darwin agent does not advertise offline log validation\n' >&2
+  exit 1
+}
+
 for macos_runbook in docs/runbook.md site/docs/runbook.html; do
   grep -Fq 'just check-macos' "$macos_runbook" || {
     printf '%s does not expose the Darwin compile boundary\n' \
@@ -78,6 +93,11 @@ for macos_runbook in docs/runbook.md site/docs/runbook.html; do
   }
   grep -Fq 'aarch64-apple-darwin' "$macos_runbook" || {
     printf '%s does not name the pinned Darwin target\n' \
+      "$macos_runbook" >&2
+    exit 1
+  }
+  grep -Fq 'JSONL' "$macos_runbook" || {
+    printf '%s does not document the portable evidence boundary\n' \
       "$macos_runbook" >&2
     exit 1
   }

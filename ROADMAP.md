@@ -251,11 +251,13 @@ The architecture contract is now in development, but no macOS backend is
 available in a release. The two paths remain deliberately separate:
 
 - Keep the available initial platform split green: shared strict config/init
-  behavior, a Darwin CLI that refuses `run`, additive unavailable-backend
-  `heimdall.agent/v8` evidence, Linux-only dependency isolation, and the pinned
-  `aarch64-apple-darwin` type-check in `just verify`.
-- Continue extracting platform-neutral relay and event-log ownership from the
-  Linux aya/eBPF root without changing the available Linux binary or schema.
+  behavior and portable JSONL tooling, a Darwin CLI that refuses `run`,
+  additive unavailable-backend `heimdall.agent/v8` evidence, Linux-only
+  dependency isolation, and the pinned `aarch64-apple-darwin` type-check in
+  `just verify`.
+- Keep the shared `RunEvidence` writer/control/finalization owner used by Linux
+  while continuing to extract platform-neutral relay transport from the aya/eBPF
+  root without changing the available Linux binary or event schema.
 - Add an opt-in `macos-explicit` compatibility backend for cooperative proxy
   clients. It must never change system-wide settings or claim transparent UDP,
   fake DNS, QUIC, runtime TLS, strict command scope, or fail-closed coverage.

@@ -17,6 +17,11 @@ guide.
   behavior, emits additive `heimdall.agent/v8` platform and unavailable-backend
   evidence, refuses `run` without executing its command, excludes Linux-only
   dependencies, and passes a pinned `aarch64-apple-darwin` type-check.
+- Extract a platform-neutral `RunEvidence` owner for writer/control-socket
+  lifetime and finalization, use it from the unchanged Linux foreground path,
+  and compile the same JSONL store plus offline `heimdall logs` inspection,
+  verification, recovery, and retention tools into the Darwin scaffold without
+  enabling a macOS execution backend.
 - Add a strict offline `heimdall.logs.flow/v1` contract and `heimdall logs
   flow` command that explain one flow's route, transport result, bounded
   capture by direction and boundary, observed plaintext, TLS/HTTP evidence,

@@ -1,8 +1,5 @@
 // macOS CLI surface while both native backends remain unavailable.
 
-mod cli;
-mod heimdall_config;
-
 use std::{path::PathBuf, process::ExitCode};
 
 use anyhow::Result;
@@ -30,14 +27,18 @@ struct Cli {
 #[derive(clap::Subcommand, Debug)]
 enum Cmd {
     /// Emit the stable JSON preflight. It exits 1 while no backend is available.
-    Agent(cli::agent::AgentArgs),
+    Agent(crate::cli::agent_macos::AgentArgs),
 
     /// Inspect or validate the shared policy configuration.
     #[command(subcommand)]
-    Config(cli::config::ConfigCmd),
+    Config(crate::cli::config::ConfigCmd),
 
     /// Write a shared-format starter config without enabling a backend.
-    Init(cli::init::InitArgs),
+    Init(crate::cli::init::InitArgs),
+
+    /// Inspect or maintain portable JSONL evidence without enabling a backend.
+    #[command(subcommand)]
+    Logs(crate::cli::logs::LogsCmd),
 
     /// Refuse command execution until a macOS backend passes native acceptance.
     Run(MacRunArgs),
@@ -83,7 +84,7 @@ fn main() -> ExitCode {
 fn dispatch(cli: Cli) -> Result<ExitCode> {
     match cli.cmd {
         Cmd::Agent(args) => {
-            let ready = cli::agent::run(cli.config.as_deref(), args)?;
+            let ready = crate::cli::agent_macos::run(cli.config.as_deref(), args)?;
             Ok(if ready {
                 ExitCode::SUCCESS
             } else {
@@ -96,11 +97,15 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             } else {
                 cli.config.unwrap_or_else(default_config_path)
             };
-            cli::config::run(&config_path, command)?;
+            crate::cli::config::run(&config_path, command)?;
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Init(args) => {
-            cli::init::run(args)?;
+            crate::cli::init::run(args)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Logs(command) => {
+            crate::cli::logs::run(command)?;
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Run(args) => {
@@ -108,7 +113,9 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             eprintln!(
                 "error[macos_backend_unavailable]: macOS backends are in development and not available"
             );
-            eprintln!("fix: run `heimdall agent` for exact backend status; use Linux for execution");
+            eprintln!(
+                "fix: run `heimdall agent` for exact backend status; use Linux for execution"
+            );
             Ok(ExitCode::FAILURE)
         }
         Cmd::Help { path, verbose } => {
@@ -149,4 +156,37 @@ fn print_help(path: &[String], _verbose: bool) -> Result<()> {
     selected.print_long_help()?;
     println!();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn logs_are_inspectable_while_run_still_refuses_before_exec() {
+        let parsed = Cli::try_parse_from(["heimdall", "logs", "schema", "--event", "v1"]).unwrap();
+        assert!(matches!(parsed.cmd, Cmd::Logs(_)));
+
+        let marker = std::env::temp_dir().join(format!(
+            "heimdall-macos-refusal-{}-{}",
+            std::process::id(),
+            uuid::Uuid::now_v7().simple()
+        ));
+        let command = vec![
+            "sh".into(),
+            "-c".into(),
+            format!("touch {}", marker.display()),
+        ];
+        let code = dispatch(Cli {
+            config: None,
+            cmd: Cmd::Run(MacRunArgs {
+                policy: None,
+                command,
+            }),
+        })
+        .unwrap();
+
+        assert_eq!(code, ExitCode::FAILURE);
+        assert!(!marker.exists());
+    }
 }
