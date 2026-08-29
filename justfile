@@ -41,6 +41,9 @@ test:
 test-release-notes:
     tests/release/render-notes.sh
 
+test-site:
+    tests/site/content-contract.sh
+
 test-npm:
     tests/npm/run-acceptance.sh
 
@@ -52,7 +55,7 @@ test-cargo:
 
 test-release-tooling:
     actionlint .github/workflows/docs-pages.yml .github/workflows/publish-cargo.yml .github/workflows/publish-npm.yml .github/workflows/publish-pypi.yml
-    shellcheck scripts/build-cargo-release-assets scripts/build-npm-package scripts/build-npm-release-assets scripts/build-pypi-release-assets scripts/publish-github-release scripts/render-release-notes scripts/sync-ebpf-object tests/cargo/run-acceptance.sh tests/npm/run-acceptance.sh tests/package/check-artifact-hygiene.sh tests/package/run-acceptance.sh tests/pypi/run-acceptance.sh tests/release/cargo-workflow.sh tests/release/npm-workflow.sh tests/release/pypi-workflow.sh tests/release/render-notes.sh
+    shellcheck scripts/build-cargo-release-assets scripts/build-npm-package scripts/build-npm-release-assets scripts/build-pypi-release-assets scripts/publish-github-release scripts/render-release-notes scripts/sync-ebpf-object tests/cargo/run-acceptance.sh tests/npm/run-acceptance.sh tests/package/check-artifact-hygiene.sh tests/package/run-acceptance.sh tests/pypi/run-acceptance.sh tests/release/cargo-workflow.sh tests/release/npm-workflow.sh tests/release/pypi-workflow.sh tests/release/render-notes.sh tests/site/content-contract.sh
     tests/release/cargo-workflow.sh
     tests/release/npm-workflow.sh
     tests/release/pypi-workflow.sh
@@ -114,5 +117,5 @@ build-userspace:
 cache-stats:
     sccache --show-stats
 
-verify: toolchain-check check-format build-ebpf check-embedded-ebpf lint lint-ebpf dependencies test test-release-notes test-release-tooling build-userspace
+verify: toolchain-check check-format build-ebpf check-embedded-ebpf lint lint-ebpf dependencies test test-release-notes test-site test-release-tooling build-userspace
     @echo "verify OK"

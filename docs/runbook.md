@@ -53,11 +53,12 @@ just release-github
 ```
 
 This runs source verification, then the current and Linux 6.6 LTS real-eBPF
-guests sequentially, then both package checks. Only after every gate passes does
-it create the version tag and GitHub Release with curated notes, archives, and
-checksums. The versioned changelog must include highlights and known limitations;
-see [releasing.md](releasing.md) for the complete release contract. GitHub Pages
-or Actions status is not release evidence.
+guests sequentially, then the native archive, npm, PyPI, and Cargo package
+checks. Only after every gate passes does it create the version tag and GitHub
+Release with curated notes, archives, and checksums. The versioned changelog
+must include highlights and known limitations; see
+[releasing.md](releasing.md) for the complete release contract. GitHub Pages or
+Actions status is not release evidence.
 
 `just release-github` also uploads the locally built npm 12 tarball, two
 platform-specific PyPI wheels, the Cargo CLI source package, and their
