@@ -4,6 +4,25 @@ All notable changes to Heimdall are documented here. Heimdall is pre-1.0; this
 file records release-level changes and does not serve as an API migration
 guide.
 
+## [Unreleased]
+
+### Added
+
+- Add a pinned Ubuntu 24.04 x86_64 KVM release gate for native archive
+  installation, exact setup authorization, direct TCP/UDP interception, JSONL
+  integrity, command exit propagation, and daemonless cleanup.
+
+### Changed
+
+- Include the Ubuntu compatibility guest in the authoritative local release
+  transaction while keeping the complete protocol, TLS, and stress matrix in
+  the current/Linux 6.6 LTS NixOS guests.
+
+### Known limitations
+
+- Native aarch64 real-eBPF acceptance still requires an ARM Linux execution
+  host and is not yet part of the completed release matrix.
+
 ## [0.1.5] - 2026-08-29
 
 ### Highlights

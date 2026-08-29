@@ -1,0 +1,22 @@
+version = 1
+
+[proxy]
+default_policy = "direct"
+
+[proxy.policies.direct.dns]
+mode = "system"
+
+[proxy.policies.direct.final]
+tcp = { type = "direct" }
+udp = { type = "direct" }
+
+[capture]
+mode = "off"
+block_max_bytes = 65536
+flush_interval_ms = 100
+boundaries = ["transport", "tls_plaintext.runtime", "tls_plaintext.relay"]
+directions = ["client_to_remote", "remote_to_client"]
+redact_env = []
+
+[decrypt]
+mode = "off"

@@ -55,7 +55,8 @@ test-cargo:
 
 test-release-tooling:
     actionlint .github/workflows/docs-pages.yml .github/workflows/publish-cargo.yml .github/workflows/publish-npm.yml .github/workflows/publish-pypi.yml
-    shellcheck scripts/build-cargo-release-assets scripts/build-npm-package scripts/build-npm-release-assets scripts/build-pypi-release-assets scripts/publish-github-release scripts/render-release-notes scripts/sync-ebpf-object tests/cargo/run-acceptance.sh tests/npm/run-acceptance.sh tests/package/check-artifact-hygiene.sh tests/package/run-acceptance.sh tests/pypi/run-acceptance.sh tests/release/cargo-workflow.sh tests/release/npm-workflow.sh tests/release/pypi-workflow.sh tests/release/render-notes.sh tests/site/content-contract.sh
+    shellcheck scripts/build-cargo-release-assets scripts/build-npm-package scripts/build-npm-release-assets scripts/build-pypi-release-assets scripts/publish-github-release scripts/render-release-notes scripts/sync-ebpf-object tests/cargo/run-acceptance.sh tests/distro/guest-acceptance.sh tests/distro/run-ubuntu-acceptance.sh tests/npm/run-acceptance.sh tests/package/check-artifact-hygiene.sh tests/package/run-acceptance.sh tests/pypi/run-acceptance.sh tests/release/cargo-workflow.sh tests/release/npm-workflow.sh tests/release/pypi-workflow.sh tests/release/render-notes.sh tests/site/content-contract.sh
+    python3 -c 'compile(open("tests/distro/fixture.py", encoding="utf-8").read(), "tests/distro/fixture.py", "exec")'
     tests/release/cargo-workflow.sh
     tests/release/npm-workflow.sh
     tests/release/pypi-workflow.sh
@@ -70,6 +71,11 @@ test-vm:
     # meaningful on two-core development and hosted runners.
     nix build .#checks.x86_64-linux.vm-proxy -L
     nix build .#checks.x86_64-linux.vm-proxy-lts -L
+
+# Installs the native archive in a pinned Ubuntu 24.04 cloud guest and proves
+# real cgroup/eBPF TCP+UDP interception plus daemonless teardown outside NixOS.
+test-vm-ubuntu:
+    nix develop .#ubuntu-acceptance -c tests/distro/run-ubuntu-acceptance.sh
 
 # Runs the same current/LTS real-eBPF guests with an aarch64 userspace and
 # kernel. The host guard prevents the x86 release host's qemu-user CLI check
@@ -99,6 +105,7 @@ test-package:
 release-check:
     nix develop -c just verify
     just test-vm
+    just test-vm-ubuntu
     just test-package
 
 release-github:

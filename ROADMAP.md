@@ -59,6 +59,9 @@ acceptance path are documented and tested.
 - A real-eBPF NixOS acceptance matrix on the current and Linux 6.6 LTS kernels,
   covering dual-stack TCP/UDP, QUIC, common CLI/runtime clients, lifecycle
   behavior, and both TLS paths.
+- A pinned Ubuntu 24.04 x86_64 KVM gate that installs the native release
+  archive, grants only the setup-worker sudo rule, and proves direct TCP/UDP,
+  JSONL integrity, exit status, daemonless cleanup, and host-network isolation.
 - A machine-readable real-eBPF benchmark covering daemonless latency, RSS,
   1/10/50 concurrent starts, sustained TCP/UDP and capture throughput, and
   event integrity without requiring a metrics service.
@@ -84,12 +87,14 @@ kernel-assigned per-run relay and DNS ports, creates fresh unpinned maps,
 attaches FD-owned links through `heimdall.setup/v2`, and closes every resource
 when the command tree exits. The real-eBPF VM proves concurrent isolated runs,
 runtime and relay TLS, owner signal forwarding, normal cleanup, deterministic
-authorization denial, and parent-death cgroup teardown.
+authorization denial, and parent-death cgroup teardown. The pinned Ubuntu 24.04
+gate separately proves release installation, user-manager re-entry, exact
+authorization, direct TCP/UDP, logs, and normal cleanup outside NixOS.
 
 - Evaluate run-scoped dynamic attachment for `libssl` images loaded only after
   child exec without introducing a persistent broker.
-- Measure setup-worker authorization UX and signal behavior across supported
-  distributions beyond the available NixOS acceptance.
+- Expand setup-worker, signal, and parent-death coverage beyond the available
+  NixOS full suite and Ubuntu 24.04 base gate.
 - Keep any persistent acceleration mode explicit and opt-in; never start it
   implicitly.
 
@@ -116,8 +121,9 @@ integrity, and distinguish opaque transport from actual TLS plaintext. See
 
 ### 3. Proxy compatibility and diagnostics
 
-- Expand the available current/LTS kernel matrix across distributions, libc
-  behaviors, socket API variants, and process-tree edge cases.
+- Expand the available current/LTS NixOS and pinned Ubuntu 24.04 coverage
+  across more distributions, libc behaviors, socket API variants, and
+  process-tree edge cases.
 - Turn more rejected or unsupported network shapes into stable agent-readable
   diagnostics with a clear repair command or an explicit fail-closed reason.
 - Keep extending dual-stack, UDP, and HTTP/3 acceptance without weakening
@@ -168,8 +174,9 @@ runs. It also records sustained direct and proxied TCP, proxied UDP, transport
 capture, and relay TLS plaintext-capture throughput. Results are explicitly
 environment-specific rather than product-wide performance claims.
 
-- Repeat the functional and performance baselines across supported
-  distributions beyond the available current/6.6 LTS NixOS matrix.
+- Extend the available Ubuntu 24.04 functional gate to the performance
+  baseline, then repeat both across distributions beyond the current/6.6 LTS
+  NixOS matrix.
 - Keep operational health low-cardinality and derived from the same per-run
   evidence used by agents; do not add a required metrics daemon.
 

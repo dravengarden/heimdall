@@ -44,6 +44,26 @@ for runbook in docs/runbook.md site/docs/runbook.html; do
     printf '%s retained the obsolete two-package claim\n' "$runbook" >&2
     exit 1
   fi
+  grep -Fq 'just test-vm-ubuntu' "$runbook" || {
+    printf '%s does not expose the Ubuntu acceptance gate\n' "$runbook" >&2
+    exit 1
+  }
+  grep -Fq 'Ubuntu 24.04' "$runbook" || {
+    printf '%s does not identify the pinned compatibility guest\n' "$runbook" >&2
+    exit 1
+  }
+done
+
+grep -A4 '^release-check:' justfile | grep -Fq 'just test-vm-ubuntu' || {
+  printf 'release-check does not include the Ubuntu acceptance gate\n' >&2
+  exit 1
+}
+
+for status_page in README.md ROADMAP.md site/docs/roadmap.html; do
+  grep -Fq 'Ubuntu 24.04' "$status_page" || {
+    printf '%s does not report Ubuntu compatibility coverage\n' "$status_page" >&2
+    exit 1
+  }
 done
 
 printf 'documentation site contract OK\n'

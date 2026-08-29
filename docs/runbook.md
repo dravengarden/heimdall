@@ -23,6 +23,21 @@ cover dual-stack TCP/UDP, fake and system DNS, SOCKS5, QUIC, common runtime
 clients, concurrent runs, runtime and relay TLS, capture, rotation, recovery,
 signals, authorization failure, parent-death cleanup, and link cleanup.
 
+Run the pinned non-NixOS compatibility gate on an x86_64 Linux KVM host:
+
+```bash
+just test-vm-ubuntu
+```
+
+This boots the content-hashed Ubuntu 24.04 cloud image with QEMU user-mode
+networking, installs the same native archive used for release, and grants an
+ordinary user only the exact setup-worker sudo rule. It proves cgroup v2 and
+systemd-user integration, direct TCP/UDP interception, JSONL verification,
+exit propagation, and return to the pre-run process, listener, command-cgroup,
+and BPF-pin state. The harness also rejects any change to host links, routes,
+or rules. It is a focused distribution gate, not a substitute for the complete
+NixOS protocol/TLS matrix or native aarch64 execution.
+
 On an aarch64 Linux execution host, run the architecture-equivalent current
 and LTS guests with:
 
@@ -52,11 +67,12 @@ exactly matches `origin/main`, publish only with:
 just release-github
 ```
 
-This runs source verification, then the current and Linux 6.6 LTS real-eBPF
-guests sequentially, then the native archive, npm, PyPI, and Cargo package
-checks. Only after every gate passes does it create the version tag and GitHub
-Release with curated notes, archives, and checksums. The versioned changelog
-must include highlights and known limitations; see
+This runs source verification, then the current and Linux 6.6 LTS NixOS
+real-eBPF guests and the pinned Ubuntu 24.04 compatibility guest sequentially,
+then the native archive, npm, PyPI, and Cargo package checks. Only after every
+gate passes does it create the version tag and GitHub Release with curated
+notes, archives, and checksums. The versioned changelog must include highlights
+and known limitations; see
 [releasing.md](releasing.md) for the complete release contract. GitHub Pages or
 Actions status is not release evidence.
 
@@ -77,6 +93,11 @@ and dynamic clients, descendants, exit/signal status, two concurrent isolated
 runs, event rotation, relay TLS, fail-closed upstream errors, and return to the
 pre-run BPF-link baseline. It also kills a live foreground owner and proves the
 unprivileged helper removes the workload cgroup and BPF links.
+
+The Ubuntu guest proves the release artifact and narrow authorization work on
+a non-NixOS system without installing a service. Its focused direct TCP/UDP
+path intentionally does not duplicate the NixOS suite's SOCKS5, fake DNS,
+QUIC, capture, TLS, crash, and stress coverage.
 
 ## Install the daemonless path
 

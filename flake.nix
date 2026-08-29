@@ -45,6 +45,15 @@
       };
       lib = pkgs.lib;
       heimdallVersion = "0.1.5";
+      # Why: the non-NixOS acceptance gate must boot the same immutable image
+      # on every release host. The dated Ubuntu URL and content hash prevent a
+      # moving cloud-image alias from silently changing the compatibility
+      # result between releases.
+      ubuntuCloudImage = pkgs.fetchurl {
+        name = "ubuntu-24.04-server-cloudimg-amd64-20260814.img";
+        url = "https://cloud-images.ubuntu.com/releases/noble/release-20260814/ubuntu-24.04-server-cloudimg-amd64.img";
+        hash = "sha256-bkDAeucV90T4SvC+x2QVzBmH3RFbS43kN4GFYfAaNzM=";
+      };
       # Why: this nixpkgs revision still defaults importCargoLock to the old
       # crates.io API route, which rejects anonymous fetchurl clients. Limit
       # the compatibility override to Heimdall's Rust platforms and use the
@@ -660,6 +669,7 @@
         default = heimdall;
         release = releaseBundle;
         release-aarch64 = releaseBundleAarch64;
+        ubuntu-cloud-image = ubuntuCloudImage;
       };
 
       packages.${nativeAarch64System} = {
@@ -747,6 +757,23 @@
             pkgs.bpftools
           ];
 
+        };
+
+        # Keep the cloud image and VM tooling out of the ordinary Rust shell.
+        # This shell is used only by the explicit cross-distribution gate and
+        # still relies on the host Nix daemon for the release build.
+        ubuntu-acceptance = pkgs.mkShell {
+          packages = [
+            pkgs.cloud-utils
+            pkgs.coreutils
+            pkgs.findutils
+            pkgs.gnugrep
+            pkgs.iproute2
+            pkgs.openssh
+            pkgs.python3
+            pkgs.qemu
+          ];
+          HEIMDALL_UBUNTU_IMAGE = ubuntuCloudImage;
         };
       };
 

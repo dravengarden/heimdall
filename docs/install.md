@@ -16,11 +16,13 @@ rejects private/build paths and ELF debug sections; the embedded eBPF object
 retains BTF/BTF.ext after its redundant DWARF is removed. Kernel, cgroup,
 privilege, and TLS-library compatibility requirements still apply.
 
-The x86_64 package is covered by native install and current/Linux 6.6 LTS
-real-eBPF VM acceptance. The aarch64 package is checked for static linkage and
-architecture and executes CLI acceptance under emulation. The repository now
-defines the same current/LTS data-path gate for an aarch64 Linux execution
-host, but that native result is not yet part of the completed release matrix.
+The x86_64 package is covered by native install, the current/Linux 6.6 LTS
+NixOS real-eBPF matrix, and a pinned Ubuntu 24.04 guest that installs the
+release archive and proves direct TCP/UDP plus daemonless cleanup. The aarch64
+package is checked for static linkage and architecture and executes CLI
+acceptance under emulation. The repository defines the same current/LTS
+data-path gate for an aarch64 Linux execution host, but that native result is
+not yet part of the completed release matrix.
 
 ## Install through npm
 
