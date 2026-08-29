@@ -1,0 +1,44 @@
+version = 1
+
+[proxy]
+default_policy = "proxy"
+
+[proxy.outbounds.default]
+type = "socks5"
+server = "127.0.0.1"
+server_port = 1080
+network = ["tcp", "udp"]
+connect_timeout = "2s"
+
+[proxy.policies.proxy.dns]
+mode = "system"
+
+[proxy.policies.proxy.final]
+tcp = { type = "route", outbound = "default" }
+udp = { type = "reject", method = "refused" }
+
+[proxy.policies.direct.dns]
+mode = "system"
+
+[proxy.policies.direct.final]
+tcp = { type = "direct" }
+udp = { type = "direct" }
+
+[proxy.policies.udp.dns]
+mode = "system"
+
+[proxy.policies.udp.final]
+tcp = { type = "reject", method = "refused" }
+udp = { type = "route", outbound = "default" }
+
+[capture]
+mode = "off"
+max_bytes_per_flow = 33554432
+block_max_bytes = 65536
+flush_interval_ms = 100
+boundaries = ["transport", "tls_plaintext.runtime", "tls_plaintext.relay"]
+directions = ["client_to_remote", "remote_to_client"]
+redact_env = []
+
+[decrypt]
+mode = "off"

@@ -16,6 +16,20 @@ fail() {
   || fail "read/write access to /dev/kvm is required"
 : "${HEIMDALL_UBUNTU_IMAGE:?enter the ubuntu-acceptance Nix shell}"
 [[ -f "$HEIMDALL_UBUNTU_IMAGE" ]] || fail "the pinned Ubuntu image is missing"
+run_benchmark=${HEIMDALL_UBUNTU_BENCHMARK:-0}
+benchmark_iterations=${HEIMDALL_UBUNTU_BENCHMARK_ITERATIONS:-3}
+[[ $run_benchmark == 0 || $run_benchmark == 1 ]] \
+  || fail "HEIMDALL_UBUNTU_BENCHMARK must be 0 or 1"
+if [[ ! $benchmark_iterations =~ ^[0-9]+$ ]] \
+  || ((benchmark_iterations < 1 || benchmark_iterations > 20)); then
+  fail "HEIMDALL_UBUNTU_BENCHMARK_ITERATIONS must be between 1 and 20"
+fi
+vm_memory_mib=2048
+if [[ $run_benchmark == 1 ]]; then
+  # Why: 50 isolated foreground sessions turn a 2 GiB compatibility guest into
+  # a memory-pressure test instead of measuring the data path.
+  vm_memory_mib=8192
+fi
 
 for command in cloud-localds ip nix python3 qemu-img qemu-system-x86_64 scp ssh ssh-keygen; do
   command -v "$command" >/dev/null || fail "required command is missing: $command"
@@ -157,7 +171,7 @@ qemu-system-x86_64 \
   -machine type=q35,accel=kvm \
   -cpu host \
   -smp 2 \
-  -m 2048 \
+  -m "$vm_memory_mib" \
   -drive "if=virtio,format=qcow2,file=$work_dir/ubuntu-overlay.qcow2" \
   -drive "if=virtio,format=raw,readonly=on,file=$work_dir/seed.img" \
   -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$ssh_port-:22" \
@@ -208,7 +222,14 @@ phase=artifact-transfer
 scp "${common_ssh_options[@]}" -P "$ssh_port" \
   "$archive" "$checksum" \
   "$script_dir/config.toml" "$script_dir/runtime.toml" "$script_dir/relay.toml" \
+  "$script_dir/benchmark.toml" "$script_dir/benchmark-relay.toml" \
+  "$script_dir/benchmark-no-capture.toml" \
+  "$script_dir/benchmark-capture.toml" \
+  "$script_dir/benchmark-relay-capture.toml" \
   "$script_dir/fixture.py" "$script_dir/guest-acceptance.sh" \
+  "$repo_root/tests/perf/vm-baseline.py" \
+  "$repo_root/tests/perf/udp-throughput.py" \
+  "$repo_root/tests/vm/socks5_fixture.py" \
   provisioner@127.0.0.1:/tmp/
 
 phase=guest-provisioning
@@ -232,8 +253,21 @@ sudo install -d -m 0755 /etc/heimdall /opt/heimdall-acceptance
 sudo install -m 0644 /tmp/config.toml /etc/heimdall/config.toml
 sudo install -m 0644 /tmp/runtime.toml /opt/heimdall-acceptance/runtime.toml
 sudo install -m 0644 /tmp/relay.toml /opt/heimdall-acceptance/relay.toml
+sudo install -m 0644 /tmp/benchmark.toml /opt/heimdall-acceptance/benchmark.toml
+sudo install -m 0644 /tmp/benchmark-relay.toml \
+  /opt/heimdall-acceptance/benchmark-relay.toml
+sudo install -m 0644 /tmp/benchmark-no-capture.toml \
+  /opt/heimdall-acceptance/benchmark-no-capture.toml
+sudo install -m 0644 /tmp/benchmark-capture.toml \
+  /opt/heimdall-acceptance/benchmark-capture.toml
+sudo install -m 0644 /tmp/benchmark-relay-capture.toml \
+  /opt/heimdall-acceptance/benchmark-relay-capture.toml
 sudo install -m 0755 /tmp/fixture.py /opt/heimdall-acceptance/fixture.py
 sudo install -m 0755 /tmp/guest-acceptance.sh /opt/heimdall-acceptance/guest-acceptance.sh
+sudo install -m 0755 /tmp/vm-baseline.py /opt/heimdall-acceptance/benchmark.py
+sudo install -m 0755 /tmp/udp-throughput.py /opt/heimdall-acceptance/udp-throughput.py
+sudo install -m 0755 /tmp/socks5_fixture.py /opt/heimdall-acceptance/socks5-fixture.py
+sudo install -d -o tester -g tester -m 0755 /run/heimdall-test
 
 rm -rf /tmp/heimdall-tls
 mkdir /tmp/heimdall-tls
@@ -289,12 +323,19 @@ echo "heimdall Ubuntu guest provisioning OK"
 REMOTE
 
 phase=guest-data-path
-"${tester_ssh[@]}" env \
+guest_output=$("${tester_ssh[@]}" env \
   HOME=/home/tester \
   XDG_RUNTIME_DIR=/run/user/1100 \
   DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1100/bus \
   HEIMDALL_EXPECTED_VERSION="$version" \
-  /opt/heimdall-acceptance/guest-acceptance.sh
+  HEIMDALL_RUN_BENCHMARK="$run_benchmark" \
+  HEIMDALL_BENCHMARK_ITERATIONS="$benchmark_iterations" \
+  /opt/heimdall-acceptance/guest-acceptance.sh)
+printf '%s\n' "$guest_output"
+if [[ $run_benchmark == 1 ]]; then
+  grep -Fq 'HEIMDALL_BENCHMARK_JSON={"' <<<"$guest_output" \
+    || fail "Ubuntu guest did not emit the benchmark contract"
+fi
 
 phase=host-isolation-after-acceptance
 network_snapshot "$work_dir/host-network-after"
@@ -302,3 +343,6 @@ cmp "$work_dir/host-network-before" "$work_dir/host-network-after" \
   || fail "acceptance changed host links, routes, or rules"
 
 echo "heimdall pinned Ubuntu VM acceptance OK"
+if [[ $run_benchmark == 1 ]]; then
+  echo "heimdall pinned Ubuntu VM benchmark OK"
+fi

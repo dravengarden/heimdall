@@ -60,12 +60,30 @@ for runbook in docs/runbook.md site/docs/runbook.html; do
     printf '%s does not expose Ubuntu TLS-mode acceptance\n' "$runbook" >&2
     exit 1
   }
+  grep -Fq 'just benchmark-vm-ubuntu' "$runbook" || {
+    printf '%s does not expose the Ubuntu performance baseline\n' "$runbook" >&2
+    exit 1
+  }
+  grep -Fq 'not part of' "$runbook" || {
+    printf '%s does not separate performance from release gates\n' "$runbook" >&2
+    exit 1
+  }
 done
 
 grep -A4 '^release-check:' justfile | grep -Fq 'just test-vm-ubuntu' || {
   printf 'release-check does not include the Ubuntu acceptance gate\n' >&2
   exit 1
 }
+
+grep -Fq 'benchmark-vm-ubuntu:' justfile || {
+  printf 'justfile does not expose the Ubuntu performance baseline\n' >&2
+  exit 1
+}
+
+if grep -A4 '^release-check:' justfile | grep -Fq 'benchmark-vm-ubuntu'; then
+  printf 'release-check unexpectedly includes the Ubuntu performance baseline\n' >&2
+  exit 1
+fi
 
 for status_page in README.md ROADMAP.md site/docs/roadmap.html; do
   grep -Fq 'Ubuntu 24.04' "$status_page" || {

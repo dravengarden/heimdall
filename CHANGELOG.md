@@ -13,6 +13,10 @@ guide.
   TCP/UDP interception, descendants, all four forwarded owner signals,
   concurrent sessions, parent-death cleanup and log recovery, runtime and relay
   TLS evidence, JSONL integrity, and daemonless cleanup.
+- Add an explicit pinned Ubuntu performance gate that emits the existing
+  `heimdall.benchmark/v1` contract for latency, procfs RSS, 1/10/50 concurrent
+  starts, SOCKS5 TCP/UDP, transport and relay capture throughput, and event
+  integrity.
 
 ### Changed
 
@@ -20,11 +24,17 @@ guide.
   transaction while keeping the broader SOCKS5, fake-DNS, QUIC, runtime-client,
   capture, rotation, retention, and stress matrix in the current/Linux 6.6 LTS
   NixOS guests.
+- Generalize the disposable-VM benchmark runner across project-owned client,
+  policy, configuration, CA, and RSS backends, and report the distribution,
+  guest memory, and RSS source without changing its scenario names.
 
 ### Known limitations
 
 - Native aarch64 real-eBPF acceptance still requires an ARM Linux execution
   host and is not yet part of the completed release matrix.
+- The Ubuntu performance gate uses system DNS because fake-DNS setup is not yet
+  compatible with Ubuntu 24.04's default unprivileged user-namespace
+  restrictions; the gate does not relax those host security settings.
 
 ## [0.1.5] - 2026-08-29
 

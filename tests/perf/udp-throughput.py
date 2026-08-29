@@ -11,6 +11,7 @@ def main():
     parser.add_argument("port", type=int)
     parser.add_argument("--bytes", type=int, default=8 * 1024 * 1024)
     parser.add_argument("--chunk-bytes", type=int, default=8192)
+    parser.add_argument("--response-prefix", default="udp-v4:")
     args = parser.parse_args()
     if not 1 <= args.bytes <= 32 * 1024 * 1024:
         parser.error("--bytes must be between 1 and 33554432")
@@ -28,7 +29,7 @@ def main():
         payload = (sequence.to_bytes(8, "big") + (b"x" * size))[:size]
         sock.send(payload)
         response = sock.recv(65_535)
-        if response != b"udp-v4:" + payload:
+        if response != args.response_prefix.encode() + payload:
             raise RuntimeError(f"UDP response mismatch at sequence {sequence}")
         sent += len(payload)
         received += len(response)

@@ -4,9 +4,19 @@ set -euo pipefail
 fixture=/opt/heimdall-acceptance/fixture.py
 runtime_config=/opt/heimdall-acceptance/runtime.toml
 relay_config=/opt/heimdall-acceptance/relay.toml
+benchmark_script=/opt/heimdall-acceptance/benchmark.py
+benchmark_config=/opt/heimdall-acceptance/benchmark.toml
+benchmark_relay_config=/opt/heimdall-acceptance/benchmark-relay.toml
+benchmark_no_capture_config=/opt/heimdall-acceptance/benchmark-no-capture.toml
+benchmark_capture_config=/opt/heimdall-acceptance/benchmark-capture.toml
+benchmark_relay_capture_config=/opt/heimdall-acceptance/benchmark-relay-capture.toml
+udp_throughput=/opt/heimdall-acceptance/udp-throughput.py
+socks_fixture=/opt/heimdall-acceptance/socks5-fixture.py
 tls_dir=/opt/heimdall-acceptance/tls
 uid=$(id -u)
 : "${HEIMDALL_EXPECTED_VERSION:?expected release version is required}"
+run_benchmark=${HEIMDALL_RUN_BENCHMARK:-0}
+benchmark_iterations=${HEIMDALL_BENCHMARK_ITERATIONS:-3}
 export HOME=${HOME:-/home/tester}
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$uid}
 export DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}
@@ -14,7 +24,12 @@ export PATH=/usr/local/bin:/usr/bin:/bin
 
 work_dir=$(mktemp -d)
 fixture_pid=
+socks_pid=
 cleanup() {
+  if [[ -n "$socks_pid" ]] && kill -0 "$socks_pid" 2>/dev/null; then
+    kill "$socks_pid"
+    wait "$socks_pid" 2>/dev/null || true
+  fi
   if [[ -n "$fixture_pid" ]] && kill -0 "$fixture_pid" 2>/dev/null; then
     kill "$fixture_pid"
     wait "$fixture_pid" 2>/dev/null || true
@@ -84,6 +99,12 @@ assert_signal_forwarded() {
 }
 
 [[ $(uname -m) == x86_64 ]] || fail "guest architecture is not x86_64"
+[[ $run_benchmark == 0 || $run_benchmark == 1 ]] \
+  || fail "HEIMDALL_RUN_BENCHMARK must be 0 or 1"
+if [[ ! $benchmark_iterations =~ ^[0-9]+$ ]] \
+  || ((benchmark_iterations < 1 || benchmark_iterations > 20)); then
+  fail "HEIMDALL_BENCHMARK_ITERATIONS must be between 1 and 20"
+fi
 [[ $(stat -fc %T /sys/fs/cgroup) == cgroup2fs ]] || fail "cgroup v2 is not mounted"
 systemctl --user show-environment >/dev/null
 [[ $(heimdall --version) == "heimdall $HEIMDALL_EXPECTED_VERSION" ]]
@@ -135,6 +156,20 @@ kill -0 "$fixture_pid" 2>/dev/null || {
   cat "$work_dir/fixture.log" >&2
   fail "loopback fixture did not start"
 }
+if [[ $run_benchmark == 1 ]]; then
+  python3 "$socks_fixture" >"$work_dir/socks.log" 2>&1 &
+  socks_pid=$!
+  for _ in $(seq 1 100); do
+    ss -Hlnpt | grep -Eq '127\.0\.0\.1:1080\b' && break
+    sleep 0.02
+  done
+  kill -0 "$socks_pid" 2>/dev/null || {
+    cat "$work_dir/socks.log" >&2
+    fail "SOCKS5 benchmark fixture did not start"
+  }
+  ss -Hlnpt | grep -Eq '127\.0\.0\.1:1080\b' \
+    || fail "SOCKS5 benchmark fixture did not listen"
+fi
 python3 "$fixture" tcp >/dev/null
 python3 "$fixture" udp >/dev/null
 ss -Hlnptu | sort >"$work_dir/listeners-before"
@@ -308,6 +343,27 @@ relay_run_dir=$(heimdall logs path --run "$relay_run_id" --json \
 heimdall logs verify --run "$relay_run_id" --json \
   | python3 "$fixture" verify-log closed
 python3 "$fixture" verify-tls relay "$relay_run_dir"
+
+if [[ $run_benchmark == 1 ]]; then
+  benchmark_ca_dir=$HOME/.local/state/heimdall/benchmark-ca
+  rm -rf "$benchmark_ca_dir"
+  benchmark_json=$(python3 "$benchmark_script" \
+    --iterations "$benchmark_iterations" \
+    --scope disposable-ubuntu-vm \
+    --config "$benchmark_config" \
+    --relay-config "$benchmark_relay_config" \
+    --no-capture-config "$benchmark_no_capture_config" \
+    --capture-config "$benchmark_capture_config" \
+    --relay-capture-config "$benchmark_relay_capture_config" \
+    --relay-ca-dir "$benchmark_ca_dir" \
+    --fixture "$fixture" \
+    --udp-throughput "$udp_throughput" \
+    --udp-response-prefix ubuntu-udp: \
+    --proxy-policy proxy \
+    --rss-source procfs)
+  python3 "$fixture" verify-benchmark <<<"$benchmark_json"
+  printf 'HEIMDALL_BENCHMARK_JSON=%s\n' "$benchmark_json"
+fi
 
 while IFS= read -r run_id; do
   heimdall logs verify --run "$run_id" --json \

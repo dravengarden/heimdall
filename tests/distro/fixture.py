@@ -18,10 +18,31 @@ TLS_PORT = 18444
 TCP_BODY = b"ubuntu-tcp-ok"
 UDP_BODY = b"ubuntu-udp:probe"
 TLS_BODY = b"ubuntu-tls-ok"
+STREAM_CHUNK = b"0123456789abcdef" * 4096
+MAX_STREAM_BYTES = 32 * 1024 * 1024
 
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
+        if self.path.startswith("/bytes/"):
+            try:
+                body_size = int(self.path.removeprefix("/bytes/"))
+            except ValueError:
+                self.send_error(400)
+                return
+            if not 0 <= body_size <= MAX_STREAM_BYTES:
+                self.send_error(413)
+                return
+            self.send_response(200)
+            self.send_header("Content-Length", str(body_size))
+            self.end_headers()
+            remaining = body_size
+            while remaining:
+                payload = STREAM_CHUNK[:remaining]
+                self.wfile.write(payload)
+                remaining -= len(payload)
+            return
+
         body = self.server.body
         self.send_response(200)
         self.send_header("Content-Length", str(len(body)))
@@ -79,22 +100,41 @@ def serve(cert_path: str, key_path: str) -> None:
     http.join()
 
 
-def tcp_client() -> None:
-    with socket.create_connection((HOST, TCP_PORT), timeout=5) as sock:
-        sock.sendall(b"GET / HTTP/1.1\r\nHost: fixture.test\r\nConnection: close\r\n\r\n")
-        response = bytearray()
-        while chunk := sock.recv(65535):
-            response.extend(chunk)
-    body = bytes(response).partition(b"\r\n\r\n")[2]
+def read_http_body(sock: socket.socket) -> bytes:
+    response = bytearray()
+    while chunk := sock.recv(65535):
+        response.extend(chunk)
+    headers, separator, body = bytes(response).partition(b"\r\n\r\n")
+    if not separator or not headers.startswith(b"HTTP/1.0 200"):
+        raise RuntimeError(f"unexpected HTTP response: {bytes(response[:200])!r}")
+    return body
+
+
+def tcp_client(host: str = HOST, body_size: int | None = None) -> None:
+    path = "/" if body_size is None else f"/bytes/{body_size}"
+    with socket.create_connection((host, TCP_PORT), timeout=30) as sock:
+        sock.sendall(
+            f"GET {path} HTTP/1.1\r\n"
+            "Host: fixture.test\r\n"
+            "Connection: close\r\n\r\n".encode()
+        )
+        body = read_http_body(sock)
+    if body_size is not None:
+        if len(body) != body_size:
+            raise RuntimeError(
+                f"unexpected TCP response length: {len(body)} != {body_size}"
+            )
+        print(len(body))
+        return
     if body != TCP_BODY:
         raise RuntimeError(f"unexpected TCP response: {body!r}")
     print(body.decode())
 
 
-def udp_client() -> None:
+def udp_client(host: str = HOST) -> None:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         sock.settimeout(5)
-        sock.connect((HOST, UDP_PORT))
+        sock.connect((host, UDP_PORT))
         original_peer = sock.getpeername()
         sock.sendall(b"probe")
         response = sock.recv(65535)
@@ -105,20 +145,19 @@ def udp_client() -> None:
     print(response.decode())
 
 
-def tls_client(ca_path: str) -> None:
+def tls_client(ca_path: str, body_size: int | None = None) -> None:
+    path = "/" if body_size is None else f"/bytes/{body_size}"
     context = ssl.create_default_context(cafile=ca_path)
-    with socket.create_connection(("fixture.test", TLS_PORT), timeout=5) as raw:
+    with socket.create_connection(("fixture.test", TLS_PORT), timeout=30) as raw:
         sock = context.wrap_socket(raw, server_hostname="fixture.test")
         try:
             sock.sendall(
-                b"GET / HTTP/1.1\r\n"
-                b"Host: fixture.test:18444\r\n"
-                b"Authorization: bearer fixture-value\r\n"
-                b"Connection: close\r\n\r\n"
+                f"GET {path} HTTP/1.1\r\n"
+                "Host: fixture.test:18444\r\n"
+                "Authorization: bearer fixture-value\r\n"
+                "Connection: close\r\n\r\n".encode()
             )
-            response = bytearray()
-            while chunk := sock.recv(65535):
-                response.extend(chunk)
+            body = read_http_body(sock)
             # Why: SSLSocket.close() may close the transport without a TLS
             # close_notify. Relay acceptance needs a clean TLS lifecycle so a
             # genuine protocol error cannot be mistaken for successful flow
@@ -127,7 +166,13 @@ def tls_client(ca_path: str) -> None:
             plain.close()
         finally:
             sock.close()
-    body = bytes(response).partition(b"\r\n\r\n")[2]
+    if body_size is not None:
+        if len(body) != body_size:
+            raise RuntimeError(
+                f"unexpected TLS response length: {len(body)} != {body_size}"
+            )
+        print(len(body))
+        return
     if body != TLS_BODY:
         raise RuntimeError(f"unexpected TLS response: {body!r}")
     print(body.decode())
@@ -372,16 +417,100 @@ def verify_tls(mode: str, path: pathlib.Path) -> None:
         )
 
 
+def verify_benchmark() -> None:
+    value = read_document()
+    environment = value.get("environment")
+    aggregates = value.get("aggregates")
+    throughput = value.get("throughput")
+    integrity = value.get("event_integrity")
+    if not all(
+        isinstance(item, expected)
+        for item, expected in (
+            (environment, dict),
+            (aggregates, list),
+            (throughput, list),
+            (integrity, dict),
+        )
+    ):
+        raise RuntimeError(f"benchmark document is incomplete: {value!r}")
+
+    iterations = environment.get("iterations")
+    expected_runs = 71 + (5 * iterations) if isinstance(iterations, int) else -1
+    expected_integrity = {
+        "runs": expected_runs,
+        "incomplete_runs": 0,
+        "missing_records": 0,
+        "out_of_order_records": 0,
+        "active_flows_after_close": 0,
+        "failed_flows": 0,
+        "error_events": 0,
+    }
+    aggregate_scenarios = {item.get("scenario") for item in aggregates}
+    concurrent_levels = {
+        item.get("concurrency")
+        for item in aggregates
+        if item.get("scenario") == "concurrent_cold_start"
+    }
+    throughput_scenarios = {item.get("scenario") for item in throughput}
+    expected_throughput = {
+        "direct_tcp_no_capture",
+        "proxy_tcp_no_capture",
+        "proxy_udp_no_capture",
+        "proxy_tcp_capture",
+        "relay_tls_capture",
+    }
+    valid = (
+        value.get("contract") == "heimdall.benchmark/v1"
+        and value.get("scope") == "disposable-ubuntu-vm"
+        and environment.get("architecture") == "x86_64"
+        and environment.get("memory_bytes", 0) >= 7 * 1024 * 1024 * 1024
+        and environment.get("rss_source") == "procfs-heimdall-processes"
+        and isinstance(environment.get("distribution"), str)
+        and "Ubuntu 24.04" in environment["distribution"]
+        and isinstance(iterations, int)
+        and 1 <= iterations <= 20
+        and aggregate_scenarios
+        == {
+            "cold_start",
+            "concurrent_cold_start",
+            "direct_tcp",
+            "proxy_tcp",
+            "proxy_udp",
+            "relay_tls",
+        }
+        and concurrent_levels == {1, 10, 50}
+        and throughput_scenarios == expected_throughput
+        and all(item.get("wall_ns", {}).get("min", 0) > 0 for item in aggregates)
+        and all(
+            item.get("max_rss_kib", {}).get("max_process", 0) > 0
+            for item in aggregates
+        )
+        and all(item.get("transferred_bytes", 0) > 0 for item in throughput)
+        and all(item.get("bytes_per_second", 0) > 0 for item in throughput)
+        and integrity == expected_integrity
+    )
+    if not valid:
+        raise RuntimeError(f"unexpected Ubuntu benchmark contract: {value!r}")
+
+
 def main() -> None:
     command = sys.argv[1]
     if command == "serve":
         serve(sys.argv[2], sys.argv[3])
     elif command == "tcp":
         tcp_client()
+    elif command == "http":
+        tcp_client(sys.argv[2])
+    elif command == "http-bytes":
+        tcp_client(sys.argv[2], int(sys.argv[3]))
     elif command == "udp":
         udp_client()
+    elif command == "udp-host":
+        udp_client(sys.argv[2])
     elif command == "tls":
         tls_client(sys.argv[2])
+    elif command == "tls-bytes":
+        tls_client(sys.argv[2], int(sys.argv[3]))
     elif command == "verify-config":
         verify_config()
     elif command == "verify-agent":
@@ -410,6 +539,8 @@ def main() -> None:
         verify_ca()
     elif command == "verify-tls":
         verify_tls(sys.argv[2], pathlib.Path(sys.argv[3]))
+    elif command == "verify-benchmark":
+        verify_benchmark()
     else:
         raise SystemExit(f"unknown command: {command}")
 

@@ -265,11 +265,13 @@ the complete schema and `jq` recipes.
 
 ## Performance baseline
 
-Run the repeatable current and Linux 6.6 LTS disposable-VM baselines after
-changes that can affect setup, relay, capture, TLS, event writing, or teardown:
+Run the repeatable current and Linux 6.6 LTS NixOS baselines and the pinned
+Ubuntu 24.04 baseline after changes that can affect setup, relay, capture, TLS,
+event writing, or teardown:
 
 ```bash
 nix develop -c just benchmark-vm
+just benchmark-vm-ubuntu
 ```
 
 Each VM emits one `HEIMDALL_BENCHMARK_JSON=` line containing its
@@ -280,9 +282,14 @@ proxied TCP, proxied UDP, full transport capture, and relay TLS plaintext
 capture, with transferred bytes, elapsed nanoseconds, bytes per second, and
 the active capture/decrypt boundary. Event integrity requires zero incomplete
 runs, sequence gaps, out-of-order records, active or failed flows, and error
-events. Treat every result as specific to the reported architecture, kernel,
-CPU count, and VM resources; it is a repeatable environment baseline, not a
-universal throughput claim.
+events. The NixOS guests use GNU time resource accounting and retain fake-DNS
+coverage. Ubuntu uses its default system DNS with SOCKS5 routing, procfs RSS
+sampling, and an 8 GiB guest so the 50-run batch does not turn into a memory
+pressure test; the gate does not weaken Ubuntu's default user-namespace
+restrictions. Treat every result as specific to the reported distribution,
+architecture, kernel, CPU count, memory, and RSS source. These commands are
+explicit performance checks, not part of `release-check`, and their output is
+an environment baseline rather than a universal throughput claim.
 
 For relay TLS certificate failures, inspect `tls.error` before changing trust:
 
