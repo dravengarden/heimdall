@@ -207,7 +207,8 @@ cmp "$work_dir/host-network-before" "$work_dir/host-network-running" \
 phase=artifact-transfer
 scp "${common_ssh_options[@]}" -P "$ssh_port" \
   "$archive" "$checksum" \
-  "$script_dir/config.toml" "$script_dir/fixture.py" "$script_dir/guest-acceptance.sh" \
+  "$script_dir/config.toml" "$script_dir/runtime.toml" "$script_dir/relay.toml" \
+  "$script_dir/fixture.py" "$script_dir/guest-acceptance.sh" \
   provisioner@127.0.0.1:/tmp/
 
 phase=guest-provisioning
@@ -216,6 +217,12 @@ set -euo pipefail
 
 archive_name=$1
 cd /tmp
+for command in openssl /usr/sbin/update-ca-certificates; do
+  command -v "$command" >/dev/null || {
+    echo "Ubuntu image is missing required TLS command: $command" >&2
+    exit 1
+  }
+done
 sha256sum -c "$archive_name.sha256"
 tar -xzf "$archive_name"
 bundle=${archive_name%.tar.gz}
@@ -223,8 +230,42 @@ sudo "./$bundle/heimdall-install" install
 sudo /usr/local/lib/heimdall/heimdall-install verify
 sudo install -d -m 0755 /etc/heimdall /opt/heimdall-acceptance
 sudo install -m 0644 /tmp/config.toml /etc/heimdall/config.toml
+sudo install -m 0644 /tmp/runtime.toml /opt/heimdall-acceptance/runtime.toml
+sudo install -m 0644 /tmp/relay.toml /opt/heimdall-acceptance/relay.toml
 sudo install -m 0755 /tmp/fixture.py /opt/heimdall-acceptance/fixture.py
 sudo install -m 0755 /tmp/guest-acceptance.sh /opt/heimdall-acceptance/guest-acceptance.sh
+
+rm -rf /tmp/heimdall-tls
+mkdir /tmp/heimdall-tls
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout /tmp/heimdall-tls/ca-key.pem -out /tmp/heimdall-tls/ca.pem \
+  -subj /CN=Heimdall-Ubuntu-Upstream-CA -days 36500 \
+  -addext basicConstraints=critical,CA:TRUE \
+  -addext keyUsage=critical,keyCertSign,cRLSign >/dev/null 2>&1
+openssl req -newkey rsa:2048 -nodes \
+  -keyout /tmp/heimdall-tls/server-key.pem -out /tmp/heimdall-tls/server.csr \
+  -subj /CN=fixture.test >/dev/null 2>&1
+printf '%s\n' \
+  'basicConstraints=critical,CA:FALSE' \
+  'keyUsage=critical,digitalSignature,keyEncipherment' \
+  'extendedKeyUsage=serverAuth' \
+  'subjectAltName=DNS:fixture.test' > /tmp/heimdall-tls/server.ext
+openssl x509 -req -in /tmp/heimdall-tls/server.csr \
+  -CA /tmp/heimdall-tls/ca.pem -CAkey /tmp/heimdall-tls/ca-key.pem \
+  -CAcreateserial -out /tmp/heimdall-tls/server.pem -days 36500 \
+  -extfile /tmp/heimdall-tls/server.ext >/dev/null 2>&1
+sudo install -d -m 0755 /opt/heimdall-acceptance/tls
+sudo install -o tester -g tester -m 0644 \
+  /tmp/heimdall-tls/ca.pem /opt/heimdall-acceptance/tls/upstream-ca.pem
+sudo install -o tester -g tester -m 0644 \
+  /tmp/heimdall-tls/server.pem /opt/heimdall-acceptance/tls/server.pem
+sudo install -o tester -g tester -m 0600 \
+  /tmp/heimdall-tls/server-key.pem /opt/heimdall-acceptance/tls/server-key.pem
+sudo install -m 0644 /tmp/heimdall-tls/ca.pem \
+  /usr/local/share/ca-certificates/heimdall-acceptance-upstream.crt
+sudo /usr/sbin/update-ca-certificates >/dev/null
+grep -Eq '^[[:space:]]*127\.0\.0\.1[[:space:]]+.*\bfixture\.test\b' /etc/hosts \
+  || printf '%s\n' '127.0.0.1 fixture.test' | sudo tee -a /etc/hosts >/dev/null
 printf '%s\n' 'tester ALL=(root) NOPASSWD: /usr/local/bin/heimdall __setup-worker' \
   | sudo tee /etc/sudoers.d/heimdall >/dev/null
 sudo chmod 0440 /etc/sudoers.d/heimdall

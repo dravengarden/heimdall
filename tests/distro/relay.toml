@@ -1,0 +1,25 @@
+version = 1
+
+[proxy]
+default_policy = "direct"
+
+[proxy.policies.direct.dns]
+mode = "system"
+
+[proxy.policies.direct.final]
+tcp = { type = "direct" }
+udp = { type = "direct" }
+
+[capture]
+mode = "on"
+max_bytes_per_flow = 65536
+block_max_bytes = 4096
+flush_interval_ms = 20
+boundaries = ["transport", "tls_plaintext.relay"]
+directions = ["client_to_remote", "remote_to_client"]
+redact_env = []
+
+[decrypt]
+mode = "relay"
+ca_cert = "/home/tester/.local/state/heimdall/acceptance-ca/ca.pem"
+ca_key = "/home/tester/.local/state/heimdall/acceptance-ca/ca-key.pem"

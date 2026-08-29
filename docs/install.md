@@ -18,11 +18,13 @@ privilege, and TLS-library compatibility requirements still apply.
 
 The x86_64 package is covered by native install, the current/Linux 6.6 LTS
 NixOS real-eBPF matrix, and a pinned Ubuntu 24.04 guest that installs the
-release archive and proves direct TCP/UDP plus daemonless cleanup. The aarch64
-package is checked for static linkage and architecture and executes CLI
-acceptance under emulation. The repository defines the same current/LTS
-data-path gate for an aarch64 Linux execution host, but that native result is
-not yet part of the completed release matrix.
+release archive and proves exact authorization, direct TCP/UDP, descendant and
+signal lifecycle, concurrent isolation, parent-death recovery, runtime and
+relay TLS, JSONL integrity, and daemonless cleanup. The aarch64 package is
+checked for static linkage and architecture and executes CLI acceptance under
+emulation. The repository defines the same current/LTS data-path gate for an
+aarch64 Linux execution host, but that native result is not yet part of the
+completed release matrix.
 
 ## Install through npm
 

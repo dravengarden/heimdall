@@ -9,14 +9,17 @@ guide.
 ### Added
 
 - Add a pinned Ubuntu 24.04 x86_64 KVM release gate for native archive
-  installation, exact setup authorization, direct TCP/UDP interception, JSONL
-  integrity, command exit propagation, and daemonless cleanup.
+  installation, exact positive and negative setup authorization, direct
+  TCP/UDP interception, descendants, all four forwarded owner signals,
+  concurrent sessions, parent-death cleanup and log recovery, runtime and relay
+  TLS evidence, JSONL integrity, and daemonless cleanup.
 
 ### Changed
 
 - Include the Ubuntu compatibility guest in the authoritative local release
-  transaction while keeping the complete protocol, TLS, and stress matrix in
-  the current/Linux 6.6 LTS NixOS guests.
+  transaction while keeping the broader SOCKS5, fake-DNS, QUIC, runtime-client,
+  capture, rotation, retention, and stress matrix in the current/Linux 6.6 LTS
+  NixOS guests.
 
 ### Known limitations
 

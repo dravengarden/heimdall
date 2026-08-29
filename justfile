@@ -73,7 +73,8 @@ test-vm:
     nix build .#checks.x86_64-linux.vm-proxy-lts -L
 
 # Installs the native archive in a pinned Ubuntu 24.04 cloud guest and proves
-# real cgroup/eBPF TCP+UDP interception plus daemonless teardown outside NixOS.
+# real TCP/UDP, lifecycle, runtime/relay TLS, and daemonless teardown outside
+# NixOS.
 test-vm-ubuntu:
     nix develop .#ubuntu-acceptance -c tests/distro/run-ubuntu-acceptance.sh
 

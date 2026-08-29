@@ -32,11 +32,13 @@ just test-vm-ubuntu
 This boots the content-hashed Ubuntu 24.04 cloud image with QEMU user-mode
 networking, installs the same native archive used for release, and grants an
 ordinary user only the exact setup-worker sudo rule. It proves cgroup v2 and
-systemd-user integration, direct TCP/UDP interception, JSONL verification,
+systemd-user integration, copied-binary authorization denial, direct TCP/UDP,
+descendant lifetime, all four forwarded owner signals, concurrent isolation,
+parent-death cleanup and recovery, runtime and relay TLS, JSONL verification,
 exit propagation, and return to the pre-run process, listener, command-cgroup,
 and BPF-pin state. The harness also rejects any change to host links, routes,
-or rules. It is a focused distribution gate, not a substitute for the complete
-NixOS protocol/TLS matrix or native aarch64 execution.
+or rules. It is focused distribution coverage, not a substitute for the broader
+NixOS protocol/stress matrix or native aarch64 execution.
 
 On an aarch64 Linux execution host, run the architecture-equivalent current
 and LTS guests with:
@@ -95,9 +97,11 @@ pre-run BPF-link baseline. It also kills a live foreground owner and proves the
 unprivileged helper removes the workload cgroup and BPF links.
 
 The Ubuntu guest proves the release artifact and narrow authorization work on
-a non-NixOS system without installing a service. Its focused direct TCP/UDP
-path intentionally does not duplicate the NixOS suite's SOCKS5, fake DNS,
-QUIC, capture, TLS, crash, and stress coverage.
+a non-NixOS system without installing a service. It independently exercises
+descendants, signals, concurrent runs, owner-death recovery, and runtime and
+relay TLS. Its focused direct path intentionally does not duplicate the NixOS
+suite's SOCKS5, fake DNS, QUIC, broad runtime-client, capture/rotation,
+retention, and stress coverage.
 
 ## Install the daemonless path
 

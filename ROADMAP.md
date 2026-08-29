@@ -60,8 +60,11 @@ acceptance path are documented and tested.
   covering dual-stack TCP/UDP, QUIC, common CLI/runtime clients, lifecycle
   behavior, and both TLS paths.
 - A pinned Ubuntu 24.04 x86_64 KVM gate that installs the native release
-  archive, grants only the setup-worker sudo rule, and proves direct TCP/UDP,
-  JSONL integrity, exit status, daemonless cleanup, and host-network isolation.
+  archive, grants only the setup-worker sudo rule, rejects copied-binary
+  authorization, and proves direct TCP/UDP, descendant lifetime, all four owner
+  signals, concurrent isolation, parent-death cleanup and recovery, runtime and
+  relay TLS evidence, JSONL integrity, daemonless cleanup, and host-network
+  isolation.
 - A machine-readable real-eBPF benchmark covering daemonless latency, RSS,
   1/10/50 concurrent starts, sustained TCP/UDP and capture throughput, and
   event integrity without requiring a metrics service.
@@ -88,13 +91,14 @@ attaches FD-owned links through `heimdall.setup/v2`, and closes every resource
 when the command tree exits. The real-eBPF VM proves concurrent isolated runs,
 runtime and relay TLS, owner signal forwarding, normal cleanup, deterministic
 authorization denial, and parent-death cgroup teardown. The pinned Ubuntu 24.04
-gate separately proves release installation, user-manager re-entry, exact
-authorization, direct TCP/UDP, logs, and normal cleanup outside NixOS.
+gate independently proves those lifecycle boundaries, both TLS modes, release
+installation, user-manager re-entry, exact authorization, direct TCP/UDP, logs,
+and normal cleanup outside NixOS.
 
 - Evaluate run-scoped dynamic attachment for `libssl` images loaded only after
   child exec without introducing a persistent broker.
-- Expand setup-worker, signal, and parent-death coverage beyond the available
-  NixOS full suite and Ubuntu 24.04 base gate.
+- Extend the available NixOS and Ubuntu lifecycle matrix across additional
+  distributions and process-tree edge cases.
 - Keep any persistent acceleration mode explicit and opt-in; never start it
   implicitly.
 

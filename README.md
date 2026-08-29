@@ -61,7 +61,7 @@ need compatibility hardening.
 | Runtime TLS decryption | Available daemonless with alpha limits | Startup-discovered OpenSSL images; no CA injection; unsupported TLS libraries remain opaque |
 | Relay TLS decryption | Available daemonless with alpha limits | Local CA plus per-host leaves; upstream certificate failures and downstream alerts/unclean closes remain distinct evidence |
 | Static Linux packaging | Available | Reproducible x86_64/aarch64 musl archives, checksums, local release gates, atomic install, one-level rollback, and BTF-preserving artifact-hygiene checks |
-| Runtime and kernel compatibility | In development | The full real-eBPF suite covers current and Linux 6.6 LTS NixOS guests on x86_64; a pinned Ubuntu 24.04 guest also proves native archive install, direct TCP/UDP, logs, and daemonless cleanup; native aarch64 still awaits an ARM Linux result |
+| Runtime and kernel compatibility | In development | The full real-eBPF suite covers current and Linux 6.6 LTS NixOS guests on x86_64; a pinned Ubuntu 24.04 guest independently proves native install, exact authorization, direct TCP/UDP, descendants, all owner signals, concurrency, parent-death recovery, both TLS modes, logs, and cleanup; native aarch64 still awaits an ARM Linux result |
 | Capture analysis | In development | Allowlists, redaction, bounded blocks, orphan recovery, and provenance-linked HTTP/1 header evidence are available; broader analysis remains active work |
 | Performance and observability | In development | Repeatable current/6.6 LTS real-eBPF latency, RSS, 1/10/50 concurrency, sustained TCP/UDP/capture throughput, and event-integrity baselines are available; the distribution matrix remains active work |
 
@@ -269,14 +269,18 @@ behavior without any persistent service.
 
 A separate pinned Ubuntu 24.04 x86_64 KVM guest installs the release archive
 through its bundled installer, grants only the exact setup-worker sudo rule,
-and proves direct TCP/UDP interception, JSONL integrity, exit propagation, and
-complete process, listener, cgroup, and BPF-pin cleanup. QEMU uses user-mode
-networking and the gate rejects changes to host links, routes, or rules.
+rejects the same subcommand from a copied binary, and proves direct TCP/UDP,
+descendant lifetime, SIGHUP/SIGINT/SIGQUIT/SIGTERM forwarding, concurrent
+isolation, parent-death cleanup and recovery, runtime and relay TLS evidence,
+JSONL integrity, exit propagation, and complete process, listener, cgroup, and
+BPF-pin cleanup. QEMU uses user-mode networking and the gate rejects changes to
+host links, routes, or rules.
 
-OpenSSL runtime capture and relay TLS termination are tested against a real TLS
-server. These results prove the checked-in acceptance paths; they do not claim
-that every language TLS implementation or every kernel release is supported.
-The current acceptance-matrix work is tracked in the [roadmap](ROADMAP.md).
+Both the NixOS and Ubuntu gates test OpenSSL runtime capture and relay TLS
+termination against a real TLS server. These results prove the checked-in
+acceptance paths; they do not claim that every language TLS implementation or
+every kernel release is supported. The current acceptance-matrix work is
+tracked in the [roadmap](ROADMAP.md).
 
 ## Development
 

@@ -256,8 +256,9 @@ Available now:
   lifecycle;
 - per-run ports, cgroup, maps, FD-owned links, and mutable policy state;
 - the narrow `heimdall.setup/v2` authorization path with privilege drop;
-- concurrent-session, descendant, foreground-signal, authorization-denial,
-  normal-cleanup, and parent-death acceptance in the disposable real-eBPF VM;
+- concurrent-session, descendant, all foreground-signal, authorization-denial,
+  normal-cleanup, parent-death recovery, and both TLS-mode acceptance in the
+  current/LTS NixOS and pinned Ubuntu 24.04 real-eBPF guests;
 - `heimdall.agent/v8` reporting only the foreground execution owner and its
   actual capability evidence.
 

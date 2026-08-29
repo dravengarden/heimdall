@@ -52,6 +52,14 @@ for runbook in docs/runbook.md site/docs/runbook.html; do
     printf '%s does not identify the pinned compatibility guest\n' "$runbook" >&2
     exit 1
   }
+  grep -Fq 'parent-death' "$runbook" || {
+    printf '%s does not expose Ubuntu owner-death acceptance\n' "$runbook" >&2
+    exit 1
+  }
+  grep -Fq 'runtime and relay TLS' "$runbook" || {
+    printf '%s does not expose Ubuntu TLS-mode acceptance\n' "$runbook" >&2
+    exit 1
+  }
 done
 
 grep -A4 '^release-check:' justfile | grep -Fq 'just test-vm-ubuntu' || {
