@@ -20,7 +20,10 @@ It type-checks the target-selected CLI and portable unit-test targets for
 pinned `aarch64-apple-darwin`. It proves that shared config/init,
 `RunEvidence`, `relay_transport`, the JSONL store and offline log CLI, and the
 reduced explicit-agent contract do not compile Linux-only aya/cgroup code. It
-does not link or execute a native binary and is not the macOS acceptance gate.
+also compiles the internal `heimdall.macos.control/v1` HMAC, fixed-vector,
+replay, framing, registration, concurrent-run, and owner-EOF tests. It does not
+link or execute a native binary, connect that protocol to a provider, or serve
+as the macOS attribution acceptance gate.
 
 On a native Apple-silicon Mac, run:
 
@@ -33,9 +36,10 @@ CLI, then routes `curl` through the `macos-explicit` loopback SOCKS5 CONNECT
 listener and a fixture upstream. It verifies domain preservation, shared
 policy routing, cooperative `policy.decision`/`flow.open`/`flow.close` JSONL,
 offline integrity, listener teardown, exit-code passthrough, and fail-closed
-backend selection. It does not accept strict process scope, UDP, fake DNS,
-capture, TLS inspection, the future Network Extension, or official macOS
-packaging.
+backend selection. The native unit phase reruns the portable control-protocol
+tests but does not supply Apple flow metadata. The gate does not accept strict
+process scope, UDP, fake DNS, capture, TLS inspection, the future Network
+Extension, or official macOS packaging.
 
 The native packaging gate is separate from backend acceptance:
 

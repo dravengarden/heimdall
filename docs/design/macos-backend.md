@@ -27,6 +27,12 @@ claim.
 6. macOS runtime TLS observation is unavailable. Relay TLS may become
    available only after transparent flow forwarding and explicit trust pass
    their own acceptance matrix.
+7. Process attribution is a native evidence gate, not an API assumption.
+   `sourceAppAuditToken` is optional, and Apple does not document it as a
+   complete process-tree identity contract for every transparent flow. The
+   transparent backend stays unavailable unless signed native tests prove a
+   safe discriminator for attributed, unrelated, missing, and ambiguous
+   metadata.
 
 ## Two separate backends
 
@@ -100,12 +106,13 @@ heimdall run
   |-- registers one authenticated run with the signed companion
   |     `-- Network Extension manager
   |           `-- NETransparentProxyProvider system extension
-  |                 |-- unrelated flow -> return false / normal route
-  |                 `-- attributed flow -> authenticated loopback channel
+  |                 |-- proven unrelated flow -> return false / normal route
+  |                 |-- proven attributed flow -> authenticated loopback channel
   |                                             `-- CLI-owned relay
   |                                                   |-- policy
   |                                                   |-- proxy/direct/reject
   |                                                   `-- JSONL/capture/TLS
+  |                 `-- missing or ambiguous identity -> unresolved native gate
   `-- releases the command only after registration is acknowledged
 ```
 
@@ -122,6 +129,13 @@ runs coordinate through a locked, user-owned registration store; the final
 unregister operation disables the transparent configuration after the provider
 confirms that no sessions remain.
 
+The internal [`heimdall.macos.control/v1`](macos-control-protocol.md) frame,
+HMAC, strict sequence, registration validation, and in-memory lifecycle
+registry are implemented and covered by portable tests. They are not connected
+to a companion or provider. `heimdall run` cannot select this path, and
+`heimdall agent` reports `provider_wired=false` and
+`attribution.status=native_evidence_required`.
+
 ## Command-scope contract
 
 Network rules describe endpoints and protocol, not a process tree. The
@@ -131,21 +145,25 @@ are active and classifies each new flow inside the provider.
 For every run, registration contains at least:
 
 - run ID, CLI owner PID, root command PID, and process-group ID;
-- the expected executable identity and creation epoch needed to reject PID
+- the expected executable path and process start epoch needed to reject PID
   reuse;
 - the loopback relay endpoint and a random per-run authentication secret;
-- policy/config digests, registration expiry, and heartbeat state.
+- policy/config digests and a bounded lease.
 
-The provider reads `NEFlowMetaData.sourceAppAuditToken`, derives the source
-process identity, and checks it against the registered root/process group and
-its observed parent chain. An unrelated flow is returned to the normal network
-path. A flow attributed to a registered run is never returned direct because
-the relay is unavailable.
+`NEFlowMetaData.sourceAppAuditToken` is one candidate input for deriving source
+process identity, but the property is optional. Apple documents source
+application metadata conservatively and does not promise a complete descendant
+process graph for a transparent proxy. A signed prototype must measure its
+presence and stability for direct children, grandchildren, exec, process-group
+escape, PID reuse, TCP, UDP, and unrelated processes before any routing logic
+depends on it.
 
-This is initially a **process-group best-effort** scope. A descendant that
-creates a new session or process group is outside the support claim until
-native tests prove a safe attribution rule. Ambiguous overlap between two run
-registrations is rejected instead of guessed. The Linux phrase “complete
+This is not yet a process-group support claim. Returning a missing or ambiguous
+flow direct could let the wrapped command bypass policy, while rejecting every
+such flow could disrupt unrelated machine traffic. Heimdall therefore does not
+guess between those outcomes. If native evidence cannot establish a safe
+discriminator, the command-scoped transparent backend does not ship, or its
+scope must be redesigned and named separately. The Linux phrase “complete
 descendant cgroup” must not appear in macOS capability output.
 
 ## Lifecycle and failure behavior
@@ -153,7 +171,8 @@ descendant cgroup” must not appear in macOS capability output.
 1. The CLI completes config, log, relay, extension-presence, approval, and
    entitlement preflight before starting the command.
 2. The command cannot execute network code until the provider acknowledges its
-   registration.
+   registration and the selected attribution implementation has passed its
+   native evidence gate.
 3. Registration failure terminates the stopped child and finalizes a failed
    run; it never retries through the explicit backend unless the user selected
    that backend.
@@ -165,6 +184,12 @@ descendant cgroup” must not appear in macOS capability output.
    and disables the provider after the last active run.
 7. Stale registration recovery is explicit, evidence-producing, and bounded;
    it may not silently trust a reused PID.
+
+The implemented protocol simulator proves registration is authenticated before
+`run_ready`, strict request/response sequences reject replay, concurrent runs
+do not stop the provider early, and owner-channel EOF removes the exact run.
+It does not simulate Network Extension flow metadata and cannot satisfy the
+native attribution gate.
 
 Loopback and provider/control traffic are excluded from transparent diversion.
 The CLI owner is outside the wrapped process group, so its upstream proxy and
@@ -246,7 +271,12 @@ The explicit source backend and its platform boundary are implemented:
   hygiene, install, simulated upgrade, rollback, and uninstall. Its official
   path requires Developer ID Application, Hardened Runtime, secure timestamp,
   warning-free notarization, and Gatekeeper assessment before returning an
-  artifact to the Linux release transaction.
+  artifact to the Linux release transaction; and
+- the internal `heimdall.macos.control/v1` protocol has strict framed JSON,
+  HMAC-SHA256 authentication, direction and replay protection, a fixed Swift
+  conformance vector, validated per-run registration, concurrent-run registry
+  transitions, and owner-EOF cleanup tests. It is deliberately not wired to a
+  CLI backend or provider.
 
 No versioned official macOS archive or registry package has been published yet;
 the package claim changes only after the signed/notarized path and a fresh
@@ -260,9 +290,13 @@ extension, transparent TCP/UDP, capture, and TLS paths remain unavailable.
 2. Keep the implemented native package-mechanics gate green, then complete one
    Developer ID-signed/notarized versioned publication and fresh-download
    acceptance before declaring the archive available.
-3. Add the signed containing app, system extension, minimal session helper, and
-   versioned authenticated registration protocol.
-4. Accept transparent TCP and process attribution before adding UDP.
+3. Keep the implemented versioned authenticated protocol and lifecycle
+   simulator green; add the signed containing app, system extension, and
+   minimal session helper without exposing a selectable backend.
+4. Measure optional flow metadata in the signed provider and establish a safe
+   process-attribution discriminator before accepting transparent TCP or
+   adding UDP. If that gate fails, stop this backend design rather than
+   weakening command scope.
 5. Add UDP, then DNS and QUIC only as separately reported capabilities.
 6. Reuse relay TLS and capture only after opaque transparent transport is
    stable. Runtime TLS remains unavailable.
@@ -295,7 +329,7 @@ installation on native Apple silicon covering:
 - IPv4/IPv6 TCP and UDP, direct/proxy/reject policy, and unrelated-process
   non-interference;
 - direct child, grandchild, exec, process-group escape, PID reuse, two
-  concurrent runs, and ambiguous attribution;
+  concurrent runs, absent metadata, and ambiguous attribution;
 - pre-exec registration failure, provider crash/restart, CLI kill -9, relay
   loss, sleep/wake, network change, and reboot recovery;
 - DNS APIs, raw port 53, cached answers, encrypted DNS boundaries, and no
@@ -319,6 +353,7 @@ transparent capability unavailable.
 - [`NETransparentProxyNetworkSettings`](https://developer.apple.com/documentation/networkextension/netransparentproxynetworksettings)
 - [`NEAppProxyProvider`](https://developer.apple.com/documentation/networkextension/neappproxyprovider)
 - [`NEAppProxyProviderManager`](https://developer.apple.com/documentation/networkextension/neappproxyprovidermanager)
+- [`NEFlowMetaData`](https://developer.apple.com/documentation/networkextension/neflowmetadata)
 - [`NEFlowMetaData.sourceAppAuditToken`](https://developer.apple.com/documentation/networkextension/neflowmetadata/sourceappaudittoken)
 - [TN3134: Network Extension provider deployment](https://developer.apple.com/documentation/technotes/tn3134-network-extension-provider-deployment)
 - [Notarizing macOS software before distribution](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)

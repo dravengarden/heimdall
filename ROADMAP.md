@@ -284,9 +284,14 @@ remain deliberately separate:
   extension for transparent TCP/UDP. Keep `NEAppProxyProvider` limited to a
   future managed per-app deployment rather than treating it as a cgroup
   equivalent.
-- Attribute flows from `sourceAppAuditToken` to a registered process group,
-  route only attributed traffic to the CLI-owned per-run relay, return unrelated
-  traffic to its normal path, and fail attributed flows closed on relay loss.
+- Keep the implemented internal `heimdall.macos.control/v1` HMAC, replay,
+  concurrent-run, and owner-EOF lifecycle contract green. It is not yet wired
+  to a provider and does not make the transparent backend selectable.
+- Treat optional `sourceAppAuditToken` and all other flow metadata as a signed
+  native evidence question. Do not claim process scope until tests can safely
+  distinguish attributed, unrelated, missing, and ambiguous identities; if no
+  safe discriminator exists, stop this backend design rather than returning a
+  possible wrapped flow direct or rejecting unrelated machine traffic.
 - Keep the provider enabled only while at least one run is active. A
   session-owned helper handles registration and owner-death cleanup; no
   persistent user-managed Heimdall daemon is installed.

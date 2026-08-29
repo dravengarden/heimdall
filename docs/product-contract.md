@@ -135,18 +135,22 @@ capability contracts:
   attribution, or fail-closed coverage. The user must select it explicitly;
   incompatible config fails before child execution.
 - `macos-transparent` requires an optional signed companion containing an
-  `NETransparentProxyProvider` system extension. It attributes flows to a
-  registered process group and reuses the CLI-owned per-run relay, policy,
-  JSONL, capture, and relay-TLS boundaries. `NEAppProxyProvider` is reserved
-  for a possible managed per-app deployment.
+  `NETransparentProxyProvider` system extension. The internal authenticated
+  run-registration protocol is implemented but unwired. Optional flow metadata
+  must pass signed native tests that distinguish registered, unrelated,
+  missing, and ambiguous identity before this path may attribute a flow or
+  release a command. If that discriminator is not safe, the backend does not
+  ship. `NEAppProxyProvider` is reserved for a possible managed per-app
+  deployment.
 
 The operating system may run the future transparent provider while a run is active,
 and a run-owned helper handles registration and owner-death cleanup. Neither
 component is a persistent user-managed Heimdall daemon: the final unregister
 operation disables the provider and no helper survives the last run. This path
 may not claim Linux-equivalent descendant scope, UDP, DNS, QUIC, or relay TLS
-until each platform-specific acceptance target passes. Runtime TLS is
-unavailable on macOS. Official macOS release artifacts remain unavailable
+until each platform-specific acceptance target passes. Returning an unknown
+flow direct is not an allowed fail-closed fallback. Runtime TLS is unavailable
+on macOS. Official macOS release artifacts remain unavailable
 until a versioned signed/notarized asset passes fresh-download install,
 upgrade, rollback, uninstall, and explicit-run acceptance. See
 [design/macos-backend.md](design/macos-backend.md).

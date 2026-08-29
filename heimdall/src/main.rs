@@ -17,6 +17,15 @@ mod event_log;
 #[cfg(any(target_os = "macos", test))]
 mod explicit_proxy;
 mod heimdall_config;
+#[cfg(any(target_os = "macos", test))]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "the authenticated control protocol is wired only after a signed companion passes native attribution acceptance"
+    )
+)]
+mod macos_control;
 #[cfg_attr(
     target_os = "macos",
     allow(

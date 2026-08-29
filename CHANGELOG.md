@@ -25,6 +25,11 @@ guide.
 - Keep the optional signed `NETransparentProxyProvider` backend as a separate
   in-development path with no released support or persistent Heimdall daemon
   claim.
+- Add the internal `heimdall.macos.control/v1` protocol with bounded strict
+  frames, HMAC-SHA256 authentication, per-direction replay protection, a fixed
+  Swift conformance vector, validated run registration, concurrent-run
+  lifecycle transitions, and owner-channel EOF cleanup. It remains unwired and
+  cannot be selected as a backend.
 - Extract a platform-neutral `RunEvidence` owner for writer/control-socket
   lifetime and finalization, use it from the unchanged Linux foreground path,
   and compile the same JSONL store plus offline `heimdall logs` inspection,
@@ -80,6 +85,10 @@ guide.
 
 ### Changed
 
+- Treat optional macOS flow identity metadata as a signed native evidence gate
+  instead of assuming it proves process-group scope. Additive
+  `heimdall.agent/v8` fields keep provider wiring and strict command scope
+  false until attributed, unrelated, missing, and ambiguous identities pass.
 - Extend the release installer and both native archive acceptance paths with
   managed uninstall while preserving unrelated prefix files. macOS installs
   explicitly avoid the Linux-only `__setup-worker` authorization message.

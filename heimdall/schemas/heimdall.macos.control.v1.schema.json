@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ravengarden.github.io/heimdall/schemas/heimdall.macos.control.v1.schema.json",
+  "title": "Heimdall macOS control frame",
+  "type": "object",
+  "required": [
+    "contract",
+    "direction",
+    "session_id",
+    "sequence",
+    "operation",
+    "payload",
+    "mac"
+  ],
+  "properties": {
+    "contract": { "const": "heimdall.macos.control/v1" },
+    "direction": { "enum": ["request", "response"] },
+    "session_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "operation": {
+      "enum": [
+        "register_run",
+        "run_ready",
+        "unregister_run",
+        "run_removed",
+        "error"
+      ]
+    },
+    "payload": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 64000,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "mac": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "direction": { "const": "request" },
+        "operation": { "enum": ["register_run", "unregister_run"] }
+      }
+    },
+    {
+      "properties": {
+        "direction": { "const": "response" },
+        "operation": { "enum": ["run_ready", "run_removed", "error"] }
+      }
+    }
+  ],
+  "additionalProperties": false
+}

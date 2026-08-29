@@ -326,6 +326,17 @@ mod tests {
     async fn logs_are_inspectable_while_run_requires_an_explicit_backend() {
         let parsed = Cli::try_parse_from(["heimdall", "logs", "schema", "--event", "v1"]).unwrap();
         assert!(matches!(parsed.cmd, Cmd::Logs(_)));
+        assert!(
+            Cli::try_parse_from([
+                "heimdall",
+                "run",
+                "--backend",
+                "macos-transparent",
+                "--",
+                "true"
+            ])
+            .is_err()
+        );
 
         let marker = std::env::temp_dir().join(format!(
             "heimdall-macos-refusal-{}-{}",

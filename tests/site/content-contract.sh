@@ -141,6 +141,69 @@ grep -Fq 'mod explicit_proxy;' heimdall/src/main.rs || {
   exit 1
 }
 
+grep -Fq 'mod macos_control;' heimdall/src/main.rs || {
+  printf 'the shared target root does not own the macOS control protocol\n' >&2
+  exit 1
+}
+
+grep -Fq 'heimdall.macos.control/v1' \
+  heimdall/schemas/heimdall.macos.control.v1.schema.json || {
+  printf 'the macOS control protocol does not have a versioned schema\n' >&2
+  exit 1
+}
+
+for macos_control_page in \
+  docs/design/macos-backend.md \
+  docs/design/macos-control-protocol.md \
+  ROADMAP.md \
+  site/docs/macos.html \
+  site/docs/roadmap.html; do
+  for boundary in \
+    'heimdall.macos.control/v1' \
+    'optional'; do
+    grep -Fq "$boundary" "$macos_control_page" || {
+      printf '%s does not preserve the macOS attribution boundary: %s\n' \
+        "$macos_control_page" "$boundary" >&2
+      exit 1
+    }
+  done
+done
+
+for macos_attribution_page in \
+  docs/design/macos-backend.md \
+  docs/design/macos-control-protocol.md \
+  ROADMAP.md \
+  site/docs/macos.html; do
+  for boundary in 'sourceAppAuditToken' 'native evidence'; do
+    grep -Fq "$boundary" "$macos_attribution_page" || {
+      printf '%s does not preserve the native attribution gate: %s\n' \
+        "$macos_attribution_page" "$boundary" >&2
+      exit 1
+    }
+  done
+done
+
+if rg -Fq 'process-group best-effort' docs/design/macos-backend.md site/docs/macos.html; then
+  printf 'macOS docs still claim an unproven process-group boundary\n' >&2
+  exit 1
+fi
+
+grep -Fq '"provider_wired": false' heimdall/src/cli/agent_macos.rs || {
+  printf 'the Darwin agent does not report the control protocol as unwired\n' >&2
+  exit 1
+}
+
+grep -Fq '"strict_command_scope_proven": false' \
+  heimdall/src/cli/agent_macos.rs || {
+  printf 'the Darwin agent claims unproven transparent command scope\n' >&2
+  exit 1
+}
+
+if rg -Fq '#[value(name = "macos-transparent")]' heimdall/src/main_macos.rs; then
+  printf 'the unavailable transparent backend is selectable\n' >&2
+  exit 1
+fi
+
 grep -Fq 'TcpListener::bind((Ipv4Addr::LOCALHOST, 0))' heimdall/src/explicit_proxy.rs || {
   printf 'macos-explicit does not bind a kernel-assigned loopback listener\n' >&2
   exit 1
