@@ -1,8 +1,9 @@
 # Release standard
 
 Heimdall releases are curated product records, not raw commit dumps. Local
-verification is authoritative; GitHub stores the immutable tag, release notes,
-archives, and checksums after every gate passes.
+verification is authoritative; Linux and macOS release hosts build their own
+native artifacts, and GitHub stores the immutable tag, release notes, archives,
+and checksums only after every gate passes.
 
 ## Required changelog entry
 
@@ -43,12 +44,63 @@ installation guide, compatibility section, and artifact list in the same
 release-preparation change. In particular, native macOS support must add its
 actual macOS artifacts rather than describing Linux aarch64 as macOS support.
 
-Every Linux archive must pass `tests/package/check-artifact-hygiene.sh`. The
-gate rejects private and build paths, Nix store paths, ELF debug sections,
+Every native archive must pass `tests/package/check-artifact-hygiene.sh`. The
+Linux gate rejects private and build paths, Nix store paths, ELF debug sections,
 dynamic interpreters, and dynamic dependencies. It checks the embedded eBPF
 object separately because stripping the outer userspace ELF cannot prove that
 the object is clean; the object must retain `.BTF`, `.BTF.ext`, and their
-relocation sections after DWARF removal.
+relocation sections after DWARF removal. The macOS gate requires one arm64
+Mach-O with no build/private paths, DWARF segment, `LC_RPATH`, or non-system
+dynamic dependency and fixes its deployment target at macOS 11.0.
+
+## macOS release host
+
+The Apple-silicon archive is built natively because the Linux release host does
+not own an Apple SDK or signing key. Configure `HEIMDALL_MACOS_BUILD_HOST` as a
+stable SSH alias for the release Mac. The project sends `git archive HEAD`, not
+a working tree or credential, to a private temporary directory and copies back
+only the archive and checksum.
+
+The Mac must provide pinned Rust, Python 3, Xcode command-line tools, one valid
+Developer ID Application identity, and a `notarytool` keychain profile. The
+default profile name is `heimdall-notary`; create it interactively on the Mac:
+
+```bash
+xcrun notarytool store-credentials heimdall-notary
+```
+
+The profile remains in the Mac keychain. No Apple ID password, App Store
+Connect key, signing key, or profile contents cross SSH or enter GitHub. When
+more than one valid Developer ID Application identity exists, set
+`HEIMDALL_MACOS_SIGNING_IDENTITY_SHA1` to the selected 40-character fingerprint.
+
+Two paths are intentionally separate:
+
+```bash
+# Package mechanics only: ad-hoc integrity signature, never publishable.
+HEIMDALL_MACOS_BUILD_HOST=<ssh-alias> just test-package-macos
+
+# Official path: Developer ID, Hardened Runtime, secure timestamp,
+# notarization log with no warning/error issue, and Gatekeeper assessment.
+HEIMDALL_MACOS_BUILD_HOST=<ssh-alias> scripts/build-macos-release-assets-remote dist
+```
+
+The unsigned gate covers native tests, explicit proxy routing, Mach-O hygiene,
+byte-stable tar metadata, checksum, install, simulated upgrade, rollback, and
+uninstall. It cannot authorize publication. The official path fails before
+compilation when the Developer ID identity or notary profile is unavailable,
+then submits the exact signed standalone executable with `notarytool`. Apple
+does not support stapling a ticket to a standalone executable, so acceptance
+uses the online notarization ticket and `spctl` before the tarball is created.
+The final signed bytes carry a secure timestamp; reproducibility applies to the
+unsigned build inputs and normalized archive construction, while the published
+checksum is authoritative for the signed artifact.
+
+Follow Apple's primary guidance for
+[Developer ID certificates](https://developer.apple.com/help/account/certificates/create-developer-id-certificates/),
+[distribution-signed macOS code](https://developer.apple.com/documentation/xcode/creating-distribution-signed-code-for-the-mac/),
+and the
+[custom notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow).
 
 The npm, PyPI, and Cargo acceptance scripts must apply the same hygiene policy
 to the native bytes recovered from each final registry package. A clean source
@@ -73,23 +125,28 @@ retain native aarch64 real-eBPF acceptance as a known limitation.
 
 ## Publication transaction
 
-From a clean `main` checkout that exactly matches `origin/main`, run only:
+From a clean `main` checkout that exactly matches `origin/main`, configure the
+stable Mac alias and run only:
 
 ```bash
+export HEIMDALL_MACOS_BUILD_HOST=<ssh-alias>
 just release-github
 ```
 
 The command validates release notes before expensive gates, runs source, the
 current/LTS NixOS real-eBPF matrix, the pinned Ubuntu 24.04 and Debian 13
-archive, lifecycle, runtime/relay TLS, and data-path gates, and package
-acceptance locally, builds archives, verifies checksums, creates the annotated
-tag, pushes it, and publishes the generated notes and local artifacts. An
-existing Release or a tag pointing elsewhere is a hard failure.
+archive, lifecycle, runtime/relay TLS, and data-path gates, runs Linux and
+native Apple-silicon package acceptance, builds and notarizes the official Mac
+archive, verifies every checksum, creates the annotated tag, pushes it, and
+publishes the generated notes and local artifacts. An existing Release, an
+unsigned Mac artifact, failed notarization, or a tag pointing elsewhere is a
+hard failure.
 
 After publication, independently verify the peeled remote tag, asset inventory,
-downloaded checksums, extracted file set, and `heimdall --version`. A failed
-attempt may remove an unpublished tag after proving no Release exists. Never
-move or replace a published release tag.
+downloaded checksums, extracted file set, `heimdall --version`, Mac Developer
+ID signature, and Gatekeeper assessment. A failed attempt may remove an
+unpublished tag after proving no Release exists. Never move or replace a
+published release tag.
 
 ## npm publication
 

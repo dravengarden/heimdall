@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+mode=signed
+notary_profile=${HEIMDALL_MACOS_NOTARY_PROFILE:-heimdall-notary}
+signing_identity_sha1=${HEIMDALL_MACOS_SIGNING_IDENTITY_SHA1:-}
+
+usage() {
+  printf '%s\n' \
+    'usage: HEIMDALL_MACOS_BUILD_HOST=SSH_ALIAS build-macos-release-assets-remote' \
+    '       [--unsigned] [--notary-profile NAME]' \
+    '       [--signing-identity-sha1 SHA1] OUTPUT_DIRECTORY'
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --unsigned)
+      mode=unsigned
+      shift
+      ;;
+    --notary-profile)
+      [[ $# -ge 2 ]] || { usage >&2; exit 2; }
+      notary_profile=$2
+      shift 2
+      ;;
+    --signing-identity-sha1)
+      [[ $# -ge 2 ]] || { usage >&2; exit 2; }
+      signing_identity_sha1=$2
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --*)
+      printf 'unknown option: %s\n' "$1" >&2
+      usage >&2
+      exit 2
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+[[ $# -eq 1 ]] || { usage >&2; exit 2; }
+output_arg=$1
+host=${HEIMDALL_MACOS_BUILD_HOST:-}
+[[ $host =~ ^[A-Za-z0-9._-]+$ ]] || {
+  printf 'HEIMDALL_MACOS_BUILD_HOST must be a stable SSH alias\n' >&2
+  exit 2
+}
+[[ $notary_profile =~ ^[A-Za-z0-9._-]+$ ]] || {
+  printf 'notary profile must contain only letters, digits, dot, underscore, or hyphen\n' >&2
+  exit 2
+}
+if [[ -n $signing_identity_sha1 && ! $signing_identity_sha1 =~ ^[[:xdigit:]]{40}$ ]]; then
+  printf 'signing identity must be a 40-character SHA-1 fingerprint\n' >&2
+  exit 2
+fi
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+git diff --quiet
+git diff --cached --quiet
+mkdir -p "$output_arg"
+output=$(cd "$output_arg" && pwd -P)
+version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' heimdall/Cargo.toml | head -n 1)
+[[ $version =~ ^[A-Za-z0-9._+-]+$ ]] || {
+  printf 'Heimdall package version is not a safe archive component: %s\n' "$version" >&2
+  exit 1
+}
+archive_root=heimdall-egress-$version-aarch64-apple-darwin
+
+remote_root=$(ssh "$host" 'mktemp -d /tmp/heimdall-macos-release.XXXXXX')
+[[ $remote_root =~ ^/tmp/heimdall-macos-release\.[A-Za-z0-9]+$ ]] || {
+  printf 'remote host returned an unsafe temporary path\n' >&2
+  exit 1
+}
+cleanup() {
+  # Why: remote_root is accepted only after the narrow /tmp pattern check.
+  # shellcheck disable=SC2029
+  ssh "$host" "find $remote_root -depth -delete" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+# Why: remote_root cannot contain shell metacharacters after validation.
+# shellcheck disable=SC2029
+git archive HEAD | ssh "$host" "tar -x -C $remote_root"
+remote_args=
+if [[ $mode == unsigned ]]; then
+  remote_args=--unsigned
+fi
+remote_args="$remote_args --notary-profile $notary_profile"
+if [[ -n $signing_identity_sha1 ]]; then
+  remote_args="$remote_args --signing-identity-sha1 $signing_identity_sha1"
+fi
+# shellcheck disable=SC2029
+ssh "$host" "/bin/bash $remote_root/scripts/build-macos-release-assets $remote_args $remote_root/dist"
+
+scp "$host:$remote_root/dist/$archive_root.tar.gz" "$output/"
+scp "$host:$remote_root/dist/$archive_root.tar.gz.sha256" "$output/"
+(cd "$output" && sha256sum -c "$archive_root.tar.gz.sha256")
+
+printf 'copied %s macOS release assets for commit %s to %s\n' \
+  "$mode" "$(git rev-parse HEAD)" "$output"

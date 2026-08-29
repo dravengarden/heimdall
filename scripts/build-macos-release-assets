@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+mode=signed
+notary_profile=${HEIMDALL_MACOS_NOTARY_PROFILE:-heimdall-notary}
+signing_identity_sha1=${HEIMDALL_MACOS_SIGNING_IDENTITY_SHA1:-}
+
+usage() {
+  printf '%s\n' \
+    'usage: build-macos-release-assets [--unsigned] [--notary-profile NAME]' \
+    '       [--signing-identity-sha1 SHA1] OUTPUT_DIRECTORY'
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --unsigned)
+      mode=unsigned
+      shift
+      ;;
+    --notary-profile)
+      [[ $# -ge 2 ]] || { usage >&2; exit 2; }
+      notary_profile=$2
+      shift 2
+      ;;
+    --signing-identity-sha1)
+      [[ $# -ge 2 ]] || { usage >&2; exit 2; }
+      signing_identity_sha1=$2
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --*)
+      printf 'unknown option: %s\n' "$1" >&2
+      usage >&2
+      exit 2
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+[[ $# -eq 1 ]] || { usage >&2; exit 2; }
+output_arg=$1
+[[ $notary_profile =~ ^[A-Za-z0-9._-]+$ ]] || {
+  printf 'notary profile must contain only letters, digits, dot, underscore, or hyphen\n' >&2
+  exit 2
+}
+if [[ -n $signing_identity_sha1 && ! $signing_identity_sha1 =~ ^[[:xdigit:]]{40}$ ]]; then
+  printf 'signing identity must be a 40-character SHA-1 fingerprint\n' >&2
+  exit 2
+fi
+
+[[ $(uname -s) == Darwin ]] || {
+  printf 'macOS release assets must be built on macOS\n' >&2
+  exit 1
+}
+[[ $(uname -m) == arm64 ]] || {
+  printf 'macOS release assets require Apple silicon\n' >&2
+  exit 1
+}
+
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+repo_root=$(cd "$script_dir/.." && pwd -P)
+cd "$repo_root"
+mkdir -p "$output_arg"
+output=$(cd "$output_arg" && pwd -P)
+
+version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' heimdall/Cargo.toml | head -n 1)
+[[ -n $version ]] || { printf 'cannot read Heimdall package version\n' >&2; exit 1; }
+[[ $version =~ ^[A-Za-z0-9._+-]+$ ]] || {
+  printf 'Heimdall package version is not a safe archive component: %s\n' "$version" >&2
+  exit 1
+}
+required_rust=$(sed -n 's/^rust-version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
+actual_rust=$(rustc --version | awk '{print $2}')
+[[ $actual_rust == "$required_rust" ]] || {
+  printf 'Rust %s is required; active rustc is %s\n' "$required_rust" "$actual_rust" >&2
+  exit 1
+}
+
+if [[ $mode == signed ]]; then
+  if [[ -n $signing_identity_sha1 ]]; then
+    signing_identity_sha1=$(tr '[:lower:]' '[:upper:]' <<<"$signing_identity_sha1")
+  fi
+  identities=$(
+    security find-identity -v -p codesigning 2>/dev/null |
+      awk '/Developer ID Application/{print $2}'
+  )
+  identity_count=$(printf '%s\n' "$identities" | awk 'NF{count++} END{print count+0}')
+  if [[ -n $signing_identity_sha1 ]]; then
+    grep -Fqx "$signing_identity_sha1" <<<"$identities" || {
+      printf 'selected signing identity is not an available Developer ID Application identity\n' >&2
+      exit 1
+    }
+  else
+    [[ $identity_count -eq 1 ]] || {
+      printf 'official macOS release requires exactly one Developer ID Application identity; found %s\n' \
+        "$identity_count" >&2
+      exit 1
+    }
+    signing_identity_sha1=$identities
+  fi
+  xcrun notarytool history --keychain-profile "$notary_profile" \
+    --output-format json >/dev/null 2>&1 || {
+    printf 'cannot authenticate the macOS notary profile: %s\n' "$notary_profile" >&2
+    exit 1
+  }
+fi
+
+work_dir=$(mktemp -d "${TMPDIR:-/tmp}/heimdall-macos-release.XXXXXX")
+trap 'rm -rf "$work_dir"' EXIT
+archive_root=heimdall-egress-$version-aarch64-apple-darwin
+bundle=$work_dir/$archive_root
+mkdir -p "$bundle"
+
+separator=$'\x1f'
+cargo_root=${CARGO_HOME:-${HOME}/.cargo}
+export CARGO_ENCODED_RUSTFLAGS="--remap-path-prefix=$repo_root=/source/heimdall${separator}--remap-path-prefix=$cargo_root=/source/cargo"
+export MACOSX_DEPLOYMENT_TARGET=11.0
+unset RUSTFLAGS
+cargo test --package heimdall-egress --all-targets --locked --release
+cargo build --package heimdall-egress --locked --release
+
+install -m 0755 target/release/heimdall "$bundle/heimdall"
+strip -S "$bundle/heimdall"
+sed \
+  -e "s/@VERSION@/$version/g" \
+  -e 's/@PLATFORM@/macos/g' \
+  packaging/heimdall-install >"$bundle/heimdall-install"
+chmod 0755 "$bundle/heimdall-install"
+install -m 0644 LICENSE "$bundle/LICENSE"
+install -m 0644 README.md "$bundle/README.md"
+
+if [[ $mode == unsigned ]]; then
+  codesign --force --sign - --options runtime \
+    --identifier io.github.dravengarden.heimdall "$bundle/heimdall" >/dev/null 2>&1
+else
+  codesign --force --sign "$signing_identity_sha1" --options runtime --timestamp \
+    --identifier io.github.dravengarden.heimdall "$bundle/heimdall" >/dev/null
+fi
+
+codesign --verify --strict "$bundle/heimdall" >/dev/null 2>&1 || {
+  printf 'macOS release binary has an invalid code signature\n' >&2
+  exit 1
+}
+signature=$(codesign -d --verbose=4 "$bundle/heimdall" 2>&1)
+grep -Eq 'flags=.*runtime' <<<"$signature" || {
+  printf 'macOS release binary is missing Hardened Runtime\n' >&2
+  exit 1
+}
+if [[ $mode == signed ]]; then
+  grep -Fq 'Authority=Developer ID Application:' <<<"$signature" || {
+    printf 'macOS release binary is not signed with Developer ID Application\n' >&2
+    exit 1
+  }
+  grep -Eq '^Timestamp=.+' <<<"$signature" || {
+    printf 'macOS release binary is missing a secure signing timestamp\n' >&2
+    exit 1
+  }
+fi
+entitlements=$(codesign -d --entitlements - "$bundle/heimdall" 2>/dev/null || true)
+if grep -Fq 'com.apple.security.get-task-allow' <<<"$entitlements"; then
+  printf 'macOS release binary enables get-task-allow\n' >&2
+  exit 1
+fi
+
+tests/package/check-artifact-hygiene.sh "$bundle/heimdall" macos-executable
+HEIMDALL_MACOS_BINARY="$bundle/heimdall" tests/macos/run-explicit-acceptance.sh
+
+if [[ $mode == signed ]]; then
+  submission=$work_dir/heimdall-notary.zip
+  result=$work_dir/notary-result.json
+  log=$work_dir/notary-log.json
+  ditto -c -k --keepParent "$bundle/heimdall" "$submission"
+  xcrun notarytool submit "$submission" \
+    --keychain-profile "$notary_profile" --wait --output-format json >"$result"
+  submission_id=$(python3 -c '
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+assert value.get("status") == "Accepted", value.get("status")
+print(value["id"])
+' "$result")
+  xcrun notarytool log "$submission_id" \
+    --keychain-profile "$notary_profile" "$log" >/dev/null
+  python3 -c '
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+issues = value.get("issues", [])
+bad = [
+    item
+    for item in issues
+    if str(item.get("severity", "")).lower() in {"warning", "error"}
+]
+assert not bad, bad
+' "$log"
+  spctl --assess --type execute "$bundle/heimdall" >/dev/null 2>&1 || {
+    printf 'Gatekeeper rejected the notarized Heimdall executable\n' >&2
+    exit 1
+  }
+fi
+
+archive=$archive_root.tar.gz
+scripts/create-release-archive.py "$bundle" "$output/$archive"
+digest=$(shasum -a 256 "$output/$archive" | awk '{print $1}')
+printf '%s  %s\n' "$digest" "$archive" >"$output/$archive.sha256"
+tests/package/run-macos-acceptance.sh "$output" "$version" "$mode"
+
+printf 'built %s macOS release assets for Heimdall %s at %s\n' \
+  "$mode" "$version" "$output"

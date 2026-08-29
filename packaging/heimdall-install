@@ -2,17 +2,19 @@
 set -eu
 
 VERSION='@VERSION@'
+PLATFORM='@PLATFORM@'
 command_name=install
 prefix=${HEIMDALL_PREFIX:-/usr/local}
 
 usage() {
   cat <<'EOF'
-Usage: ./heimdall-install [install|rollback|verify] [--prefix ABSOLUTE_PATH]
+Usage: ./heimdall-install [install|rollback|verify|uninstall] [--prefix ABSOLUTE_PATH]
 
 Commands:
   install   Validate and atomically install the bundled Heimdall binary.
   rollback  Swap the active binary with the one-level rollback copy.
   verify    Check the active binary and print its version.
+  uninstall Remove the managed executable and installer state.
 
 The default prefix is /usr/local. Set HEIMDALL_PREFIX or pass --prefix for an
 unprivileged test installation. This tool never writes sudoers configuration.
@@ -21,7 +23,7 @@ EOF
 
 if [ "$#" -gt 0 ]; then
   case "$1" in
-    install|rollback|verify)
+    install|rollback|verify|uninstall)
       command_name=$1
       shift
       ;;
@@ -56,6 +58,10 @@ case "$prefix" in
   *) echo "install prefix must be absolute: $prefix" >&2; exit 2 ;;
 esac
 [ "$prefix" != / ] || { echo "refusing to use / as the install prefix" >&2; exit 2; }
+case "$PLATFORM" in
+  linux|macos) ;;
+  *) echo "release installer has an invalid platform: $PLATFORM" >&2; exit 1 ;;
+esac
 
 bin_dir=$prefix/bin
 state_dir=$prefix/lib/heimdall
@@ -64,7 +70,7 @@ active=$bin_dir/heimdall
 active_version=$state_dir/active-version
 rollback=$state_dir/rollback/heimdall
 rollback_version=$state_dir/rollback/version
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 
 validate_binary() {
   candidate=$1
@@ -77,6 +83,10 @@ validate_binary() {
 }
 
 acquire_lock() {
+  [ ! -L "$state_dir" ] || {
+    echo "refusing symlinked Heimdall installer state: $state_dir" >&2
+    exit 1
+  }
   mkdir -p "$state_dir"
   lock_dir=$state_dir/install.lock
   if ! mkdir "$lock_dir" 2>/dev/null; then
@@ -116,7 +126,10 @@ case "$command_name" in
     install -m 0755 "$0" "$state_dir/heimdall-install"
     validate_binary "$active"
     printf 'installed Heimdall %s at %s\n' "$VERSION" "$active"
-    printf 'authorize only: %s __setup-worker\n' "$active"
+    case "$PLATFORM" in
+      linux) printf 'authorize only: %s __setup-worker\n' "$active" ;;
+      macos) printf 'macos-explicit requires no privileged setup\n' ;;
+    esac
     ;;
   rollback)
     acquire_lock
@@ -146,5 +159,22 @@ case "$command_name" in
     installed_version=unknown
     [ -f "$active_version" ] && installed_version=$(cat "$active_version")
     printf 'Heimdall %s is active at %s\n' "$installed_version" "$active"
+    ;;
+  uninstall)
+    [ ! -L "$state_dir" ] || {
+      echo "refusing symlinked Heimdall installer state: $state_dir" >&2
+      exit 1
+    }
+    [ -f "$active_version" ] && [ -f "$state_dir/heimdall-install" ] || {
+      echo "no managed Heimdall installation exists below $prefix" >&2
+      exit 1
+    }
+    acquire_lock
+    if [ -e "$active" ]; then
+      validate_binary "$active"
+      rm -f "$active"
+    fi
+    rm -rf "$state_dir"
+    printf 'uninstalled Heimdall from %s\n' "$prefix"
     ;;
 esac

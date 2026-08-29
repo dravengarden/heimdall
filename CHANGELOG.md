@@ -38,6 +38,17 @@ guide.
   loopback listener.
 - Keep macOS Unix event/control sockets within Darwin's path limit and reset
   accepted streams to blocking mode before the portable JSONL owner uses them.
+- Add a native Apple-silicon release-asset builder with path-remapped pinned
+  Rust, macOS 11 deployment, arm64 Mach-O hygiene, normalized tar metadata,
+  SHA-256, and complete explicit-backend/package acceptance. Its ad-hoc mode is
+  test-only; the publication path fails before compilation unless Developer ID
+  Application and the notary keychain profile are ready, then requires
+  Hardened Runtime, secure timestamp, a warning-free accepted notarization log,
+  and Gatekeeper assessment.
+- Add a generic stable-SSH-alias bridge that sends only `git archive HEAD` to
+  the native Mac and returns only the archive and checksum. The local GitHub
+  release transaction now requires that signed/notarized asset and includes it
+  in generated release notes without moving signing credentials off the Mac.
 - Add a strict offline `heimdall.logs.flow/v1` contract and `heimdall logs
   flow` command that explain one flow's route, transport result, bounded
   capture by direction and boundary, observed plaintext, TLS/HTTP evidence,
@@ -69,6 +80,9 @@ guide.
 
 ### Changed
 
+- Extend the release installer and both native archive acceptance paths with
+  managed uninstall while preserving unrelated prefix files. macOS installs
+  explicitly avoid the Linux-only `__setup-worker` authorization message.
 - Make `logs query --error-code` match stable error evidence stored as either
   `data.code` or `data.error_code`, including TLS errors and their correlated
   flow-close records.

@@ -71,4 +71,10 @@ flow_schema=$("$prefix/bin/heimdall" logs schema --flow v1)
 printf '%s\n' "$flow_schema" |
   grep -Eq '"const"[[:space:]]*:[[:space:]]*"heimdall\.logs\.flow/v1"'
 
+touch "$prefix/unrelated-file"
+"$prefix/lib/heimdall/heimdall-install" uninstall --prefix "$prefix"
+[ ! -e "$prefix/bin/heimdall" ]
+[ ! -e "$prefix/lib/heimdall" ]
+[ -f "$prefix/unrelated-file" ]
+
 echo "release package acceptance OK"

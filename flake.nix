@@ -521,7 +521,8 @@
             mkdir -p "$out" "$archive_root"
             install -m 0755 ${heimdall-static}/bin/heimdall "$archive_root/heimdall"
             substitute ${./packaging/heimdall-install} "$archive_root/heimdall-install" \
-              --replace-fail '@VERSION@' '${heimdallVersion}'
+              --replace-fail '@VERSION@' '${heimdallVersion}' \
+              --replace-fail '@PLATFORM@' 'linux'
             chmod 0755 "$archive_root/heimdall-install"
             install -m 0644 ${./LICENSE} "$archive_root/LICENSE"
             install -m 0644 ${./README.md} "$archive_root/README.md"
@@ -545,7 +546,8 @@
             mkdir -p "$out" "$archive_root"
             install -m 0755 ${heimdall-static-aarch64}/bin/heimdall "$archive_root/heimdall"
             substitute ${./packaging/heimdall-install} "$archive_root/heimdall-install" \
-              --replace-fail '@VERSION@' '${heimdallVersion}'
+              --replace-fail '@VERSION@' '${heimdallVersion}' \
+              --replace-fail '@PLATFORM@' 'linux'
             chmod 0755 "$archive_root/heimdall-install"
             install -m 0644 ${./LICENSE} "$archive_root/LICENSE"
             install -m 0644 ${./README.md} "$archive_root/README.md"

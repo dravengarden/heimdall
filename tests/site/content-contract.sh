@@ -65,6 +65,26 @@ for macos_design in docs/design/macos-backend.md site/docs/macos.html; do
   done
 done
 
+for macos_package_page in \
+  docs/design/macos-backend.md \
+  docs/releasing.md \
+  docs/runbook.md \
+  site/docs/macos.html \
+  site/docs/runbook.html; do
+  rg -iq 'package[- ]mechanics' "$macos_package_page" || {
+    printf '%s does not preserve the macOS package-mechanics boundary\n' \
+      "$macos_package_page" >&2
+    exit 1
+  }
+  for boundary in 'Developer ID' 'notar' 'Gatekeeper' 'uninstall'; do
+    grep -Fiq "$boundary" "$macos_package_page" || {
+      printf '%s does not preserve the macOS package boundary: %s\n' \
+        "$macos_package_page" "$boundary" >&2
+      exit 1
+    }
+  done
+done
+
 grep -Fq 'aarch64-apple-darwin' rust-toolchain.toml || {
   printf 'the pinned toolchain does not include the Darwin check target\n' >&2
   exit 1
@@ -173,6 +193,11 @@ for macos_runbook in docs/runbook.md site/docs/runbook.html; do
       "$macos_runbook" >&2
     exit 1
   }
+  grep -Fq 'just test-package-macos' "$macos_runbook" || {
+    printf '%s does not expose the native package-mechanics gate\n' \
+      "$macos_runbook" >&2
+    exit 1
+  }
   grep -Fq 'cooperative' "$macos_runbook" || {
     printf '%s does not preserve the reduced explicit scope\n' \
       "$macos_runbook" >&2
@@ -228,10 +253,13 @@ for runbook in docs/runbook.md site/docs/runbook.html; do
     printf '%s does not expose the canonical eBPF sync command\n' "$runbook" >&2
     exit 1
   }
-  grep -Fq 'native archive, npm, PyPI, and Cargo package' "$runbook" || {
-    printf '%s does not describe all four package gates\n' "$runbook" >&2
-    exit 1
-  }
+  for package_gate in 'just test-package' 'just test-package-macos' 'npm' 'PyPI' 'Cargo'; do
+    grep -Fq "$package_gate" "$runbook" || {
+      printf '%s does not describe the package gate: %s\n' \
+        "$runbook" "$package_gate" >&2
+      exit 1
+    }
+  done
   if grep -Fq 'both package checks' "$runbook"; then
     printf '%s retained the obsolete two-package claim\n' "$runbook" >&2
     exit 1
@@ -317,13 +345,18 @@ for contract_page in docs/product-contract.md site/docs/product-contract.html; d
   }
 done
 
-grep -A5 '^release-check:' justfile | grep -Fq 'just test-vm-ubuntu' || {
+grep -A7 '^release-check:' justfile | grep -Fq 'just test-vm-ubuntu' || {
   printf 'release-check does not include the Ubuntu acceptance gate\n' >&2
   exit 1
 }
 
-grep -A5 '^release-check:' justfile | grep -Fq 'just test-vm-debian' || {
+grep -A7 '^release-check:' justfile | grep -Fq 'just test-vm-debian' || {
   printf 'release-check does not include the Debian acceptance gate\n' >&2
+  exit 1
+}
+
+grep -A7 '^release-check:' justfile | grep -Fq 'just test-package-macos' || {
+  printf 'release-check does not include the native macOS package gate\n' >&2
   exit 1
 }
 
@@ -337,7 +370,7 @@ grep -Fq 'benchmark-vm-debian:' justfile || {
   exit 1
 }
 
-if grep -A5 '^release-check:' justfile | grep -Fq 'benchmark-vm-'; then
+if grep -A7 '^release-check:' justfile | grep -Fq 'benchmark-vm-'; then
   printf 'release-check unexpectedly includes a performance baseline\n' >&2
   exit 1
 fi

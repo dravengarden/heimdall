@@ -42,14 +42,15 @@ ${section}
 
 ## Install
 
-Download the archive and matching SHA-256 file for your Linux architecture.
+Download the archive and matching SHA-256 file for your supported platform.
 Follow the [versioned installation guide](${repository_url}/blob/${tag}/docs/install.md)
-for checksum verification, setup authorization, upgrade, and rollback.
+for checksum verification, setup authorization, upgrade, rollback, and uninstall.
 
 ## Release artifacts
 
 - \`heimdall-egress-${version}-x86_64-linux-musl.tar.gz\`
 - \`heimdall-egress-${version}-aarch64-linux-musl.tar.gz\`
+- \`heimdall-egress-${version}-aarch64-apple-darwin.tar.gz\`
 - \`heimdall-egress-${version}.tgz\` for npm trusted publishing
 - x86_64 and aarch64 \`heimdall_egress-${version}-*.whl\` files for PyPI
   trusted publishing
@@ -58,9 +59,10 @@ for checksum verification, setup authorization, upgrade, and rollback.
 
 ## Verification
 
-The release host completed the authoritative local source checks, current and
-Linux 6.6 LTS real-eBPF VM suites sequentially, and Linux archive, npm, PyPI,
-and Cargo package gates before the tag or assets were published.
+The release hosts completed the authoritative local source checks, current and
+Linux 6.6 LTS real-eBPF VM suites sequentially, Linux archive, npm, PyPI, and
+Cargo package gates, plus native Apple-silicon package and notarization gates,
+before the tag or assets were published.
 
 ## Full changelog
 

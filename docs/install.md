@@ -185,6 +185,16 @@ Rollback covers the complete embedded executable, including its eBPF object
 and machine-readable contracts. It does not rewrite user configuration or
 logs. Review pre-1.0 schema changes before moving between releases.
 
+Remove only the managed executable and installer state with:
+
+```bash
+sudo /usr/local/lib/heimdall/heimdall-install uninstall
+```
+
+Uninstall leaves invoking-user configuration, logs, captures, TLS material,
+and unrelated files below the prefix untouched. Heimdall has no daemon or
+background service to disable.
+
 For an unprivileged packaging test, use an absolute private prefix:
 
 ```bash

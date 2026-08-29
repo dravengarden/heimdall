@@ -37,6 +37,23 @@ backend selection. It does not accept strict process scope, UDP, fake DNS,
 capture, TLS inspection, the future Network Extension, or official macOS
 packaging.
 
+The native packaging gate is separate from backend acceptance:
+
+```bash
+# Directly on Apple silicon:
+scripts/build-macos-release-assets --unsigned /tmp/heimdall-dist
+
+# From the Linux release host through a stable SSH alias:
+HEIMDALL_MACOS_BUILD_HOST=<ssh-alias> just test-package-macos
+```
+
+It adds arm64 Mach-O and deployment-target hygiene, deterministic archive
+metadata, checksum, ad-hoc integrity signing, install, simulated upgrade,
+rollback, and uninstall. `--unsigned` is a non-publishable test mode. The
+default builder requires Developer ID Application, Hardened Runtime, secure
+timestamp, a valid `heimdall-notary` keychain profile, an accepted notarization
+log with no warning/error issue, and Gatekeeper assessment.
+
 Run the real kernel acceptance after changes to eBPF, cgroups, DNS, relay,
 capture, TLS, setup privilege, or lifecycle behavior:
 
@@ -97,31 +114,36 @@ release notes as a known limitation.
 Build both generic static archives, reject incorrect architecture, dynamic
 linkage, private/build paths, and debug sections, verify embedded BTF metadata,
 exercise the aarch64 CLI under emulation, and run native x86_64 install,
-upgrade, and rollback acceptance:
+upgrade, rollback, and uninstall acceptance:
 
 ```bash
 nix develop -c just test-package
 ```
 
 Local release verification is authoritative. From a clean `main` checkout that
-exactly matches `origin/main`, publish only with:
+exactly matches `origin/main`, configure the native release Mac and publish
+only with:
 
 ```bash
+export HEIMDALL_MACOS_BUILD_HOST=<ssh-alias>
 just release-github
 ```
 
 This runs source verification, then the current and Linux 6.6 LTS NixOS
 real-eBPF guests and the pinned Ubuntu 24.04 and Debian 13 compatibility guests
-sequentially, then the native archive, npm, PyPI, and Cargo package checks. Only
-after every gate passes does it create the version tag and GitHub Release with
-curated notes, archives, and checksums. The versioned changelog must include
-highlights and known limitations; see
+sequentially, then the Linux archive, npm, PyPI, Cargo, and unsigned native
+Apple-silicon package-mechanics checks. It then builds, Developer ID signs,
+notarizes, and Gatekeeper-assesses the official Mac archive. Only after every
+gate passes does it create the version tag and GitHub Release with curated
+notes, archives, and checksums. The versioned changelog must include highlights
+and known limitations; see
 [releasing.md](releasing.md) for the complete release contract. GitHub Pages or
 Actions status is not release evidence.
 
-`just release-github` also uploads the locally built npm 12 tarball, two
-platform-specific PyPI wheels, the Cargo CLI source package, and their
-checksums. Publishing that Release automatically starts the project-owned
+`just release-github` uploads two Linux archives, one native signed/notarized
+Apple-silicon archive, the locally built npm 12 tarball, two platform-specific
+PyPI wheels, the Cargo CLI source package, and their checksums. Publishing that
+Release automatically starts the project-owned
 `publish-npm.yml`, `publish-pypi.yml`, and `publish-cargo.yml`; their native
 registry CLIs publish through OIDC. The Cargo workflow first reproduces the
 `.crate` file byte for byte from the immutable tag. Routine publication
@@ -236,15 +258,13 @@ shell-evaluate it. Consumers may rely on existing v8 field semantics and must
 ignore additive unknown fields. Renaming or changing an existing semantic
 requires a new contract version.
 
-The in-development Darwin target preserves that rule while remaining not
-ready: `platform.os = "macos"`, both entries in additive `backends` have
-`available = false`, `execution = null`, and `actions.execute_prefix = null`.
-Shared config and offline `logs` actions are exposed. These commands can print
-schemas and inspect, verify, recover, or prune a compatible existing JSONL
-store; they do not imply that a macOS backend can create traffic evidence.
-`heimdall run` deterministically exits 1 without executing the supplied
-command. A successful `aarch64-apple-darwin` type-check is not native backend
-acceptance.
+On Apple silicon, the same v8 document reports `macos-explicit` available only
+when the selected policy fits the reduced contract and every outbound
+credential is readable. `execution.scope = cooperative_proxy_environment`,
+`client_can_bypass = true`, and strict scope, UDP, fake DNS, capture, and TLS
+remain unavailable. `actions.execute_prefix` includes the mandatory
+`--backend macos-explicit`; an incompatible policy or omitted backend fails
+before exec. `macos-transparent` remains unavailable.
 
 ```bash
 heimdall logs schema --event v1

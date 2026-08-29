@@ -240,19 +240,26 @@ The explicit source backend and its platform boundary are implemented:
 - `just check-macos` type-checks the CLI and portable protocol test targets for
   pinned `aarch64-apple-darwin` as part of `just verify`; native Apple-silicon
   `just test-macos-native` exercises `curl`, a fixture SOCKS5 upstream, JSONL
-  integrity, listener cleanup, and pre-exec refusal.
+  integrity, listener cleanup, and pre-exec refusal; and
+- the native release builder creates an arm64 macOS 11+ archive with normalized
+  tar metadata and checksum. Its non-publishable ad-hoc gate covers Mach-O
+  hygiene, install, simulated upgrade, rollback, and uninstall. Its official
+  path requires Developer ID Application, Hardened Runtime, secure timestamp,
+  warning-free notarization, and Gatekeeper assessment before returning an
+  artifact to the Linux release transaction.
 
-Official macOS archives and registry packages are not yet published. The
-companion app, system extension, transparent TCP/UDP, capture, and TLS paths
-remain unavailable.
+No versioned official macOS archive or registry package has been published yet;
+the package claim changes only after the signed/notarized path and a fresh
+download acceptance complete for that release. The companion app, system
+extension, transparent TCP/UDP, capture, and TLS paths remain unavailable.
 
 ## Implementation sequence
 
 1. Keep the completed target/dependency split, shared evidence owner, offline
    log tooling, outbound relay transport, and reduced machine contract covered.
-2. Package and accept the implemented `macos-explicit` CLI on clean Apple
-   silicon machines, including checksum, install, upgrade, rollback, and
-   uninstall evidence.
+2. Keep the implemented native package-mechanics gate green, then complete one
+   Developer ID-signed/notarized versioned publication and fresh-download
+   acceptance before declaring the archive available.
 3. Add the signed containing app, system extension, minimal session helper, and
    versioned authenticated registration protocol.
 4. Accept transparent TCP and process attribution before adding UDP.
@@ -270,6 +277,16 @@ upstream, domain preservation, route evidence, JSONL verification, per-run
 listener cleanup, normal and non-zero child exit propagation, and refusal to
 execute when backend selection is omitted. It does not claim packaging or any
 transparent capability.
+
+`just test-package-macos` adds a native package-mechanics matrix: pinned release
+tests, the same explicit fixture, private/build-path and Mach-O checks, macOS
+11.0 deployment target, normalized tar metadata, checksum, ad-hoc integrity
+signature, atomic install, simulated upgrade, rollback, uninstall, and
+unrelated-prefix preservation. Ad-hoc mode is deliberately impossible to use
+from `scripts/publish-github-release`. The publish path independently requires
+Developer ID, Hardened Runtime, timestamp, notarization result and log, and
+Gatekeeper assessment. A successful mechanics gate is not a published-package
+claim.
 
 Compilation and simulator-style unit tests are insufficient for the future
 transparent backend. Availability of that backend requires a signed, entitled
@@ -304,3 +321,6 @@ transparent capability unavailable.
 - [`NEAppProxyProviderManager`](https://developer.apple.com/documentation/networkextension/neappproxyprovidermanager)
 - [`NEFlowMetaData.sourceAppAuditToken`](https://developer.apple.com/documentation/networkextension/neflowmetadata/sourceappaudittoken)
 - [TN3134: Network Extension provider deployment](https://developer.apple.com/documentation/technotes/tn3134-network-extension-provider-deployment)
+- [Notarizing macOS software before distribution](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)
+- [Customizing the notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow)
+- [Creating distribution-signed code for macOS](https://developer.apple.com/documentation/xcode/creating-distribution-signed-code-for-the-mac)

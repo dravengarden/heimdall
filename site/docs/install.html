@@ -21,7 +21,7 @@
     <main id="main-content" class="container docs-shell">
       <aside class="docs-sidebar" aria-label="Documentation navigation"><div class="sidebar-label">Documentation</div><nav class="sidebar-nav"><a href="product-contract.html" data-page="product-contract">Product contract</a><a href="install.html" data-page="install">Install and upgrade</a><a href="architecture.html" data-page="architecture">Architecture</a><a href="configuration.html" data-page="configuration">Configuration</a><a href="commands.html" data-page="commands">Command workflows</a><a href="runbook.html" data-page="runbook">Runbook</a><a href="roadmap.html" data-page="roadmap">Roadmap</a></nav><div class="sidebar-meta"><strong>Source document</strong><a href="https://github.com/dravengarden/heimdall/blob/main/docs/install.md">docs/install.md ↗</a></div></aside>
       <article class="doc-content">
-        <details class="mobile-toc"><summary>In this section</summary><nav><a href="#download">Download</a><a href="#npm">npm</a><a href="#pypi">PyPI</a><a href="#cargo">Cargo</a><a href="#authorize">Authorize setup</a><a href="#upgrade">Upgrade and rollback</a><a href="#ownership">Ownership</a></nav></details>
+        <details class="mobile-toc"><summary>In this section</summary><nav><a href="#download">Download</a><a href="#npm">npm</a><a href="#pypi">PyPI</a><a href="#cargo">Cargo</a><a href="#authorize">Authorize setup</a><a href="#upgrade">Upgrade and rollback</a><a href="#uninstall">Uninstall</a><a href="#ownership">Ownership</a></nav></details>
         <span class="doc-kicker">One binary / no daemon</span>
         <h1>Install Heimdall</h1>
         <p class="doc-lead">Install one static x86_64 or aarch64 Linux CLI with its eBPF object embedded. Verify its checksum, authorize only the setup worker, and keep all runtime state under the invoking user.</p>
@@ -77,6 +77,9 @@ sudo /usr/local/lib/heimdall/heimdall-install verify
 sudo /usr/local/lib/heimdall/heimdall-install rollback
 heimdall --version</code></pre>
         <p>The rollback unit includes userspace, embedded eBPF, and machine-readable contracts. It does not rewrite configuration or logs.</p>
+        <h3 id="uninstall">Uninstall</h3>
+        <pre><code>sudo /usr/local/lib/heimdall/heimdall-install uninstall</code></pre>
+        <p>This removes only the managed executable and installer state. User configuration, logs, captures, TLS material, unrelated prefix files, and the operating system remain untouched; there is no Heimdall daemon to disable.</p>
 
         <h2 id="ownership">Keep user state unprivileged</h2>
         <p>Run <code>heimdall init</code>, <code>heimdall run</code>, and <code>heimdall logs</code> as the invoking user. Configuration, JSONL events, captures, and TLS CA material are user-owned. Root is used only by the hidden session setup worker.</p>

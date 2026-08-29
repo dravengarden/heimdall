@@ -70,6 +70,10 @@ acceptance path are documented and tested.
   SOCKS-aware TCP clients, with explicit selection, shared route/direct/reject
   policy, metadata-only JSONL, no system proxy mutation, and native acceptance.
   Official macOS packages and transparent scope remain unavailable.
+- A non-publishable native macOS package-mechanics gate covering arm64 Mach-O
+  hygiene, macOS 11 deployment, normalized archive metadata, checksum,
+  install, simulated upgrade, rollback, and uninstall. The official builder
+  separately requires Developer ID, notarization, and Gatekeeper acceptance.
 - A real-eBPF NixOS acceptance matrix on the current and Linux 6.6 LTS kernels,
   covering dual-stack TCP/UDP, QUIC, common CLI/runtime clients, lifecycle
   behavior, and both TLS paths.
@@ -271,8 +275,11 @@ remain deliberately separate:
   cooperative metadata evidence, and never changes system-wide settings or
   claims transparent UDP, fake DNS, QUIC, capture, TLS inspection, strict
   command scope, or fail-closed coverage.
-- Publish official Apple-silicon macOS artifacts only after release packaging,
-  checksum, install/upgrade/rollback, and fresh-machine acceptance are present.
+- Keep the implemented package-mechanics and fail-closed signing/notarization
+  pipeline green. Publish the first official Apple-silicon artifact only after
+  Developer ID/notary credentials are configured and that version passes a
+  fresh-download signature, Gatekeeper, install, upgrade, rollback, uninstall,
+  and explicit-run acceptance.
 - Add an optional signed companion and `NETransparentProxyProvider` system
   extension for transparent TCP/UDP. Keep `NEAppProxyProvider` limited to a
   future managed per-app deployment rather than treating it as a cgroup
@@ -288,10 +295,12 @@ remain deliberately separate:
   JSONL integrity, install/approval, upgrade, rollback, uninstall, and cleanup.
 
 Acceptance target: both paths report separate machine-readable capabilities;
-the explicit source backend remains native-gated; the signed transparent path
-passes its full matrix in [docs/design/macos-backend.md](docs/design/macos-backend.md);
-and no package or release note claims more macOS coverage than its artifacts
-and native evidence establish.
+the explicit source backend remains native-gated; an official CLI package is
+claimed only after a signed/notarized versioned asset passes fresh-download
+acceptance; the signed transparent path passes its full matrix in
+[docs/design/macos-backend.md](docs/design/macos-backend.md); and no package or
+release note claims more macOS coverage than its artifacts and native evidence
+establish.
 
 ## Deferred product boundaries
 

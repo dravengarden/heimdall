@@ -119,7 +119,10 @@ the data plane.
 Linux cgroup v2 plus eBPF is the complete transparent backend and the only
 backend shipped in official packages. Apple-silicon macOS has a source-built
 explicit backend with native acceptance; the transparent architecture and
-official macOS packages remain in development. Its two paths have separate
+first versioned official macOS package remain in development. Native package
+mechanics cover Mach-O hygiene, checksum, install, upgrade, rollback, and
+uninstall, while publication separately requires Developer ID, notarization,
+Gatekeeper, and fresh-download acceptance. Its two paths have separate
 capability contracts:
 
 - `macos-explicit` is an opt-in CLI-only compatibility path for cooperative
@@ -144,8 +147,8 @@ operation disables the provider and no helper survives the last run. This path
 may not claim Linux-equivalent descendant scope, UDP, DNS, QUIC, or relay TLS
 until each platform-specific acceptance target passes. Runtime TLS is
 unavailable on macOS. Official macOS release artifacts remain unavailable
-until their own packaging, install, upgrade, rollback, and clean-machine gates
-pass. See
+until a versioned signed/notarized asset passes fresh-download install,
+upgrade, rollback, uninstall, and explicit-run acceptance. See
 [design/macos-backend.md](design/macos-backend.md).
 
 ## Acceptance rule

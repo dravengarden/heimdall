@@ -5,11 +5,11 @@
 - [architecture.md](architecture.md) — foreground CLI/setup-worker boundary, shared outbound relay transport, and backend-owned data path
 - [design/daemonless-runtime.md](design/daemonless-runtime.md) — implemented foreground per-run path for proxying and both TLS modes
 - [design/agent-event-log.md](design/agent-event-log.md) — portable JSONL owner and offline CLI, events, content-addressed payload blobs, run manifests, rotation, and retention
-- [design/macos-backend.md](design/macos-backend.md) — native-accepted Apple-silicon cooperative TCP source backend, official packaging boundary, and future signed transparent-provider contract
+- [design/macos-backend.md](design/macos-backend.md) — native-accepted Apple-silicon cooperative TCP source backend, native package/signing/notarization boundary, and future signed transparent-provider contract
 - [config.md](config.md) — the strict TOML/YAML/JSON configuration
 - [install.md](install.md) — native, npm, PyPI, and Cargo Linux releases, artifact hygiene, compatibility, checksum verification, setup authorization, upgrade, and rollback
-- [runbook.md](runbook.md) — build, Darwin all-targets and native Apple-silicon explicit gates, x86_64 NixOS/Ubuntu/Debian functional and performance VM gates, native-aarch64 acceptance, agent JSON contract, lifecycle, and troubleshooting
-- [releasing.md](releasing.md) — curated changelog, artifact hygiene and native-ARM claims, local release assets, registry OIDC publication, and verification standard
+- [runbook.md](runbook.md) — build, Darwin all-targets plus native Apple-silicon explicit/package gates, x86_64 NixOS/Ubuntu/Debian functional and performance VM gates, native-aarch64 acceptance, agent JSON contract, lifecycle, and troubleshooting
+- [releasing.md](releasing.md) — curated changelog, Linux/macOS artifact hygiene, Developer ID/notarization and native-ARM claims, local release assets, registry OIDC publication, and verification standard
 
 Agent workflows live in [`../skills/heimdall/`](../skills/heimdall/). The
 event schema map is
