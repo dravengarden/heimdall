@@ -1,0 +1,418 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A10000000000000000000001 /* HeimdallCompanionApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* HeimdallCompanionApp.swift */; };
+		A10000000000000000000002 /* SystemExtensionPrototype.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* SystemExtensionPrototype.swift */; };
+		A10000000000000000000003 /* TransparentProxyProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* TransparentProxyProvider.swift */; };
+		A10000000000000000000004 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* main.swift */; };
+		A10000000000000000000005 /* SystemExtensions.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000009 /* SystemExtensions.framework */; };
+		A10000000000000000000006 /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000010 /* NetworkExtension.framework */; };
+		A10000000000000000000007 /* io.github.dravengarden.heimdall.transparent-proxy.systemextension in Embed System Extensions */ = {isa = PBXBuildFile; fileRef = A20000000000000000000012 /* io.github.dravengarden.heimdall.transparent-proxy.systemextension */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A70000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A60000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A50000000000000000000002;
+			remoteInfo = HeimdallTransparentProxy;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		A40000000000000000000004 /* Embed System Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(SYSTEM_EXTENSIONS_FOLDER_PATH)";
+			dstSubfolderSpec = 16;
+			files = (
+				A10000000000000000000007 /* io.github.dravengarden.heimdall.transparent-proxy.systemextension in Embed System Extensions */,
+			);
+			name = "Embed System Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		A20000000000000000000001 /* HeimdallCompanionApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeimdallCompanionApp.swift; sourceTree = "<group>"; };
+		A20000000000000000000002 /* SystemExtensionPrototype.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemExtensionPrototype.swift; sourceTree = "<group>"; };
+		A20000000000000000000003 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A20000000000000000000004 /* HeimdallCompanion.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HeimdallCompanion.entitlements; sourceTree = "<group>"; };
+		A20000000000000000000005 /* TransparentProxyProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransparentProxyProvider.swift; sourceTree = "<group>"; };
+		A20000000000000000000006 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		A20000000000000000000007 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A20000000000000000000008 /* HeimdallTransparentProxy.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HeimdallTransparentProxy.entitlements; sourceTree = "<group>"; };
+		A20000000000000000000009 /* SystemExtensions.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SystemExtensions.framework; path = System/Library/Frameworks/SystemExtensions.framework; sourceTree = SDKROOT; };
+		A20000000000000000000010 /* NetworkExtension.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NetworkExtension.framework; path = System/Library/Frameworks/NetworkExtension.framework; sourceTree = SDKROOT; };
+		A20000000000000000000011 /* HeimdallCompanion.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HeimdallCompanion.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A20000000000000000000012 /* io.github.dravengarden.heimdall.transparent-proxy.systemextension */ = {isa = PBXFileReference; explicitFileType = "wrapper.system-extension"; includeInIndex = 0; path = "io.github.dravengarden.heimdall.transparent-proxy.systemextension"; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A40000000000000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000005 /* SystemExtensions.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A40000000000000000000006 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000006 /* NetworkExtension.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A30000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				A30000000000000000000002 /* App */,
+				A30000000000000000000003 /* Extension */,
+				A30000000000000000000004 /* Frameworks */,
+				A30000000000000000000005 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A30000000000000000000002 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000001 /* HeimdallCompanionApp.swift */,
+				A20000000000000000000002 /* SystemExtensionPrototype.swift */,
+				A20000000000000000000003 /* Info.plist */,
+				A20000000000000000000004 /* HeimdallCompanion.entitlements */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		A30000000000000000000003 /* Extension */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000005 /* TransparentProxyProvider.swift */,
+				A20000000000000000000006 /* main.swift */,
+				A20000000000000000000007 /* Info.plist */,
+				A20000000000000000000008 /* HeimdallTransparentProxy.entitlements */,
+			);
+			path = Extension;
+			sourceTree = "<group>";
+		};
+		A30000000000000000000004 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000009 /* SystemExtensions.framework */,
+				A20000000000000000000010 /* NetworkExtension.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		A30000000000000000000005 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000011 /* HeimdallCompanion.app */,
+				A20000000000000000000012 /* io.github.dravengarden.heimdall.transparent-proxy.systemextension */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A50000000000000000000001 /* HeimdallCompanion */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A90000000000000000000002 /* Build configuration list for PBXNativeTarget "HeimdallCompanion" */;
+			buildPhases = (
+				A40000000000000000000001 /* Sources */,
+				A40000000000000000000002 /* Frameworks */,
+				A40000000000000000000003 /* Resources */,
+				A40000000000000000000004 /* Embed System Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A71000000000000000000001 /* PBXTargetDependency */,
+			);
+			name = HeimdallCompanion;
+			packageProductDependencies = (
+			);
+			productName = HeimdallCompanion;
+			productReference = A20000000000000000000011 /* HeimdallCompanion.app */;
+			productType = "com.apple.product-type.application";
+		};
+		A50000000000000000000002 /* HeimdallTransparentProxy */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A90000000000000000000003 /* Build configuration list for PBXNativeTarget "HeimdallTransparentProxy" */;
+			buildPhases = (
+				A40000000000000000000005 /* Sources */,
+				A40000000000000000000006 /* Frameworks */,
+				A40000000000000000000007 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = HeimdallTransparentProxy;
+			packageProductDependencies = (
+			);
+			productName = HeimdallTransparentProxy;
+			productReference = A20000000000000000000012 /* io.github.dravengarden.heimdall.transparent-proxy.systemextension */;
+			productType = "com.apple.product-type.system-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A60000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2660;
+				LastUpgradeCheck = 2660;
+				TargetAttributes = {
+					A50000000000000000000001 = {
+						CreatedOnToolsVersion = 26.0;
+					};
+					A50000000000000000000002 = {
+						CreatedOnToolsVersion = 26.0;
+					};
+				};
+			};
+			buildConfigurationList = A90000000000000000000001 /* Build configuration list for PBXProject "HeimdallCompanion" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A30000000000000000000001;
+			packageReferences = (
+			);
+			productRefGroup = A30000000000000000000005 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A50000000000000000000001 /* HeimdallCompanion */,
+				A50000000000000000000002 /* HeimdallTransparentProxy */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A40000000000000000000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A40000000000000000000007 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A40000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000001 /* HeimdallCompanionApp.swift in Sources */,
+				A10000000000000000000002 /* SystemExtensionPrototype.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A40000000000000000000005 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000003 /* TransparentProxyProvider.swift in Sources */,
+				A10000000000000000000004 /* main.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A71000000000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A50000000000000000000002 /* HeimdallTransparentProxy */;
+			targetProxy = A70000000000000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		A80000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CLANG_ENABLE_MODULES = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				MACOSX_DEPLOYMENT_TARGET = 11.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		A80000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CLANG_ENABLE_MODULES = YES;
+				COPY_PHASE_STRIP = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				MACOSX_DEPLOYMENT_TARGET = 11.0;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		A80000000000000000000003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = App/HeimdallCompanion.entitlements;
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 0.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.dravengarden.heimdall.companion;
+				PRODUCT_NAME = HeimdallCompanion;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+			};
+			name = Debug;
+		};
+		A80000000000000000000004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = App/HeimdallCompanion.entitlements;
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 0.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.dravengarden.heimdall.companion;
+				PRODUCT_NAME = HeimdallCompanion;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+			};
+			name = Release;
+		};
+		A80000000000000000000005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = Extension/HeimdallTransparentProxy.entitlements;
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Extension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MARKETING_VERSION = 0.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "io.github.dravengarden.heimdall.transparent-proxy";
+				PRODUCT_NAME = "io.github.dravengarden.heimdall.transparent-proxy";
+				REGISTER_APP_GROUPS = NO;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+			};
+			name = Debug;
+		};
+		A80000000000000000000006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = Extension/HeimdallTransparentProxy.entitlements;
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Extension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MARKETING_VERSION = 0.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "io.github.dravengarden.heimdall.transparent-proxy";
+				PRODUCT_NAME = "io.github.dravengarden.heimdall.transparent-proxy";
+				REGISTER_APP_GROUPS = NO;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A90000000000000000000001 /* Build configuration list for PBXProject "HeimdallCompanion" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A80000000000000000000001 /* Debug */,
+				A80000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A90000000000000000000002 /* Build configuration list for PBXNativeTarget "HeimdallCompanion" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A80000000000000000000003 /* Debug */,
+				A80000000000000000000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A90000000000000000000003 /* Build configuration list for PBXNativeTarget "HeimdallTransparentProxy" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A80000000000000000000005 /* Debug */,
+				A80000000000000000000006 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = A60000000000000000000001 /* Project object */;
+}

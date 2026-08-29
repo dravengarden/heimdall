@@ -23,7 +23,7 @@ material, and operational guidance.
 - [`design/daemonless-runtime.md`](design/daemonless-runtime.md) — Foreground per-run architecture and implementation status for session-owned data-plane and kernel resources
 - [`design/agent-event-log.md`](design/agent-event-log.md) — Daemonless event/run/run-summary/flow-summary schemas, DNS/policy/TLS evidence, content-addressed blobs, rotation, orphan recovery, and CLI
 - [`install.md`](install.md) — Versioned native, npm, PyPI, and Cargo `heimdall-egress` Linux installation, narrow setup authorization, upgrade, and one-level rollback
-- [`runbook.md`](runbook.md) — Build, Darwin all-targets, native Apple-silicon explicit and package checks, resolver/userns and relay-CA preflight, x86_64 NixOS/Ubuntu/Debian lifecycle and fake DNS, TLS, real-eBPF and performance acceptance, host-guarded aarch64 acceptance, native/npm/PyPI/Cargo package gates, operation, and diagnosis
+- [`runbook.md`](runbook.md) — Build, Darwin all-targets, native Apple-silicon explicit, unsigned companion, and package checks, resolver/userns and relay-CA preflight, x86_64 NixOS/Ubuntu/Debian lifecycle and fake DNS, TLS, real-eBPF and performance acceptance, host-guarded aarch64 acceptance, native/npm/PyPI/Cargo package gates, operation, and diagnosis
 - [`releasing.md`](releasing.md) — Curated changelog, Linux and Apple-silicon artifact hygiene, native ARM claim boundary, Developer ID/notarization, local GitHub assets, release-triggered registry publication, and post-publication verification
 
 ## Documents
@@ -43,7 +43,7 @@ material, and operational guidance.
 
 - [`design/daemonless-runtime.md`](design/daemonless-runtime.md) — Implemented foreground replacement for all decrypt modes, including bounded pre-exec discovery of active and system-loader OpenSSL images
 - [`design/agent-event-log.md`](design/agent-event-log.md) — Portable evidence owner and offline event/run/run-summary/flow-summary CLI contracts with Linux cgroup and cooperative macOS source identities, lifecycle, DNS/policy/TLS observations, provenance-linked HTTP/1 headers, payload allowlists/redaction, content-addressed blobs, and orphan recovery
-- [`design/macos-backend.md`](design/macos-backend.md) — Implemented native-accepted Apple-silicon cooperative TCP source backend, package/signing/notarization boundary, and optional signed `NETransparentProxyProvider` architecture, process attribution, lifecycle, capabilities, and acceptance matrix
-- [`design/macos-control-protocol.md`](design/macos-control-protocol.md) — Internal versioned macOS control framing, HMAC, replay protection, run registration, owner-EOF lifecycle, fixed Swift vector, and unresolved native attribution gate
+- [`design/macos-backend.md`](design/macos-backend.md) — Implemented native-accepted Apple-silicon cooperative TCP source backend, unsigned companion/provider build skeleton, package/signing/notarization boundary, and optional signed `NETransparentProxyProvider` architecture, process attribution, lifecycle, capabilities, and acceptance matrix
+- [`design/macos-control-protocol.md`](design/macos-control-protocol.md) — Internal versioned Rust/Swift macOS control framing, HMAC, replay protection, run registration, owner-EOF lifecycle, fixed cross-language vector, and unresolved native attribution gate
 - [`../skills/heimdall/references/commands.md`](../skills/heimdall/references/commands.md) — Agent operating and diagnosis workflow, including daemonless setup, scoped fake-DNS resolver fallback, TLS boundaries, and log lifecycle
 - [`../skills/heimdall/references/events.md`](../skills/heimdall/references/events.md) — Agent-facing schema map, bounded provenance joins, and non-disclosing blob verification recipes

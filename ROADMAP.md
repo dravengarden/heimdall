@@ -280,13 +280,16 @@ remain deliberately separate:
   Developer ID/notary credentials are configured and that version passes a
   fresh-download signature, Gatekeeper, install, upgrade, rollback, uninstall,
   and explicit-run acceptance.
-- Add an optional signed companion and `NETransparentProxyProvider` system
-  extension for transparent TCP/UDP. Keep `NEAppProxyProvider` limited to a
-  future managed per-app deployment rather than treating it as a cgroup
-  equivalent.
+- Keep the implemented Swift control codec and compile-only containing
+  app/`NETransparentProxyProvider` system-extension skeleton green through
+  `just test-macos-companion-native`. Promote it to an optional signed companion
+  only after profile, entitlement, install, activation, and approval gates are
+  available. Keep `NEAppProxyProvider` limited to a future managed per-app
+  deployment rather than treating it as a cgroup equivalent.
 - Keep the implemented internal `heimdall.macos.control/v1` HMAC, replay,
-  concurrent-run, and owner-EOF lifecycle contract green. It is not yet wired
-  to a provider and does not make the transparent backend selectable.
+  concurrent-run, and owner-EOF lifecycle contract plus its native Swift fixed
+  vector green. It is not yet wired to the provider and does not make the
+  transparent backend selectable.
 - Treat optional `sourceAppAuditToken` and all other flow metadata as a signed
   native evidence question. Do not claim process scope until tests can safely
   distinguish attributed, unrelated, missing, and ambiguous identities; if no

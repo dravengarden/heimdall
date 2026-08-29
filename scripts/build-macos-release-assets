@@ -121,6 +121,7 @@ cargo_root=${CARGO_HOME:-${HOME}/.cargo}
 export CARGO_ENCODED_RUSTFLAGS="--remap-path-prefix=$repo_root=/source/heimdall${separator}--remap-path-prefix=$cargo_root=/source/cargo"
 export MACOSX_DEPLOYMENT_TARGET=11.0
 unset RUSTFLAGS
+tests/macos/run-companion-acceptance.sh
 cargo test --package heimdall-egress --all-targets --locked --release
 cargo build --package heimdall-egress --locked --release
 

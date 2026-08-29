@@ -18,6 +18,8 @@ grep -Fq "grep -Eq '^Timestamp=.+'" scripts/build-macos-release-assets
 grep -Fq 'notarytool submit' scripts/build-macos-release-assets
 grep -Fq 'notarytool log' scripts/build-macos-release-assets
 grep -Fq 'spctl --assess --type execute' scripts/build-macos-release-assets
+grep -Fq 'tests/macos/run-companion-acceptance.sh' \
+  scripts/build-macos-release-assets
 grep -Fq 'uninstall)' packaging/heimdall-install
 
 work_dir=$(mktemp -d)

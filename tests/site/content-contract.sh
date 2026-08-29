@@ -193,6 +193,19 @@ grep -Fq '"provider_wired": false' heimdall/src/cli/agent_macos.rs || {
   exit 1
 }
 
+for boundary in \
+  '"activation_enabled": false' \
+  '"network_configuration_enabled": false' \
+  '"installable": false'; do
+  grep -Fq "$boundary" heimdall/src/cli/agent_macos.rs || {
+    printf 'the Darwin agent overstates companion readiness: %s\n' \
+      "$boundary" >&2
+    exit 1
+  }
+done
+
+tests/macos/check-companion-contract.sh
+
 grep -Fq '"strict_command_scope_proven": false' \
   heimdall/src/cli/agent_macos.rs || {
   printf 'the Darwin agent claims unproven transparent command scope\n' >&2
@@ -253,6 +266,11 @@ for macos_runbook in docs/runbook.md site/docs/runbook.html; do
   }
   grep -Fq 'just test-macos-native' "$macos_runbook" || {
     printf '%s does not expose the native explicit acceptance gate\n' \
+      "$macos_runbook" >&2
+    exit 1
+  }
+  grep -Fq 'just test-macos-companion-native' "$macos_runbook" || {
+    printf '%s does not expose the unsigned companion source gate\n' \
       "$macos_runbook" >&2
     exit 1
   }

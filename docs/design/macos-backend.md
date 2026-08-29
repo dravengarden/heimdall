@@ -136,6 +136,36 @@ to a companion or provider. `heimdall run` cannot select this path, and
 `heimdall agent` reports `provider_wired=false` and
 `attribution.status=native_evidence_required`.
 
+## Compile-only companion prototype
+
+The repository now contains the first non-routing Apple implementation slice:
+
+- a Swift 6 `HeimdallMacControl` package that independently reproduces the
+  Rust HMAC vector and strict envelope behavior;
+- a macOS 11+ arm64 containing app with the system-extension install
+  entitlement source and an `OSSystemExtensionRequest` factory;
+- an embedded `NETransparentProxyProvider` system-extension target using
+  Apple's `NetworkExtension` / `NEProviderClasses` bundle shape and the direct
+  distribution `app-proxy-provider-systemextension` entitlement source; and
+- `just test-macos-companion-native`, which performs Swift tests plus an
+  unsigned Xcode Release build and verifies the `.app` / `.systemextension`
+  product shape.
+
+This slice is deliberately impossible to mistake for a working transparent
+backend. The app never submits its activation request. No
+`NETransparentProxyManager` is created and no preferences are saved. Provider
+startup returns a stable prototype error. If a flow reaches the provider
+despite that guard, the provider accepts and closes both directions instead of
+returning `false` to the normal route. The build gate does not sign, install,
+activate, approve, launch, or configure the extension.
+
+The checked-in entitlement values document the intended direct-distribution
+shape; they do not prove that Apple has authorized a profile or that an
+installed signature contains those rights. `heimdall agent` therefore reports
+the source prototype separately while keeping `signed=false`,
+`installable=false`, `activation_enabled=false`,
+`network_configuration_enabled=false`, and `provider_wired=false`.
+
 ## Command-scope contract
 
 Network rules describe endpoints and protocol, not a process tree. The
@@ -273,15 +303,21 @@ The explicit source backend and its platform boundary are implemented:
   warning-free notarization, and Gatekeeper assessment before returning an
   artifact to the Linux release transaction; and
 - the internal `heimdall.macos.control/v1` protocol has strict framed JSON,
-  HMAC-SHA256 authentication, direction and replay protection, a fixed Swift
-  conformance vector, validated per-run registration, concurrent-run registry
-  transitions, and owner-EOF cleanup tests. It is deliberately not wired to a
-  CLI backend or provider.
+  HMAC-SHA256 authentication, direction and replay protection, validated
+  per-run registration, concurrent-run registry transitions, and owner-EOF
+  cleanup tests. The native Swift codec reproduces its fixed vector and strict
+  framing; and
+- the compile-only Xcode prototype produces one containing app with one
+  embedded arm64 macOS 11+ system extension. Activation and Network Extension
+  configuration are absent, provider startup fails closed, and unexpected
+  flows are closed rather than returned to the normal route. It is deliberately
+  not wired to a CLI backend or provider transport.
 
 No versioned official macOS archive or registry package has been published yet;
 the package claim changes only after the signed/notarized path and a fresh
 download acceptance complete for that release. The companion app, system
-extension, transparent TCP/UDP, capture, and TLS paths remain unavailable.
+extension, transparent TCP/UDP, capture, and TLS paths remain unavailable for
+installation or use; only their unsigned source/build prototype exists.
 
 ## Implementation sequence
 
@@ -290,9 +326,10 @@ extension, transparent TCP/UDP, capture, and TLS paths remain unavailable.
 2. Keep the implemented native package-mechanics gate green, then complete one
    Developer ID-signed/notarized versioned publication and fresh-download
    acceptance before declaring the archive available.
-3. Keep the implemented versioned authenticated protocol and lifecycle
-   simulator green; add the signed containing app, system extension, and
-   minimal session helper without exposing a selectable backend.
+3. Keep the implemented Rust/Swift authenticated protocol and compile-only
+   provider skeleton green; promote it to a signed containing app and system
+   extension, then add the minimal session helper without exposing a selectable
+   backend.
 4. Measure optional flow metadata in the signed provider and establish a safe
    process-attribution discriminator before accepting transparent TCP or
    adding UDP. If that gate fails, stop this backend design rather than
@@ -311,6 +348,13 @@ upstream, domain preservation, route evidence, JSONL verification, per-run
 listener cleanup, normal and non-zero child exit propagation, and refusal to
 execute when backend selection is omitted. It does not claim packaging or any
 transparent capability.
+
+`just test-macos-companion-native` is a separate unsigned source gate. It runs
+the Swift codec conformance suite, builds the containing app and embedded
+system extension with code signing disabled, checks both arm64 Mach-O binaries
+and their macOS 11 deployment target, and validates the provider class and
+bundle identifiers. It neither installs nor activates the result and supplies
+no flow metadata, so it is not signed-provider or attribution evidence.
 
 `just test-package-macos` adds a native package-mechanics matrix: pinned release
 tests, the same explicit fixture, private/build-path and Mach-O checks, macOS
@@ -356,6 +400,8 @@ transparent capability unavailable.
 - [`NEFlowMetaData`](https://developer.apple.com/documentation/networkextension/neflowmetadata)
 - [`NEFlowMetaData.sourceAppAuditToken`](https://developer.apple.com/documentation/networkextension/neflowmetadata/sourceappaudittoken)
 - [TN3134: Network Extension provider deployment](https://developer.apple.com/documentation/technotes/tn3134-network-extension-provider-deployment)
+- [Installing system extensions and drivers](https://developer.apple.com/documentation/systemextensions/installing-system-extensions-and-drivers)
+- [System Extensions](https://developer.apple.com/documentation/systemextensions)
 - [Notarizing macOS software before distribution](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)
 - [Customizing the notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow)
 - [Creating distribution-signed code for macOS](https://developer.apple.com/documentation/xcode/creating-distribution-signed-code-for-the-mac)

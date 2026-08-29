@@ -136,12 +136,15 @@ capability contracts:
   incompatible config fails before child execution.
 - `macos-transparent` requires an optional signed companion containing an
   `NETransparentProxyProvider` system extension. The internal authenticated
-  run-registration protocol is implemented but unwired. Optional flow metadata
-  must pass signed native tests that distinguish registered, unrelated,
-  missing, and ambiguous identity before this path may attribute a flow or
-  release a command. If that discriminator is not safe, the backend does not
-  ship. `NEAppProxyProvider` is reserved for a possible managed per-app
-  deployment.
+  run-registration protocol has Rust and Swift implementations but remains
+  unwired. An unsigned source prototype builds the app/system-extension bundle
+  shape, refuses provider startup, closes unexpected flows, and cannot submit
+  activation or save Network Extension configuration. It is not installable or
+  routing support. Optional flow metadata must pass signed native tests that
+  distinguish registered, unrelated, missing, and ambiguous identity before
+  this path may attribute a flow or release a command. If that discriminator
+  is not safe, the backend does not ship. `NEAppProxyProvider` is reserved for
+  a possible managed per-app deployment.
 
 The operating system may run the future transparent provider while a run is active,
 and a run-owned helper handles registration and owner-death cleanup. Neither

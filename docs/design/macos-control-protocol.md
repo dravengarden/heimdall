@@ -1,7 +1,8 @@
 # macOS control protocol
 
-Status: **internal v1 framing and lifecycle simulation are implemented; no
-companion, system extension, or transparent backend uses this protocol yet**.
+Status: **internal Rust v1 framing/lifecycle and the native Swift codec are
+implemented; the compile-only companion, system extension, and transparent
+backend do not use this protocol yet**.
 
 `heimdall.macos.control/v1` is the narrow control boundary between a future
 foreground run session and the signed macOS companion. It registers one run,
@@ -11,8 +12,11 @@ network data plane, public daemon API, or transparent-support claim.
 
 ## Transport and authorization boundary
 
-The protocol is transport-neutral so the Rust CLI and future Swift companion
-can share exact frames. A production transport must provide all of these:
+The protocol is transport-neutral so the Rust CLI and Swift companion can
+share exact frames. The Swift package under `macos/` already reproduces the
+fixed vector, frame bounds, strict envelope keys, canonical base64url, HMAC,
+direction, session, and sequence behavior. It is a codec only. A production
+transport must still provide all of these:
 
 - a private, session-owned channel with a bounded peer and no listening
   machine-wide API;
@@ -115,11 +119,13 @@ run leaves it active; removing a non-final run leaves it active; and only the
 last removal transitions it toward stop. A session may remove only its own run.
 Clean EOF performs the same exact removal as an explicit unregister.
 
-Portable tests cover the fixed vector, schema, frame bounds, authentication,
-tampering, version/direction/session mismatch, replay, invalid registrations,
-duplicate process groups, two concurrent runs, explicit removal, and owner EOF.
-They do not test Apple entitlements, extension approval, provider messaging, or
-flow attribution.
+Portable Rust tests cover the fixed vector, schema, frame bounds,
+authentication, tampering, version/direction/session mismatch, replay, invalid
+registrations, duplicate process groups, two concurrent runs, explicit
+removal, and owner EOF. Native Swift tests independently reproduce the fixed
+request and cover strict envelope keys, authentication, tampering, replay,
+UUID version, and key length. Neither suite tests Apple entitlements, extension
+approval, provider messaging, or flow attribution.
 
 ## Attribution gate
 

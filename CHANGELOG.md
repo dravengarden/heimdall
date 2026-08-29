@@ -30,6 +30,16 @@ guide.
   Swift conformance vector, validated run registration, concurrent-run
   lifecycle transitions, and owner-channel EOF cleanup. It remains unwired and
   cannot be selected as a backend.
+- Add a native Swift 6 implementation of that HMAC, strict frame, canonical
+  base64url, direction, session, and sequence contract. Apple-silicon tests
+  reproduce the Rust fixed vector and reject unknown fields, tampering, replay,
+  invalid UUID versions, and invalid key lengths.
+- Add an unsigned, compile-only macOS companion and
+  `NETransparentProxyProvider` system-extension skeleton. Its app never submits
+  activation, its provider refuses startup and closes any unexpected flow, and
+  no Network Extension configuration is created. The native gate validates the
+  arm64 macOS 11 bundle shape without installing, activating, or claiming
+  transparent support.
 - Extract a platform-neutral `RunEvidence` owner for writer/control-socket
   lifetime and finalization, use it from the unchanged Linux foreground path,
   and compile the same JSONL store plus offline `heimdall logs` inspection,
@@ -89,6 +99,8 @@ guide.
   instead of assuming it proves process-group scope. Additive
   `heimdall.agent/v8` fields keep provider wiring and strict command scope
   false until attributed, unrelated, missing, and ambiguous identities pass.
+  The report distinguishes the source prototype from a signed, installable,
+  activation-enabled companion.
 - Extend the release installer and both native archive acceptance paths with
   managed uninstall while preserving unrelated prefix files. macOS installs
   explicitly avoid the Linux-only `__setup-worker` authorization message.

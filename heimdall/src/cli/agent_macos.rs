@@ -233,6 +233,14 @@ fn backend_report(ready: bool) -> Value {
             "provider": "NETransparentProxyProvider",
             "companion_required": true,
             "persistent_daemon_required": false,
+            "companion": {
+                "source_prototype": true,
+                "native_unsigned_build_gate": "just test-macos-companion-native",
+                "signed": false,
+                "installable": false,
+                "activation_enabled": false,
+                "network_configuration_enabled": false,
+            },
             "control": {
                 "contract": crate::macos_control::CONTRACT,
                 "authentication": "hmac-sha256",
@@ -536,6 +544,14 @@ mod tests {
             "heimdall.macos.control/v1"
         );
         assert_eq!(report["backends"][1]["control"]["provider_wired"], false);
+        assert_eq!(
+            report["backends"][1]["companion"]["activation_enabled"],
+            false
+        );
+        assert_eq!(
+            report["backends"][1]["companion"]["network_configuration_enabled"],
+            false
+        );
         assert_eq!(
             report["backends"][1]["attribution"]["status"],
             "native_evidence_required"
