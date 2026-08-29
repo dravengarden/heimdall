@@ -16,12 +16,12 @@ nix develop -c just verify
 nix develop -c just check-macos
 ```
 
-It type-checks only the target-selected CLI for pinned
-`aarch64-apple-darwin`. It proves that shared config/init, `RunEvidence`, the
-JSONL store and offline log CLI, and the unavailable agent contract do not
-compile Linux-only aya/cgroup code. It does not link a macOS app, exercise a
-Network Extension, generate macOS traffic evidence, or establish macOS
-support.
+It type-checks the target-selected CLI and portable unit-test targets for
+pinned `aarch64-apple-darwin`. It proves that shared config/init,
+`RunEvidence`, `relay_transport`, the JSONL store and offline log CLI, and the
+unavailable agent contract do not compile Linux-only aya/cgroup code. It does
+not link a macOS app, start a relay listener, exercise a Network Extension,
+generate macOS traffic evidence, or establish macOS support.
 
 Run the real kernel acceptance after changes to eBPF, cgroups, DNS, relay,
 capture, TLS, setup privilege, or lifecycle behavior:

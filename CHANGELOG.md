@@ -22,6 +22,11 @@ guide.
   and compile the same JSONL store plus offline `heimdall logs` inspection,
   verification, recovery, and retention tools into the Darwin scaffold without
   enabling a macOS execution backend.
+- Extract the platform-neutral `relay_transport` core for one-time outbound
+  credential resolution, SOCKS5 TCP CONNECT, UDP ASSOCIATE, destination
+  encoding, frame validation, and bounded setup timeouts. Linux now uses that
+  shared implementation, and the Darwin all-targets check compiles its protocol
+  tests without enabling a macOS listener or execution backend.
 - Add a strict offline `heimdall.logs.flow/v1` contract and `heimdall logs
   flow` command that explain one flow's route, transport result, bounded
   capture by direction and boundary, observed plaintext, TLS/HTTP evidence,

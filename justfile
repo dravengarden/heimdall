@@ -3,11 +3,12 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 toolchain-check:
     required="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].rust_version')"; actual="$(rustc --version --verbose | awk '/^release:/ { print $2 }')"; test "$required" = "$actual" || { echo "rust-version $required does not match pinned stable rustc $actual" >&2; exit 1; }
 
-# Type-check the target-selected CLI without linking against a macOS SDK. This
-# proves Linux-only dependencies do not leak into the Darwin entry point; a
-# signed Network Extension still requires separate native acceptance.
+# Type-check the target-selected CLI and its portable protocol tests without
+# linking against a macOS SDK. This proves Linux-only dependencies do not leak
+# into the Darwin entry point; a signed Network Extension still requires
+# separate native acceptance.
 check-macos:
-    cargo check --package heimdall-egress --bin heimdall --target aarch64-apple-darwin --locked
+    cargo check --package heimdall-egress --all-targets --target aarch64-apple-darwin --locked
 
 fmt:
     cargo fmt --all

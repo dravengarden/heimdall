@@ -65,6 +65,11 @@ grep -A6 '^check-macos:' justfile | grep -Fq 'aarch64-apple-darwin' || {
   exit 1
 }
 
+grep -A1 '^check-macos:' justfile | grep -Fq -- '--all-targets' || {
+  printf 'check-macos does not type-check portable protocol tests\n' >&2
+  exit 1
+}
+
 grep '^verify:' justfile | grep -Fq 'check-macos' || {
   printf 'verify does not include the Darwin compile boundary\n' >&2
   exit 1
@@ -74,6 +79,22 @@ grep -Fq 'mod event_log;' heimdall/src/main.rs || {
   printf 'the event store is not owned by the shared target root\n' >&2
   exit 1
 }
+
+grep -Fq 'mod relay_transport;' heimdall/src/main.rs || {
+  printf 'the outbound relay transport is not owned by the shared target root\n' >&2
+  exit 1
+}
+
+grep -Fq 'pub(crate) async fn open_socks5_udp_association' \
+  heimdall/src/relay_transport.rs || {
+  printf 'the shared relay transport does not own SOCKS5 UDP setup\n' >&2
+  exit 1
+}
+
+if grep -Fq 'async fn socks5_connect' heimdall/src/main_linux.rs; then
+  printf 'the Linux root still owns the SOCKS5 CONNECT implementation\n' >&2
+  exit 1
+fi
 
 grep -Fq 'Logs(crate::cli::logs::LogsCmd)' heimdall/src/main_macos.rs || {
   printf 'the Darwin scaffold does not expose portable log inspection\n' >&2
@@ -99,6 +120,23 @@ for macos_runbook in docs/runbook.md site/docs/runbook.html; do
   grep -Fq 'JSONL' "$macos_runbook" || {
     printf '%s does not document the portable evidence boundary\n' \
       "$macos_runbook" >&2
+    exit 1
+  }
+  grep -Fq 'relay_transport' "$macos_runbook" || {
+    printf '%s does not document the portable transport boundary\n' \
+      "$macos_runbook" >&2
+    exit 1
+  }
+done
+
+for transport_page in \
+  docs/architecture.md \
+  docs/design/macos-backend.md \
+  site/docs/architecture.html \
+  site/docs/macos.html; do
+  grep -Fq 'relay_transport' "$transport_page" || {
+    printf '%s does not document the shared outbound transport boundary\n' \
+      "$transport_page" >&2
     exit 1
   }
 done

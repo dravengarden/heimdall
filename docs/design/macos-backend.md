@@ -164,12 +164,13 @@ weaken signature validation, or install a permanent host-wide proxy.
 
 ## Current implementation status
 
-The compile boundary and first evidence-ownership extraction are implemented:
+The compile boundary, evidence ownership, and outbound transport extraction are
+implemented:
 
 - the crate selects separate Linux and Darwin roots while preserving the
   available Linux implementation unchanged;
-- Linux-only aya, cgroup, relay, capture, and TLS dependencies are excluded
-  from the Darwin target;
+- Linux-only aya, cgroup interception, original-destination correlation,
+  capture, and TLS dependencies are excluded from the Darwin target;
 - Darwin shares strict `init`, config schema, validation, and policy
   explanation behavior;
 - one platform-neutral `RunEvidence` value owns the JSONL writer, rotation/event
@@ -178,23 +179,30 @@ The compile boundary and first evidence-ownership extraction are implemented:
 - the Darwin scaffold compiles the same event store and exposes `logs` schema,
   list, path, summary, flow, query, tail, rotate, verify, recovery, and retention
   commands for existing run data;
+- one platform-neutral `relay_transport` module resolves outbound credentials
+  and implements SOCKS5 TCP CONNECT, UDP ASSOCIATE, destination encoding,
+  response validation, and setup timeouts; the available Linux relay now uses
+  that implementation while retaining its Linux-only listeners and flow
+  correlation;
 - `heimdall agent` validates that shared config but reports both backends as
   unavailable, leaves `execution` and `actions.execute_prefix` null, exposes
   argv-safe offline log actions, and exits 1;
 - `heimdall run` exits 1 without executing the supplied command; and
-- `just check-macos` type-checks the CLI for pinned
-  `aarch64-apple-darwin` as part of `just verify`.
+- `just check-macos` type-checks the CLI and portable protocol test targets for
+  pinned `aarch64-apple-darwin` as part of `just verify`.
 
-This is build scaffolding, not a macOS package or transport implementation.
-The Darwin log commands can inspect a compatible existing store, but no macOS
-backend creates traffic events yet. No explicit proxy, companion app, system
-extension, TCP/UDP forwarding, capture, or TLS path is available.
+This remains build scaffolding, not a macOS package, listener, or execution
+backend. The shared outbound protocol is compiled but never selected by the
+Darwin `run` command. Darwin log commands can inspect a compatible existing
+store, but no macOS backend creates traffic events yet. No explicit proxy,
+companion app, system extension, TCP/UDP forwarding, capture, or TLS path is
+available.
 
 ## Implementation sequence
 
 1. Keep the completed target/dependency split, shared evidence owner, offline
-   log tooling, and unavailable machine contract covered while extracting the
-   platform-neutral relay transport.
+   log tooling, outbound relay transport, and unavailable machine contract
+   covered.
 2. Implement and accept `macos-explicit` as an opt-in reduced mode.
 3. Add the signed containing app, system extension, minimal session helper, and
    versioned authenticated registration protocol.

@@ -255,9 +255,11 @@ available in a release. The two paths remain deliberately separate:
   additive unavailable-backend `heimdall.agent/v8` evidence, Linux-only
   dependency isolation, and the pinned `aarch64-apple-darwin` type-check in
   `just verify`.
-- Keep the shared `RunEvidence` writer/control/finalization owner used by Linux
-  while continuing to extract platform-neutral relay transport from the aya/eBPF
-  root without changing the available Linux binary or event schema.
+- Keep the shared `RunEvidence` writer/control/finalization owner and
+  `relay_transport` SOCKS5 TCP/UDP protocol used by Linux green. Original
+  destination correlation, listeners, session attribution, capture, and TLS
+  remain backend-owned; the extraction does not change the available Linux
+  binary or event schema.
 - Add an opt-in `macos-explicit` compatibility backend for cooperative proxy
   clients. It must never change system-wide settings or claim transparent UDP,
   fake DNS, QUIC, runtime TLS, strict command scope, or fail-closed coverage.

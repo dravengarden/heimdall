@@ -19,11 +19,12 @@ settings or an implicit `proxychains` invocation. The in-development
 `macos-explicit` and `macos-transparent` backends remain unavailable until
 `heimdall agent` reports a concrete backend and its accepted scope, TCP, UDP,
 DNS, QUIC, and TLS boundaries.
-The development Darwin scaffold permits shared config and offline JSONL
-inspection, but its agent report has `ready = false`, `execution = null`, both
-backend entries unavailable, and no execution prefix. Its `run` command
-refuses before exec. `actions.logs_*` may inspect or verify a compatible
-existing store; their presence is not macOS traffic-capture evidence.
+The development Darwin scaffold compiles shared outbound SOCKS5 transport and
+permits shared config plus offline JSONL inspection, but its agent report has
+`ready = false`, `execution = null`, both backend entries unavailable, and no
+execution prefix. Its `run` command refuses before exec. No relay listener is
+started. `actions.logs_*` may inspect or verify a compatible existing store;
+their presence is not macOS traffic-capture evidence.
 
 ## Inspect without mutation
 

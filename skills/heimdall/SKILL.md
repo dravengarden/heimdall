@@ -23,12 +23,14 @@ released `heimdall agent` document names the selected backend and proves its
 capabilities. See
 [`../../docs/design/macos-backend.md`](../../docs/design/macos-backend.md).
 
-An in-development Darwin build may expose `init`, `config`, `agent`, and
-offline `logs` commands for portable inspection. Require `ready = false`,
-`execution = null`, both `backends[].available = false`, and
+An in-development Darwin build may compile shared outbound SOCKS5 transport and
+expose `init`, `config`, `agent`, and offline `logs` commands for portable
+inspection. Require `ready = false`, `execution = null`, both
+`backends[].available = false`, and
 `actions.execute_prefix = null`. Log action argv may inspect a compatible
-existing JSONL store, but no macOS backend emits traffic evidence. Never run
-its supplied command or treat the cross-target compile gate as native support.
+existing JSONL store, but no listener or macOS backend emits traffic evidence.
+Never run its supplied command or treat the cross-target compile gate as native
+support.
 
 ## Start with the machine contract
 

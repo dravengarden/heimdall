@@ -24,6 +24,13 @@ cgroup, binds kernel-assigned loopback relay and DNS ports, starts the child,
 forwards its exit status, waits for every inherited descendant, and tears down
 the session.
 
+The platform-neutral `relay_transport` module resolves outbound credentials
+once, validates and encodes destinations, and implements bounded SOCKS5 TCP
+CONNECT and UDP ASSOCIATE setup. The Linux root still owns cgroup interception,
+kernel-map correlation, relay listeners, per-socket UDP identity, policy/event
+context, capture, and TLS. Compiling this outbound transport for Darwin does
+not create a macOS listener or execution backend.
+
 The hidden `heimdall __setup-worker` process is the only privileged component
 in the default path. It accepts one `heimdall.setup/v2` request over an
 inherited Unix socket, authenticates the caller and cgroup identity, creates

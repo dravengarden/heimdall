@@ -19,6 +19,14 @@ mod heimdall_config;
     target_os = "macos",
     allow(
         dead_code,
+        reason = "the shared outbound transport compiles before a Darwin backend accepts runs"
+    )
+)]
+mod relay_transport;
+#[cfg_attr(
+    target_os = "macos",
+    allow(
+        dead_code,
         reason = "the shared evidence owner is compiled before a Darwin execution backend uses it"
     )
 )]

@@ -38,12 +38,12 @@ libc = "0.2"
 sha2 = "0.10"
 uuid = { version = "=1.10.0", features = ["serde", "v7"] }
 
+# The outbound relay protocol is shared by Linux and future Darwin backends.
+tokio = { version = "1", features = ["full"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # eBPF userspace management: load programs, attach to cgroups, read/write maps
 aya = "0.14"
-
-# Async runtime
-tokio = { version = "1", features = ["full"] }
 
 # Logging
 tracing = "0.1"
