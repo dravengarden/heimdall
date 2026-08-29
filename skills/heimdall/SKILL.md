@@ -13,6 +13,16 @@ Treat [`../../docs/product-contract.md`](../../docs/product-contract.md) as the
 normative product boundary. This skill supplies operating procedure and must
 not broaden that contract.
 
+## Gate on the released platform
+
+The current release is Linux-only. On macOS, stop before `heimdall run`: do
+not modify system proxy settings, start `proxychains`, install trust, or infer
+support from the presence of a CLI binary. The `macos-explicit` and
+`macos-transparent` contracts are in development and unavailable until a
+released `heimdall agent` document names the selected backend and proves its
+capabilities. See
+[`../../docs/design/macos-backend.md`](../../docs/design/macos-backend.md).
+
 ## Start with the machine contract
 
 Run:

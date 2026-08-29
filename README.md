@@ -54,7 +54,7 @@ need compatibility hardening.
 | Area | Status | Current boundary |
 | --- | --- | --- |
 | Command-scoped TCP and UDP proxying | Available | IPv4/IPv6, SOCKS5 and direct egress, fake DNS, ordered policies |
-| macOS support | Planned | Wrapper fallback and Network Extension backend are roadmap items; not currently available |
+| macOS support | In development, not available | The explicit-wrapper and optional signed Network Extension contracts are defined; implementation and native acceptance remain incomplete |
 | Strict configuration and agent contract | Available | TOML, YAML, JSON; generated offline schema/examples; `heimdall.agent/v8` with execution ownership, resolver strategy/userns preflight, shell-safe inspection argv, and repairable diagnostics |
 | Daemonless Linux execution | Available | All decrypt modes own per-run relay, DNS, maps, links, and logs; runtime TLS keeps one unprivileged session helper, never a service |
 | Agent event logs and capture | Available | Per-run health and per-flow explanation summaries, fake-DNS, policy, TCP/UDP and TLS evidence plus coalesced bounded blobs with pre-storage allowlists/redaction |
@@ -66,7 +66,9 @@ need compatibility hardening.
 | Performance and observability | In development | Repeatable current/6.6 LTS NixOS, Ubuntu 24.04, and Debian 13 real-eBPF latency, RSS, 1/10/50 concurrency, sustained TCP/UDP/capture throughput, and event-integrity baselines are available; broader distribution coverage remains active work |
 
 See [docs/product-contract.md](docs/product-contract.md) for the normative
-requirements and [ROADMAP.md](ROADMAP.md) for status and planned work.
+requirements, [docs/design/macos-backend.md](docs/design/macos-backend.md) for
+the in-development macOS boundary, and [ROADMAP.md](ROADMAP.md) for status and
+planned work.
 
 ## Architecture
 

@@ -5,6 +5,7 @@
 - [architecture.md](architecture.md) — foreground CLI/setup-worker boundary and data path
 - [design/daemonless-runtime.md](design/daemonless-runtime.md) — implemented foreground per-run path for proxying and both TLS modes
 - [design/agent-event-log.md](design/agent-event-log.md) — JSONL events, content-addressed payload blobs, run manifests, rotation, retention, and agent CLI
+- [design/macos-backend.md](design/macos-backend.md) — in-development explicit-wrapper and signed transparent-provider contracts; no released macOS support yet
 - [config.md](config.md) — the strict TOML/YAML/JSON configuration
 - [install.md](install.md) — native, npm, PyPI, and Cargo Linux releases, artifact hygiene, compatibility, checksum verification, setup authorization, upgrade, and rollback
 - [runbook.md](runbook.md) — build, x86_64 NixOS/Ubuntu/Debian functional and performance VM gates, native-aarch64 acceptance, agent JSON contract, lifecycle, and troubleshooting

@@ -245,27 +245,34 @@ static, contain no private or build-path evidence, preserve required eBPF
 metadata, and pass native current/LTS data-path acceptance on each supported
 architecture.
 
-## Planned
+### 8. macOS backend
 
-### macOS backend and fallback
+The architecture contract is now in development, but no macOS backend is
+available in a release. The two paths remain deliberately separate:
 
-- Add a macOS wrapper backend for `heimdall run` using native proxy settings or
-  a bounded `proxychains-ng` fallback. Report its reduced capabilities
-  explicitly: best-effort command scope, TCP-only fallback behavior, and no
-  runtime TLS inspection.
-- Add a signed macOS companion app/system extension backed by
-  `NETransparentProxyProvider` for transparent TCP and UDP flow handling.
-  Evaluate `NEAppProxyProvider` for per-app or managed deployments rather than
-  treating it as a direct cgroup equivalent.
-- Define policy handoff, lifecycle, concurrent sessions, DNS, fail-closed
-  behavior, and relay self-protection between the CLI and the macOS provider.
-- Preserve shared policy, relay, and TLS semantics across platforms without
-  claiming Linux cgroup-equivalent command scope until process attribution and
-  acceptance coverage are proven.
+- Split platform-neutral CLI, config, policy, relay, log, and agent contracts
+  from Linux-only aya/eBPF setup before adding a Darwin build.
+- Add an opt-in `macos-explicit` compatibility backend for cooperative proxy
+  clients. It must never change system-wide settings or claim transparent UDP,
+  fake DNS, QUIC, runtime TLS, strict command scope, or fail-closed coverage.
+- Add an optional signed companion and `NETransparentProxyProvider` system
+  extension for transparent TCP/UDP. Keep `NEAppProxyProvider` limited to a
+  future managed per-app deployment rather than treating it as a cgroup
+  equivalent.
+- Attribute flows from `sourceAppAuditToken` to a registered process group,
+  route only attributed traffic to the CLI-owned per-run relay, return unrelated
+  traffic to its normal path, and fail attributed flows closed on relay loss.
+- Keep the provider enabled only while at least one run is active. A
+  session-owned helper handles registration and owner-death cleanup; no
+  persistent user-managed Heimdall daemon is installed.
+- Add native signed acceptance for process attribution, concurrent runs,
+  owner/provider failure, TCP/UDP, DNS, QUIC, relay recursion, TLS boundaries,
+  JSONL integrity, install/approval, upgrade, rollback, uninstall, and cleanup.
 
-Acceptance target: macOS wrapper and transparent-provider paths have separate
-capability contracts and acceptance coverage for TCP, UDP, QUIC, DNS, process
-scope, relay recovery, and TLS boundaries.
+Acceptance target: both paths report separate machine-readable capabilities;
+the signed transparent path passes the native matrix in
+[docs/design/macos-backend.md](docs/design/macos-backend.md); and no package,
+website, or release note claims macOS availability before that evidence exists.
 
 ## Deferred product boundaries
 

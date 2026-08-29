@@ -116,11 +116,28 @@ the data plane.
 
 ## Platform scope
 
-The available backend is Linux cgroup v2 plus eBPF. macOS support remains a
-roadmap item with separate capability contracts: a bounded wrapper fallback
-and a signed `NETransparentProxyProvider` path. Neither may claim
-Linux-equivalent command scope, UDP, DNS, QUIC, or TLS behavior without
-platform-specific acceptance evidence.
+The available backend is Linux cgroup v2 plus eBPF. The macOS architecture is
+in development. macOS is not available in a release. Its two paths have
+separate capability contracts:
+
+- `macos-explicit` is an opt-in CLI-only compatibility path for cooperative
+  proxy clients. It never changes system-wide proxy settings and cannot claim
+  transparent UDP, fake DNS, QUIC, runtime TLS, strict command scope, or
+  fail-closed coverage.
+- `macos-transparent` requires an optional signed companion containing an
+  `NETransparentProxyProvider` system extension. It attributes flows to a
+  registered process group and reuses the CLI-owned per-run relay, policy,
+  JSONL, capture, and relay-TLS boundaries. `NEAppProxyProvider` is reserved
+  for a possible managed per-app deployment.
+
+The operating system may run the transparent provider while a run is active,
+and a run-owned helper handles registration and owner-death cleanup. Neither
+component is a persistent user-managed Heimdall daemon: the final unregister
+operation disables the provider and no helper survives the last run. This path
+may not claim Linux-equivalent descendant scope, UDP, DNS, QUIC, or relay TLS
+until each platform-specific acceptance target passes. Runtime TLS is
+unavailable on macOS. See
+[design/macos-backend.md](design/macos-backend.md).
 
 ## Acceptance rule
 

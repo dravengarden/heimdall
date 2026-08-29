@@ -3,12 +3,22 @@
 ## Contents
 
 - [Inspect without mutation](#inspect-without-mutation)
+- [Gate on the platform](#gate-on-the-platform)
 - [Run through a policy](#run-through-a-policy)
 - [Inspect JSONL with Linux tools](#inspect-jsonl-with-linux-tools)
 - [Relay TLS](#relay-tls)
 - [Runtime TLS](#runtime-tls)
 - [Rotate and retain](#rotate-and-retain)
 - [Diagnose failures](#diagnose-failures)
+
+## Gate on the platform
+
+Released Heimdall execution is Linux-only. A Darwin host is not ready even if
+an installer placed `heimdall` on `PATH`; do not substitute system-wide proxy
+settings or an implicit `proxychains` invocation. The in-development
+`macos-explicit` and `macos-transparent` backends remain unavailable until
+`heimdall agent` reports a concrete backend and its accepted scope, TCP, UDP,
+DNS, QUIC, and TLS boundaries.
 
 ## Inspect without mutation
 

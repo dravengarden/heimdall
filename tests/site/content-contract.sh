@@ -28,11 +28,31 @@ for heading in \
   'TLS boundaries' \
   'Capture analysis' \
   'Performance and observability' \
-  'Native ARM completion'; do
+  'Native ARM completion' \
+  'macOS backend'; do
   grep -Fq "<h3>$heading</h3>" site/docs/roadmap.html || {
     printf 'site roadmap is missing track heading: %s\n' "$heading" >&2
     exit 1
   }
+done
+
+for macos_page in \
+  docs/design/macos-backend.md \
+  docs/product-contract.md \
+  site/docs/macos.html \
+  site/docs/product-contract.html; do
+  for boundary in \
+    'NETransparentProxyProvider' \
+    'NEAppProxyProvider' \
+    'process group' \
+    'persistent user-managed Heimdall daemon' \
+    'not available'; do
+    grep -Fq "$boundary" "$macos_page" || {
+      printf '%s does not preserve the macOS boundary: %s\n' \
+        "$macos_page" "$boundary" >&2
+      exit 1
+    }
+  done
 done
 
 for evidence_page in \

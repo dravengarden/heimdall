@@ -8,6 +8,11 @@ guide.
 
 ### Added
 
+- Define the in-development macOS backend contract: an opt-in reduced
+  CLI-only explicit proxy and an optional signed
+  `NETransparentProxyProvider` system extension that is active only for
+  registered runs, with no released macOS support or persistent Heimdall
+  daemon claim.
 - Add a strict offline `heimdall.logs.flow/v1` contract and `heimdall logs
   flow` command that explain one flow's route, transport result, bounded
   capture by direction and boundary, observed plaintext, TLS/HTTP evidence,

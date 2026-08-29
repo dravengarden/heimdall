@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#F7F4ED">
+    <meta name="description" content="Heimdall macOS backend design, lifecycle, capability boundaries, and native acceptance plan.">
+    <link rel="icon" href="../assets/heimdall-mark.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="../assets/apple-touch-icon.png">
+    <link rel="stylesheet" href="../styles.css">
+    <title>macOS backend — Heimdall docs</title>
+  </head>
+  <body class="docs-page" data-page="macos">
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <header class="site-header"><div class="container nav-shell">
+      <a class="brand" href="../index.html"><img class="brand-mark" src="../assets/heimdall-mark.svg" alt=""><span class="brand-copy"><span class="brand-name">Heimdall</span><span class="brand-tagline">docs / guarded path</span></span></a>
+      <button class="menu-toggle" type="button" data-menu-toggle aria-expanded="false" aria-controls="site-nav" aria-label="Open navigation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke-linecap="round" /></svg></button>
+      <nav class="nav-links" id="site-nav" data-site-nav aria-label="Primary navigation"><a href="product-contract.html" data-page="product-contract">Contract</a><a href="install.html" data-page="install">Install</a><a href="architecture.html" data-page="architecture">Architecture</a><a href="configuration.html" data-page="configuration">Configuration</a><a href="commands.html" data-page="commands">Commands</a><a href="runbook.html" data-page="runbook">Runbook</a><a href="roadmap.html" data-page="roadmap">Roadmap</a><a class="nav-github" href="https://github.com/dravengarden/heimdall">GitHub <span aria-hidden="true">↗</span></a></nav>
+    </div></header>
+
+    <main id="main-content" class="container docs-shell">
+      <aside class="docs-sidebar" aria-label="Documentation navigation"><div class="sidebar-label">Documentation</div><nav class="sidebar-nav"><a href="product-contract.html" data-page="product-contract">Product contract</a><a href="install.html" data-page="install">Install and upgrade</a><a href="architecture.html" data-page="architecture">Architecture</a><a href="configuration.html" data-page="configuration">Configuration</a><a href="commands.html" data-page="commands">Command workflows</a><a href="runbook.html" data-page="runbook">Runbook</a><a href="macos.html" data-page="macos">macOS backend</a><a href="roadmap.html" data-page="roadmap">Roadmap</a></nav><div class="sidebar-meta"><strong>Source document</strong><a href="https://github.com/dravengarden/heimdall/blob/main/docs/design/macos-backend.md">docs/design/macos-backend.md ↗</a></div></aside>
+      <article class="doc-content">
+        <details class="mobile-toc"><summary>In this section</summary><nav><a href="#status">Status</a><a href="#backends">Two backends</a><a href="#transparent">Transparent path</a><a href="#lifecycle">Lifecycle</a><a href="#capabilities">Capabilities</a><a href="#acceptance">Acceptance</a></nav></details>
+        <span class="doc-kicker">Design / platform boundary</span>
+        <h1>macOS backend</h1>
+        <p class="doc-lead">The architecture is in development. macOS execution is <strong>not available</strong> in a Heimdall release yet.</p>
+
+        <h2 id="status">One CLI, no always-on service</h2>
+        <p>The <code>heimdall</code> CLI remains the only command users invoke. Transparent operation will require an optional signed companion and system extension, but it will not install a persistent user-managed Heimdall daemon. The provider is enabled only while at least one transparent run is active.</p>
+        <p class="callout"><strong>No implicit fallback.</strong> A failed transparent run never switches to an explicit proxy or the normal network path. The command starts only after registration succeeds.</p>
+
+        <h2 id="backends">Two backends with different claims</h2>
+        <table><thead><tr><th>Backend</th><th>Purpose</th><th>Boundary</th></tr></thead><tbody><tr><td><code>macos-explicit</code></td><td>CLI-only compatibility for cooperative proxy clients.</td><td>Client-dependent TCP; no transparent UDP, fake DNS, QUIC, runtime TLS, strict scope, or fail-closed claim.</td></tr><tr><td><code>macos-transparent</code></td><td>Optional signed transparent TCP/UDP path.</td><td>Process attribution must pass native tests before it can approach the Linux cgroup claim.</td></tr></tbody></table>
+        <p>The explicit backend never edits system-wide proxy settings. <code>NEAppProxyProvider</code> remains a possible managed per-app option, not the default backend for arbitrary terminal commands.</p>
+
+        <h2 id="transparent">Signed transparent path</h2>
+        <ol><li>The CLI validates policy, opens the per-run relay and JSONL store, and starts the command in an initially stopped process group.</li><li>A signed companion registers the run with an <code>NETransparentProxyProvider</code> system extension.</li><li>The provider uses the flow audit token to classify the source process against the registered process group and parent chain.</li><li>Unrelated flows return to their normal route. Attributed flows use an authenticated loopback channel to the CLI-owned relay.</li><li>The CLI relay owns policy, proxy/direct/reject routing, capture, relay TLS, and evidence.</li></ol>
+        <p>This starts as a process-group best-effort boundary. Process-group escape, PID reuse, races, and ambiguous concurrent attribution must be measured; they are not hidden behind a Linux-equivalent claim.</p>
+
+        <h2 id="lifecycle">Foreground-owned lifecycle</h2>
+        <ul><li>A session helper exists only for its run and unregisters on completion or owner death.</li><li>Matched flows fail closed if the provider or relay disappears.</li><li>Loopback, helper, provider, and CLI-owned upstream traffic are excluded to prevent recursion.</li><li>Concurrent runs use separate identities, secrets, relays, and logs. Ambiguous overlap is rejected.</li><li>The final run disables the transparent configuration; stale recovery rejects PID reuse and writes evidence.</li></ul>
+
+        <h2 id="capabilities">Capabilities arrive separately</h2>
+        <table><thead><tr><th>Capability</th><th>Initial status</th></tr></thead><tbody><tr><td>TCP</td><td>First transparent milestone after IPv4/IPv6, relay-loss, backpressure, and long-lived flow tests.</td></tr><tr><td>UDP</td><td>Separate milestone preserving datagram and destination boundaries.</td></tr><tr><td>DNS and fake DNS</td><td>Observed hostname metadata is not universal DNS coverage; fake DNS is unavailable initially.</td></tr><tr><td>QUIC</td><td>Unavailable until UDP migration, rebinding, and policy correlation pass.</td></tr><tr><td>Runtime TLS</td><td>Unavailable on macOS.</td></tr><tr><td>Relay TLS</td><td>Later milestone after transparent TCP and explicit trust acceptance.</td></tr></tbody></table>
+
+        <h2 id="acceptance">Native release gate</h2>
+        <p>A compile is not acceptance. A signed, entitled Apple-silicon installation must prove TCP/UDP, process descendants and escapes, two concurrent runs, unrelated-process isolation, owner/provider/relay failures, DNS boundaries, recursion protection, JSONL integrity, cleanup, approval, upgrade, rollback, and uninstall.</p>
+        <p>Until that matrix passes, package pages, <code>heimdall agent</code>, the website, and release notes must continue to say macOS is not available.</p>
+
+        <div class="doc-page-footer"><a href="runbook.html">← Runbook</a><a href="roadmap.html">Roadmap →</a></div>
+      </article>
+    </main>
+    <footer class="site-footer"><div class="container footer-inner"><a class="footer-brand" href="../index.html"><img src="../assets/heimdall-mark.svg" alt="">Heimdall</a><span class="footer-copy">macOS design without premature support claims.</span><nav class="footer-links" aria-label="Footer navigation"><a href="https://github.com/dravengarden/heimdall">GitHub</a><a href="https://github.com/dravengarden/heimdall/blob/main/SECURITY.md">Security</a></nav></div></footer>
+    <script src="../app.js" defer></script>
+  </body>
+</html>
