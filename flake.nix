@@ -44,7 +44,7 @@
         overlays = [ fenix.overlays.default ];
       };
       lib = pkgs.lib;
-      heimdallVersion = "0.1.4";
+      heimdallVersion = "0.1.5";
       # Why: this nixpkgs revision still defaults importCargoLock to the old
       # crates.io API route, which rejects anonymous fetchurl clients. Limit
       # the compatibility override to Heimdall's Rust platforms and use the
@@ -269,7 +269,7 @@
 
       heimdall-ebpf = craneLib.buildPackage {
         pname = "heimdall-ebpf";
-        version = "0.1.4";
+        version = "0.1.5";
 
         src = ebpfSrc;
 

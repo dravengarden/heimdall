@@ -4,7 +4,16 @@ All notable changes to Heimdall are documented here. Heimdall is pre-1.0; this
 file records release-level changes and does not serve as an API migration
 guide.
 
-## [Unreleased]
+## [0.1.5] - 2026-08-29
+
+### Highlights
+
+- Add an offline, agent-readable schema for low-cardinality run summaries and
+  correct payload filtering to select only real content-addressed blobs.
+- Apply the same static-binary and embedded-eBPF hygiene gate to native, npm,
+  PyPI, and Cargo release artifacts on both Linux architectures.
+- Add host-guarded native aarch64 current/Linux 6.6 real-eBPF acceptance
+  outputs while keeping the missing ARM execution result explicit.
 
 ### Added
 

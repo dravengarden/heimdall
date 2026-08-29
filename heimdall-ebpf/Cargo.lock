@@ -96,11 +96,11 @@ dependencies = [
 
 [[package]]
 name = "heimdall-common"
-version = "0.1.4"
+version = "0.1.5"
 
 [[package]]
 name = "heimdall-ebpf"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "aya-ebpf",
  "heimdall-common",

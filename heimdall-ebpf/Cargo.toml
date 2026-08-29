@@ -1,13 +1,13 @@
 [package]
 name = "heimdall-ebpf"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 license = "MIT"
 publish = false
 
 [dependencies]
 aya-ebpf = "0.1"
-heimdall-common = { version = "0.1.4", path = "../heimdall-common", default-features = false }
+heimdall-common = { version = "0.1.5", path = "../heimdall-common", default-features = false }
 
 [[bin]]
 name = "heimdall-ebpf"

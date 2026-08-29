@@ -20,7 +20,7 @@ stable contracts, planning, design material, and operational guidance.
 - [`architecture.md`](architecture.md) — Foreground CLI ownership, setup privilege drop, per-run eBPF/relay/DNS lifecycle, fail-closed UDP correlation, capture, and TLS boundaries
 - [`design/daemonless-runtime.md`](design/daemonless-runtime.md) — Foreground per-run architecture and implementation status for session-owned data-plane and kernel resources
 - [`design/agent-event-log.md`](design/agent-event-log.md) — Daemonless event/run/summary schemas, DNS/policy/TLS evidence, content-addressed blobs, rotation, orphan recovery, and CLI
-- [`install.md`](install.md) — Native, npm, PyPI, and Cargo `heimdall-egress` Linux installation, narrow setup authorization, upgrade, and one-level rollback
+- [`install.md`](install.md) — Versioned native, npm, PyPI, and Cargo `heimdall-egress` Linux installation, narrow setup authorization, upgrade, and one-level rollback
 - [`runbook.md`](runbook.md) — Build, x86_64 and host-guarded aarch64 real-eBPF acceptance, package gates, operation, and diagnosis
 - [`releasing.md`](releasing.md) — Curated changelog, artifact hygiene, native ARM claim boundary, local GitHub assets, release-triggered registry publication, and post-publication verification
 
