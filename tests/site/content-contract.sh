@@ -44,8 +44,10 @@ for macos_page in \
   for boundary in \
     'macos-explicit' \
     'cooperative' \
+    'macos-interpose' \
     'macos-transparent' \
     'NETransparentProxyProvider' \
+    'deferred' \
     'persistent user-managed Heimdall daemon'; do
     grep -Fq "$boundary" "$macos_page" || {
       printf '%s does not preserve the macOS boundary: %s\n' \
@@ -56,13 +58,36 @@ for macos_page in \
 done
 
 for macos_design in docs/design/macos-backend.md site/docs/macos.html; do
-  for boundary in 'NEAppProxyProvider' 'process group' 'official macOS'; do
+  for boundary in \
+    'NEAppProxyProvider' \
+    'process group' \
+    'official macOS' \
+    'proxychains' \
+    'Proxyman' \
+    'Hardened Runtime' \
+    'release_included=false'; do
     grep -Fiq "$boundary" "$macos_design" || {
       printf '%s does not preserve the deep macOS boundary: %s\n' \
         "$macos_design" "$boundary" >&2
       exit 1
     }
   done
+done
+
+for fallback_boundary in \
+  'proxychains-ng' \
+  'Proxyman' \
+  'mitmproxy' \
+  'Packet Filter is not API' \
+  'macos-interpose' \
+  'Hardened Runtime' \
+  'SIP-protected' \
+  'no persistent daemon'; do
+  grep -Fq "$fallback_boundary" docs/design/macos-fallbacks.md || {
+    printf 'the macOS fallback research is missing: %s\n' \
+      "$fallback_boundary" >&2
+    exit 1
+  }
 done
 
 for macos_package_page in \
@@ -193,6 +218,22 @@ grep -Fq '"provider_wired": false' heimdall/src/cli/agent_macos.rs || {
   exit 1
 }
 
+grep -Fq '"backend": "macos-interpose"' heimdall/src/cli/agent_macos.rs || {
+  printf 'the Darwin agent does not expose the interpose research boundary\n' >&2
+  exit 1
+}
+
+for boundary in \
+  '"status": "deferred"' \
+  '"roadmap_only": true' \
+  '"release_included": false'; do
+  grep -Fq "$boundary" heimdall/src/cli/agent_macos.rs || {
+    printf 'the Darwin agent does not keep the deferred backend offline: %s\n' \
+      "$boundary" >&2
+    exit 1
+  }
+done
+
 for boundary in \
   '"activation_enabled": false' \
   '"network_configuration_enabled": false' \
@@ -212,8 +253,9 @@ grep -Fq '"strict_command_scope_proven": false' \
   exit 1
 }
 
-if rg -Fq '#[value(name = "macos-transparent")]' heimdall/src/main_macos.rs; then
-  printf 'the unavailable transparent backend is selectable\n' >&2
+if rg -Fq '#[value(name = "macos-transparent")]' heimdall/src/main_macos.rs ||
+  rg -Fq '#[value(name = "macos-interpose")]' heimdall/src/main_macos.rs; then
+  printf 'an unavailable macOS backend is selectable\n' >&2
   exit 1
 fi
 
@@ -243,6 +285,18 @@ if rg -q 'Command::new\("(networksetup|scutil)"' heimdall/src; then
   exit 1
 fi
 
+if grep -Fq 'tests/macos/run-companion-acceptance.sh' \
+  scripts/build-macos-release-assets; then
+  printf 'the macOS release builder invokes the deferred companion gate\n' >&2
+  exit 1
+fi
+
+grep -A2 '^test-macos-interpose-feasibility:' justfile |
+  grep -Fq 'tests/macos/run-interpose-feasibility.sh' || {
+    printf 'the justfile does not expose the interpose feasibility gate\n' >&2
+    exit 1
+  }
+
 for macos_runbook in docs/runbook.md site/docs/runbook.html; do
   grep -Fq 'just check-macos' "$macos_runbook" || {
     printf '%s does not expose the Darwin compile boundary\n' \
@@ -266,6 +320,11 @@ for macos_runbook in docs/runbook.md site/docs/runbook.html; do
   }
   grep -Fq 'just test-macos-native' "$macos_runbook" || {
     printf '%s does not expose the native explicit acceptance gate\n' \
+      "$macos_runbook" >&2
+    exit 1
+  }
+  grep -Fq 'just test-macos-interpose-feasibility' "$macos_runbook" || {
+    printf '%s does not expose the interpose feasibility gate\n' \
       "$macos_runbook" >&2
     exit 1
   }

@@ -118,11 +118,12 @@ the data plane.
 
 Linux cgroup v2 plus eBPF is the complete transparent backend and the only
 backend shipped in official packages. Apple-silicon macOS has a source-built
-explicit backend with native acceptance; the transparent architecture and
-first versioned official macOS package remain in development. Native package
+explicit backend with native acceptance; a daemonless interposition fallback
+is in development; the Network Extension architecture is deferred; and the
+first versioned official macOS package remains unavailable. Native package
 mechanics cover Mach-O hygiene, checksum, install, upgrade, rollback, and
 uninstall, while publication separately requires Developer ID, notarization,
-Gatekeeper, and fresh-download acceptance. Its two paths have separate
+Gatekeeper, and fresh-download acceptance. Its three paths have separate
 capability contracts:
 
 - `macos-explicit` is an opt-in CLI-only compatibility path for cooperative
@@ -134,29 +135,39 @@ capability contracts:
   fake DNS, QUIC, capture, TLS inspection, strict command scope, process
   attribution, or fail-closed coverage. The user must select it explicitly;
   incompatible config fails before child execution.
-- `macos-transparent` requires an optional signed companion containing an
-  `NETransparentProxyProvider` system extension. The internal authenticated
+- `macos-interpose` is an unavailable proxychains-style research backend for
+  compatible dynamic TCP and resolver calls. It will use a foreground-owned
+  injected library and shared relay without root or system proxy changes.
+  Native evidence already shows that ordinary dynamic code can load the probe
+  while Hardened Runtime and SIP-protected targets do not. Static code,
+  alternate APIs, direct syscalls, UDP, QUIC, complete descendant coverage,
+  strict command scope, TLS, and universal fail-closed behavior remain outside
+  the claim. A failed preflight may not fall back to another backend.
+- `macos-transparent` is deferred source research that would require an
+  optional signed companion containing an `NETransparentProxyProvider` system
+  extension. The internal authenticated
   run-registration protocol has Rust and Swift implementations but remains
   unwired. An unsigned source prototype builds the app/system-extension bundle
   shape, refuses provider startup, closes unexpected flows, and cannot submit
   activation or save Network Extension configuration. It is not installable or
-  routing support. Optional flow metadata must pass signed native tests that
+  routing support, is excluded from release artifacts, and reports
+  `release_included=false`. If a future roadmap decision reactivates the path,
+  optional flow metadata must pass signed native tests that
   distinguish registered, unrelated, missing, and ambiguous identity before
   this path may attribute a flow or release a command. If that discriminator
   is not safe, the backend does not ship. `NEAppProxyProvider` is reserved for
   a possible managed per-app deployment.
 
-The operating system may run the future transparent provider while a run is active,
-and a run-owned helper handles registration and owner-death cleanup. Neither
-component is a persistent user-managed Heimdall daemon: the final unregister
-operation disables the provider and no helper survives the last run. This path
-may not claim Linux-equivalent descendant scope, UDP, DNS, QUIC, or relay TLS
-until each platform-specific acceptance target passes. Returning an unknown
-flow direct is not an allowed fail-closed fallback. Runtime TLS is unavailable
-on macOS. Official macOS release artifacts remain unavailable
+The current explicit backend and planned interpose backend use only
+foreground-owned resources and no persistent user-managed Heimdall daemon.
+Proxyman-style child-only proxy/trust adapters may be added for individually
+tested runtimes, but Heimdall does not install Proxyman, mutate the system
+proxy or keychain, or use PF/TUN as a product fallback. Runtime TLS is
+unavailable on macOS. Official macOS release artifacts remain unavailable
 until a versioned signed/notarized asset passes fresh-download install,
 upgrade, rollback, uninstall, and explicit-run acceptance. See
-[design/macos-backend.md](design/macos-backend.md).
+[design/macos-backend.md](design/macos-backend.md) and
+[design/macos-fallbacks.md](design/macos-fallbacks.md).
 
 ## Acceptance rule
 

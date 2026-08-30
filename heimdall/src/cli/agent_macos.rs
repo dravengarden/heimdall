@@ -226,13 +226,15 @@ fn backend_report(ready: bool) -> Value {
         },
         {
             "backend": "macos-transparent",
-            "status": "in_development",
+            "status": "deferred",
             "available": false,
             "ready": false,
             "transparent": true,
             "provider": "NETransparentProxyProvider",
             "companion_required": true,
             "persistent_daemon_required": false,
+            "roadmap_only": true,
+            "release_included": false,
             "companion": {
                 "source_prototype": true,
                 "native_unsigned_build_gate": "just test-macos-companion-native",
@@ -254,6 +256,42 @@ fn backend_report(ready: bool) -> Value {
                 "strict_command_scope_proven": false,
             },
             "reason_code": "macos_transparent_backend_unavailable",
+        },
+        {
+            "backend": "macos-interpose",
+            "status": "in_development",
+            "available": false,
+            "ready": false,
+            "transparent": false,
+            "mechanism": "dyld-interpose",
+            "scope": "interposed_dynamic_calls",
+            "strict_command_scope": false,
+            "client_can_bypass": true,
+            "system_proxy_modified": false,
+            "persistent_daemon_required": false,
+            "roadmap_only": true,
+            "release_included": false,
+            "capabilities": {
+                "tcp": "unavailable",
+                "dns": "unavailable",
+                "udp": "unavailable",
+                "quic": "unavailable",
+                "tls": "unavailable",
+            },
+            "research_targets": [
+                "tcp_connect",
+                "libc_resolver",
+                "child_runtime_proxy_and_trust_adapters",
+            ],
+            "compatibility": {
+                "dynamic_targets_only": true,
+                "sip_protected_targets": false,
+                "hardened_runtime_targets": false,
+                "static_targets": false,
+                "complete_descendant_scope_proven": false,
+                "native_feasibility_gate": "just test-macos-interpose-feasibility",
+            },
+            "reason_code": "macos_interpose_backend_unavailable",
         },
     ])
 }
@@ -454,7 +492,7 @@ fn decrypt_report(config: &DecryptConfig) -> Value {
         }),
         DecryptMode::Relay => json!({
             "code": "macos_relay_tls_unavailable",
-            "message": "relay TLS requires the future transparent macOS backend",
+            "message": "relay TLS is unavailable on current macOS backends",
             "diagnostics": [],
         }),
     };
@@ -535,6 +573,8 @@ mod tests {
         assert!(report["actions"]["execute_prefix"].is_null());
         assert_eq!(report["backends"][0]["available"], true);
         assert_eq!(report["backends"][1]["available"], false);
+        assert_eq!(report["backends"][1]["status"], "deferred");
+        assert_eq!(report["backends"][1]["release_included"], false);
         assert_eq!(
             report["backends"][1]["provider"],
             "NETransparentProxyProvider"
@@ -555,6 +595,14 @@ mod tests {
         assert_eq!(
             report["backends"][1]["attribution"]["status"],
             "native_evidence_required"
+        );
+        assert_eq!(report["backends"][2]["backend"], "macos-interpose");
+        assert_eq!(report["backends"][2]["available"], false);
+        assert_eq!(report["backends"][2]["release_included"], false);
+        assert_eq!(report["backends"][2]["scope"], "interposed_dynamic_calls");
+        assert_eq!(
+            report["backends"][2]["compatibility"]["hardened_runtime_targets"],
+            false
         );
     }
 

@@ -103,7 +103,9 @@ acceptance path are documented and tested.
 Official release packages and the transparent implementation remain
 Linux-only. The Apple-silicon `macos-explicit` source backend is available as
 the reduced cooperative contract described below; it is not equivalent to the
-Linux cgroup boundary.
+Linux cgroup boundary. `macos-interpose` is an active daemonless fallback
+research track. The Network Extension prototype is deferred and excluded from
+release artifacts.
 
 ## In development
 
@@ -258,8 +260,8 @@ architecture.
 ### 8. macOS backend
 
 The Apple-silicon source-built explicit backend has native acceptance, but no
-official macOS package or transparent backend is available. The two paths
-remain deliberately separate:
+official macOS package or strict-scope backend is available. Three paths remain
+deliberately separate:
 
 - Keep the platform split green: shared strict config/init behavior, portable
   JSONL tooling, Linux-only dependency isolation, and the pinned
@@ -280,35 +282,44 @@ remain deliberately separate:
   Developer ID/notary credentials are configured and that version passes a
   fresh-download signature, Gatekeeper, install, upgrade, rollback, uninstall,
   and explicit-run acceptance.
+- Implement the separately named `macos-interpose` research path around a
+  signed DYLD interposition library, authenticated constructor startup, TCP
+  `connect`, libc resolver calls, and the existing foreground relay. Keep it
+  unselectable until positive and negative native tests establish its precise
+  dynamic-program boundary.
+- Treat SIP-protected binaries, Hardened Runtime/library-validation targets,
+  static code, alternate networking APIs, direct syscalls, loader-state
+  removal, and unsupported descendants as explicit blockers. Do not claim
+  strict scope, UDP, QUIC, or universal fail-closed coverage.
+- Add Proxyman-style child-only proxy and CA adapters for individually tested
+  CLI runtimes without installing Proxyman, changing the system proxy, or
+  mutating the system keychain. Relay TLS remains unavailable until each
+  adapter passes native trust and failure acceptance.
 - Keep the implemented Swift control codec and compile-only containing
-  app/`NETransparentProxyProvider` system-extension skeleton green through
-  `just test-macos-companion-native`. Promote it to an optional signed companion
-  only after profile, entitlement, install, activation, and approval gates are
-  available. Keep `NEAppProxyProvider` limited to a future managed per-app
-  deployment rather than treating it as a cgroup equivalent.
+  app/`NETransparentProxyProvider` system-extension skeleton green through the
+  explicitly invoked `just test-macos-companion-native` source gate. It is
+  deferred, not called by package/release construction, and must remain
+  unsigned, uninstalled, unactivatable, unwired, and absent from artifacts.
+  Keep `NEAppProxyProvider` limited to a possible managed per-app research path
+  rather than treating it as a cgroup equivalent.
 - Keep the implemented internal `heimdall.macos.control/v1` HMAC, replay,
   concurrent-run, and owner-EOF lifecycle contract plus its native Swift fixed
-  vector green. It is not yet wired to the provider and does not make the
-  transparent backend selectable.
+  vector green as deferred source research. It is not wired to the provider
+  and does not make the transparent backend selectable.
 - Treat optional `sourceAppAuditToken` and all other flow metadata as a signed
-  native evidence question. Do not claim process scope until tests can safely
-  distinguish attributed, unrelated, missing, and ambiguous identities; if no
-  safe discriminator exists, stop this backend design rather than returning a
-  possible wrapped flow direct or rejecting unrelated machine traffic.
-- Keep the provider enabled only while at least one run is active. A
-  session-owned helper handles registration and owner-death cleanup; no
-  persistent user-managed Heimdall daemon is installed.
-- Add native signed acceptance for process attribution, concurrent runs,
-  owner/provider failure, TCP/UDP, DNS, QUIC, relay recursion, TLS boundaries,
-  JSONL integrity, install/approval, upgrade, rollback, uninstall, and cleanup.
+  native evidence question only if a future roadmap decision reactivates the
+  Network Extension path. Do not claim process scope until tests can safely
+  distinguish attributed, unrelated, missing, and ambiguous identities.
 
-Acceptance target: both paths report separate machine-readable capabilities;
-the explicit source backend remains native-gated; an official CLI package is
-claimed only after a signed/notarized versioned asset passes fresh-download
-acceptance; the signed transparent path passes its full matrix in
-[docs/design/macos-backend.md](docs/design/macos-backend.md); and no package or
-release note claims more macOS coverage than its artifacts and native evidence
-establish.
+Acceptance target: all three paths report separate machine-readable
+capabilities; the explicit source backend remains native-gated; interpose stays
+unavailable until its loader, TCP/DNS, descendant, bypass, and failure matrix
+passes; the deferred Network Extension path reports `release_included=false`;
+an official CLI package is claimed only after a signed/notarized versioned
+asset passes fresh-download acceptance; and no package or release note claims
+more macOS coverage than its artifacts and native evidence establish. See the
+[backend design](docs/design/macos-backend.md) and
+[fallback research](docs/design/macos-fallbacks.md).
 
 ## Deferred product boundaries
 
@@ -317,6 +328,8 @@ The following are intentionally not on the current roadmap:
 - Kubernetes, cluster orchestration, or a host-wide policy controller.
 - A replacement VPN, desktop traffic dashboard, or host-wide always-on system
   proxy.
+- Shipping, signing, installing, or activating the checked-in macOS Network
+  Extension prototype on the current roadmap.
 - A workload policy language layered on top of the small proxy schema.
 - A fourth first-class configuration syntax.
 - Claims of universal TLS decryption across every language, TLS library, or

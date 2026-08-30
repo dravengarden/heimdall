@@ -25,9 +25,15 @@ test-macos-companion-contract:
     tests/macos/check-companion-contract.sh
 
 # Builds but never signs, installs, activates, or configures the companion.
-# This is source evidence only; transparent routing remains unavailable.
+# This deferred research gate is source evidence only and is intentionally not
+# part of the macOS package or release path.
 test-macos-companion-native:
     tests/macos/run-companion-acceptance.sh
+
+# Records the bounded loader behavior behind the daemonless interpose research.
+# It opens no sockets and is not a backend or release-availability gate.
+test-macos-interpose-feasibility:
+    tests/macos/run-interpose-feasibility.sh
 
 fmt:
     cargo fmt --all
@@ -84,7 +90,7 @@ test-package-macos:
 
 test-release-tooling:
     actionlint .github/workflows/docs-pages.yml .github/workflows/publish-cargo.yml .github/workflows/publish-npm.yml .github/workflows/publish-pypi.yml
-    shellcheck scripts/build-cargo-release-assets scripts/build-macos-release-assets scripts/build-macos-release-assets-remote scripts/build-npm-package scripts/build-npm-release-assets scripts/build-pypi-release-assets scripts/publish-github-release scripts/render-release-notes scripts/sync-ebpf-object tests/cargo/run-acceptance.sh tests/distro/guest-acceptance.sh tests/distro/run-cloud-acceptance.sh tests/macos/check-companion-contract.sh tests/macos/run-companion-acceptance.sh tests/macos/run-explicit-acceptance.sh tests/npm/run-acceptance.sh tests/package/check-artifact-hygiene.sh tests/package/run-acceptance.sh tests/package/run-macos-acceptance.sh tests/pypi/run-acceptance.sh tests/release/cargo-workflow.sh tests/release/macos-workflow.sh tests/release/npm-workflow.sh tests/release/pypi-workflow.sh tests/release/render-notes.sh tests/site/content-contract.sh
+    shellcheck scripts/build-cargo-release-assets scripts/build-macos-release-assets scripts/build-macos-release-assets-remote scripts/build-npm-package scripts/build-npm-release-assets scripts/build-pypi-release-assets scripts/publish-github-release scripts/render-release-notes scripts/sync-ebpf-object tests/cargo/run-acceptance.sh tests/distro/guest-acceptance.sh tests/distro/run-cloud-acceptance.sh tests/macos/check-companion-contract.sh tests/macos/run-companion-acceptance.sh tests/macos/run-explicit-acceptance.sh tests/macos/run-interpose-feasibility.sh tests/npm/run-acceptance.sh tests/package/check-artifact-hygiene.sh tests/package/run-acceptance.sh tests/package/run-macos-acceptance.sh tests/pypi/run-acceptance.sh tests/release/cargo-workflow.sh tests/release/macos-workflow.sh tests/release/npm-workflow.sh tests/release/pypi-workflow.sh tests/release/render-notes.sh tests/site/content-contract.sh
     python3 -c 'paths = ("scripts/create-release-archive.py", "tests/distro/fixture.py", "tests/macos/fixture.py", "tests/perf/udp-throughput.py", "tests/perf/vm-baseline.py", "tests/vm/socks5_fixture.py"); [compile(open(path, encoding="utf-8").read(), path, "exec") for path in paths]'
     tests/release/cargo-workflow.sh
     tests/release/macos-workflow.sh

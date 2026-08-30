@@ -8,22 +8,22 @@ description: Heimdall CLI proxy, daemonless runtime, agent event-log, macOS back
 ## Scope
 
 Heimdall CLI proxy, daemonless runtime, agent event-log, reduced Apple-silicon
-macOS source backend, and sustained performance baseline designs including
-derived HTTP evidence, strict configuration, roadmap, and operations
-documentation. The index distinguishes stable contracts, planning, design
-material, and operational guidance.
+macOS source backend and interpose fallback research, and sustained performance
+baseline designs including derived HTTP evidence, strict configuration,
+roadmap, and operations documentation. The index distinguishes stable
+contracts, planning, design material, and operational guidance.
 
 ## Reading order
 
 - [`README.md`](../README.md) — Project overview and quick start
 - [`Documentation map`](README.md) — Compact links to the normative, design, install, runbook, and release documents
 - [`product-contract.md`](product-contract.md) — Normative product, lifecycle, network, TLS, capture safety, agent evidence, optional UI, and platform requirements
-- [`ROADMAP.md`](../ROADMAP.md) — Public status, active development tracks, NixOS/Ubuntu/Debian lifecycle and fake-DNS compatibility, TLS and performance acceptance, release artifact hygiene, native ARM acceptance, reduced macOS source support, native package/signing boundary, transparent roadmap, and non-goals
-- [`architecture.md`](architecture.md) — Foreground CLI ownership, Linux setup privilege drop and eBPF lifecycle, shared outbound SOCKS5 transport, Apple-silicon cooperative frontend, resolver preflight, fail-closed UDP correlation, capture, and TLS boundaries
+- [`ROADMAP.md`](../ROADMAP.md) — Public status, active development tracks, NixOS/Ubuntu/Debian lifecycle and fake-DNS compatibility, TLS and performance acceptance, release artifact hygiene, native ARM acceptance, reduced macOS source support, daemonless interpose fallback, deferred Network Extension prototype, and non-goals
+- [`architecture.md`](architecture.md) — Foreground CLI ownership, Linux setup privilege drop and eBPF lifecycle, shared outbound SOCKS5 transport, Apple-silicon cooperative frontend plus unavailable interpose/deferred-extension boundaries, resolver preflight, fail-closed UDP correlation, capture, and TLS boundaries
 - [`design/daemonless-runtime.md`](design/daemonless-runtime.md) — Foreground per-run architecture and implementation status for session-owned data-plane and kernel resources
 - [`design/agent-event-log.md`](design/agent-event-log.md) — Daemonless event/run/run-summary/flow-summary schemas, DNS/policy/TLS evidence, content-addressed blobs, rotation, orphan recovery, and CLI
 - [`install.md`](install.md) — Versioned native, npm, PyPI, and Cargo `heimdall-egress` Linux installation, narrow setup authorization, upgrade, and one-level rollback
-- [`runbook.md`](runbook.md) — Build, Darwin all-targets, native Apple-silicon explicit, unsigned companion, and package checks, resolver/userns and relay-CA preflight, x86_64 NixOS/Ubuntu/Debian lifecycle and fake DNS, TLS, real-eBPF and performance acceptance, host-guarded aarch64 acceptance, native/npm/PyPI/Cargo package gates, operation, and diagnosis
+- [`runbook.md`](runbook.md) — Build, Darwin all-targets, native Apple-silicon explicit, interpose-feasibility, deferred companion, and package checks, resolver/userns and relay-CA preflight, x86_64 NixOS/Ubuntu/Debian lifecycle and fake DNS, TLS, real-eBPF and performance acceptance, host-guarded aarch64 acceptance, native/npm/PyPI/Cargo package gates, operation, and diagnosis
 - [`releasing.md`](releasing.md) — Curated changelog, Linux and Apple-silicon artifact hygiene, native ARM claim boundary, Developer ID/notarization, local GitHub assets, release-triggered registry publication, and post-publication verification
 
 ## Documents
@@ -32,7 +32,7 @@ material, and operational guidance.
 
 - [`README.md`](../README.md) — Project overview and quick start
 - [`product-contract.md`](product-contract.md) — Single normative statement of the current product contract
-- [`ROADMAP.md`](../ROADMAP.md) — Public status, NixOS/Ubuntu/Debian lifecycle, fake-DNS and TLS compatibility, release artifact hygiene and native ARM work, implemented cooperative macOS source/backend package mechanics, future Network Extension backend, and roadmap
+- [`ROADMAP.md`](../ROADMAP.md) — Public status, NixOS/Ubuntu/Debian lifecycle, fake-DNS and TLS compatibility, release artifact hygiene and native ARM work, implemented cooperative macOS source/backend package mechanics, daemonless fallback research, deferred Network Extension backend, and roadmap
 - [`architecture.md`](architecture.md) — CLI, Linux eBPF, shared outbound SOCKS5 transport, Apple-silicon cooperative frontend, namespace-free and private-mount DNS, TCP/UDP relay, and TLS decrypt boundaries
 - [`config.md`](config.md) — Generated offline schema/examples, strict TOML/YAML/JSON policy rules, credentials, macOS explicit compatibility profile, capture allowlists/redaction, decrypt modes, and UDP/QUIC limits
 - [`install.md`](install.md) — Reproducible native/npm/PyPI/Cargo `heimdall-egress` Linux artifacts, hygiene and compatibility boundaries, checksums, install ownership, upgrade, and rollback
@@ -43,7 +43,8 @@ material, and operational guidance.
 
 - [`design/daemonless-runtime.md`](design/daemonless-runtime.md) — Implemented foreground replacement for all decrypt modes, including bounded pre-exec discovery of active and system-loader OpenSSL images
 - [`design/agent-event-log.md`](design/agent-event-log.md) — Portable evidence owner and offline event/run/run-summary/flow-summary CLI contracts with Linux cgroup and cooperative macOS source identities, lifecycle, DNS/policy/TLS observations, provenance-linked HTTP/1 headers, payload allowlists/redaction, content-addressed blobs, and orphan recovery
-- [`design/macos-backend.md`](design/macos-backend.md) — Implemented native-accepted Apple-silicon cooperative TCP source backend, unsigned companion/provider build skeleton, package/signing/notarization boundary, and optional signed `NETransparentProxyProvider` architecture, process attribution, lifecycle, capabilities, and acceptance matrix
-- [`design/macos-control-protocol.md`](design/macos-control-protocol.md) — Internal versioned Rust/Swift macOS control framing, HMAC, replay protection, run registration, owner-EOF lifecycle, fixed cross-language vector, and unresolved native attribution gate
+- [`design/macos-backend.md`](design/macos-backend.md) — Implemented native-accepted Apple-silicon cooperative TCP source backend, active `macos-interpose` direction, package/signing/notarization boundary, and deferred `NETransparentProxyProvider` prototype and acceptance matrix
+- [`design/macos-fallbacks.md`](design/macos-fallbacks.md) — Primary-source evaluation of proxychains-ng, Proxyman, mitmproxy, PF/TUN, and Network Extension plus native loader evidence and the daemonless interpose/adapter implementation order
+- [`design/macos-control-protocol.md`](design/macos-control-protocol.md) — Deferred versioned Rust/Swift macOS control framing, HMAC, replay protection, run registration, owner-EOF lifecycle, fixed cross-language vector, and unresolved native attribution gate
 - [`../skills/heimdall/references/commands.md`](../skills/heimdall/references/commands.md) — Agent operating and diagnosis workflow, including daemonless setup, scoped fake-DNS resolver fallback, TLS boundaries, and log lifecycle
 - [`../skills/heimdall/references/events.md`](../skills/heimdall/references/events.md) — Agent-facing schema map, bounded provenance joins, and non-disclosing blob verification recipes

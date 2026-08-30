@@ -17,14 +17,18 @@ guide.
   diagnostic, and argv-safe action evidence. Preflight rejects fake DNS,
   non-rejected UDP, capture, and both TLS inspection modes before the command
   executes; omission of `--backend macos-explicit` also remains fail-closed.
+- Add the `macos-interpose` fallback research contract after evaluating
+  proxychains-ng, Proxyman, mitmproxy local capture, PF/TUN, and Network
+  Extension boundaries. A standalone no-network Apple-silicon gate proves an
+  ordinary dynamic target loads an injected library while Hardened Runtime and
+  SIP-protected targets do not.
 - Emit cooperative macOS policy and TCP flow metadata under the additive
   `source={backend:"macos-explicit",scope:"cooperative_environment"}` event
   boundary, without claiming payload capture or process attribution. Native
   Apple-silicon acceptance covers upstream routing, domain preservation,
   evidence integrity, listener cleanup, and exit propagation.
-- Keep the optional signed `NETransparentProxyProvider` backend as a separate
-  in-development path with no released support or persistent Heimdall daemon
-  claim.
+- Keep the `NETransparentProxyProvider` backend as deferred source research
+  with no released support or persistent Heimdall daemon claim.
 - Add the internal `heimdall.macos.control/v1` protocol with bounded strict
   frames, HMAC-SHA256 authentication, per-direction replay protection, a fixed
   Swift conformance vector, validated run registration, concurrent-run
@@ -95,6 +99,10 @@ guide.
 
 ### Changed
 
+- Remove the Network Extension app/system-extension prototype from macOS
+  package and release construction while retaining its explicit source gate.
+  `heimdall.agent/v8` now reports `status="deferred"` and
+  `release_included=false` for that path.
 - Treat optional macOS flow identity metadata as a signed native evidence gate
   instead of assuming it proves process-group scope. Additive
   `heimdall.agent/v8` fields keep provider wiring and strict command scope

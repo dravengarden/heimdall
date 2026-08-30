@@ -1,11 +1,12 @@
 # macOS control protocol
 
-Status: **internal Rust v1 framing/lifecycle and the native Swift codec are
-implemented; the compile-only companion, system extension, and transparent
-backend do not use this protocol yet**.
+Status: **deferred source research**. Internal Rust v1 framing/lifecycle and
+the native Swift codec are implemented, but the compile-only companion, system
+extension, and transparent backend do not use this protocol. The protocol is
+excluded from release artifacts and the active macOS fallback delivery path.
 
-`heimdall.macos.control/v1` is the narrow control boundary between a future
-foreground run session and the signed macOS companion. It registers one run,
+`heimdall.macos.control/v1` is the retained control design between a possible
+future foreground run session and signed macOS companion. It registers one run,
 waits for provider acknowledgement before command release, unregisters that
 run, and removes it when the owner channel closes. It is not a policy language,
 network data plane, public daemon API, or transparent-support claim.
@@ -136,7 +137,8 @@ to distinguish the registered process group from unrelated, missing, and
 ambiguous sources.
 
 Returning an unknown flow direct can violate fail-closed command policy;
-rejecting every unknown flow can disrupt unrelated traffic. Until native
-evidence resolves that distinction, the provider remains unwired,
-`macos-transparent` remains unselectable, and machine capability output keeps
+rejecting every unknown flow can disrupt unrelated traffic. Until a future
+roadmap decision reactivates the path and native evidence resolves that
+distinction, the provider remains unwired, `macos-transparent` remains deferred
+and unselectable, `release_included=false`, and machine capability output keeps
 `strict_command_scope_proven=false`.

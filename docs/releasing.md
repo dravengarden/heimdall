@@ -96,6 +96,13 @@ The final signed bytes carry a secure timestamp; reproducibility applies to the
 unsigned build inputs and normalized archive construction, while the published
 checksum is authoritative for the signed artifact.
 
+Both paths build and package only the foreground CLI. The checked-in
+`NETransparentProxyProvider` app/system-extension skeleton and its control
+protocol are deferred source research: `just test-macos-companion-native` may
+be invoked explicitly by a developer, but release construction must not build,
+sign, notarize, install, activate, or archive it. A future interposition library
+must pass its own native and package acceptance before joining the archive.
+
 Follow Apple's primary guidance for
 [Developer ID certificates](https://developer.apple.com/help/account/certificates/create-developer-id-certificates/),
 [distribution-signed macOS code](https://developer.apple.com/documentation/xcode/creating-distribution-signed-code-for-the-mac/),

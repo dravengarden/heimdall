@@ -84,9 +84,13 @@ cannot prove or clean an entire descendant network scope, its run manifest
 intentionally reports `result.complete=false` and
 `descendants_cleaned=false` even after a normal child exit.
 
-Official packages remain Linux-only. The future `macos-transparent` signed
-companion is a separate backend and may not inherit the explicit backend's
-acceptance claims.
+Official packages remain Linux-only. The planned `macos-interpose` fallback is
+a separate, narrower backend for compatible dynamic socket/resolver calls and
+may not inherit either the explicit backend's acceptance or Linux cgroup
+claims. The checked-in `macos-transparent` Network Extension prototype is
+deferred source research, excluded from release artifacts, and reports
+`release_included=false`. See
+[the fallback research](design/macos-fallbacks.md).
 
 ## Connection lifecycle
 

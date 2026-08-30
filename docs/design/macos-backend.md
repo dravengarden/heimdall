@@ -1,13 +1,17 @@
 # macOS backend design
 
 Status: **the reduced Apple-silicon explicit backend is available from source;
-official macOS packages and the transparent backend are not available**.
+`macos-interpose` is implementation research; the Network Extension prototype
+is deferred and excluded from releases; official macOS packages are not
+available**.
 
 This document records the implemented cooperative backend and fixes the
-architecture boundaries for future transparent support. Native explicit
-acceptance does not turn a proxy environment into strict process scope, and a
-successful cross-compile or unsigned extension is never a transparent support
-claim.
+architecture boundaries for the daemonless fallback work and the retained
+Network Extension prototype. Native explicit acceptance does not turn a proxy
+environment into strict process scope, and a successful interpose probe,
+cross-compile, or unsigned extension is never a transparent support claim. See
+the [fallback research](macos-fallbacks.md) for the evaluated alternatives and
+primary sources.
 
 ## Decisions
 
@@ -15,31 +19,36 @@ claim.
    No persistent user-managed Heimdall daemon is installed or required.
 2. A CLI-only explicit-proxy backend is a bounded compatibility mode. It is
    never selected silently and is not described as transparent or fail closed.
-3. Transparent TCP and UDP use an optional signed companion containing an
-   `NETransparentProxyProvider` system extension. The extension is enabled
-   only while at least one transparent run is active.
-4. `NEAppProxyProvider` is not the default command backend. Its manager is
-   tied to managed per-app VPN configuration, so it remains a future option
-   for MDM-managed deployments rather than a cgroup substitute.
-5. The transparent backend reuses the CLI-owned policy, relay, JSONL, capture,
-   and relay-TLS boundaries. The provider classifies and transports flows; it
-   does not become a policy or evidence authority.
-6. macOS runtime TLS observation is unavailable. Relay TLS may become
-   available only after transparent flow forwarding and explicit trust pass
-   their own acceptance matrix.
-7. Process attribution is a native evidence gate, not an API assumption.
+3. The active fallback research combines a proxychains-style
+   `macos-interpose` library for compatible dynamic socket calls with
+   Proxyman-style child-only runtime adapters. It never changes the system
+   proxy or trust store and cannot claim universal process scope.
+4. The checked-in `NETransparentProxyProvider` companion remains a deferred,
+   source-only experiment. It is not built by the macOS release builder,
+   packaged, signed, installed, activated, or promoted as the next backend.
+5. `NEAppProxyProvider` is not the default command backend. Its manager is
+   tied to managed per-app VPN configuration, so it remains a possible
+   MDM-managed research path rather than a cgroup substitute.
+6. A future macOS backend reuses the CLI-owned policy, relay, JSONL, capture,
+   and relay-TLS boundaries. An interception component transports calls or
+   flows; it does not become a policy or evidence authority.
+7. macOS runtime TLS observation is unavailable. Relay TLS may become
+   available only for explicitly supported runtime trust adapters after opaque
+   TCP transport passes its own acceptance matrix.
+8. Network Extension process attribution is a native evidence gate, not an API assumption.
    `sourceAppAuditToken` is optional, and Apple does not document it as a
    complete process-tree identity contract for every transparent flow. The
-   transparent backend stays unavailable unless signed native tests prove a
-   safe discriminator for attributed, unrelated, missing, and ambiguous
-   metadata.
+   deferred backend stays unavailable unless it is deliberately reactivated
+   and signed native tests prove a safe discriminator for attributed,
+   unrelated, missing, and ambiguous metadata.
 
-## Two separate backends
+## Three separate backends
 
 | Backend | Installation | Intended coverage | Explicit limits |
 | --- | --- | --- | --- |
 | `macos-explicit` | Source-built `heimdall` CLI only; official package pending | Cooperative clients that honor a SOCKS proxy environment | Client-dependent TCP; no transparent UDP, fake DNS, QUIC, capture, TLS inspection, fail-closed, or strict command-scope claim |
-| `macos-transparent` | `heimdall` plus signed companion/system extension | Transparently attributed TCP and UDP flows from the wrapped process group | Not Linux cgroup-equivalent until descendant attribution, escape behavior, and race handling pass native acceptance |
+| `macos-interpose` | Planned CLI plus signed interposition library | Compatible dynamically linked socket/resolver calls | In development and unselectable; SIP, Hardened Runtime, static code, alternate APIs, direct syscalls, and loader-state changes remain outside the claim |
+| `macos-transparent` | Deferred source prototype; no release artifact | Possible operating-system flow interception if the path is reactivated | Requires paid entitlement, signed app/system extension, user approval, safe attribution, and coexistence acceptance |
 
 `macos-explicit` does not modify machine-wide network settings. `heimdall
 agent` prints an argv-safe execution prefix and the exact reduced capability
@@ -92,12 +101,17 @@ when the child exits. Child exit status is preserved, but the run manifest
 sets `result.complete=false` and `descendants_cleaned=false` because a proxy
 environment cannot prove or clean an entire descendant network scope.
 
-Dynamic-loader interposition may be evaluated as a separately named explicit
-backend, but it cannot broaden this contract. System Integrity Protection,
-hardened runtimes, static code, alternate socket APIs, and child environment
-changes make interposition incomplete by design.
+Dynamic-loader interposition is now evaluated as the separately named
+`macos-interpose` backend. Native feasibility proves an ordinary dynamic
+target can load an injected library while a Hardened Runtime target and an
+SIP-protected Apple binary do not. It cannot broaden the explicit contract or
+inherit Linux claims. See [macOS fallback research](macos-fallbacks.md).
 
-## Transparent architecture
+## Deferred Network Extension architecture
+
+The following design is retained so the source prototype and its safety
+invariants do not rot. It is not the active delivery sequence and is excluded
+from release artifacts.
 
 ```text
 heimdall run
@@ -136,7 +150,7 @@ to a companion or provider. `heimdall run` cannot select this path, and
 `heimdall agent` reports `provider_wired=false` and
 `attribution.status=native_evidence_required`.
 
-## Compile-only companion prototype
+## Deferred compile-only companion prototype
 
 The repository now contains the first non-routing Apple implementation slice:
 
@@ -162,7 +176,8 @@ activate, approve, launch, or configure the extension.
 The checked-in entitlement values document the intended direct-distribution
 shape; they do not prove that Apple has authorized a profile or that an
 installed signature contains those rights. `heimdall agent` therefore reports
-the source prototype separately while keeping `signed=false`,
+the source prototype as `status="deferred"` and `release_included=false` while
+keeping `signed=false`,
 `installable=false`, `activation_enabled=false`,
 `network_configuration_enabled=false`, and `provider_wired=false`.
 
@@ -228,7 +243,7 @@ to prevent relay recursion.
 
 ## TCP, UDP, DNS, QUIC, and TLS
 
-| Capability | First transparent milestone | Availability condition |
+| Capability | Deferred transparent milestone | Availability condition |
 | --- | --- | --- |
 | TCP | Forward attributed IPv4/IPv6 streams to the per-run relay | unrelated-process, relay-loss, half-close, backpressure, and long-lived-stream tests pass |
 | UDP | Preserve datagram boundaries and destination metadata | connected/unconnected UDP, timeout, truncation, and concurrent-flow tests pass |
@@ -246,11 +261,16 @@ observed.
 
 ## Packaging and authorization
 
-The CLI-only package may expose only `macos-explicit`. Transparent support
-requires a separately installed, notarized companion with the Network
-Extension entitlement and a provisioning profile that authorizes the system
-extension form of the app-proxy provider capability. Direct distribution uses
-the system-extension deployment shape; installation and first enablement may
+The current CLI-only package may expose only `macos-explicit`. The native
+release builder does not build or include the companion, system extension, or
+control transport. A future `macos-interpose` archive would add only a signed
+and notarized library after its own acceptance matrix passes.
+
+If the deferred path is ever reactivated, transparent support requires a
+separately installed, notarized companion with the Network Extension
+entitlement and a provisioning profile that authorizes the system-extension
+form of the app-proxy provider capability. Direct distribution uses the
+system-extension deployment shape; installation and first enablement may
 require user approval.
 
 `heimdall agent` must distinguish at least:
@@ -311,13 +331,18 @@ The explicit source backend and its platform boundary are implemented:
   embedded arm64 macOS 11+ system extension. Activation and Network Extension
   configuration are absent, provider startup fails closed, and unexpected
   flows are closed rather than returned to the normal route. It is deliberately
-  not wired to a CLI backend or provider transport.
+  not wired to a CLI backend or provider transport; and
+- `just test-macos-interpose-feasibility` proves the current loader boundary
+  without networking: an ordinary dynamic target loads the ad-hoc library,
+  while Hardened Runtime and SIP-protected targets do not. No socket hook or
+  backend is implemented yet.
 
 No versioned official macOS archive or registry package has been published yet;
 the package claim changes only after the signed/notarized path and a fresh
 download acceptance complete for that release. The companion app, system
 extension, transparent TCP/UDP, capture, and TLS paths remain unavailable for
-installation or use; only their unsigned source/build prototype exists.
+installation or use; only their deferred unsigned source/build prototype
+exists. `macos-interpose` is also unavailable and unselectable.
 
 ## Implementation sequence
 
@@ -326,19 +351,23 @@ installation or use; only their unsigned source/build prototype exists.
 2. Keep the implemented native package-mechanics gate green, then complete one
    Developer ID-signed/notarized versioned publication and fresh-download
    acceptance before declaring the archive available.
-3. Keep the implemented Rust/Swift authenticated protocol and compile-only
-   provider skeleton green; promote it to a signed containing app and system
-   extension, then add the minimal session helper without exposing a selectable
-   backend.
-4. Measure optional flow metadata in the signed provider and establish a safe
-   process-attribution discriminator before accepting transparent TCP or
-   adding UDP. If that gate fails, stop this backend design rather than
-   weakening command scope.
-5. Add UDP, then DNS and QUIC only as separately reported capabilities.
-6. Reuse relay TLS and capture only after opaque transparent transport is
-   stable. Runtime TLS remains unavailable.
-7. Add notarized release artifacts only after clean-machine installation,
-   approval, upgrade, rollback, uninstall, and fresh-run acceptance pass.
+3. Keep the Rust/Swift protocol and provider skeleton green only through their
+   explicit source gates. Do not invoke the native companion gate from package
+   or release construction.
+4. Build the proxychains-style `macos-interpose` fixture around authenticated
+   constructor startup, TCP `connect`, libc resolver calls, and the existing
+   foreground relay. Reject known incompatible targets before exec.
+5. Add negative native tests for SIP, Hardened Runtime, static code, alternate
+   networking APIs, direct syscalls, environment-cleared descendants, and
+   unsupported spawn/exec shapes. Keep strict scope and UDP false.
+6. Add Proxyman-style child-only runtime proxy/trust adapters without changing
+   system proxy or keychain state. Add relay TLS only for individually accepted
+   adapters; runtime TLS remains unavailable.
+7. Package the interposition library only after signed/notarized fresh-archive
+   acceptance. Keep the deferred companion out of that artifact.
+8. Reconsider Network Extension work only through a future roadmap decision;
+   reactivation still requires the complete signed attribution, coexistence,
+   installation, approval, and cleanup matrix below.
 
 ## Native acceptance matrix
 
@@ -356,6 +385,12 @@ and their macOS 11 deployment target, and validates the provider class and
 bundle identifiers. It neither installs nor activates the result and supplies
 no flow metadata, so it is not signed-provider or attribution evidence.
 
+`just test-macos-interpose-feasibility` is a separate no-network research
+gate. It proves only that the loader accepts an injected library for an
+ordinary dynamic fixture and blocks it for Hardened Runtime and SIP-protected
+targets. It is not part of package or release acceptance and does not prove a
+socket hook, DNS, descendants, or fail-closed routing.
+
 `just test-package-macos` adds a native package-mechanics matrix: pinned release
 tests, the same explicit fixture, private/build-path and Mach-O checks, macOS
 11.0 deployment target, normalized tar metadata, checksum, ad-hoc integrity
@@ -366,9 +401,10 @@ Developer ID, Hardened Runtime, timestamp, notarization result and log, and
 Gatekeeper assessment. A successful mechanics gate is not a published-package
 claim.
 
-Compilation and simulator-style unit tests are insufficient for the future
-transparent backend. Availability of that backend requires a signed, entitled
-installation on native Apple silicon covering:
+The deferred transparent matrix remains recorded below in case the roadmap
+reactivates it. Compilation and simulator-style unit tests are insufficient;
+availability would require a signed, entitled installation on native Apple
+silicon covering:
 
 - IPv4/IPv6 TCP and UDP, direct/proxy/reject policy, and unrelated-process
   non-interference;
@@ -386,9 +422,20 @@ installation on native Apple silicon covering:
   extension after the final run.
 
 Until the packaging gate passes, package pages and release notes must say that
-official macOS packages are not available. Until the transparent matrix passes,
-README, `heimdall agent`, package pages, and release notes must keep every
-transparent capability unavailable.
+official macOS packages are not available. Until an interpose or reactivated
+transparent matrix passes, README, `heimdall agent`, package pages, and release
+notes must keep every unimplemented macOS capability unavailable.
+
+## Fallback references
+
+- [macOS fallback research](macos-fallbacks.md)
+- [proxychains-ng README](https://github.com/rofl0r/proxychains-ng/blob/master/README)
+- [proxychains-ng interposition source](https://github.com/rofl0r/proxychains-ng/blob/master/src/libproxychains.c)
+- [Apple Hardened Runtime](https://developer.apple.com/documentation/security/hardened-runtime)
+- [Apple TN3165: Packet Filter is not API](https://developer.apple.com/documentation/technotes/tn3165-packet-filter-is-not-api)
+- [Proxyman proxy setting tool](https://docs.proxyman.com/basic-features/proxy-setting-tool)
+- [Proxyman manual setup](https://docs.proxyman.com/automatic-setup/manual-setup)
+- [mitmproxy macOS local capture](https://www.mitmproxy.org/posts/local-capture/macos/)
 
 ## Apple references
 

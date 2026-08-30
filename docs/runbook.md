@@ -29,6 +29,9 @@ On a native Apple-silicon Mac, run:
 
 ```bash
 just test-macos-native
+just test-macos-interpose-feasibility
+
+# Deferred source research; not a package or release gate:
 just test-macos-companion-native
 ```
 
@@ -49,6 +52,12 @@ disabled, and checks their arm64 macOS 11 bundle shape. The app never submits
 activation, the provider refuses startup and closes an unexpected flow, and no
 Network Extension configuration exists. The gate does not install, approve,
 activate, or route through the extension and is not attribution evidence.
+It is intentionally excluded from package and release construction.
+
+`just test-macos-interpose-feasibility` is a no-network research gate. It
+builds an ad-hoc-signed constructor probe and verifies that an ordinary dynamic
+target loads it while Hardened Runtime and SIP-protected targets do not. It
+does not implement or accept socket routing, DNS, descendants, capture, or TLS.
 
 The native packaging gate is separate from backend acceptance:
 
@@ -62,9 +71,9 @@ HEIMDALL_MACOS_BUILD_HOST=<ssh-alias> just test-package-macos
 
 It adds arm64 Mach-O and deployment-target hygiene, deterministic archive
 metadata, checksum, ad-hoc integrity signing, install, simulated upgrade,
-rollback, and uninstall. It also reruns the unsigned companion source gate,
-without adding the companion to the CLI archive. `--unsigned` is a
-non-publishable test mode. The
+rollback, and uninstall. It builds and packages only the CLI; the deferred
+companion and system extension are neither built nor included. `--unsigned` is
+a non-publishable test mode. The
 default builder requires Developer ID Application, Hardened Runtime, secure
 timestamp, a valid `heimdall-notary` keychain profile, an accepted notarization
 log with no warning/error issue, and Gatekeeper assessment.

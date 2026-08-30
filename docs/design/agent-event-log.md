@@ -12,7 +12,9 @@ evidence source of truth.
 The writer/control/finalization owner and offline log CLI run on Linux and
 Darwin. The Apple-silicon `macos-explicit` backend emits cooperative TCP policy
 and flow metadata, but no payload, DNS, TLS, or process-attribution evidence.
-The future transparent backend has a separate native acceptance boundary.
+The deferred Network Extension backend has a separate native acceptance
+boundary and is excluded from release artifacts. The `macos-interpose`
+research path must define its own source identity before it emits events.
 
 This document defines the unified storage and CLI contract. The goals are direct Linux-tool usability, strict
 machine discovery, bounded storage, and loss-aware rotation. The event log is
