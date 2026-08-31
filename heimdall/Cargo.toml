@@ -36,7 +36,7 @@ base64 = "0.22"
 hex = "0.4"
 libc = "0.2"
 sha2 = "0.10"
-uuid = { version = "=1.10.0", features = ["serde", "v7"] }
+uuid = { version = "=1.26.0", features = ["serde", "v7"] }
 
 # The outbound relay protocol is shared by Linux and future Darwin backends.
 tokio = { version = "1", features = ["full"] }
