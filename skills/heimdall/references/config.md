@@ -5,6 +5,7 @@ discovered `/etc/heimdall/config.<format>` file. All formats use this model:
 
 ```text
 version = 1
+execution.backend = ebpf | interpose | explicit (required)
 proxy.default_policy -> proxy.policies.<name>
 proxy.outbounds.<name> = SOCKS5 TCP/UDP endpoint
 proxy.policies.<name>.dns.mode = fake | system
@@ -22,6 +23,21 @@ decrypt.mode = off | runtime | relay
 decrypt.ca_cert = absolute PEM path (relay only)
 decrypt.ca_key = absolute protected PEM path (relay only)
 ```
+
+Heimdall never guesses or falls back. `ebpf` is Linux-only and is the full
+transparent boundary. `interpose` is available on Linux and Apple-silicon
+macOS for compatible dynamically linked TCP and libc resolver calls.
+`explicit` is available on Linux and macOS x86_64/aarch64 for cooperative
+clients. The run-level
+`--backend` flag overrides this field once without changing the file.
+
+For `interpose`, require every UDP path to reject, capture and decrypt off, and
+TCP-capable referenced outbounds. Common interposed IP-datagram calls are
+rejected, but direct syscalls, alternate APIs, inherited sockets, loader-state
+removal, and unsupported descendants remain bypasses. For `explicit`, apply
+the same constraints and additionally require system DNS. Never turn a
+reduced backend's successful request into a transparent-scope claim; inspect
+`heimdall.agent/v10` first.
 
 Use `heimdall init --format toml|yaml|json` for exact syntax. Do not
 translate field names between formats.
@@ -131,6 +147,10 @@ both config paths. Heimdall never uploads captures; use
   53 are redirected to Heimdall.
 - `system` sends port 53 to the host resolver and forbids domain rules because
   the relay sees only resolved IPs.
+- `interpose` fake DNS means only synthetic results returned by interposed libc
+  `getaddrinfo`; it does not intercept port 53 or alternate resolver APIs.
+- `explicit` requires `system`; SOCKS-aware clients may still forward a
+  hostname through their child-only proxy environment.
 
 ## Repair protocol
 

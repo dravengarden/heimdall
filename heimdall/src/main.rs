@@ -1,9 +1,9 @@
 //! Heimdall's target-selected CLI entry point.
 //!
-//! Linux contains the available cgroup/eBPF implementation. macOS currently
-//! exposes portable configuration and event-log inspection plus a
-//! machine-readable unavailable backend contract; it never executes a command
-//! outside policy.
+//! Linux contains the cgroup/eBPF implementation. Linux and macOS share the
+//! reduced interpose and explicit frontends, portable configuration, and
+//! event-log inspection; neither platform executes a command outside the
+//! selected backend's declared policy boundary.
 
 mod cli;
 #[cfg_attr(
@@ -14,9 +14,9 @@ mod cli;
     )
 )]
 mod event_log;
-#[cfg(any(target_os = "macos", test))]
 mod explicit_proxy;
 mod heimdall_config;
+mod interpose;
 #[cfg(any(target_os = "macos", test))]
 #[cfg_attr(
     not(test),

@@ -77,8 +77,17 @@
           "type": "object",
           "required": ["backend", "scope"],
           "properties": {
-            "backend": { "const": "macos-explicit" },
+            "backend": { "const": "explicit" },
             "scope": { "const": "cooperative_environment" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["backend", "scope"],
+          "properties": {
+            "backend": { "const": "interpose" },
+            "scope": { "const": "interposed_dynamic_calls" }
           },
           "additionalProperties": false
         }

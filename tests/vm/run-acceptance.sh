@@ -65,7 +65,7 @@ as_tester heimdall config schema --version v1 \
 as_tester heimdall config example --format toml > /tmp/heimdall-example.toml
 as_tester heimdall --config /tmp/heimdall-example.toml config validate
 as_tester heimdall agent \
-  | jq -e '.contract == "heimdall.agent/v8"
+  | jq -e '.contract == "heimdall.agent/v10"
     and .ready
     and .execution.backend == "linux-ebpf-foreground"
     and .execution.owner == "heimdall-run"

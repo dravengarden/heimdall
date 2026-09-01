@@ -710,10 +710,10 @@ enum Cmd {
     /// Write a minimal starter config in the selected format.
     Init(cli::init::InitArgs),
 
-    /// Wrap a CLI command so its egress goes through a heimdall
-    /// selected policy (proxychains-style). Non-root: re-execs itself
-    /// under `systemd-run --user --scope` to land in a writable
-    /// cgroup. The policy defaults to `proxy.default_policy`.
+    /// Wrap a CLI command with the explicitly selected backend and
+    /// policy. Only `ebpf` re-execs through `systemd-run --user
+    /// --scope`; `interpose` and `explicit` stay in the foreground.
+    /// The policy defaults to `proxy.default_policy`.
     Run(cli::run::RunArgs),
 
     /// Print help. By default, concise per-command help (same as

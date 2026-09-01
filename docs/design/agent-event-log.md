@@ -10,11 +10,11 @@ per-flow explanation documents are implemented without replacing JSONL as the
 evidence source of truth.
 
 The writer/control/finalization owner and offline log CLI run on Linux and
-Darwin. The Apple-silicon `macos-explicit` backend emits cooperative TCP policy
-and flow metadata, but no payload, DNS, TLS, or process-attribution evidence.
-The deferred Network Extension backend has a separate native acceptance
-boundary and is excluded from release artifacts. The `macos-interpose`
-research path must define its own source identity before it emits events.
+Darwin. The cross-platform `interpose` backend emits dynamic-call TCP policy
+and flow metadata; Linux/macOS x86_64/aarch64 `explicit` emits cooperative TCP metadata.
+Neither emits payload, TLS, or process-attribution evidence. The deferred
+Network Extension backend has a separate native acceptance boundary and is
+excluded from release artifacts.
 
 This document defines the unified storage and CLI contract. The goals are direct Linux-tool usability, strict
 machine discovery, bounded storage, and loss-aware rotation. The event log is
@@ -141,10 +141,11 @@ fields cannot reinterpret an existing kind.
 - `dns.answer`: matching exchange UUID, rcode, answers, fake boundary, and
   latency.
 - `policy.decision`: source boundary, policy, network, destination identity,
-  matched rule or final action, and selected action. Linux identifies
-  `{cgroup_id}`; `macos-explicit` identifies
-  `{backend:"macos-explicit",scope:"cooperative_environment"}`. The latter
-  proves only that a client reached the cooperative listener, not which process
+  matched rule or final action, and selected action. Linux `ebpf` identifies
+  `{cgroup_id}`; `interpose` identifies
+  `{backend:"interpose",scope:"interposed_dynamic_calls"}`; `explicit`
+  identifies `{backend:"explicit",scope:"cooperative_environment"}`. Reduced
+  sources prove only that a client reached their frontend, not which process
   originated every socket.
 
 ### Flows

@@ -1,11 +1,8 @@
-//! `heimdall run` — proxychains-style CLI proxy via cgroup + eBPF.
+//! `heimdall run` — explicitly selected Linux execution backend.
 //!
-//! Wraps an arbitrary command so its egress flows through one of the
-//! named policy declared in /etc/heimdall/config.<ext>. No
-//! LD_PRELOAD: works with statically-linked Go binaries, setuid
-//! binaries. UDP uses reversible IPv4 tokens or an IPv6 single-peer fallback;
-//! ambiguous IPv6 multi-target and shared-source-port patterns remain
-//! fail-closed. The cgroup-attached eBPF programs do the redirection.
+//! `explicit` and `interpose` dispatch directly to their foreground reduced
+//! frontends. The flow below applies only to `ebpf`, which covers static code
+//! and UDP without loader cooperation.
 //!
 //! Flow:
 //!
@@ -40,7 +37,10 @@ use std::time::Duration;
 use nix::mount::{MsFlags, mount};
 use nix::sched::{CloneFlags, unshare};
 
-use crate::heimdall_config::{DnsMode, HeimdallConfig};
+use crate::{
+    cli::backend::{BackendArg, selected as selected_backend},
+    heimdall_config::{DnsMode, ExecutionBackend, HeimdallConfig},
+};
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
 use nix::sys::signal::{self, SaFlags, SigAction, SigHandler, SigSet, SigmaskHow, Signal};
@@ -51,6 +51,10 @@ use tracing::warn;
 
 #[derive(Args, Debug)]
 pub struct RunArgs {
+    /// Execution backend. Overrides execution.backend for this command.
+    #[arg(long, value_enum)]
+    pub backend: Option<BackendArg>,
+
     /// Named policy from `proxy.policies`. Overrides proxy.default_policy.
     #[arg(short = 'p', long)]
     pub policy: Option<String>,
@@ -60,8 +64,8 @@ pub struct RunArgs {
     #[arg(long, hide = true)]
     pub no_reentry: bool,
 
-    /// Don't rmdir the transient cgroup on exit (debug aid; cgroup
-    /// stays around so you can inspect cgroup.events / cgroup.procs).
+    /// eBPF only: don't rmdir the transient cgroup on exit (debug aid;
+    /// the cgroup stays available for cgroup.events / cgroup.procs inspection).
     #[arg(long)]
     pub keep_cgroup: bool,
 
@@ -181,11 +185,51 @@ pub async fn run(config_path: &Path, args: RunArgs) -> Result<()> {
     })?;
 
     let decision = resolve_decision(&cfg, &args)?;
+    let backend = resolve_backend(&cfg, &args);
 
     if args.command.is_empty() {
         bail!(
             "missing command — pass it after `--`. e.g. `heimdall run -- curl https://example.com`"
         );
+    }
+
+    if matches!(
+        backend,
+        ExecutionBackend::Interpose | ExecutionBackend::Explicit
+    ) && args.keep_cgroup
+    {
+        bail!(
+            "--keep-cgroup applies only to the eBPF backend; remove it for {} mode",
+            backend.name()
+        );
+    }
+
+    if backend == ExecutionBackend::Interpose {
+        let evidence = crate::run_evidence::RunEvidence::start(
+            &args.command,
+            &decision.policy,
+            "interpose",
+            &cfg.capture,
+        )?;
+        let outcome = crate::interpose::run(&cfg, &decision.policy, &args.command, &evidence).await;
+        match outcome {
+            Ok(exit_code) => {
+                evidence.finish(exit_code, false)?;
+                std::process::exit(exit_code);
+            }
+            Err(error) => {
+                let _ = evidence.fail(
+                    "interpose_run_failed",
+                    "the interpose foreground run failed before completion",
+                );
+                return Err(error);
+            }
+        }
+    }
+
+    if backend == ExecutionBackend::Explicit {
+        let exit_code = crate::explicit_proxy::run(&cfg, &decision.policy, &args.command).await?;
+        std::process::exit(exit_code);
     }
 
     // Re-entry: if not under user@<UID>.service, hand off to
@@ -406,6 +450,10 @@ fn resolve_decision(cfg: &HeimdallConfig, args: &RunArgs) -> Result<RunDecision>
     Ok(RunDecision { policy, dns })
 }
 
+fn resolve_backend(cfg: &HeimdallConfig, args: &RunArgs) -> ExecutionBackend {
+    selected_backend(cfg.execution.backend, args.backend)
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // systemd user-scope re-exec — gives us a writable cgroup tree
 // ────────────────────────────────────────────────────────────────────────────
@@ -459,6 +507,10 @@ fn reentry_command_args(exe: &Path, config_path: &Path, args: &RunArgs) -> Vec<O
         "run".into(),
         "--no-reentry".into(),
     ];
+    if let Some(backend) = args.backend {
+        argv.push("--backend".into());
+        argv.push(backend.name().into());
+    }
     if let Some(policy) = &args.policy {
         argv.push("--policy".into());
         argv.push(policy.into());
@@ -781,6 +833,7 @@ mod tests {
     #[test]
     fn reentry_preserves_the_resolved_global_config_path() {
         let args = RunArgs {
+            backend: Some(crate::cli::backend::BackendArg::Ebpf),
             policy: Some("corp".to_string()),
             no_reentry: false,
             keep_cgroup: true,
@@ -799,6 +852,8 @@ mod tests {
                 "/etc/heimdall/runtime.toml".into(),
                 "run".into(),
                 "--no-reentry".into(),
+                "--backend".into(),
+                "ebpf".into(),
                 "--policy".into(),
                 "corp".into(),
                 "--keep-cgroup".into(),

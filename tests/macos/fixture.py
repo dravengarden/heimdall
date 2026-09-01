@@ -23,7 +23,7 @@ def read_exact(stream, length):
 
 class HttpHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        payload = b"heimdall-macos-explicit-ok\n"
+        payload = b"heimdall-fixture-ok\n"
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
         self.send_header("Content-Length", str(len(payload)))
@@ -87,6 +87,13 @@ class SocksHandler(socketserver.BaseRequestHandler):
                     target.sendall(payload)
 
 
+class UdpHandler(socketserver.BaseRequestHandler):
+    def handle(self):
+        payload, server_socket = self.request
+        if payload == b"heimdall-macos-udp":
+            server_socket.sendto(b"heimdall-macos-udp-ok", self.client_address)
+
+
 class ThreadingServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
@@ -101,11 +108,14 @@ def main():
 
     http = ThreadingServer(("127.0.0.1", 0), HttpHandler)
     socks = ThreadingServer(("127.0.0.1", 0), SocksHandler)
+    udp = socketserver.ThreadingUDPServer(("127.0.0.1", 0), UdpHandler)
+    udp.daemon_threads = True
     socks.log_path = args.log
     socks.log_lock = threading.Lock()
     threads = [
         threading.Thread(target=http.serve_forever, daemon=True),
         threading.Thread(target=socks.serve_forever, daemon=True),
+        threading.Thread(target=udp.serve_forever, daemon=True),
     ]
     for thread in threads:
         thread.start()
@@ -115,6 +125,7 @@ def main():
             {
                 "http_port": http.server_address[1],
                 "socks_port": socks.server_address[1],
+                "udp_port": udp.server_address[1],
             }
         ),
         encoding="utf-8",
@@ -128,6 +139,7 @@ def main():
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     stopped.wait()
+    udp.shutdown()
     socks.shutdown()
     http.shutdown()
 

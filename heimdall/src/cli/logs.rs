@@ -1652,8 +1652,39 @@ mod tests {
             "data": {
                 "network": "tcp",
                 "source": {
-                    "backend": "macos-explicit",
+                    "backend": "explicit",
                     "scope": "cooperative_environment"
+                },
+                "destination": {"host": "example.com", "port": 443},
+                "action": {"type": "route", "outbound": "default"},
+                "policy": "default",
+                "boundary": "transport"
+            }
+        });
+        let errors = validator
+            .iter_errors(&event)
+            .map(|error| error.to_string())
+            .collect::<Vec<_>>();
+        assert!(errors.is_empty(), "{errors:#?}");
+    }
+
+    #[test]
+    fn event_schema_accepts_cross_platform_interpose_source() {
+        let schema: Value = serde_json::from_str(EVENT_SCHEMA).unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let event = json!({
+            "schema": EVENT_CONTRACT,
+            "run_id": Uuid::now_v7(),
+            "seq": 1,
+            "ts": "2026-08-30T00:00:00.000000Z",
+            "monotonic_ns": 1,
+            "kind": "flow.open",
+            "flow_id": Uuid::now_v7(),
+            "data": {
+                "network": "tcp",
+                "source": {
+                    "backend": "interpose",
+                    "scope": "interposed_dynamic_calls"
                 },
                 "destination": {"host": "example.com", "port": 443},
                 "action": {"type": "route", "outbound": "default"},

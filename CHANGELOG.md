@@ -8,25 +8,35 @@ guide.
 
 ### Added
 
-- Add the opt-in Apple-silicon `macos-explicit` source backend: a foreground,
-  kernel-assigned loopback SOCKS5 CONNECT frontend for cooperative TCP clients
-  that evaluates the shared policy, routes through SOCKS5/direct/reject,
-  injects only child `ALL_PROXY`/`all_proxy`, preserves child exit status, and
-  never changes system proxy settings or starts a daemon.
-- Extend `heimdall.agent/v8` with truthful macOS execution, capability,
-  diagnostic, and argv-safe action evidence. Preflight rejects fake DNS,
-  non-rejected UDP, capture, and both TLS inspection modes before the command
-  executes; omission of `--backend macos-explicit` also remains fail-closed.
-- Add the `macos-interpose` fallback research contract after evaluating
-  proxychains-ng, Proxyman, mitmproxy local capture, PF/TUN, and Network
-  Extension boundaries. A standalone no-network Apple-silicon gate proves an
-  ordinary dynamic target loads an injected library while Hardened Runtime and
-  SIP-protected targets do not.
-- Emit cooperative macOS policy and TCP flow metadata under the additive
-  `source={backend:"macos-explicit",scope:"cooperative_environment"}` event
-  boundary, without claiming payload capture or process attribution. Native
+- Require strict `execution.backend = ebpf | interpose | explicit` selection
+  in the shared TOML/YAML/JSON schema and all generated starters. Missing or
+  unknown values fail before exec; Heimdall never guesses or falls back.
+  `--backend` remains a one-run override.
+- Add the selectable daemonless `interpose` backend on Linux and Apple silicon.
+  The single CLI embeds a native `.so`/`.dylib`, materializes it privately for
+  one run, authenticates it to a kernel-assigned loopback SOCKS5 frontend with
+  a fresh secret, routes compatible dynamic TCP `connect` and libc resolver
+  calls through shared policy, and removes the library at teardown.
+- Reject common interposed IP-datagram `connect`, `send`, `sendto`, `sendmsg`,
+  and Linux `sendmmsg` calls. The contract remains intentionally reduced:
+  static code, direct syscalls, alternate APIs, inherited sockets,
+  loader-state removal, and unsupported descendants can bypass it; capture,
+  TLS inspection, QUIC, and universal fail-closed scope are unavailable.
+- Add Linux and macOS x86_64/aarch64 `explicit`: a foreground loopback SOCKS5 CONNECT frontend
+  for cooperative TCP clients that evaluates shared policy, injects only child
+  `ALL_PROXY`/`all_proxy`, preserves exit status, and never changes system
+  proxy settings or starts a daemon.
+- Add `heimdall.agent/v10` with configured backend, scope,
+  failure-boundary, bypass, diagnostic, and argv-safe action evidence for all
+  three implemented backends. Reduced-backend preflight rejects unsupported
+  UDP policy, capture, and TLS modes before the command executes.
+- Emit reduced policy and TCP flow metadata under
+  `source={backend:"interpose",scope:"interposed_dynamic_calls"}` or
+  `source={backend:"explicit",scope:"cooperative_environment"}` without
+  claiming payload capture or process attribution. Native Linux and
   Apple-silicon acceptance covers upstream routing, domain preservation,
-  evidence integrity, listener cleanup, and exit propagation.
+  authentication, UDP-call rejection, evidence integrity, cleanup, and exit
+  propagation.
 - Keep the `NETransparentProxyProvider` backend as deferred source research
   with no released support or persistent Heimdall daemon claim.
 - Add the internal `heimdall.macos.control/v1` protocol with bounded strict
@@ -53,7 +63,7 @@ guide.
   credential resolution, SOCKS5 TCP CONNECT, UDP ASSOCIATE, destination
   encoding, frame validation, and bounded setup timeouts. Linux now uses that
   shared implementation; the Darwin all-targets check compiles its protocol
-  tests, and `macos-explicit` uses the TCP CONNECT path behind its per-run
+  tests, and the reduced backends use the TCP CONNECT path behind their per-run
   loopback listener.
 - Keep macOS Unix event/control sockets within Darwin's path limit and reset
   accepted streams to blocking mode before the portable JSONL owner uses them.
@@ -74,7 +84,7 @@ guide.
   error evidence, and argv-safe follow-up actions without copying payloads,
   headers, or SNI into the summary.
 - Advertise the flow-summary schema and parameterized inspection action through
-  additive `heimdall.agent/v8` fields, with unit, current/LTS NixOS, Ubuntu,
+  additive `heimdall.agent/v10` fields, with unit, current/LTS NixOS, Ubuntu,
   and Debian acceptance coverage.
 - Add a pinned Ubuntu 24.04 x86_64 KVM release gate for native archive
   installation, exact positive and negative setup authorization, fake DNS
@@ -90,22 +100,26 @@ guide.
   existing `heimdall.benchmark/v1` contract for latency, procfs RSS, 1/10/50
   concurrent starts, SOCKS5 TCP/UDP, transport and relay capture throughput,
   and event integrity.
-- Add resolver compatibility preflight to `heimdall.agent/v8`, including the
+- Add resolver compatibility preflight to `heimdall.agent/v10`, including the
   selected fake-DNS strategy, NSS/nscd evidence, user-namespace settings,
   shell-safe inspection argv, and a stable blocking diagnostic.
-- Add relay CA validation to `heimdall.agent/v8`; invalid material now reports
+- Add relay CA validation to `heimdall.agent/v10`; invalid material now reports
   `config.decrypt.ca_material_error`, makes readiness false, and withholds the
   execution prefix before a command starts.
 
 ### Changed
 
+- Replace pre-release backend names tied to one operating system with the
+  canonical `interpose` and `explicit` enum values. Existing pre-1.0 config
+  must be updated; there is no compatibility alias.
+
 - Remove the Network Extension app/system-extension prototype from macOS
   package and release construction while retaining its explicit source gate.
-  `heimdall.agent/v8` now reports `status="deferred"` and
+  `heimdall.agent/v10` now reports `status="deferred"` and
   `release_included=false` for that path.
 - Treat optional macOS flow identity metadata as a signed native evidence gate
   instead of assuming it proves process-group scope. Additive
-  `heimdall.agent/v8` fields keep provider wiring and strict command scope
+  `heimdall.agent/v10` fields keep provider wiring and strict command scope
   false until attributed, unrelated, missing, and ambiguous identities pass.
   The report distinguishes the source prototype from a signed, installable,
   activation-enabled companion.

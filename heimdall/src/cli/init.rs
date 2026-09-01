@@ -53,6 +53,9 @@ impl InitFormat {
 const HEIMDALL_TOML: &str = r#"# heimdall is a proxy wrapper. System traffic is never redirected.
 version = 1
 
+[execution]
+backend = "ebpf"
+
 [proxy]
 default_policy = "default"
 
@@ -84,6 +87,8 @@ mode = "off"
 
 const HEIMDALL_YAML: &str = r#"# heimdall is a proxy wrapper. System traffic is never redirected.
 version: 1
+execution:
+  backend: ebpf
 proxy:
   default_policy: default
   outbounds:
@@ -112,6 +117,7 @@ decrypt: { mode: "off" }
 
 const HEIMDALL_JSON: &str = r#"{
   "version": 1,
+  "execution": { "backend": "ebpf" },
   "proxy": {
     "default_policy": "default",
     "outbounds": {
@@ -185,7 +191,7 @@ pub fn run(args: InitArgs) -> Result<()> {
     );
     #[cfg(target_os = "macos")]
     println!(
-        "  2. For macos-explicit, set system DNS, reject UDP, and keep capture/decrypt off.\n     Run `heimdall agent` and use its actions.execute_prefix only when ready.\n     Pass --config <PATH> only if the file lives elsewhere than {}.",
+        "  2. Set execution.backend to interpose or explicit; macOS does not choose a reduced backend automatically.\n     Reject UDP, keep capture/decrypt off, then run `heimdall agent` and use its actions.execute_prefix.\n     Pass --config <PATH> only if the file lives elsewhere than {}.",
         main_target.display()
     );
 

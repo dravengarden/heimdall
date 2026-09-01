@@ -128,7 +128,7 @@ case "$command_name" in
     printf 'installed Heimdall %s at %s\n' "$VERSION" "$active"
     case "$PLATFORM" in
       linux) printf 'authorize only: %s __setup-worker\n' "$active" ;;
-      macos) printf 'macos-explicit requires no privileged setup\n' ;;
+      macos) printf 'macOS reduced backends require no privileged setup\n' ;;
     esac
     ;;
   rollback)

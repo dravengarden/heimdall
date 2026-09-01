@@ -5,9 +5,10 @@ description: Operate and configure the Heimdall command-scoped TCP/UDP proxy and
 
 # Heimdall
 
-Treat Heimdall as a command wrapper, not a host-wide router. A normal run
-attaches eBPF only to its transient command cgroup and owns its relay, DNS,
-maps, links, and logs in the foreground.
+Treat Heimdall as a command wrapper, not a host-wide router. Every backend owns
+its relay and logs in the foreground. The full Linux backend additionally
+attaches eBPF only to its transient command cgroup and owns DNS, maps, and links
+for that run.
 
 Treat [`../../docs/product-contract.md`](../../docs/product-contract.md) as the
 normative product boundary. This skill supplies operating procedure and must
@@ -15,21 +16,30 @@ not broaden that contract.
 
 ## Gate on the platform
 
-Official packages currently execute on Linux only. On macOS, do not infer
-support from a binary alone and never modify system proxy settings, start
-`proxychains`, or install trust. A source-built Apple-silicon CLI may expose
-the reduced `macos-explicit` backend. Run `heimdall agent --policy <name>` and
-continue only when it exits 0, reports that exact backend, and supplies
-`actions.execute_prefix`. Execute that prefix as an argv array before appending
-the command argv.
+Run `heimdall agent --policy <name>` and continue only when it exits 0, reports
+the configured backend, and supplies `actions.execute_prefix`. Execute that
+prefix as an argv array before appending the command argv.
 
-For `macos-explicit`, require `scope.model = cooperative_proxy_environment`,
-`strict_command_scope = false`, `client_can_bypass = true`, and only
-`ALL_PROXY`/`all_proxy` environment ownership. It supports cooperative TCP
-metadata only: no UDP, fake DNS, capture, TLS inspection, process attribution,
-or fail-closed coverage. A run deliberately reports incomplete descendant
-cleanup. Do not broaden those claims from a successful request. The backend
-starts no daemon and changes no system proxy setting.
+On Linux, explicitly select the full `ebpf` backend, or choose `interpose` or
+`explicit` when a no-privilege reduced boundary is intentional. For
+`interpose`, require
+`scope.model = interposed_dynamic_calls`, `strict_command_scope = false`, and
+`client_can_bypass = true`; only compatible dynamic TCP `connect` and libc
+resolver calls are routed. Common interposed UDP send calls are rejected, but
+uninterposed UDP, direct syscalls, alternate APIs, loader-state removal,
+inherited sockets, and unsupported descendants remain bypasses. Capture and
+TLS inspection must be off.
+
+On Apple silicon, select `interpose` for that same dynamic-call boundary.
+On either x86_64 or Apple-silicon macOS, select `explicit` for cooperative
+SOCKS-aware TCP clients. There is no automatic backend or fallback on either
+platform.
+For `explicit`, require `scope.model = cooperative_proxy_environment`,
+`strict_command_scope = false`, and `client_can_bypass = true`. It owns only
+the child proxy environment and emits TCP metadata; it has no UDP, fake DNS,
+capture, TLS inspection, process attribution, or fail-closed coverage. Neither
+macOS backend changes system proxy settings, installs trust, or starts a
+daemon.
 
 `macos-transparent` remains unavailable. Never infer Network Extension,
 transparent process scope, or official macOS packaging from explicit-backend
@@ -44,19 +54,23 @@ Run:
 heimdall agent
 ```
 
-Parse the single `heimdall.agent/v8` JSON object. Exit 0 means ready, exit 1
+Parse the single `heimdall.agent/v10` JSON object. Exit 0 means ready, exit 1
 means the document explains why, and exit 2 is invalid CLI usage. Read stable
 error `code` values before messages. Execute `actions` as argv arrays; never
 join or evaluate them as shell text.
 
 Use `platform` and `execution` before running a command:
 
-- On Linux, require `backend = linux-ebpf-foreground`,
-  `daemon_required = false`, `owner = heimdall-run`, and
-  `privilege_setup = sudo-then-unprivileged-session-helper` for every decrypt
-  mode.
-- On macOS, require `backend = macos-explicit`, `daemon_required = false`,
-  `privilege_setup = none`, and the reduced capability boundary above.
+- For Linux `ebpf`, require `scope = command_cgroup`, `daemon_required =
+  false`, `owner = heimdall-run`, and `privilege_setup =
+  sudo-then-unprivileged-session-helper` for every decrypt mode.
+- For `interpose` on Linux or macOS, require `scope =
+  interposed_dynamic_calls`, `failure_boundary = interposed_calls_only`,
+  `daemon_required = false`, and `privilege_setup = none`.
+- For Linux or macOS `explicit`, require `scope =
+  cooperative_proxy_environment`, `failure_boundary = cooperative_clients_only`,
+  `daemon_required = false`,
+  and `privilege_setup = none`.
 - Heimdall has no persistent daemon or health endpoint.
 - `web_ui_required` must remain false for every executable path.
 
@@ -183,12 +197,14 @@ with the actual command when compatibility matters.
 Require lifecycle fields appropriate to the workflow:
 
 - `foreground_modes` contains the selected mode;
-- `foreground_owned_resources`, `resources_close_when_run_exits`,
-  `setup_helper_session_scoped`, and `setup_helper_drops_privileges` are true;
+- `foreground_owned_resources` and `resources_close_when_run_exits` are true;
+- for `ebpf`, `setup_helper_session_scoped` and
+  `setup_helper_drops_privileges` are true; reduced backends report both false
+  because they do not start a setup helper;
 - `concurrent_runs_isolated` is true when running independent policies in
   parallel;
-- `descendant_cgroup_lifetime` and `upstream_unreachable_fail_closed` are true
-  for long-lived or failure-sensitive commands.
+- require `descendant_cgroup_lifetime` and a transparent fail-closed claim only
+  for `ebpf`; reduced backends explicitly do not make that claim.
 
 ## Run and inspect
 

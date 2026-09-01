@@ -6,10 +6,13 @@ that executable. They do not install or start a daemon.
 
 ## Requirements
 
-- x86_64 or aarch64 Linux 5.10 or newer;
-- cgroup v2 and a running systemd user manager;
-- `sudo` for the narrow per-run setup worker;
-- a reachable SOCKS5 server for proxied policies.
+- x86_64 or aarch64 Linux;
+- a reachable SOCKS5 server for proxied policies;
+- for `execution.backend = "ebpf"`: Linux 5.10 or newer, cgroup v2, a
+  running systemd user manager, and `sudo` for the narrow per-run setup worker;
+- for `execution.backend = "interpose"`: a compatible dynamically linked
+  command, rejected UDP policy, and capture/decrypt off. This path needs no
+  setup authorization.
 
 The release binary has no dynamic libc dependency. Package acceptance also
 rejects private/build paths and ELF debug sections; the embedded eBPF object
@@ -45,7 +48,7 @@ npx heimdall-egress --version
 npx heimdall-egress help
 ```
 
-Transparent `heimdall run` setup must authorize a stable regular native binary,
+Transparent `ebpf` setup must authorize a stable regular native binary,
 not the Node launcher or an npm cache glob. With a global npm installation,
 print that path with:
 
@@ -55,7 +58,8 @@ heimdall-egress --print-native-path
 
 Use the printed path in the narrow sudoers rule below. An `npx` cache path is
 not stable enough for this authorization boundary, so use a global npm or
-native archive installation for `heimdall run`.
+native archive installation for `ebpf` runs. The reduced `interpose` backend
+does not need this stable privileged path.
 
 ## Install through PyPI
 
@@ -78,11 +82,11 @@ uvx --from heimdall-egress heimdall --version
 pipx run --spec heimdall-egress heimdall help
 ```
 
-For a persistent installation, print the regular bundled binary path with
+For a persistent eBPF installation, print the regular bundled binary path with
 `heimdall-egress --print-native-path` and use it in the narrow sudoers rule
 below. Do not authorize a Python console-script wrapper or ephemeral tool-cache
 path. Use a persistent `uv tool`, `pipx`, or virtual-environment installation
-for real `heimdall run` sessions.
+for eBPF sessions. The reduced `interpose` backend needs no setup authorization.
 
 ## Install through Cargo
 
@@ -95,11 +99,12 @@ cargo install heimdall-egress --locked
 heimdall --version
 ```
 
-Rust 1.95 or newer is required. Cargo installation does not require nightly
+Rust 1.95 or newer and a native C compiler are required (`cc` on Linux or Xcode
+Command Line Tools on macOS). Cargo installation does not require nightly
 Rust, `bpf-linker`, or an eBPF build because the release object is already part
-of the source crate. Use the regular path printed by `command -v heimdall` in
-the narrow sudoers rule below; do not authorize a Cargo registry or build-cache
-glob.
+of the source crate. For eBPF, use the regular path printed by `command -v
+heimdall` in the narrow sudoers rule below; do not authorize a Cargo registry
+or build-cache glob. Interpose needs no setup authorization.
 
 ## Install a tagged release
 
@@ -135,7 +140,9 @@ heimdall config validate --json
 Do not run `heimdall init` with `sudo`. Configuration, event logs, captures,
 and TLS CA material belong to the invoking user.
 
-## Authorize setup
+## Authorize eBPF setup
+
+Skip this section when `execution.backend = "interpose"`.
 
 Create `/etc/sudoers.d/heimdall` with `visudo`, replacing `USERNAME`. Native
 archive installations use `/usr/local/bin/heimdall`; Cargo installations use

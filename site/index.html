@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#fbfaf6">
-    <meta name="description" content="Heimdall routes one Linux command through an explicit TCP/UDP proxy, with optional transparent TLS inspection and JSONL evidence.">
+    <meta name="description" content="Heimdall routes one CLI command through an explicit egress policy with daemonless eBPF, interpose, or cooperative proxy backends.">
     <link rel="icon" href="assets/heimdall-mark.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
     <link rel="stylesheet" href="styles.css">
@@ -38,7 +38,7 @@
           <div class="hero-content">
             <span class="eyebrow">Command-scoped egress</span>
             <h1>One command.<br><em>One guarded path.</em></h1>
-            <p class="hero-lead">Route a Linux command through an explicit TCP/UDP proxy. Add transparent TLS inspection only when you need request-level evidence.</p>
+            <p class="hero-lead">Route one command through an explicit egress policy. Choose Linux eBPF, dynamic-call interposition, or a cooperative SOCKS environment.</p>
             <div class="hero-actions">
               <a class="button button-primary" href="#quick-start">Get started <span aria-hidden="true">→</span></a>
               <a class="button button-quiet" href="docs/architecture.html">Read the architecture</a>
@@ -46,7 +46,7 @@
             <ul class="hero-facts" aria-label="Product facts">
               <li>One CLI binary</li>
               <li>No daemon</li>
-              <li>Linux</li>
+              <li>Linux + macOS</li>
               <li>JSONL evidence</li>
             </ul>
           </div>
@@ -68,7 +68,7 @@
           <div class="quick-grid">
             <ol class="step-list">
               <li><span>1</span><div><strong>Install</strong><p>Choose npm, PyPI, Cargo, or a signed release archive.</p></div></li>
-              <li><span>2</span><div><strong>Authorize setup once</strong><p>Allow only the exact native binary's <code>__setup-worker</code>.</p></div></li>
+              <li><span>2</span><div><strong>Select a backend</strong><p>Choose <code>ebpf</code>, <code>interpose</code>, or <code>explicit</code>; Heimdall never guesses.</p></div></li>
               <li><span>3</span><div><strong>Initialize and run</strong><p>Create a policy, validate it, then wrap one command.</p></div></li>
             </ol>
             <div class="code-card">
@@ -82,7 +82,7 @@ heimdall config validate --json
 
 <span class="code-comment"># route one command</span>
 heimdall run -- curl https://example.com</code></pre>
-              <div class="code-note">Complete the narrow one-time authorization before the first run. <a href="docs/install.html">Install guide →</a></div>
+              <div class="code-note">Only the Linux eBPF backend needs narrow one-time setup authorization. <a href="docs/install.html">Install guide →</a></div>
             </div>
           </div>
           <div class="install-row" aria-label="Package installation options">
@@ -128,13 +128,13 @@ heimdall run -- curl https://example.com</code></pre>
         <div class="container">
           <div class="section-heading">
             <div><span class="section-kicker">Architecture</span><h2>A foreground path with a clear owner.</h2></div>
-            <p>The CLI owns every per-run resource and removes it when the process tree exits.</p>
+            <p>The CLI owns every per-run resource and removes it when the foreground run exits.</p>
           </div>
           <div class="architecture-panel">
             <div class="architecture-flow">
               <div class="architecture-node"><small>01</small><strong>Command</strong><span><code>heimdall run</code></span></div>
               <div class="architecture-arrow" aria-hidden="true">→</div>
-              <div class="architecture-node"><small>02</small><strong>Scope</strong><span>Transient cgroup</span></div>
+              <div class="architecture-node"><small>02</small><strong>Backend</strong><span>eBPF / interpose / explicit</span></div>
               <div class="architecture-arrow" aria-hidden="true">→</div>
               <div class="architecture-node"><small>03</small><strong>Policy</strong><span>DNS + route rules</span></div>
               <div class="architecture-arrow" aria-hidden="true">→</div>
@@ -162,7 +162,7 @@ heimdall run -- curl https://example.com</code></pre>
             <a class="doc-card" href="docs/architecture.html"><span class="card-index">04</span><h3>Architecture</h3><p>Lifecycle, data path, and security boundaries.</p><span class="card-arrow">Open →</span></a>
             <a class="doc-card" href="docs/product-contract.html"><span class="card-index">05</span><h3>Product contract</h3><p>Normative guarantees and non-goals.</p><span class="card-arrow">Open →</span></a>
             <a class="doc-card" href="docs/roadmap.html"><span class="card-index">06</span><h3>Roadmap</h3><p>Current Linux support and active platform work.</p><span class="card-arrow">Open →</span></a>
-            <a class="doc-card" href="docs/macos.html"><span class="card-index">07</span><h3>macOS backend</h3><p>Explicit source quick start, daemonless interpose research, and deferred extension boundary.</p><span class="card-arrow">Open →</span></a>
+            <a class="doc-card" href="docs/macos.html"><span class="card-index">07</span><h3>macOS backend</h3><p>Interpose and explicit quick start, exact bypasses, packaging, and deferred extension boundary.</p><span class="card-arrow">Open →</span></a>
           </div>
         </div>
       </section>
@@ -171,7 +171,7 @@ heimdall run -- curl https://example.com</code></pre>
     <footer class="site-footer">
       <div class="container footer-inner">
         <a class="footer-brand" href="index.html"><img src="assets/heimdall-mark.svg" alt="">Heimdall</a>
-        <span class="footer-copy">Command-scoped egress for Linux. Apache-2.0.</span>
+        <span class="footer-copy">Daemonless command egress. Apache-2.0.</span>
         <nav class="footer-links" aria-label="Footer navigation"><a href="docs/roadmap.html">Roadmap</a><a href="https://github.com/dravengarden/heimdall">GitHub</a><a href="https://github.com/dravengarden/heimdall/blob/main/SECURITY.md">Security</a></nav>
       </div>
     </footer>

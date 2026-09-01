@@ -49,7 +49,7 @@
         <details class="mobile-toc"><summary>In this section</summary><nav><a href="product-contract.html">Product contract</a><a href="install.html">Install and upgrade</a><a href="architecture.html">Architecture</a><a href="configuration.html">Configuration</a><a href="commands.html">Command workflows</a><a href="runbook.html">Runbook</a><a href="roadmap.html">Roadmap</a></nav></details>
         <span class="doc-kicker">System / data path</span>
         <h1>Architecture</h1>
-        <p class="doc-lead">Heimdall has one product path: wrap a command and proxy that command's outbound connections. The control plane selects a policy; the data plane enforces it only for that command scope.</p>
+        <p class="doc-lead">Heimdall wraps one command, selects a configured backend, and owns one foreground relay. Linux eBPF provides strict command-cgroup scope; reduced backends state exactly which client calls they can see.</p>
 
         <div class="doc-mark-card"><img src="../assets/heimdall-mark.svg" alt="Heimdall Bifröst mark"><div><strong>The mark is a guarded crossing.</strong><span>The navy arch is the boundary; the spectrum path is Bifröst; a command crosses only inside its attached policy scope.</span></div></div>
 
@@ -68,18 +68,22 @@
         </div>
 
         <h2 id="boundaries">Boundaries</h2>
-        <p>The foreground CLI is the session owner. It selects a policy, creates a child cgroup, binds per-run relay and DNS listeners, executes the command, waits for every descendant, and closes all resources.</p>
-        <p>The platform-neutral <code>relay_transport</code> core resolves outbound credentials once and owns SOCKS5 TCP CONNECT, UDP ASSOCIATE, destination encoding, response validation, and setup timeouts. Linux owns cgroup interception, original-destination correlation, its TCP/UDP listeners, UDP identity, capture, and TLS. Apple-silicon <code>macos-explicit</code> uses only the shared TCP CONNECT path behind its own per-run cooperative listener.</p>
+        <p>The foreground CLI is the session owner. Every backend selects a policy, binds its per-run relay, executes the command, and closes all owned resources. Linux <code>ebpf</code> additionally creates a child cgroup and DNS listener and waits for every descendant.</p>
+        <p>The platform-neutral <code>relay_transport</code> core resolves outbound credentials once and owns SOCKS5 TCP CONNECT, UDP ASSOCIATE, destination encoding, response validation, and setup timeouts. Linux <code>ebpf</code> owns cgroup interception, original-destination correlation, TCP/UDP listeners, UDP identity, capture, and TLS. <code>interpose</code> and <code>explicit</code> reuse only the shared TCP path behind reduced frontends.</p>
         <p>A root setup worker validates one cgroup, attaches fresh unpinned maps and FD-owned eBPF links, transfers those FDs, and drops to the invoking user before the workload starts. Every run keeps that helper as a parent-death guard; runtime TLS also uses it to retain probe state. Unmarked owner exit kills and removes only that command cgroup. It never reads proxy credentials, captures bytes, or keeps a listener.</p>
         <p>Runtime TLS pre-attaches supported OpenSSL images found in active mappings, standard library directories, and <code>/etc/ld.so.conf</code>. A loader-known image may map after child exec because the probe already owns its inode. Private images outside those paths remain opaque; the setup helper does not retain privilege to monitor the workload.</p>
-        <div class="callout"><strong>No persistent daemon.</strong> Relay and fake-DNS ports are kernel-assigned per run on IPv4/IPv6 loopback. The session helper has no listener and exits with its foreground invocation.</div>
-        <h3>Reduced macOS path</h3>
-        <pre><code>heimdall run --backend macos-explicit -- command
-  → 127.0.0.1:&lt;kernel-assigned&gt; SOCKS5 CONNECT
-  → shared TCP policy
-  → SOCKS5 / direct / reject</code></pre>
-        <p>The child receives only <code>ALL_PROXY</code> and <code>all_proxy</code>. A client may ignore them, so this is cooperative rather than transparent. Preflight requires system DNS, rejected UDP, capture off, and decrypt off. JSONL uses <code>source={backend:"macos-explicit", scope:"cooperative_environment"}</code> and records no payload, DNS, TLS, or process-attribution evidence. The source build starts no daemon or Network Extension; official macOS packages remain pending.</p>
-        <p>The planned <code>macos-interpose</code> fallback is separate and narrower: compatible dynamic socket/resolver calls only, with Hardened Runtime, SIP, static code, alternate APIs, and unproven descendants outside the claim. The <code>macos-transparent</code> Network Extension prototype is deferred source research, reports <code>release_included=false</code>, and is excluded from release artifacts. <a href="macos.html">Read the macOS decision →</a></p>
+        <div class="callout"><strong>No persistent daemon.</strong> Every implemented backend uses kernel-assigned loopback relay ports per run. The eBPF backend additionally owns per-run IPv4/IPv6 fake-DNS listeners; its session helper has no listener and exits with the foreground invocation.</div>
+        <h3>Reduced daemonless paths</h3>
+        <pre><code>heimdall run --backend interpose -- command
+  → embedded private .so/.dylib
+  → authenticated per-run SOCKS5 CONNECT
+  → shared TCP policy → SOCKS5 / direct / reject
+
+heimdall run --backend explicit -- command
+  → child ALL_PROXY/all_proxy
+  → cooperative per-run SOCKS5 CONNECT</code></pre>
+        <p><code>interpose</code> is selectable on Linux and Apple silicon. It routes compatible dynamic TCP <code>connect</code> and libc <code>getaddrinfo</code> calls and rejects common interposed UDP sends. Static code, direct syscalls, alternate APIs, loader removal, inherited sockets, and unsupported descendants can bypass it. JSONL uses <code>source={backend:"interpose", scope:"interposed_dynamic_calls"}</code>.</p>
+        <p>Linux/macOS x86_64/aarch64 <code>explicit</code> supplies only child SOCKS variables and requires system DNS. JSONL uses <code>source={backend:"explicit", scope:"cooperative_environment"}</code>. Both reduced paths require rejected UDP and capture/decrypt off, start no daemon, and claim no payload, TLS, strict process scope, or universal fail-closed behavior. <code>macos-transparent</code> remains deferred and excluded from releases. <a href="macos.html">Read the macOS decision →</a></p>
         <p>For a plain <code>hosts: files dns</code> NSS path, the cgroup hooks redirect resolver port-53 traffic directly, including a systemd-resolved loopback stub. No user or mount namespace is needed. NSS modules or caches that bypass port 53 retain the private resolver-mount fallback; pinned Debian 13 exercises that path with its stock <code>files myhostname resolve [!UNAVAIL=return] dns</code> chain. Setup fails before command execution if the required scoped namespace is unavailable.</p>
         <p>The read-only agent preflight uses the same classifier. <code>decision.resolver</code> reports its strategy, reason, hosts sources, nscd socket, AppArmor/userns settings, private-mount status, readiness, and stable error. A known system-wide disablement withholds <code>actions.execute_prefix</code>; an AppArmor restriction remains a runtime policy check because an exact-path profile may permit only Heimdall.</p>
 

@@ -24,7 +24,7 @@
         <details class="mobile-toc"><summary>In this section</summary><nav><a href="#download">Download</a><a href="#npm">npm</a><a href="#pypi">PyPI</a><a href="#cargo">Cargo</a><a href="#authorize">Authorize setup</a><a href="#upgrade">Upgrade and rollback</a><a href="#uninstall">Uninstall</a><a href="#ownership">Ownership</a></nav></details>
         <span class="doc-kicker">One binary / no daemon</span>
         <h1>Install Heimdall</h1>
-        <p class="doc-lead">Install one static x86_64 or aarch64 Linux CLI with its eBPF object embedded. Verify its checksum, authorize only the setup worker, and keep all runtime state under the invoking user.</p>
+        <p class="doc-lead">Install one static x86_64 or aarch64 Linux CLI with both execution backends embedded. The strict eBPF path needs narrow setup authorization; reduced interpose mode needs none.</p>
 
         <h2 id="download">Download and install</h2>
         <pre><code>version=0.1.5
@@ -46,7 +46,7 @@ heimdall init</code></pre>
         <pre><code>npm install --global heimdall-egress
 heimdall --version
 npx heimdall-egress help</code></pre>
-        <p>The npm package embeds the official x86_64 and aarch64 Linux musl binaries. It has no install lifecycle script or install-time download. Use <code>heimdall-egress --print-native-path</code> after a global install and authorize that exact regular binary below. An <code>npx</code> cache path is not a stable authorization boundary for <code>heimdall run</code>.</p>
+        <p>The npm package embeds the official x86_64 and aarch64 Linux musl binaries. It has no install lifecycle script or install-time download. For eBPF, use <code>heimdall-egress --print-native-path</code> after a global install and authorize that exact regular binary below; an <code>npx</code> cache path is not stable enough. Reduced <code>interpose</code> mode needs no setup authorization.</p>
 
         <h2 id="pypi">Install through PyPI</h2>
         <pre><code>uv tool install heimdall-egress
@@ -55,14 +55,15 @@ heimdall --version
 
 # Ephemeral compatibility check only.
 uvx --from heimdall-egress heimdall help</code></pre>
-        <p>PyPI provides separate x86_64 and aarch64 Linux wheels for glibc and musl systems, with one static binary embedded in each wheel and no install-time build or download. After a persistent install, use <code>heimdall-egress --print-native-path</code> and authorize that exact regular binary. Do not authorize a Python launcher or ephemeral tool-cache path.</p>
+        <p>PyPI provides separate x86_64 and aarch64 Linux wheels for glibc and musl systems, with one static binary embedded in each wheel and no install-time build or download. For eBPF, use <code>heimdall-egress --print-native-path</code> after a persistent install and authorize that exact regular binary. Do not authorize a Python launcher or ephemeral tool-cache path. Reduced <code>interpose</code> mode needs no setup authorization.</p>
 
         <h2 id="cargo">Install through Cargo</h2>
         <pre><code>cargo install heimdall-egress --locked
 heimdall --version</code></pre>
-        <p>The crate installs only <code>heimdall</code> and embeds the verified eBPF object. It requires Rust 1.95 or newer, but it does not require nightly Rust or an eBPF toolchain. Authorize the exact regular path printed by <code>command -v heimdall</code>.</p>
+        <p>The crate installs only <code>heimdall</code> and embeds the verified eBPF object and native interpose library. It requires Rust 1.95 or newer plus a native C compiler (<code>cc</code> on Linux or Xcode Command Line Tools on macOS), but it does not require nightly Rust or an eBPF toolchain. For eBPF, authorize the exact regular path printed by <code>command -v heimdall</code>; interpose needs no setup authorization.</p>
 
-        <h2 id="authorize">Authorize only setup</h2>
+        <h2 id="authorize">Authorize only eBPF setup</h2>
+        <p>Skip this section when <code>execution.backend = "interpose"</code>.</p>
         <p>Create this entry with <code>visudo</code>, replacing <code>USERNAME</code>:</p>
         <pre><code>USERNAME ALL=(root) NOPASSWD: /usr/local/bin/heimdall __setup-worker</code></pre>
         <pre><code>sudo chmod 0440 /etc/sudoers.d/heimdall
@@ -82,7 +83,7 @@ heimdall --version</code></pre>
         <p>This removes only the managed executable and installer state. User configuration, logs, captures, TLS material, unrelated prefix files, and the operating system remain untouched; there is no Heimdall daemon to disable.</p>
 
         <h2 id="ownership">Keep user state unprivileged</h2>
-        <p>Run <code>heimdall init</code>, <code>heimdall run</code>, and <code>heimdall logs</code> as the invoking user. Configuration, JSONL events, captures, and TLS CA material are user-owned. Root is used only by the hidden session setup worker.</p>
+        <p>Run <code>heimdall init</code>, <code>heimdall run</code>, and <code>heimdall logs</code> as the invoking user. Configuration, JSONL events, captures, and TLS CA material are user-owned. Root is used only by the hidden eBPF session setup worker; reduced interpose mode remains fully unprivileged.</p>
 
         <div class="doc-page-footer"><a href="product-contract.html">← Product contract</a><a href="commands.html">Command workflows →</a></div>
       </article>

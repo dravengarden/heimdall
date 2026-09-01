@@ -13,25 +13,25 @@
 
 ## Gate on the platform
 
-Official packages currently execute on Linux only. A source-built
-Apple-silicon CLI can expose `macos-explicit`; do not substitute system-wide
-proxy settings or an implicit `proxychains` invocation. Run:
+Backend selection comes from `execution.backend`; do not substitute
+system-wide proxy settings or an implicit `proxychains` invocation. Run:
 
 ```bash
 heimdall agent --policy default
 ```
 
-Continue only when it exits 0, selects `macos-explicit`, and returns an
-`actions.execute_prefix` argv array. Append the command argv to that array.
-Readiness requires system DNS, rejected UDP, capture off, decrypt off, and
-readable outbound credentials. The backend sets only child `ALL_PROXY` and
-`all_proxy`, so a client can bypass it. Its evidence is cooperative TCP
-policy/flow metadata, not strict process attribution or payload capture.
+Continue only when it exits 0 and returns an `actions.execute_prefix` argv
+array. Append the command argv to that array. The config must explicitly select
+`ebpf`, `interpose`, or `explicit`; there is no automatic choice or fallback.
+Linux supports all three. macOS x86_64/aarch64 supports `explicit`; Apple
+silicon additionally supports `interpose`.
 
-`macos-transparent`, UDP, fake DNS, capture, TLS inspection, and official
-macOS packages remain unavailable. Never infer them from explicit readiness or
-from `actions.logs_*`. No macOS path changes system proxy settings or requires
-a persistent daemon.
+Both reduced backends require rejected UDP, capture off, decrypt off, and
+readable TCP outbound credentials. `interpose` supports compatible dynamic TCP
+and libc resolver calls; `explicit` additionally requires system DNS and only
+sets child proxy variables. Read `scope`, `failure_boundary`,
+`client_can_bypass`, and `known_bypasses`; their evidence is not strict process
+attribution or payload capture. No backend requires a persistent daemon.
 
 ## Inspect without mutation
 
@@ -53,7 +53,7 @@ heimdall logs summary --run RUN_ID --json
 heimdall logs flow --run RUN_ID --flow FLOW_ID --json
 ```
 
-`agent` is the primary `heimdall.agent/v8` machine contract. Exit 0 means
+`agent` is the primary `heimdall.agent/v10` machine contract. Exit 0 means
 ready, 1 means not ready, and 2 is CLI usage error. It never mutates state.
 Require the foreground execution owner and `daemon_required = false`. There is
 no persistent service or health endpoint.
@@ -84,24 +84,27 @@ heimdall agent --policy default
 heimdall run --policy default -- curl https://example.com
 ```
 
-On macOS, use the exact agent action instead; its equivalent shape is:
+For a configured reduced backend, use the exact agent action; its equivalent
+shape is:
 
 ```bash
 heimdall --config /path/to/config.toml run \
-  --backend macos-explicit --policy default -- \
+  --backend interpose --policy default -- \
   curl https://example.com
 ```
 
-Do not omit `--backend macos-explicit`; omission fails before exec by design.
-Do not rewrite this as HTTP/HTTPS proxy variables or a system proxy change.
+The flag in an agent action makes the resolved choice explicit; ordinary users
+may omit it when the config already selects that backend. Do not rewrite this
+as HTTP/HTTPS proxy variables or a system proxy change.
 
-On Linux, the command may re-enter through `systemd-run --user --scope`. The resolved
-global config path and exact argv survive re-entry. An authorized setup helper
-attaches one transient cgroup and drops privilege before the child starts.
-Every mode keeps that unprivileged helper only until the run exits so an
-unexpected owner death can kill the command cgroup before links disappear.
-The Linux foreground process owns relay/DNS listeners, maps, links, and logs until
-the complete descendant tree exits.
+With the Linux `ebpf` backend, the command may re-enter through `systemd-run
+--user --scope`. The resolved global config path and exact argv survive
+re-entry. An authorized setup helper attaches one transient cgroup and drops
+privilege before the child starts. Every eBPF decrypt mode keeps that
+unprivileged helper only until the run exits so an unexpected owner death can
+kill the command cgroup before links disappear. The foreground process owns
+relay/DNS listeners, maps, links, and logs until the complete descendant tree
+exits. Reduced backends do not create a cgroup or setup helper.
 
 For two independent runs, execute them normally in parallel; do not share a
 manual relay. Verify `capabilities.lifecycle.concurrent_runs_isolated`

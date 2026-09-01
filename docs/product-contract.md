@@ -13,19 +13,22 @@ VPN or an application control plane.
 
 ## Distribution and lifecycle
 
-1. Linux installation produces one `heimdall` executable. The eBPF object is
-   embedded in that executable.
-2. `heimdall run -- COMMAND` owns one foreground session for the complete
-   descendant process tree.
+1. Installation produces one `heimdall` executable. Linux embeds both its eBPF
+   object and native interposition library; macOS embeds its native
+   interposition library. No companion is required for a released backend.
+2. `heimdall run -- COMMAND` owns one foreground session. The Linux `ebpf`
+   backend owns the complete descendant cgroup; reduced backends own only
+   their documented frontend boundary.
 3. Proxying, capture, and both TLS modes work without installing or starting a
    persistent Heimdall service.
-4. Every run owns isolated relay and DNS listeners, cgroup, maps, links, log
-   directory, and policy state. Concurrent runs share no mutable data-plane
-   state.
-5. A narrowly authorized setup worker attaches eBPF, transfers owned FDs, and
+4. Every run owns its relay, log directory, and policy state. The `ebpf`
+   backend additionally owns isolated DNS listeners, cgroup, maps, and links;
+   `interpose` owns a private injected library and authenticated frontend.
+   Concurrent runs share no mutable data-plane state.
+5. In `ebpf`, a narrowly authorized setup worker attaches eBPF, transfers owned FDs, and
    drops to the invoking user before the workload starts. It has no listener
    or machine-wide API.
-6. The setup helper remains attached to the session as a parent-death guard.
+6. The eBPF setup helper remains attached to the session as a parent-death guard.
    An unmarked owner exit kills the command cgroup before interception can
    disappear underneath surviving descendants.
 7. Normal completion leaves no Heimdall process, listener, cgroup, BPF link,
@@ -33,13 +36,15 @@ VPN or an application control plane.
 
 ## Network contract
 
-1. Only the cgroup created for the wrapped command is intercepted.
+1. `ebpf` intercepts only the cgroup created for the wrapped command.
 2. Policies select named SOCKS5 outbounds, direct egress, or explicit reject
    actions independently for TCP and UDP.
 3. Fake DNS preserves hostnames for policy and upstream resolution; system DNS
    remains an explicit policy choice.
-4. Unsupported or ambiguous network shapes fail closed. Heimdall never falls
-   back to unproxied egress because interception or relay setup failed.
+4. The eBPF boundary fails closed for unsupported or ambiguous network shapes.
+   Reduced backends fail closed only for calls that enter their frontend and
+   expose all known bypasses in the agent contract. A failed backend preflight
+   never falls back to another backend.
 5. `heimdall agent` reports concrete IPv4, IPv6, UDP, QUIC, runtime, and CLI
    acceptance evidence. A feature name alone is not a support claim.
 6. For the selected policy, `decision.resolver` reports system DNS, direct
@@ -81,7 +86,7 @@ the reported capability and event boundary.
 
 ## Agent evidence contract
 
-1. `heimdall agent` is read-only, emits exactly one `heimdall.agent/v8` JSON
+1. `heimdall agent` is read-only, emits exactly one `heimdall.agent/v10` JSON
    document, and represents executable actions as argv arrays.
    `actions.resolver_inspect` is a list of shell-safe argv arrays for the host
    files that produced `decision.resolver`; it never changes resolver or
@@ -116,33 +121,35 @@ the data plane.
 
 ## Platform scope
 
-Linux cgroup v2 plus eBPF is the complete transparent backend and the only
-backend shipped in official packages. Apple-silicon macOS has a source-built
-explicit backend with native acceptance; a daemonless interposition fallback
-is in development; the Network Extension architecture is deferred; and the
-first versioned official macOS package remains unavailable. Native package
-mechanics cover Mach-O hygiene, checksum, install, upgrade, rollback, and
-uninstall, while publication separately requires Developer ID, notarization,
-Gatekeeper, and fresh-download acceptance. Its three paths have separate
-capability contracts:
+`execution.backend` is a required strict cross-platform enum containing
+`ebpf`, `interpose`, and `explicit`. Heimdall never guesses or falls back. A
+CLI `--backend` value may override the file for one command but may not change
+backend on failure.
 
-- `macos-explicit` is an opt-in CLI-only compatibility path for cooperative
+- `ebpf` is Linux-only and is the complete transparent command-cgroup
+  boundary. It supports TCP/UDP policy, fake or system DNS, capture, runtime
+  TLS, and relay TLS.
+- `interpose` is a daemonless Linux and Apple-silicon backend for compatible
+  dynamically linked TCP `connect` and libc `getaddrinfo` calls. Its embedded
+  library authenticates to a private foreground SOCKS5 frontend with a fresh
+  per-run secret. Common interposed IP-datagram send calls are rejected, but
+  direct syscalls, alternate APIs, inherited sockets, loader-state removal,
+  static code, and unsupported descendants remain bypasses. On macOS,
+  SIP-protected and Hardened Runtime targets fail preflight; `connectx` and
+  Network.framework are outside the hook set. Its source is
+  `{backend:"interpose",scope:"interposed_dynamic_calls"}`. It requires UDP
+  policy rejection, capture off, and decrypt off, and cannot claim transparent
+  scope, complete descendant attribution, payload capture, TLS inspection,
+  QUIC, or universal fail-closed behavior.
+- `explicit` is a Linux and macOS x86_64/aarch64 CLI-only compatibility path for cooperative
   SOCKS-aware TCP clients. It owns a kernel-assigned loopback SOCKS5 CONNECT
   listener for one foreground run, evaluates shared TCP policy, sets only the
   child `ALL_PROXY` and `all_proxy`, and emits policy/flow metadata with
-  `source={backend:"macos-explicit",scope:"cooperative_environment"}`. It
+  `source={backend:"explicit",scope:"cooperative_environment"}`. It
   never changes system-wide proxy settings and cannot claim transparent UDP,
   fake DNS, QUIC, capture, TLS inspection, strict command scope, process
-  attribution, or fail-closed coverage. The user must select it explicitly;
-  incompatible config fails before child execution.
-- `macos-interpose` is an unavailable proxychains-style research backend for
-  compatible dynamic TCP and resolver calls. It will use a foreground-owned
-  injected library and shared relay without root or system proxy changes.
-  Native evidence already shows that ordinary dynamic code can load the probe
-  while Hardened Runtime and SIP-protected targets do not. Static code,
-  alternate APIs, direct syscalls, UDP, QUIC, complete descendant coverage,
-  strict command scope, TLS, and universal fail-closed behavior remain outside
-  the claim. A failed preflight may not fall back to another backend.
+  attribution, or fail-closed coverage. It requires system DNS, rejected UDP,
+  capture off, and decrypt off.
 - `macos-transparent` is deferred source research that would require an
   optional signed companion containing an `NETransparentProxyProvider` system
   extension. The internal authenticated
@@ -158,14 +165,14 @@ capability contracts:
   is not safe, the backend does not ship. `NEAppProxyProvider` is reserved for
   a possible managed per-app deployment.
 
-The current explicit backend and planned interpose backend use only
+The current explicit and interpose backends use only
 foreground-owned resources and no persistent user-managed Heimdall daemon.
 Proxyman-style child-only proxy/trust adapters may be added for individually
 tested runtimes, but Heimdall does not install Proxyman, mutate the system
 proxy or keychain, or use PF/TUN as a product fallback. Runtime TLS is
 unavailable on macOS. Official macOS release artifacts remain unavailable
 until a versioned signed/notarized asset passes fresh-download install,
-upgrade, rollback, uninstall, and explicit-run acceptance. See
+upgrade, rollback, uninstall, and reduced-backend acceptance. See
 [design/macos-backend.md](design/macos-backend.md) and
 [design/macos-fallbacks.md](design/macos-fallbacks.md).
 

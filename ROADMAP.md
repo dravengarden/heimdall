@@ -24,9 +24,9 @@ acceptance path are documented and tested.
   diagnostic codes, JSON paths, and repair hints.
 - An offline JSON Schema generated from that model, plus complete read-only
   starter examples in every supported syntax.
-- `heimdall agent` as a read-only `heimdall.agent/v8` preflight with argv-safe
+- `heimdall agent` as a read-only `heimdall.agent/v10` preflight with argv-safe
   actions, selected execution ownership, and capability evidence.
-- Additive `heimdall.agent/v8` resolver preflight that reports system DNS,
+- Additive `heimdall.agent/v10` resolver preflight that reports system DNS,
   direct port-53 interception, or private-mount fallback; NSS/nscd evidence;
   AppArmor/userns settings; and deterministic pre-exec blockers.
 - Daemonless foreground execution for all decrypt modes:
@@ -66,10 +66,17 @@ acceptance path are documented and tested.
   that reveal no certificate-specific reason.
 - No background service, machine-wide control plane, or persistent kernel
   state in the shipped CLI.
-- A source-built Apple-silicon `macos-explicit` backend for cooperative
-  SOCKS-aware TCP clients, with explicit selection, shared route/direct/reject
-  policy, metadata-only JSONL, no system proxy mutation, and native acceptance.
-  Official macOS packages and transparent scope remain unavailable.
+- Required cross-platform `execution.backend = ebpf | interpose | explicit`
+  selection with no guessing or fallback. Linux supports all three; Apple
+  silicon supports the two reduced backends.
+- A selectable Linux and Apple-silicon `interpose` backend with an embedded
+  native library, per-run materialization, authenticated loopback frontend,
+  compatible dynamic TCP/libc resolver routing, common interposed UDP-call
+  rejection, metadata-only JSONL, and native acceptance on both platforms.
+- A Linux and macOS x86_64/aarch64 `explicit` backend for cooperative SOCKS-aware TCP clients,
+  with shared route/direct/reject policy, metadata-only JSONL, no system proxy
+  mutation, and native acceptance. Official macOS packages and transparent
+  scope remain unavailable.
 - A non-publishable native macOS package-mechanics gate covering arm64 Mach-O
   hygiene, macOS 11 deployment, normalized archive metadata, checksum,
   install, simulated upgrade, rollback, and uninstall. The official builder
@@ -101,11 +108,10 @@ acceptance path are documented and tested.
   real-eBPF execution remains in the compatibility track.
 
 Official release packages and the transparent implementation remain
-Linux-only. The Apple-silicon `macos-explicit` source backend is available as
-the reduced cooperative contract described below; it is not equivalent to the
-Linux cgroup boundary. `macos-interpose` is an active daemonless fallback
-research track. The Network Extension prototype is deferred and excluded from
-release artifacts.
+Linux-only. `interpose` is an available reduced dynamic-call boundary on Linux
+and Apple silicon; `explicit` is an available reduced cooperative boundary on
+Linux and macOS x86_64/aarch64. Neither is equivalent to the Linux cgroup boundary. The Network
+Extension prototype is deferred and excluded from release artifacts.
 
 ## In development
 
@@ -114,7 +120,7 @@ proxy and its evidence before adding a larger control plane.
 
 ### 1. Daemonless lifecycle hardening
 
-The foreground data plane is now the default for every decrypt mode. It binds
+The foreground eBPF data plane is now the default for every decrypt mode. It binds
 kernel-assigned per-run relay and DNS ports, creates fresh unpinned maps,
 attaches FD-owned links through `heimdall.setup/v2`, and closes every resource
 when the command tree exits. The real-eBPF VM proves concurrent isolated runs,
@@ -257,22 +263,26 @@ static, contain no private or build-path evidence, preserve required eBPF
 metadata, and pass native current/LTS data-path acceptance on each supported
 architecture.
 
-### 8. macOS backend
+### 8. Reduced backend and macOS packaging
 
-The Apple-silicon source-built explicit backend has native acceptance, but no
-official macOS package or strict-scope backend is available. Three paths remain
+The cross-platform interpose and explicit backends have native Linux and
+Apple-silicon acceptance. Explicit is architecture-neutral and also compiles
+for x86_64 macOS; its native gate is intentionally runnable there when an
+Intel Mac is available. No official signed/notarized macOS package or
+strict-scope macOS backend is available. The reduced and deferred paths remain
 deliberately separate:
 
 - Keep the platform split green: shared strict config/init behavior, portable
   JSONL tooling, Linux-only dependency isolation, and the pinned
-  `aarch64-apple-darwin` all-targets check in `just verify`.
+  `aarch64-apple-darwin` and `x86_64-apple-darwin` all-targets checks in
+  `just verify`.
 - Keep the shared `RunEvidence` writer/control/finalization owner and
   `relay_transport` SOCKS5 TCP/UDP protocol used by Linux green. Original
   destination correlation, listeners, session attribution, capture, and TLS
   remain backend-owned; the extraction does not change the available Linux
   binary or event schema.
-- Maintain the implemented opt-in `macos-explicit` compatibility backend and
-  its `just test-macos-native` Apple-silicon gate. It owns one foreground
+- Maintain the implemented opt-in `explicit` compatibility backend and
+  its architecture-neutral `just test-macos-explicit-native` gate. It owns one foreground
   loopback SOCKS5 CONNECT listener, evaluates shared TCP policy, emits
   cooperative metadata evidence, and never changes system-wide settings or
   claims transparent UDP, fake DNS, QUIC, capture, TLS inspection, strict
@@ -282,11 +292,15 @@ deliberately separate:
   Developer ID/notary credentials are configured and that version passes a
   fresh-download signature, Gatekeeper, install, upgrade, rollback, uninstall,
   and explicit-run acceptance.
-- Implement the separately named `macos-interpose` research path around a
-  signed DYLD interposition library, authenticated constructor startup, TCP
-  `connect`, libc resolver calls, and the existing foreground relay. Keep it
-  unselectable until positive and negative native tests establish its precise
-  dynamic-program boundary.
+- Keep the implemented `interpose` path green on Linux and Apple silicon: the
+  CLI embeds and privately materializes the native library, rejects conflicting
+  loader state and unsupported protected targets, authenticates every frontend
+  connection, preserves hostname identity through libc resolver mapping,
+  routes real TCP through shared policy, rejects common interposed UDP calls,
+  writes reduced-source JSONL, cleans up, and preserves exit status.
+- Expand native runtime acceptance one client at a time. Every added hook or
+  runtime must include a positive route test and a negative bypass/failure test;
+  a compatibility result does not broaden the backend's scope model.
 - Treat SIP-protected binaries, Hardened Runtime/library-validation targets,
   static code, alternate networking APIs, direct syscalls, loader-state
   removal, and unsupported descendants as explicit blockers. Do not claim
@@ -312,9 +326,9 @@ deliberately separate:
   distinguish attributed, unrelated, missing, and ambiguous identities.
 
 Acceptance target: all three paths report separate machine-readable
-capabilities; the explicit source backend remains native-gated; interpose stays
-unavailable until its loader, TCP/DNS, descendant, bypass, and failure matrix
-passes; the deferred Network Extension path reports `release_included=false`;
+capabilities; the explicit and interpose backends remain native-gated and keep
+their reduced scope even as runtime coverage expands; the deferred Network
+Extension path reports `release_included=false`;
 an official CLI package is claimed only after a signed/notarized versioned
 asset passes fresh-download acceptance; and no package or release note claims
 more macOS coverage than its artifacts and native evidence establish. See the

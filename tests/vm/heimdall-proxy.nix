@@ -34,6 +34,9 @@ let
   heimdallConfigText = ''
     version = 1
 
+    [execution]
+    backend = "ebpf"
+
     [proxy]
     default_policy = "fake"
 

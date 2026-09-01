@@ -1,19 +1,19 @@
-//! Stable machine contract for the cooperative macOS explicit backend.
+//! Stable machine contract for daemonless macOS execution backends.
 
 use std::path::{Path, PathBuf};
 
 use crate::heimdall_config::{
     Action, CaptureMode, ConfigDiagnostic, ConfigFormat, DecryptConfig, DecryptMode, DnsMode,
-    HeimdallConfig,
+    ExecutionBackend, HeimdallConfig,
 };
 use anyhow::Result;
 use serde_json::{Value, json};
 
-const CONTRACT_VERSION: &str = "heimdall.agent/v8";
+const CONTRACT_VERSION: &str = "heimdall.agent/v10";
 
 #[derive(clap::Args, Debug)]
 pub struct AgentArgs {
-    /// Preview a named policy for the cooperative explicit backend.
+    /// Preview a named policy for the configured execution backend.
     #[arg(short = 'p', long)]
     policy: Option<String>,
 }
@@ -54,7 +54,7 @@ fn build_report(explicit_path: Option<&Path>, args: AgentArgs) -> Value {
             "version": env!("CARGO_PKG_VERSION"),
             "ready": false,
             "platform": platform_report(),
-            "backends": backend_report(false),
+            "backends": backend_report(None, false),
             "diagnostics": [{
                 "code": error.code(),
                 "path": "$.config",
@@ -94,9 +94,21 @@ fn report_for_valid_config(
     let policy_name = args
         .policy
         .unwrap_or_else(|| config.proxy.default_policy.clone());
-    let selected = config.policy(&policy_name);
-    let mut diagnostics = crate::explicit_proxy::diagnostics(&config, &policy_name);
-    if let Some(diagnostic) = crate::explicit_proxy::outbound_diagnostic(&config) {
+    let selected_policy = config.policy(&policy_name);
+    let backend = config.execution.backend;
+    let mut diagnostics = match backend {
+        ExecutionBackend::Explicit => crate::explicit_proxy::diagnostics(&config, &policy_name),
+        ExecutionBackend::Interpose => crate::interpose::diagnostics(&config, &policy_name),
+        ExecutionBackend::Ebpf => vec![crate::explicit_proxy::ExplicitDiagnostic::new(
+            "macos_ebpf_unavailable",
+            "$.execution.backend",
+            "the eBPF backend is available only on Linux",
+            "Select interpose or explicit on macOS.",
+        )],
+    };
+    if backend == ExecutionBackend::Explicit
+        && let Some(diagnostic) = crate::explicit_proxy::outbound_diagnostic(&config)
+    {
         diagnostics.push(diagnostic);
     }
     let ready = diagnostics.is_empty();
@@ -106,7 +118,7 @@ fn report_for_valid_config(
             &[
                 "run",
                 "--backend",
-                "macos-explicit",
+                backend.name(),
                 "--policy",
                 &policy_name,
                 "--",
@@ -116,12 +128,12 @@ fn report_for_valid_config(
     let redaction_error = capture_redaction_error(&config.capture.redact_env);
     let decision_error = (!diagnostics.is_empty()).then(|| {
         json!({
-            "code": "macos_explicit_not_ready",
-            "message": "the selected policy requires capabilities outside macos-explicit",
-            "diagnostics": diagnostics,
+            "code": format!("{}_not_ready", backend.name()),
+            "message": "the configured backend cannot run the selected policy",
+            "diagnostics": diagnostics.clone(),
         })
     });
-    let decision = selected.map_or_else(
+    let decision = selected_policy.map_or_else(
         || {
             json!({
                 "policy": policy_name,
@@ -146,14 +158,14 @@ fn report_for_valid_config(
     let policies = config.proxy.policies.keys().cloned().collect::<Vec<_>>();
     let outbounds = config.proxy.outbounds.keys().cloned().collect::<Vec<_>>();
     let diagnostics_json =
-        serde_json::to_value(&diagnostics).expect("macos-explicit diagnostics are serializable");
+        serde_json::to_value(&diagnostics).expect("macOS backend diagnostics are serializable");
 
     json!({
         "contract": CONTRACT_VERSION,
         "version": env!("CARGO_PKG_VERSION"),
         "ready": ready,
         "platform": platform_report(),
-        "backends": backend_report(ready),
+        "backends": backend_report(Some(backend), ready),
         "diagnostics": diagnostics_json,
         "config": {
             "path": path.display().to_string(),
@@ -178,17 +190,12 @@ fn report_for_valid_config(
             "decrypt": decrypt_report(&config.decrypt),
             "error": null,
         },
-        "execution": {
-            "backend": "macos-explicit",
-            "owner": "heimdall-run",
-            "privilege_setup": "none",
-            "daemon_required": false,
-            "web_ui_required": false,
-            "scope": "cooperative_proxy_environment",
-            "listener": "loopback-socks5-connect",
-            "environment": ["ALL_PROXY", "all_proxy"],
+        "execution": execution_report(backend),
+        "capabilities": match backend {
+            ExecutionBackend::Explicit => explicit_capabilities(),
+            ExecutionBackend::Interpose => interpose_capabilities(),
+            ExecutionBackend::Ebpf => unavailable_capabilities(),
         },
-        "capabilities": explicit_capabilities(),
         "decision": decision,
         "policies": policies,
         "outbounds": outbounds,
@@ -201,27 +208,93 @@ fn platform_report() -> Value {
     json!({
         "os": "macos",
         "architecture": std::env::consts::ARCH,
-        "supported_architectures": ["aarch64"],
+        "supported_architectures": ["aarch64", "x86_64"],
     })
 }
 
-fn backend_report(ready: bool) -> Value {
-    let architecture_available = crate::explicit_proxy::native_arch_supported();
+fn backend_report(selected: Option<ExecutionBackend>, selected_ready: bool) -> Value {
+    let interpose_architecture_available = crate::interpose::architecture_supported();
+    let interpose_available =
+        interpose_architecture_available && crate::interpose::artifact_available();
     json!([
         {
-            "backend": "macos-explicit",
-            "status": if architecture_available { "available" } else { "unsupported_architecture" },
-            "available": architecture_available,
-            "ready": ready,
+            "backend": "explicit",
+            "status": "available",
+            "available": true,
+            "ready": selected == Some(ExecutionBackend::Explicit) && selected_ready,
             "transparent": false,
             "scope": "cooperative_proxy_environment",
             "client_can_bypass": true,
             "system_proxy_modified": false,
             "persistent_daemon_required": false,
-            "reason_code": if ready { Value::Null } else if architecture_available {
-                json!("macos_explicit_preflight_failed")
+            "reason_code": if selected == Some(ExecutionBackend::Explicit) && selected_ready {
+                Value::Null
             } else {
-                json!("macos_explicit_architecture_unavailable")
+                json!("explicit_not_selected_or_preflight_failed")
+            },
+        },
+        {
+            "backend": "interpose",
+            "status": if interpose_available {
+                "available"
+            } else if interpose_architecture_available {
+                "native_artifact_unavailable"
+            } else {
+                "unsupported_architecture"
+            },
+            "available": interpose_available,
+            "ready": selected == Some(ExecutionBackend::Interpose) && selected_ready,
+            "transparent": false,
+            "mechanism": "dyld-interpose",
+            "scope": "interposed_dynamic_calls",
+            "failure_boundary": "interposed_calls_only",
+            "strict_command_scope": false,
+            "client_can_bypass": true,
+            "system_proxy_modified": false,
+            "persistent_daemon_required": false,
+            "roadmap_only": false,
+            "release_included": interpose_available,
+            "capabilities": {
+                "tcp": "ordinary_dynamic_connect",
+                "dns": "libc_getaddrinfo",
+                "udp": "unavailable",
+                "quic": "unavailable",
+                "tls": "unavailable",
+            },
+            "native_evidence": {
+                "gate": "just test-macos-interpose-native",
+                "ordinary_dynamic_tcp_connect_interposed": true,
+                "libc_getaddrinfo_interposed": true,
+                "fork_inherits_interposition": true,
+                "exec_with_loader_state_inherits_interposition": true,
+                "hardened_runtime_bypasses": true,
+                "sip_protected_bypasses": true,
+                "loader_state_removal_bypasses": true,
+                "connectx_bypasses": true,
+                "network_framework_bypasses": true,
+                "connected_udp_interposed_calls_rejected": true,
+                "connectionless_udp_interposed_calls_rejected": true,
+                "uninterposed_udp_calls_bypass": true,
+                "background_descendant_outlives_wrapper": true,
+                "routing_implemented": true,
+                "authenticated_constructor_implemented": true,
+            },
+            "compatibility": {
+                "dynamic_targets_only": true,
+                "sip_protected_targets": false,
+                "hardened_runtime_targets": false,
+                "static_targets": false,
+                "complete_descendant_scope_proven": false,
+                "native_acceptance_gate": "just test-macos-interpose-native",
+            },
+            "reason_code": if selected == Some(ExecutionBackend::Interpose) && selected_ready {
+                Value::Null
+            } else if interpose_available {
+                json!("interpose_not_selected_or_preflight_failed")
+            } else if !interpose_architecture_available {
+                json!("interpose_architecture_unavailable")
+            } else {
+                json!("interpose_native_artifact_unavailable")
             },
         },
         {
@@ -257,43 +330,48 @@ fn backend_report(ready: bool) -> Value {
             },
             "reason_code": "macos_transparent_backend_unavailable",
         },
-        {
-            "backend": "macos-interpose",
-            "status": "in_development",
-            "available": false,
-            "ready": false,
-            "transparent": false,
-            "mechanism": "dyld-interpose",
-            "scope": "interposed_dynamic_calls",
-            "strict_command_scope": false,
-            "client_can_bypass": true,
-            "system_proxy_modified": false,
-            "persistent_daemon_required": false,
-            "roadmap_only": true,
-            "release_included": false,
-            "capabilities": {
-                "tcp": "unavailable",
-                "dns": "unavailable",
-                "udp": "unavailable",
-                "quic": "unavailable",
-                "tls": "unavailable",
-            },
-            "research_targets": [
-                "tcp_connect",
-                "libc_resolver",
-                "child_runtime_proxy_and_trust_adapters",
-            ],
-            "compatibility": {
-                "dynamic_targets_only": true,
-                "sip_protected_targets": false,
-                "hardened_runtime_targets": false,
-                "static_targets": false,
-                "complete_descendant_scope_proven": false,
-                "native_feasibility_gate": "just test-macos-interpose-feasibility",
-            },
-            "reason_code": "macos_interpose_backend_unavailable",
-        },
     ])
+}
+
+fn execution_report(backend: ExecutionBackend) -> Value {
+    match backend {
+        ExecutionBackend::Explicit => json!({
+            "backend": "explicit",
+            "configured_backend": "explicit",
+            "owner": "heimdall-run",
+            "privilege_setup": "none",
+            "daemon_required": false,
+            "web_ui_required": false,
+            "scope": "cooperative_proxy_environment",
+            "failure_boundary": "cooperative_clients_only",
+            "listener": "loopback-socks5-connect",
+            "environment": ["ALL_PROXY", "all_proxy"],
+        }),
+        ExecutionBackend::Interpose => json!({
+            "backend": "interpose",
+            "configured_backend": "interpose",
+            "owner": "heimdall-run",
+            "privilege_setup": "none",
+            "daemon_required": false,
+            "web_ui_required": false,
+            "scope": "interposed_dynamic_calls",
+            "failure_boundary": "interposed_calls_only",
+            "listener": "authenticated-loopback-socks5-connect",
+            "environment": ["DYLD_INSERT_LIBRARIES"],
+        }),
+        ExecutionBackend::Ebpf => json!({
+            "backend": "unavailable",
+            "configured_backend": backend.name(),
+            "owner": "heimdall-run",
+            "privilege_setup": "none",
+            "daemon_required": false,
+            "web_ui_required": false,
+            "scope": "unavailable",
+            "failure_boundary": "no_execution",
+            "listener": null,
+            "environment": [],
+        }),
+    }
 }
 
 fn explicit_capabilities() -> Value {
@@ -305,6 +383,7 @@ fn explicit_capabilities() -> Value {
             "client_can_bypass": true,
             "system_proxy_modified": false,
             "environment": ["ALL_PROXY", "all_proxy"],
+            "known_bypasses": ["proxy_environment_ignored", "proxy_environment_replaced"],
         },
         "capture": {
             "contract": "heimdall.event/v1",
@@ -383,7 +462,7 @@ fn explicit_capabilities() -> Value {
         },
         "cli_acceptance": {"tcp_fake_dns": []},
         "native_acceptance": {
-            "macos_explicit": ["curl"],
+            "explicit": ["curl"],
             "architecture": "aarch64",
             "gate": "just test-macos-native",
         },
@@ -402,6 +481,144 @@ fn explicit_capabilities() -> Value {
             "concurrent_runs_isolated": true,
         },
     })
+}
+
+fn interpose_capabilities() -> Value {
+    json!({
+        "scope": {
+            "model": "interposed_dynamic_calls",
+            "strict_command_scope": false,
+            "transparent": false,
+            "client_can_bypass": true,
+            "system_proxy_modified": false,
+            "environment": ["DYLD_INSERT_LIBRARIES"],
+            "known_bypasses": [
+                "sip_protected_targets",
+                "hardened_runtime_targets",
+                "static_code",
+                "direct_syscalls",
+                "connectx",
+                "network_framework",
+                "loader_state_removal",
+                "unsupported_descendants",
+                "uninterposed_udp_calls",
+                "quic",
+            ],
+        },
+        "capture": {
+            "contract": "heimdall.event/v1",
+            "format": "unavailable",
+            "tcp": false,
+            "udp": false,
+            "payload": "unavailable",
+            "tls_plaintext": false,
+            "boundary_allowlist": false,
+            "direction_allowlist": false,
+            "environment_redaction": false,
+        },
+        "logs": {
+            "event_contract": "heimdall.event/v1",
+            "run_contract": "heimdall.run/v1",
+            "summary_contract": "heimdall.logs.summary/v1",
+            "flow_summary_contract": "heimdall.logs.flow/v1",
+            "format": "jsonl",
+            "lifecycle_events": true,
+            "flow_events": "interposed_tcp_metadata",
+            "dns_events": "unavailable",
+            "policy_decision_events": true,
+            "tls_events": "unavailable",
+            "client_hello_events": false,
+            "derived_http_records": "unavailable",
+            "offline_schema_validation": true,
+            "writer_owned_rotation": true,
+            "content_addressed_blobs": false,
+            "bounded_block_coalescing": false,
+            "incomplete_run_recovery": true,
+        },
+        "decrypt": {
+            "modes": ["off"],
+            "runtime_libraries": [],
+            "runtime_apis": [],
+            "runtime_evidence": "unavailable",
+            "runtime_discovery": "unavailable",
+            "runtime_loader_discovery": "unavailable",
+            "runtime_loader_images_can_map_after_exec": false,
+            "runtime_privileged_dynamic_attachment": false,
+            "runtime_max_bytes_per_event": 0,
+            "runtime_requires_attached_image": false,
+            "runtime_requires_ca_trust": false,
+            "runtime_supports_pinning_and_mtls": false,
+            "relay_library_independent": false,
+            "relay_requires_ca_trust": false,
+            "relay_supports_pinning_and_mtls": false,
+            "upstream_certificate_verification": false,
+            "non_tls_passthrough": true,
+        },
+        "udp": {
+            "connected": false,
+            "connectionless": false,
+            "connectionless_ipv4": false,
+            "connectionless_ipv6": false,
+            "connectionless_ipv6_single_peer": false,
+            "ipv4_mapped_ipv6_socket": false,
+            "concurrent_shared_source_port": false,
+            "concurrent_shared_source_port_ipv4": false,
+            "concurrent_shared_source_port_ipv6": false,
+            "association_reuse": false,
+            "multi_response": false,
+            "max_socks5_payload_bytes": 0,
+            "quic": "unavailable",
+            "quic_ipv4": false,
+            "quic_ipv6": false,
+            "quic_address_family_migration": false,
+            "exchange": "unavailable",
+        },
+        "runtime_acceptance": {
+            "tcp_fake_dns": ["c-libc"],
+            "udp_ipv4": [],
+            "udp_ipv6": [],
+            "tls_runtime": [],
+            "tls_relay": [],
+        },
+        "cli_acceptance": {"tcp_fake_dns": ["c-libc"]},
+        "native_acceptance": {
+            "interpose": ["c-libc"],
+            "architecture": "aarch64",
+            "gate": "just test-macos-interpose-native",
+        },
+        "lifecycle": {
+            "descendant_cgroup_lifetime": false,
+            "exit_code_passthrough": true,
+            "signal_exit_code": "128+signal",
+            "foreground_signal_forwarding": [],
+            "upstream_unreachable_fail_closed": true,
+            "foreground_modes": ["off"],
+            "foreground_owned_resources": true,
+            "resources_close_when_run_exits": true,
+            "setup_helper_session_scoped": false,
+            "setup_helper_drops_privileges": false,
+            "web_ui_optional": true,
+            "concurrent_runs_isolated": true,
+        },
+    })
+}
+
+fn unavailable_capabilities() -> Value {
+    let mut capabilities = interpose_capabilities();
+    capabilities["scope"]["model"] = json!("unavailable");
+    capabilities["scope"]["known_bypasses"] = json!([]);
+    capabilities["logs"]["lifecycle_events"] = json!(false);
+    capabilities["logs"]["flow_events"] = json!("unavailable");
+    capabilities["logs"]["policy_decision_events"] = json!(false);
+    capabilities["runtime_acceptance"]["tcp_fake_dns"] = json!([]);
+    capabilities["cli_acceptance"]["tcp_fake_dns"] = json!([]);
+    capabilities["native_acceptance"] = Value::Null;
+    capabilities["lifecycle"]["exit_code_passthrough"] = json!(false);
+    capabilities["lifecycle"]["upstream_unreachable_fail_closed"] = json!(false);
+    capabilities["lifecycle"]["foreground_owned_resources"] = json!(false);
+    capabilities["lifecycle"]["resources_close_when_run_exits"] = json!(false);
+    capabilities["lifecycle"]["concurrent_runs_isolated"] = json!(false);
+    capabilities
 }
 
 fn actions(path: &Path, execute_prefix: Option<Vec<String>>) -> Value {
@@ -566,48 +783,66 @@ mod tests {
             AgentArgs { policy: None },
         );
 
-        assert_eq!(report["contract"], "heimdall.agent/v8");
+        assert_eq!(report["contract"], "heimdall.agent/v10");
         assert_eq!(report["ready"], false);
         assert_eq!(report["platform"]["os"], "macos");
+        assert_eq!(
+            report["platform"]["supported_architectures"],
+            json!(["aarch64", "x86_64"])
+        );
         assert!(report["execution"].is_null());
         assert!(report["actions"]["execute_prefix"].is_null());
         assert_eq!(report["backends"][0]["available"], true);
-        assert_eq!(report["backends"][1]["available"], false);
-        assert_eq!(report["backends"][1]["status"], "deferred");
-        assert_eq!(report["backends"][1]["release_included"], false);
+        assert_eq!(report["backends"][1]["backend"], "interpose");
         assert_eq!(
-            report["backends"][1]["provider"],
+            report["backends"][1]["available"],
+            crate::interpose::architecture_supported()
+        );
+        assert_eq!(report["backends"][1]["scope"], "interposed_dynamic_calls");
+        assert_eq!(
+            report["backends"][1]["failure_boundary"],
+            "interposed_calls_only"
+        );
+        assert_eq!(
+            report["backends"][1]["native_evidence"]["routing_implemented"],
+            true
+        );
+        assert_eq!(
+            report["backends"][1]["native_evidence"]["authenticated_constructor_implemented"],
+            true
+        );
+        assert_eq!(
+            report["backends"][1]["capabilities"]["tcp"],
+            "ordinary_dynamic_connect"
+        );
+        assert_eq!(report["backends"][2]["available"], false);
+        assert_eq!(report["backends"][2]["status"], "deferred");
+        assert_eq!(report["backends"][2]["release_included"], false);
+        assert_eq!(
+            report["backends"][2]["provider"],
             "NETransparentProxyProvider"
         );
         assert_eq!(
-            report["backends"][1]["control"]["contract"],
+            report["backends"][2]["control"]["contract"],
             "heimdall.macos.control/v1"
         );
-        assert_eq!(report["backends"][1]["control"]["provider_wired"], false);
+        assert_eq!(report["backends"][2]["control"]["provider_wired"], false);
         assert_eq!(
-            report["backends"][1]["companion"]["activation_enabled"],
+            report["backends"][2]["companion"]["activation_enabled"],
             false
         );
         assert_eq!(
-            report["backends"][1]["companion"]["network_configuration_enabled"],
+            report["backends"][2]["companion"]["network_configuration_enabled"],
             false
         );
         assert_eq!(
-            report["backends"][1]["attribution"]["status"],
+            report["backends"][2]["attribution"]["status"],
             "native_evidence_required"
-        );
-        assert_eq!(report["backends"][2]["backend"], "macos-interpose");
-        assert_eq!(report["backends"][2]["available"], false);
-        assert_eq!(report["backends"][2]["release_included"], false);
-        assert_eq!(report["backends"][2]["scope"], "interposed_dynamic_calls");
-        assert_eq!(
-            report["backends"][2]["compatibility"]["hardened_runtime_targets"],
-            false
         );
     }
 
     #[test]
-    fn shared_starter_reports_reduced_mode_diagnostics() {
+    fn shared_starter_reports_linux_backend_diagnostics() {
         let path = temporary_config(crate::cli::init::InitFormat::Toml.template());
         let report = build_report(Some(&path), AgentArgs { policy: None });
         std::fs::remove_file(path).unwrap();
@@ -621,7 +856,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|value| { value["code"] == "macos_explicit_fake_dns_unavailable" })
+                .any(|value| { value["code"] == "macos_ebpf_unavailable" })
         );
     }
 
@@ -629,13 +864,15 @@ mod tests {
     fn compatible_config_exposes_argv_safe_explicit_execution() {
         let source = crate::cli::init::InitFormat::Toml
             .template()
+            .replace("backend = \"ebpf\"", "backend = \"explicit\"")
             .replace("mode = \"fake\"", "mode = \"system\"");
         let path = temporary_config(&source);
         let report = build_report(Some(&path), AgentArgs { policy: None });
         std::fs::remove_file(&path).unwrap();
 
         assert_eq!(report["ready"], true);
-        assert_eq!(report["execution"]["backend"], "macos-explicit");
+        assert_eq!(report["execution"]["backend"], "explicit");
+        assert_eq!(report["backends"][0]["available"], true);
         assert_eq!(
             report["capabilities"]["scope"]["strict_command_scope"],
             false
@@ -650,7 +887,51 @@ mod tests {
                 path.display().to_string(),
                 "run",
                 "--backend",
-                "macos-explicit",
+                "explicit",
+                "--policy",
+                "default",
+                "--"
+            ])
+        );
+    }
+
+    #[test]
+    fn compatible_config_exposes_argv_safe_interpose_execution() {
+        let source = crate::cli::init::InitFormat::Toml
+            .template()
+            .replace("backend = \"ebpf\"", "backend = \"interpose\"");
+        let path = temporary_config(&source);
+        let report = build_report(Some(&path), AgentArgs { policy: None });
+        std::fs::remove_file(&path).unwrap();
+
+        if !crate::interpose::architecture_supported() {
+            assert_eq!(report["ready"], false);
+            assert!(report["actions"]["execute_prefix"].is_null());
+            assert!(
+                report["diagnostics"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|value| { value["code"] == "interpose_architecture_unavailable" })
+            );
+            return;
+        }
+
+        assert_eq!(report["ready"], true);
+        assert_eq!(report["execution"]["backend"], "interpose");
+        assert_eq!(report["execution"]["scope"], "interposed_dynamic_calls");
+        assert_eq!(report["capabilities"]["scope"]["client_can_bypass"], true);
+        assert_eq!(report["capabilities"]["udp"]["connected"], false);
+        assert_eq!(report["capabilities"]["decrypt"]["modes"], json!(["off"]));
+        assert_eq!(
+            report["actions"]["execute_prefix"],
+            json!([
+                "heimdall",
+                "--config",
+                path.display().to_string(),
+                "run",
+                "--backend",
+                "interpose",
                 "--policy",
                 "default",
                 "--"

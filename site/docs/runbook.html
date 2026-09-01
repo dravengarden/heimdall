@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#F7F4ED">
-    <meta name="description" content="Heimdall runbook for building, installing, smoke testing, and diagnosing the eBPF proxy.">
+    <meta name="description" content="Build, test, operate, and release Heimdall.">
     <link rel="icon" href="../assets/heimdall-mark.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" href="../assets/apple-touch-icon.png">
     <link rel="stylesheet" href="../styles.css">
@@ -15,93 +15,58 @@
     <header class="site-header"><div class="container nav-shell">
       <a class="brand" href="../index.html"><img class="brand-mark" src="../assets/heimdall-mark.svg" alt=""><span class="brand-copy"><span class="brand-name">Heimdall</span><span class="brand-tagline">docs / guarded path</span></span></a>
       <button class="menu-toggle" type="button" data-menu-toggle aria-expanded="false" aria-controls="site-nav" aria-label="Open navigation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke-linecap="round" /></svg></button>
-      <nav class="nav-links" id="site-nav" data-site-nav aria-label="Primary navigation"><a href="product-contract.html" data-page="product-contract">Contract</a><a href="install.html" data-page="install">Install</a><a href="architecture.html" data-page="architecture">Architecture</a><a href="configuration.html" data-page="configuration">Configuration</a><a href="commands.html" data-page="commands">Commands</a><a href="runbook.html" data-page="runbook">Runbook</a><a href="roadmap.html" data-page="roadmap">Roadmap</a><a class="nav-github" href="https://github.com/dravengarden/heimdall">GitHub <span aria-hidden="true">↗</span></a></nav>
+      <nav class="nav-links" id="site-nav" data-site-nav aria-label="Primary navigation"><a href="product-contract.html">Contract</a><a href="install.html">Install</a><a href="architecture.html">Architecture</a><a href="configuration.html">Configuration</a><a href="commands.html">Commands</a><a href="runbook.html">Runbook</a><a href="roadmap.html">Roadmap</a><a class="nav-github" href="https://github.com/dravengarden/heimdall">GitHub <span aria-hidden="true">↗</span></a></nav>
     </div></header>
 
     <main id="main-content" class="container docs-shell">
-      <aside class="docs-sidebar" aria-label="Documentation navigation"><div class="sidebar-label">Documentation</div><nav class="sidebar-nav"><a href="product-contract.html" data-page="product-contract">Product contract</a><a href="install.html" data-page="install">Install and upgrade</a><a href="architecture.html" data-page="architecture">Architecture</a><a href="configuration.html" data-page="configuration">Configuration</a><a href="commands.html" data-page="commands">Command workflows</a><a href="runbook.html" data-page="runbook">Runbook</a><a href="roadmap.html" data-page="roadmap">Roadmap</a></nav><div class="sidebar-meta"><strong>Source document</strong><a href="https://github.com/dravengarden/heimdall/blob/main/docs/runbook.md">docs/runbook.md ↗</a></div></aside>
+      <aside class="docs-sidebar" aria-label="Documentation navigation"><div class="sidebar-label">Documentation</div><nav class="sidebar-nav"><a href="product-contract.html">Product contract</a><a href="install.html">Install and upgrade</a><a href="architecture.html">Architecture</a><a href="configuration.html">Configuration</a><a href="commands.html">Command workflows</a><a href="runbook.html" data-page="runbook">Runbook</a><a href="macos.html">macOS backend</a><a href="roadmap.html">Roadmap</a></nav><div class="sidebar-meta"><strong>Source document</strong><a href="https://github.com/dravengarden/heimdall/blob/main/docs/runbook.md">docs/runbook.md ↗</a></div></aside>
       <article class="doc-content">
-        <details class="mobile-toc"><summary>In this section</summary><nav><a href="product-contract.html">Product contract</a><a href="install.html">Install and upgrade</a><a href="architecture.html">Architecture</a><a href="configuration.html">Configuration</a><a href="commands.html">Command workflows</a><a href="runbook.html">Runbook</a><a href="roadmap.html">Roadmap</a></nav></details>
-        <span class="doc-kicker">Operations / evidence first</span>
+        <span class="doc-kicker">Operate / verify</span>
         <h1>Runbook</h1>
-        <p class="doc-lead">Build eBPF before userspace, install one binary, authorize only its setup worker, and verify the foreground contract rather than trusting a successful compile.</p>
+        <p class="doc-lead">Use repository-owned commands inside the pinned Nix shell. Build eBPF before userspace because the object is embedded in the single CLI.</p>
 
-        <h2 id="build">Build</h2>
-        <p>The single binary embeds the versioned eBPF ELF, so refresh it first. Enter the pinned development environment before running project commands.</p>
+        <h2 id="build">Build and verify</h2>
         <pre><code>nix develop -c just sync-ebpf
-nix develop -c just verify
-nix develop -c just check-macos
+nix develop -c just verify</code></pre>
+        <p><code>just verify</code> includes format, lint, dependency, unit, Darwin type-check, site, release-tooling, userspace, and Linux interpose-native gates.</p>
 
-# On a native Apple-silicon Mac:
+        <h2 id="macos">macOS native gates</h2>
+        <pre><code># x86_64 or Apple silicon
+just test-macos-explicit-native
+
+# Apple silicon
 just test-macos-native
-just test-macos-interpose-feasibility
+just test-macos-interpose-native
 
-# Deferred source research; not a package or release gate:
-just test-macos-companion-native
-scripts/build-macos-release-assets --unsigned /tmp/heimdall-dist
+# Deferred source only:
+just test-macos-companion-native</code></pre>
+        <p><code>test-macos-explicit-native</code> accepts explicit mode on either macOS architecture by routing curl through its cooperative listener. The Apple-silicon combined gate additionally verifies the embedded interpose dylib, per-run authentication, real TCP policy routing, hostname preservation, common UDP-call rejection, Agent v10, JSONL integrity, cleanup, exit status, and protected-target preflight.</p>
+        <p>The companion gate builds no release artifact and proves no Network Extension installation, activation, routing, or attribution.</p>
 
-# From the Linux release host:
-HEIMDALL_MACOS_BUILD_HOST=&lt;ssh-alias&gt; just test-package-macos</code></pre>
-        <p><code>check-macos</code> type-checks the target-selected CLI and portable unit-test targets for pinned <code>aarch64-apple-darwin</code>. It proves Linux-only aya/cgroup code does not leak into shared config/init, <code>RunEvidence</code>, <code>relay_transport</code>, the JSONL store and offline log CLI, or the reduced explicit-agent contract. It also compiles the internal <code>heimdall.macos.control/v1</code> HMAC, fixed-vector, replay, framing, concurrent-run, and owner-EOF tests. It does not link a native binary or connect that protocol to a provider.</p>
-        <p><code>test-macos-native</code> builds and runs the release CLI on Apple silicon. It routes <code>curl</code> through the <code>macos-explicit</code> loopback SOCKS5 CONNECT listener and a fixture upstream, then verifies domain preservation, shared policy routing, cooperative JSONL, integrity, listener teardown, exit passthrough, and fail-closed backend selection. Its unit phase reruns the control protocol but does not supply Apple flow metadata, so it does not accept strict scope, UDP, fake DNS, capture, TLS inspection, Network Extension behavior, or official packaging.</p>
-        <p><code>test-macos-interpose-feasibility</code> is a no-network research gate. It proves an ordinary dynamic fixture loads the injected constructor while Hardened Runtime and SIP-protected targets do not. It does not implement or accept socket routing, DNS, descendants, capture, or TLS.</p>
-        <p><code>test-macos-companion-native</code> runs the native Swift control-codec tests and builds one containing app with one embedded <code>NETransparentProxyProvider</code> system extension, both unsigned arm64 macOS 11 products. It never signs, installs, activates, approves, or configures the extension. The app does not submit activation; provider startup fails and an unexpected flow is closed instead of returned to the normal route. This is deferred source and bundle-shape evidence, excluded from package and release construction.</p>
-        <p><code>test-package-macos</code> sends only <code>git archive HEAD</code> through a stable SSH alias and returns only an archive/checksum. Its <code>--unsigned</code> path proves CLI Mach-O hygiene, macOS 11 deployment, deterministic tar metadata, checksum, install, simulated upgrade, rollback, and uninstall. It neither builds nor includes the deferred companion. The default path requires Developer ID, Hardened Runtime, timestamp, a warning-free accepted <code>notarytool</code> log, and Gatekeeper assessment.</p>
-        <p>Run the current and Linux 6.6 LTS disposable NixOS real-eBPF VMs when changing cgroups, DNS, relay correlation, routing, or kernel programs. Both execute the same static binary and full daemonless acceptance suite. Run both pinned distro gates to prove the release archive on non-NixOS systems:</p>
-        <pre><code>nix develop -c just test-vm
+        <h2 id="smoke">Config and smoke test</h2>
+        <pre><code>heimdall config validate --json
+heimdall agent --policy default | jq .
+heimdall run --policy default -- curl -fsS https://example.com</code></pre>
+        <p>Select every backend explicitly. Linux supports <code>ebpf</code>, <code>interpose</code>, and <code>explicit</code>. macOS x86_64/aarch64 supports <code>explicit</code>; Apple silicon additionally supports <code>interpose</code>. Heimdall never guesses or falls back.</p>
 
-# On an x86_64 Linux KVM host:
-just test-vm-ubuntu
-just test-vm-debian
+        <h2 id="evidence">Inspect evidence</h2>
+        <pre><code>heimdall logs list --json
+heimdall logs summary --run RUN_ID --json | jq .
+heimdall logs flow --run RUN_ID --flow FLOW_ID --json | jq .
+heimdall logs verify --run RUN_ID --json</code></pre>
+        <p>JSONL is the source of truth. Agent v10 and all log schemas are available offline. Reduced backend events carry <code>interpose/interposed_dynamic_calls</code> or <code>explicit/cooperative_environment</code> source metadata and intentionally do not imply process attribution.</p>
 
-# On an aarch64 Linux execution host:
-nix develop .#acceptance -c just test-vm-native-aarch64</code></pre>
-        <p>The Ubuntu 24.04 guest uses QEMU user-mode networking, grants only the exact setup-worker sudo rule, rejects copied-binary authorization, and verifies fake DNS through SOCKS5 while AppArmor's default user-namespace restriction remains enabled, direct TCP/UDP, descendants, all four owner signals, concurrent sessions, parent-death recovery, runtime and relay TLS, JSONL integrity, exit propagation, and daemonless process/listener/cgroup/BPF-pin cleanup. It rejects host link, route, or rule changes. It is focused distribution coverage, not a replacement for the broader NixOS protocol/stress matrix or native aarch64 execution.</p>
-        <p>The Debian 13 guest runs the same archive and lifecycle suite against its stock <code>files myhostname resolve [!UNAVAIL=return] dns</code> chain. It proves the private resolver mount without changing host NSS state or requiring a session D-Bus service, and its Python 3.13/OpenSSL client validates Heimdall's generated relay CA and leaf extensions.</p>
+        <h2 id="acceptance">Acceptance matrix</h2>
+        <table><thead><tr><th>Gate</th><th>Evidence</th></tr></thead><tbody><tr><td><code>just verify</code></td><td>Source, docs, tooling, userspace, and Linux native interpose/explicit.</td></tr><tr><td><code>just test-vm</code></td><td>Current/LTS NixOS real-eBPF data path and lifecycle.</td></tr><tr><td><code>just test-vm-ubuntu</code></td><td>Ubuntu release archive, namespace-free fake DNS, lifecycle, TLS, and cleanup.</td></tr><tr><td><code>just test-vm-debian</code></td><td>Debian release archive and private-resolver-mount path.</td></tr><tr><td><code>just test-vm-native-aarch64</code></td><td>Native ARM Linux real-eBPF acceptance; requires an ARM host.</td></tr><tr><td><code>just test-macos-explicit-native</code></td><td>x86_64 or Apple-silicon explicit source acceptance.</td></tr><tr><td><code>just test-macos-native</code></td><td>Apple-silicon explicit and interpose source acceptance.</td></tr><tr><td><code>just test-package</code></td><td>Linux archives, checksums, static linkage, architecture, install, and rollback.</td></tr><tr><td><code>just test-package-macos</code></td><td>macOS CLI archive mechanics; publishable mode additionally requires signing and notarization.</td></tr></tbody></table>
 
-        <h2 id="install">Install</h2>
-        <p>For a tagged static release, verify the checksum and use the bundled atomic installer. See <a href="install.html">Install and upgrade</a> for download and rollback commands. For a source build:</p>
-        <pre><code>sudo install -Dm755 target/release/heimdall /usr/local/bin/heimdall
-heimdall init
+        <h2 id="release">Release boundary</h2>
+        <p>The local release transaction is authoritative: build immutable assets, inspect them, run platform gates, render changelog-backed notes, then publish. Thin npm, PyPI, and crates.io OIDC workflows upload only those release assets; they do not rebuild Heimdall.</p>
+        <p>A macOS version is publishable only after the CLI and embedded dylib receive Developer ID signatures, notarization succeeds without warnings, Gatekeeper accepts the result, and a fresh download passes install, run, upgrade, rollback, and uninstall.</p>
 
-# Add with visudo after replacing USERNAME:
-# USERNAME ALL=(root) NOPASSWD: /usr/local/bin/heimdall __setup-worker
-sudo chmod 0440 /etc/sudoers.d/heimdall
-sudo visudo -cf /etc/sudoers.d/heimdall</code></pre>
-        <p>Replace <code>USERNAME</code>. The worker receives one strict request over stdin, transfers map/link FDs, and drops privilege before the command starts. Runtime TLS retains that unprivileged helper only for the run lifetime. No service is required.</p>
-
-        <h2 id="smoke">Smoke test</h2>
-        <pre><code>heimdall agent | jq .
-heimdall config validate
-heimdall run -- curl -fsS https://example.com</code></pre>
-        <div class="callout"><strong>Exit status is part of the contract.</strong> The wrapped command's exit status is Heimdall's exit status. Owner-addressed SIGHUP, SIGINT, SIGQUIT, and SIGTERM are forwarded to the child while Heimdall remains alive to finalize evidence. Setup authorization is non-interactive and fails before execution.</div>
-
-        <h2 id="acceptance">Acceptance coverage</h2>
-        <p>The NixOS VMs exercise real eBPF attachment, fake/system DNS, SOCKS5 TCP/UDP, QUIC, descendants, signals, concurrent isolated runs, runtime and relay TLS, provenance-linked HTTP/1 header evidence and credential masking, log rotation, orphan recovery, exact preview/apply retention, fail-closed errors, parent-death cgroup cleanup, and link cleanup. Ubuntu independently proves namespace-free fake DNS under its default user-namespace restriction; Debian proves the private-mount fallback through its stock nss-resolve chain. Both install the archive and cover exact authorization, direct TCP/UDP, descendants, all owner signals, concurrent isolation, parent-death recovery, both TLS modes, logs, and normal cleanup outside NixOS. The native-aarch64 recipe rejects a non-aarch64 host and asserts the guest architecture; qemu-user CLI execution does not satisfy that gate.</p>
-        <p>Local release verification is authoritative. From a clean <code>main</code> checkout that exactly matches <code>origin/main</code>, set <code>HEIMDALL_MACOS_BUILD_HOST=&lt;ssh-alias&gt;</code> and run <code>just release-github</code>. It validates curated highlights, the structured version changelog and known limitations before running source verification, the current and Linux 6.6 LTS NixOS real-eBPF guests, the pinned Ubuntu 24.04 and Debian 13 compatibility guests, all package checks, and the signed/notarized Mac build sequentially. Only then does it create the tag and publish the generated release notes, archives, and checksums. GitHub Pages or Actions status is not release evidence.</p>
-        <p>The same local transaction builds and checksums the npm tarball, x86_64/aarch64 PyPI wheels, and Cargo CLI source package. Publishing the GitHub Release triggers thin npm, PyPI, and crates.io OIDC workflows that upload only those immutable assets; Actions does not rebuild Heimdall and routine publication needs no registry login, write token, 2FA link, or second dispatch.</p>
-        <table><thead><tr><th>Evidence</th><th>What it proves</th></tr></thead><tbody><tr><td><code>just verify</code></td><td>Build, format, lint, dependency, unit, Darwin type-check, deferred companion source-contract, and userspace gates.</td></tr><tr><td><code>just check-macos</code></td><td>The Darwin entry and portable protocol tests exclude Linux-only dependencies; this is a compile boundary, not native acceptance.</td></tr><tr><td><code>just test-macos-native</code></td><td>The reduced cooperative TCP backend on native Apple silicon, including routing, metadata evidence, integrity, cleanup, exit status, and explicit selection.</td></tr><tr><td><code>just test-macos-interpose-feasibility</code></td><td>Only the DYLD loader boundary: ordinary dynamic target accepted, Hardened Runtime and SIP-protected targets blocked.</td></tr><tr><td><code>just test-macos-companion-native</code></td><td>Deferred Swift control-codec and unsigned app/system-extension source shape; no release inclusion, signing, install, activation, routing, or attribution.</td></tr><tr><td><code>just test-package-macos</code></td><td>Native non-publishable arm64 CLI package mechanics: Mach-O/deployment/path hygiene, archive/checksum, install, upgrade, rollback, and uninstall; no companion.</td></tr><tr><td><code>just test-package</code></td><td>x86_64/aarch64 static linkage, architecture, checksum, source-path and debug-section hygiene, BTF preservation, aarch64 emulated CLI, and x86_64 install/upgrade/rollback/uninstall.</td></tr><tr><td><code>just test-vm</code></td><td>The x86_64 static release binary on the current/LTS NixOS real-kernel daemonless data path.</td></tr><tr><td><code>just test-vm-ubuntu</code></td><td>The installed x86_64 archive on Ubuntu 24.04 with exact authorization, restricted-userns fake DNS, direct TCP/UDP, descendant/signal/concurrent/parent-death lifecycle, runtime and relay TLS, logs, cleanup, and host isolation.</td></tr><tr><td><code>just test-vm-debian</code></td><td>The same archive on Debian 13 with private-mount fake DNS through stock nss-resolve, strict OpenSSL relay verification, the complete distro lifecycle, cleanup, and host isolation.</td></tr><tr><td><code>just test-vm-native-aarch64</code></td><td>The aarch64 static CLI on the same current/LTS real-eBPF suite; it must execute from an aarch64 Linux host.</td></tr><tr><td><code>heimdall agent</code></td><td>Config, execution ownership, capabilities, and repair actions.</td></tr><tr><td><code>heimdall logs schema --summary v1</code></td><td>The strict offline contract for the low-cardinality run-health document.</td></tr><tr><td><code>heimdall logs summary</code></td><td>Run health, sequence loss, active flows, failures, and protocol counters.</td></tr><tr><td><code>heimdall logs schema --flow v1</code></td><td>The strict offline contract for one bounded flow explanation.</td></tr><tr><td><code>heimdall logs flow</code></td><td>Route/result, capture boundaries, actual plaintext, protocol counters, errors, and argv-safe next actions without payload disclosure.</td></tr><tr><td><code>heimdall logs verify</code></td><td>Per-run JSONL sequence, schema, segment, and blob integrity.</td></tr></tbody></table>
-
-        <p>The Ubuntu gate also asserts that <code>heimdall agent --policy fake</code> selects <code>port53_intercept</code>, reports the still-enabled AppArmor restriction, and needs no private resolver mount.</p>
-        <p>The Debian gate asserts <code>private_mount</code> for its nss-resolve status-action chain and completes without a session D-Bus service or host resolver edits.</p>
-
-        <h2 id="benchmark">Performance baseline</h2>
-        <pre><code>nix develop -c just benchmark-vm
-just benchmark-vm-ubuntu
-just benchmark-vm-debian</code></pre>
-        <p>The current/Linux 6.6 LTS NixOS guests and pinned Ubuntu 24.04 and Debian 13 guests each emit one <code>heimdall.benchmark/v1</code> document after measuring cold start, direct TCP, proxied TCP/UDP, relay TLS, maximum RSS, 1/10/50 concurrent starts, event integrity, and sustained direct/proxied TCP, proxied UDP, transport-capture, and relay-plaintext-capture throughput. Each throughput record includes bytes, elapsed time, bytes per second, and its capture/decrypt boundary. Event integrity requires zero incomplete runs, sequence gaps, out-of-order records, active or failed flows, and error events. NixOS uses GNU time accounting; Ubuntu and Debian use SOCKS5 routing, procfs RSS sampling, and 8 GiB guests. The Ubuntu baseline does not weaken its AppArmor user-namespace restriction. These explicit performance checks are not part of <code>release-check</code>. Results are specific to the reported distribution, architecture, kernel, CPU count, memory, and RSS source; they are environment baselines, not universal performance claims.</p>
-
-        <h2 id="diagnose">Diagnose failures</h2>
-        <ol><li>Run <code>heimdall agent</code> and preserve its JSON even when it exits 1.</li><li>Follow <code>actions.validate</code> and every <code>actions.resolver_inspect[]</code> item as independent argv arrays.</li><li>Check the exact sudoers path if foreground setup is denied.</li><li>Preview with <code>config explain</code>, then reproduce with a minimal command and the same policy.</li></ol>
-        <p>A plain <code>hosts: files dns</code> NSS path uses cgroup port-53 interception for fake DNS and needs no user namespace. Read <code>decision.resolver</code> first. <code>fake_dns_user_namespace_disabled</code> fails before run state or the workload exists; choose system DNS or use a compatible host. For <code>apparmor_policy_check</code>, grant <code>userns,</code> only to the exact installed Heimdall path when authorized. Never relax Ubuntu's system-wide restriction.</p>
-        <p>Before relay trust, require <code>agent.config.decrypt.ca_material_ready</code> and compare the DER SHA-256 in <code>tls init-ca</code> <code>ca_cert_sha256</code> with <code>agent.config.decrypt.ca_cert_sha256</code>. Trust only that public certificate in the explicitly wrapped client; never expose the signing key. For <code>relay_ca_material_invalid</code>, generate replacement material in a new private directory, update command-scoped trust, and then change both config paths.</p>
-        <p>For relay TLS, <code>tls_upstream_certificate_invalid</code> means Heimdall rejected the remote peer and upstream verification must not be weakened. <code>tls_upstream_client_auth_required</code> means the verified upstream requires a client certificate relay mode cannot forward, so use runtime mode or disable decryption. <code>tls_downstream_certificate_rejected</code> is an explicit client certificate alert. <code>tls_downstream_closed_without_close_notify</code> is ambiguous; preserve the wrapped command's stderr and exit status before diagnosing trust.</p>
-        <p>Do not equate config validity with connectivity. A real acceptance check must exercise the selected policy through <code>heimdall run</code>.</p>
-
-        <div class="doc-page-footer"><a href="commands.html">← Command workflows</a><a href="roadmap.html">Roadmap →</a></div>
+        <div class="doc-page-footer"><a href="commands.html">← Commands</a><a href="roadmap.html">Roadmap →</a></div>
       </article>
     </main>
-    <footer class="site-footer"><div class="container footer-inner"><a class="footer-brand" href="../index.html"><img src="../assets/heimdall-mark.svg" alt="">Heimdall</a><span class="footer-copy">Build, activate, verify.</span><nav class="footer-links" aria-label="Footer navigation"><a href="https://github.com/dravengarden/heimdall">GitHub</a><a href="https://github.com/dravengarden/heimdall/blob/main/SECURITY.md">Security</a></nav></div></footer>
+    <footer class="site-footer"><div class="container footer-inner"><a class="footer-brand" href="../index.html"><img src="../assets/heimdall-mark.svg" alt="">Heimdall</a><span class="footer-copy">Build locally. Verify the boundary.</span><nav class="footer-links" aria-label="Footer navigation"><a href="https://github.com/dravengarden/heimdall">GitHub</a><a href="https://github.com/dravengarden/heimdall/blob/main/SECURITY.md">Security</a></nav></div></footer>
     <script src="../app.js" defer></script>
   </body>
 </html>

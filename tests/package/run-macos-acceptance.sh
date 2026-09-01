@@ -68,7 +68,7 @@ grep -Eq '"const"[[:space:]]*:[[:space:]]*"heimdall\.logs\.flow/v1"' <<<"$flow_s
 
 prefix=$work_dir/prefix
 install_output=$("$bundle/heimdall-install" install --prefix "$prefix")
-grep -Fq 'macos-explicit requires no privileged setup' <<<"$install_output"
+grep -Fq 'macOS reduced backends require no privileged setup' <<<"$install_output"
 if grep -Fq '__setup-worker' <<<"$install_output"; then
   printf 'macOS installer printed Linux setup authorization\n' >&2
   exit 1

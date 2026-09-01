@@ -108,6 +108,9 @@ if [[ $mode == signed ]]; then
     printf 'cannot authenticate the macOS notary profile: %s\n' "$notary_profile" >&2
     exit 1
   }
+  export HEIMDALL_INTERPOSE_SIGNING_IDENTITY_SHA1=$signing_identity_sha1
+else
+  unset HEIMDALL_INTERPOSE_SIGNING_IDENTITY_SHA1
 fi
 
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/heimdall-macos-release.XXXXXX")
@@ -169,6 +172,7 @@ fi
 
 tests/package/check-artifact-hygiene.sh "$bundle/heimdall" macos-executable
 HEIMDALL_MACOS_BINARY="$bundle/heimdall" tests/macos/run-explicit-acceptance.sh
+HEIMDALL_MACOS_BINARY="$bundle/heimdall" tests/macos/run-interpose-acceptance.sh
 
 if [[ $mode == signed ]]; then
   submission=$work_dir/heimdall-notary.zip

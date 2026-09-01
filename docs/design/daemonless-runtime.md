@@ -148,11 +148,11 @@ The hidden setup worker is now wired and VM-verified. It authenticates the Unix
 socket peer against the sudo caller when available, confines non-root callers
 to their own user slice, rejects non-canonical paths and cgroup inode
 mismatches, initializes fresh maps, attaches only the requested cgroup, sends
-the fixed FD bundle, and drops to the authenticated caller. Every mode waits
-on inherited-socket EOF as a parent-death guard; runtime mode also retains Aya
-probe state. Graceful teardown is explicitly marked. Unmarked EOF kills and
-removes the command cgroup before the helper exits. No persistent daemon or
-long-lived privileged listener is required.
+the fixed FD bundle, and drops to the authenticated caller. Every eBPF decrypt
+mode waits on inherited-socket EOF as a parent-death guard; runtime mode also
+retains Aya probe state. Graceful teardown is explicitly marked. Unmarked EOF
+kills and removes the command cgroup before the helper exits. No persistent
+daemon or long-lived privileged listener is required.
 `heimdall run` invokes it once after binding per-run listeners and before
 executing the child.
 
@@ -217,7 +217,7 @@ UI has no effect on a run. Starting a run has no effect on the UI.
 ## Agent contract
 
 `heimdall agent` remains read-only and single-document JSON.
-`heimdall.agent/v8` reports:
+`heimdall.agent/v10` reports:
 
 - selected backend and whether per-run authorization is required;
 - the explicit `daemon_required = false` foreground ownership boundary;
@@ -270,7 +270,7 @@ Available now:
 - concurrent-session, descendant, all foreground-signal, authorization-denial,
   normal-cleanup, parent-death recovery, and both TLS-mode acceptance in the
   current/LTS NixOS and pinned Ubuntu 24.04 and Debian 13 real-eBPF guests;
-- `heimdall.agent/v8` reporting only the foreground execution owner and its
+- `heimdall.agent/v10` reporting only the foreground execution owner and its
   actual capability evidence.
 
 Planned work is limited to the acceptance and product boundaries in

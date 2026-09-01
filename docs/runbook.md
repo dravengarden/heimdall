@@ -17,7 +17,7 @@ nix develop -c just check-macos
 ```
 
 It type-checks the target-selected CLI and portable unit-test targets for
-pinned `aarch64-apple-darwin`. It proves that shared config/init,
+pinned `aarch64-apple-darwin` and `x86_64-apple-darwin`. It proves that shared config/init,
 `RunEvidence`, `relay_transport`, the JSONL store and offline log CLI, and the
 reduced explicit-agent contract do not compile Linux-only aya/cgroup code. It
 also compiles the internal `heimdall.macos.control/v1` HMAC, fixed-vector,
@@ -25,25 +25,42 @@ replay, framing, registration, concurrent-run, and owner-EOF tests. It does not
 link or execute a native binary, connect that protocol to a provider, or serve
 as the macOS attribution acceptance gate.
 
-On a native Apple-silicon Mac, run:
+On Linux, `just verify` also builds the release CLI and runs
+`test-linux-interpose-native` plus `test-linux-explicit-native`. These gates
+route real TCP through the selected reduced frontend, verify policy/flow JSONL,
+exit propagation, teardown, and preflight failures, and prove `explicit` does
+not enter the systemd/cgroup/eBPF re-entry path.
+
+On any native x86_64 or Apple-silicon Mac, accept the architecture-neutral
+explicit backend:
+
+```bash
+just test-macos-explicit-native
+```
+
+On Apple silicon, run the combined explicit/interpose gate:
 
 ```bash
 just test-macos-native
+
+# Optional negative boundary inventory:
 just test-macos-interpose-feasibility
 
 # Deferred source research; not a package or release gate:
 just test-macos-companion-native
 ```
 
-This pinned release-mode gate runs the Darwin unit tests, builds the source
-CLI, then routes `curl` through the `macos-explicit` loopback SOCKS5 CONNECT
-listener and a fixture upstream. It verifies domain preservation, shared
-policy routing, cooperative `policy.decision`/`flow.open`/`flow.close` JSONL,
-offline integrity, listener teardown, exit-code passthrough, and fail-closed
-backend selection. The native unit phase reruns the portable control-protocol
-tests but does not supply Apple flow metadata. The gate does not accept strict
-process scope, UDP, fake DNS, capture, TLS inspection, the future Network
-Extension, or official macOS packaging.
+The explicit gate runs the Darwin unit tests, builds the source CLI, and routes
+`curl` through its cooperative loopback SOCKS5 CONNECT listener on either
+macOS architecture. The Apple-silicon combined gate additionally accepts
+`interpose`, which injects the embedded signed library into a dynamic libc
+client, authenticates to the foreground
+listener, preserves fake-DNS hostname identity, routes TCP through shared
+policy, rejects common connected and connectionless UDP calls, and rejects a
+SIP-protected target before exec. Both paths verify JSONL integrity, listener
+and library teardown, exit-code passthrough, and fail-closed backend selection.
+The gate does not accept strict process scope, payload capture, TLS inspection,
+the future Network Extension, or official signed/notarized publication.
 
 `just test-macos-companion-native` is a different source gate. It runs the
 Swift `heimdall.macos.control/v1` conformance tests, builds the containing app
@@ -54,10 +71,14 @@ Network Extension configuration exists. The gate does not install, approve,
 activate, or route through the extension and is not attribution evidence.
 It is intentionally excluded from package and release construction.
 
-`just test-macos-interpose-feasibility` is a no-network research gate. It
-builds an ad-hoc-signed constructor probe and verifies that an ordinary dynamic
-target loads it while Hardened Runtime and SIP-protected targets do not. It
-does not implement or accept socket routing, DNS, descendants, capture, or TLS.
+`just test-macos-interpose-feasibility` remains a negative boundary-inventory
+gate independent of the product acceptance path. It exercises ordinary
+dynamic interposition across `fork` and inherited-loader `exec`, then records
+where Hardened Runtime, SIP, loader-state removal, `connectx`,
+Network.framework, uninterposed UDP APIs, and a background descendant can
+bypass that mechanism. Product acceptance adds real relay routing,
+authentication, preflight, common UDP-call rejection, and cleanup but does not
+turn those remaining bypasses into a strict command-scope claim.
 
 The native packaging gate is separate from backend acceptance:
 
@@ -252,14 +273,14 @@ the exact sudoers rule is absent.
 
 `heimdall agent [--policy NAME]` is read-only and prints exactly one JSON value.
 Exit 0 means ready, 1 means the document contains a repairable reason, and 2 is
-CLI usage failure. The current contract is `heimdall.agent/v8`.
+CLI usage failure. The current contract is `heimdall.agent/v10`.
 
 The execution section is the ownership decision that automation must use (the
 following is an excerpt):
 
 ```json
 {
-  "contract": "heimdall.agent/v8",
+  "contract": "heimdall.agent/v10",
   "ready": true,
   "execution": {
     "backend": "linux-ebpf-foreground",
@@ -278,17 +299,20 @@ map after exec; if no supported image can be attached, setup fails before the
 wrapped command starts.
 
 Treat every `actions.*` command as an argv array; never concatenate or
-shell-evaluate it. Consumers may rely on existing v8 field semantics and must
+shell-evaluate it. Consumers may rely on existing v10 field semantics and must
 ignore additive unknown fields. Renaming or changing an existing semantic
 requires a new contract version.
 
-On Apple silicon, the same v8 document reports `macos-explicit` available only
-when the selected policy fits the reduced contract and every outbound
-credential is readable. `execution.scope = cooperative_proxy_environment`,
-`client_can_bypass = true`, and strict scope, UDP, fake DNS, capture, and TLS
-remain unavailable. `actions.execute_prefix` includes the mandatory
-`--backend macos-explicit`; an incompatible policy or omitted backend fails
-before exec. `macos-transparent` remains unavailable.
+The v10 document reports the explicitly configured backend. Linux supports
+`ebpf`, `interpose`, and `explicit`; macOS x86_64/aarch64 supports `explicit`,
+and Apple silicon additionally supports `interpose`. There is no automatic
+choice or fallback. For
+`interpose`, require `execution.scope = interposed_dynamic_calls` and
+`failure_boundary = interposed_calls_only`; for `explicit`, require
+`scope = cooperative_proxy_environment`. Both report `client_can_bypass = true` and
+no payload capture or TLS inspection. `actions.execute_prefix` includes the
+configured backend so automation never guesses. `macos-transparent` remains
+deferred and unavailable.
 
 ```bash
 heimdall logs schema --event v1
@@ -300,7 +324,7 @@ heimdall logs verify --run <RUN_ID> --json
 not require a valid or discoverable config file.
 `capabilities.logs.flow_summary_contract`, `actions.logs_schema_flow`, and
 `actions.logs_flow` expose the bounded per-flow explanation contract and its
-parameterized argv without changing the v8 semantics.
+parameterized argv without changing the v10 semantics.
 
 Before execution, inspect:
 

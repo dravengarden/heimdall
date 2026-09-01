@@ -18,6 +18,10 @@ grep -Fq "grep -Eq '^Timestamp=.+'" scripts/build-macos-release-assets
 grep -Fq 'notarytool submit' scripts/build-macos-release-assets
 grep -Fq 'notarytool log' scripts/build-macos-release-assets
 grep -Fq 'spctl --assess --type execute' scripts/build-macos-release-assets
+grep -Fq 'HEIMDALL_INTERPOSE_SIGNING_IDENTITY_SHA1' \
+  scripts/build-macos-release-assets
+grep -Fq 'tests/macos/run-interpose-acceptance.sh' \
+  scripts/build-macos-release-assets
 if grep -Fq 'tests/macos/run-companion-acceptance.sh' \
   scripts/build-macos-release-assets; then
   printf 'the macOS release builder includes the deferred companion gate\n' >&2

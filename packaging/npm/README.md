@@ -30,8 +30,9 @@ deno install --global -A --name heimdall npm:heimdall-egress
 Modern Yarn intentionally has no global install command; use `yarn dlx` below.
 Deno installs a persistent command backed by its npm cache, but that cache is
 not a durable privileged-authorization boundary. Use npm, pnpm, Bun, Yarn
-Classic, or a native GitHub Release for real proxy sessions. macOS is not
-supported yet.
+Classic, or a native GitHub Release for eBPF sessions. Reduced `interpose` and
+`explicit` sessions need no privileged authorization. macOS npm binaries are not
+published yet.
 
 Verify the installed command:
 
@@ -41,7 +42,8 @@ heimdall --version
 
 ## Run without installing
 
-Use these for `--version`, `help`, and compatibility checks:
+Use these for `--version`, `help`, compatibility checks, and unprivileged
+`interpose` or `explicit` sessions:
 
 ```bash
 npx --yes --package=heimdall-egress -- heimdall --version
@@ -52,9 +54,9 @@ deno x -A --package heimdall-egress heimdall --version
 ```
 
 These runners use package-manager caches. Their paths are not stable enough for
-Heimdall's narrow privileged setup authorization, so do not use them for
-`heimdall run`. Use a persistent package-manager or native installation for
-real proxy sessions.
+Heimdall's narrow eBPF setup authorization, so use a persistent package-manager
+or native installation for `ebpf`. They may run either reduced backend because
+neither has privileged setup; their documented client bypasses still apply.
 
 ## Quick start
 
@@ -66,9 +68,9 @@ heimdall init
 heimdall agent
 ```
 
-`heimdall run` needs one narrowly authorized setup entry point. For a
-persistent Node package-manager installation, print the exact bundled binary
-path:
+The generated starter explicitly selects the strict Linux `ebpf` backend. It needs one narrowly authorized
+setup entry point; for a persistent Node package-manager installation, print
+the exact bundled binary path:
 
 ```bash
 heimdall-egress --print-native-path
@@ -78,6 +80,11 @@ Authorize only that regular file followed by `__setup-worker`, as shown in the
 [installation guide](https://dravengarden.github.io/heimdall/docs/install.html).
 Do not authorize the JavaScript launcher, arbitrary Heimdall arguments, a
 package cache glob, or a shell.
+
+For a no-privilege reduced session, explicitly select `interpose` for
+compatible dynamic calls or `explicit` for clients that honor a SOCKS proxy
+environment. Reject every UDP path and keep capture/decrypt off; `explicit`
+also requires system DNS. Run `heimdall agent` and verify the reported scope.
 
 Then run one command through the selected policy:
 
@@ -100,22 +107,27 @@ heimdall logs query --run RUN_ID --kind flow.close --jsonl
 ```text
 heimdall run -- COMMAND
         |
-        +-- transient command cgroup + embedded eBPF links
-        +-- per-run relay + fake DNS + JSONL writer
-        `-- command tree
-                `-- TCP/UDP -> policy -> SOCKS5, direct, or reject
+        +-- backend
+        |   +-- ebpf: cgroup links; TCP/UDP, DNS, optional capture/TLS
+        |   +-- interpose: LD_PRELOAD; compatible TCP/libc DNS calls
+        |   `-- explicit: child ALL_PROXY; cooperative TCP clients
+        `-- per-run relay + policy + JSONL -> SOCKS5, direct, or reject
 ```
 
-The foreground CLI owns the complete session: cgroup, relay, DNS, eBPF maps and
-links, logs, child exit status, and teardown. The privileged setup worker only
-attaches eBPF, transfers owned file descriptors, drops privilege, and guards
-the command tree. No persistent Heimdall daemon or Web UI is installed or
-started in any mode.
+The foreground CLI owns the relay, policy, logs, child exit status, and
+teardown. In `ebpf`, it additionally owns the cgroup, DNS, maps, and links; the
+setup worker attaches eBPF, transfers owned file descriptors, drops privilege,
+and guards the command tree. `interpose` uses no cgroup or setup worker and can
+be bypassed by static code, direct syscalls, alternate APIs, loader removal,
+inherited sockets, and unsupported descendants. `explicit` can be bypassed by
+clients that ignore or replace the proxy environment. No persistent Heimdall daemon or Web UI is installed or started in any mode.
 
 ## Modes
 
 Proxying, payload capture, and TLS plaintext observation are independent:
 
+- **Execution backend** — choose `ebpf`, `interpose`, or `explicit`; the field
+  is required and there is no automatic selection or fallback.
 - **Proxy only** — `decrypt.mode = "off"` routes TCP/UDP while TLS remains
   opaque. Policies choose named SOCKS5 outbounds, direct egress, or rejection.
 - **Bounded capture** — `capture.mode = "on"` writes private,

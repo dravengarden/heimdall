@@ -16,14 +16,12 @@
   <a href="ROADMAP.md"><img src="https://img.shields.io/badge/status-alpha-E6B52A.svg" alt="Alpha status and roadmap"></a>
 </p>
 
-On Linux, Heimdall runs one command and its entire descendant process tree
-through a named SOCKS5 egress policy. On Apple silicon macOS, the source-built
-`macos-explicit` backend offers a deliberately smaller path for cooperative
-SOCKS-aware TCP clients. It is designed for terminal workflows where a single
-command needs controlled routing without changing system-wide proxy settings.
-The next macOS research path is a separately named, proxychains-style dynamic
-interposition backend plus child-only runtime adapters. It is not available
-yet and will not claim Linux-equivalent scope.
+Heimdall runs one command through a named SOCKS5 egress policy without changing
+the machine-wide proxy. Linux can select a cgroup eBPF backend that covers the
+command's descendant tree, plus daemonless `interpose` and `explicit` reduced
+backends. macOS supports architecture-neutral `explicit` on x86_64 and Apple
+silicon; `interpose` remains Apple-silicon-only. Reduced backends report their
+bypasses and never claim eBPF-equivalent scope.
 
 The mark uses Bifröst as a boundary metaphor: the navy arch is the guarded
 crossing, and the spectrum path is the route selected by policy. It describes
@@ -37,8 +35,9 @@ the product's scope and visibility; Heimdall is not a general-purpose VPN.
 
 ## Why Heimdall?
 
-- **One command, one scope** — only `heimdall run` and its descendants are
-  redirected; unrelated processes keep their normal network path.
+- **One command, one foreground session** — no backend starts a persistent
+  daemon; the Linux eBPF mode strictly scopes interception to the command
+  cgroup.
 - **Kernel-level coverage** — cgroup eBPF hooks cover dynamic and static
   binaries without interposing a language-specific socket library.
 - **Explicit policy** — named outbounds, ordered TCP/UDP rules, fake-DNS
@@ -57,9 +56,10 @@ need compatibility hardening.
 
 | Area | Status | Current boundary |
 | --- | --- | --- |
-| Command-scoped TCP and UDP proxying | Available | IPv4/IPv6, SOCKS5 and direct egress, fake DNS, ordered policies |
-| macOS support | Explicit source backend available; daemonless fallback in research | Apple-silicon native acceptance covers an opt-in loopback SOCKS5 CONNECT frontend for cooperative TCP clients. `macos-interpose` research targets compatible dynamic TCP/resolver calls and child-only runtime adapters; Hardened Runtime, SIP, static code, UDP, strict scope, and TLS remain unavailable. The retained Network Extension prototype is deferred, source-only, and excluded from release artifacts. Native CLI package mechanics are ready, but official publication still requires Developer ID and notarization |
-| Strict configuration and agent contract | Available | TOML, YAML, JSON; generated offline schema/examples; `heimdall.agent/v8` with execution ownership, resolver strategy/userns preflight, shell-safe inspection argv, and repairable diagnostics |
+| Linux eBPF proxying | Available | Explicit `ebpf` backend; cgroup-scoped IPv4/IPv6 TCP/UDP, SOCKS5 and direct egress, fake DNS, ordered policies, capture, and optional TLS inspection |
+| Dynamic-call interposition | Available with reduced scope | Config-selectable on Linux and Apple silicon; authenticated per-run TCP relay and libc fake-DNS mapping, no root or daemon. Static code, direct syscalls, alternate APIs, loader removal, inherited sockets, and unsupported descendants can bypass it; capture and TLS inspection are unavailable |
+| Explicit proxy environment | Available with reduced scope | Config-selectable on Linux and macOS x86_64/aarch64 for cooperative SOCKS-aware TCP clients; system DNS, no UDP, capture, TLS inspection, strict scope, or fail-closed claim. The macOS Network Extension prototype remains deferred and excluded from releases |
+| Strict configuration and agent contract | Available | TOML, YAML, JSON; required `execution.backend = ebpf | interpose | explicit`; generated offline schema/examples; `heimdall.agent/v10` with exact scope, capabilities, shell-safe actions, and repairable diagnostics |
 | Daemonless Linux execution | Available | All decrypt modes own per-run relay, DNS, maps, links, and logs; runtime TLS keeps one unprivileged session helper, never a service |
 | Agent event logs and capture | Available | Per-run health and per-flow explanation summaries, fake-DNS, policy, TCP/UDP and TLS evidence plus coalesced bounded blobs with pre-storage allowlists/redaction |
 | Runtime TLS decryption | Available daemonless with alpha limits | Active and system-loader OpenSSL images are pre-attached; loader-known images may map after exec; no CA injection or privileged runtime broker |
@@ -80,29 +80,35 @@ proxychains/Proxyman research decision, and
 
 ```mermaid
 flowchart LR
-    C[heimdall run] --> G[transient cgroup v2]
-    C --> W[setup worker; drops privilege after attach]
+    C[heimdall run] --> B{execution.backend}
+    B -->|ebpf| G[transient cgroup v2]
+    B -->|ebpf| W[setup worker; drops privilege after attach]
     W --> E[per-run cgroup eBPF hooks]
     G --> E
-    E --> P[policy + fake DNS]
+    B -->|interpose| I[embedded per-run interpose library]
+    B -->|explicit| X[child SOCKS proxy environment]
+    E --> P[policy + DNS]
+    I --> P
+    X --> P
     P --> R[foreground per-run relay]
     R --> S[SOCKS5 or direct outbound]
-    R --> X[optional capture]
+    R --> K[optional capture]
     R --> T[optional runtime or relay TLS boundary]
 ```
 
-For every decrypt mode, the foreground CLI owns the relay, fake-IP
-DNS, event writer, cgroup, maps, and links. A narrow setup worker attaches eBPF,
-transfers owned file descriptors back to the CLI, and immediately drops to the
-invoking user. Every mode keeps that unprivileged helper scoped to the
+In the Linux `ebpf` backend, the foreground CLI owns the relay, fake-IP DNS,
+event writer, cgroup, maps, and links for every decrypt mode. A narrow setup
+worker attaches eBPF, transfers owned file descriptors back to the CLI, and
+immediately drops to the invoking user. The helper stays scoped to the
 invocation as a parent-death guard; runtime TLS also needs it to retain Aya's
 probe state. The CLI waits for the complete descendant tree and closes every
-per-run resource. Processes outside that cgroup are left alone.
+per-run resource. Processes outside that cgroup are left alone. Reduced
+backends own only their documented foreground proxy and injection resources.
 
-The available Linux backend does not use `LD_PRELOAD`: its privileged setup
+The default Linux backend does not use `LD_PRELOAD`: its privileged setup
 worker attaches cgroup eBPF hooks, so static binaries and mixed-language
-process trees share the same interception boundary. The planned macOS
-interpose backend is intentionally separate and narrower. See
+process trees share the same interception boundary. The selectable interpose
+backend is intentionally separate and narrower. See
 [docs/architecture.md](docs/architecture.md) for data flow and failure
 semantics.
 
@@ -120,23 +126,25 @@ npm install --global heimdall-egress
 heimdall --version
 ```
 
-Official packages remain Linux-only. An Apple-silicon source build can run a
-cooperative TCP client through the reduced explicit backend after
-`heimdall agent` reports `ready: true`:
+Choose a backend in the same config used by `agent` and `run`:
 
-```bash
-heimdall agent
-heimdall --config /path/to/config.toml run \
-  --backend macos-explicit --policy default -- \
-  curl https://example.com
+```toml
+[execution]
+backend = "ebpf" # Linux only; choose interpose or explicit for a reduced path.
 ```
 
-Use the exact `actions.execute_prefix` argv returned by `heimdall agent` in
-automation. This path sets only child `ALL_PROXY` and `all_proxy`; clients may
-ignore those variables, so it is not a transparent or fail-closed boundary.
-See the [macOS backend contract](docs/design/macos-backend.md) for its required
-system DNS, rejected UDP, disabled capture/decrypt settings, native gate, and
-the unavailable interpose/deferred Network Extension paths.
+```bash
+heimdall agent --policy default
+heimdall run --policy default -- curl https://example.com
+```
+
+Use the exact `actions.execute_prefix` returned by `heimdall agent` in
+automation. The field is required and Heimdall never guesses or falls back.
+On Linux, choose `ebpf` for the complete transparent boundary, `interpose` for
+compatible dynamically linked calls, or `explicit` for clients that honor a
+SOCKS proxy environment. On macOS x86_64/aarch64, choose `explicit`; Apple
+silicon can also choose `interpose`. `ebpf` is unavailable on macOS. Both reduced backends require rejected UDP and disabled
+capture/TLS; `explicit` also requires system DNS.
 
 To build the full Linux backend from source instead:
 
@@ -203,6 +211,9 @@ stable paths and repair hints.
 ```toml
 version = 1
 
+[execution]
+backend = "ebpf"
+
 [proxy]
 default_policy = "default"
 
@@ -263,7 +274,7 @@ Start automation with one side-effect-free preflight:
 heimdall agent
 ```
 
-It emits one `heimdall.agent/v8` JSON document containing config validity, the
+It emits one `heimdall.agent/v10` JSON document containing config validity, the
 selected foreground backend and owner, confirmation that no daemon or Web UI
 is required, selected policy, capability evidence, stable
 repair codes, and exact next commands as argv arrays. Exit `0` means ready,

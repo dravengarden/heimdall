@@ -1,5 +1,8 @@
 version = 1
 
+[execution]
+backend = "ebpf"
+
 [proxy]
 default_policy = "direct"
 

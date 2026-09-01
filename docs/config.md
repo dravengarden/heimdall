@@ -20,17 +20,19 @@ works offline. It catches field shape, enum, required-field, unknown-field, and
 config-version errors. It cannot prove references or runtime capabilities, so
 always finish with `heimdall config validate --json`.
 
-On Apple-silicon macOS, also run `heimdall agent` and use its exact
-`actions.execute_prefix`. The reduced `macos-explicit` backend accepts only a
-policy with `dns.mode = "system"`, rejected UDP, `capture.mode = "off"`, and
-`decrypt.mode = "off"`. Any route referenced by TCP must use a TCP-capable
-outbound. These are backend preflight constraints, not a second configuration
-schema; incompatible input fails before the child executes.
+Backend selection is part of the same strict config. Always run `heimdall
+agent` and inspect `execution`, `capabilities`, and its exact
+`actions.execute_prefix` before an automated invocation. Backend constraints
+are preflight checks, not a second schema; incompatible input fails before the
+child executes.
 
 ## Minimal configuration
 
 ```toml
 version = 1
+
+[execution]
+backend = "ebpf"
 
 [proxy]
 default_policy = "default"
@@ -63,6 +65,28 @@ mode = "off"
 `proxy.outbounds` describes how traffic leaves. `proxy.policies` describes the
 ordered decision for one `heimdall run` invocation. The CLI uses
 `proxy.default_policy` unless `--policy` is present.
+
+## Execution backend
+
+`execution.backend` is required and accepts exactly three values. Heimdall
+never guesses a backend and never falls back to a different one:
+
+| Value | Platform | Boundary |
+| --- | --- | --- |
+| `ebpf` | Linux | Transparent cgroup-scoped TCP/UDP interception, fake or system DNS, capture, and optional TLS inspection. It uses the session-scoped setup worker but no persistent daemon. |
+| `interpose` | Linux and Apple-silicon macOS | Injects the embedded per-run library into compatible dynamically linked commands. It routes interposed TCP `connect` and libc `getaddrinfo` calls through the authenticated foreground relay and rejects common interposed IP-datagram send calls. It is not transparent: static code, direct syscalls, alternate APIs, loader removal, inherited sockets, and unsupported descendants can bypass it. Capture and TLS inspection are unavailable. |
+| `explicit` | Linux and macOS x86_64/aarch64 | Supplies a child-only SOCKS proxy environment for cooperative clients. Clients may ignore or replace it. Fake DNS, UDP, capture, and TLS inspection are unavailable. |
+
+`heimdall run --backend <value>` is a one-command override; it does not rewrite
+the config. Prefer the config field for normal use and let automation consume
+the exact argv returned by `heimdall agent`. Linux accepts all three values;
+macOS rejects `ebpf`.
+
+Both reduced backends require every UDP policy path to reject, `capture.mode =
+"off"`, `decrypt.mode = "off"`, and TCP-capable referenced outbounds.
+`explicit` additionally requires `dns.mode = "system"`. `interpose` may use
+`fake` only through interposed libc resolver calls; this is not port-53 or
+universal resolver interception.
 
 ## Outbounds
 
@@ -164,10 +188,12 @@ domain request. Domain rules therefore require fake DNS.
 resolver. The relay then sees resolved IPs, so domain rules are rejected and
 policies must use `ip_cidr`, `port`, or protocol matchers.
 
-`macos-explicit` requires system DNS because it has no transparent DNS or fake
-IP path. Its local URL uses the `socks5h` scheme so a cooperative client may
-still pass an original hostname to the loopback frontend. This is
-client-dependent behavior, not universal DNS interception.
+`explicit` requires system DNS because it has no resolver interposition or
+fake-IP path. Its local URL uses the `socks5h` scheme so a cooperative client
+may still pass an original hostname to the loopback frontend. `interpose` can
+return per-run synthetic addresses from compatible libc `getaddrinfo` calls
+and recover the hostname at TCP `connect`. Neither reduced backend intercepts
+raw DNS packets or alternate resolver APIs.
 
 Use `heimdall config explain --network udp ... --json` to inspect a UDP policy
 decision. Without `--network`, the command explains TCP.

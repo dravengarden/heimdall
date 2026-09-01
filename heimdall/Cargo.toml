@@ -12,7 +12,7 @@ homepage = "https://dravengarden.github.io/heimdall/"
 readme = "../packaging/cargo/README.md"
 keywords = ["proxy", "egress", "ebpf", "socks5", "cli"]
 categories = ["command-line-utilities", "network-programming"]
-include = ["src/**", "schemas/**", "embedded/heimdall-ebpf"]
+include = ["build.rs", "interpose/**", "src/**", "schemas/**", "embedded/heimdall-ebpf"]
 
 [lints]
 workspace = true

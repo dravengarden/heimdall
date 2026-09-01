@@ -224,7 +224,7 @@ def verify_agent(mode: str) -> None:
         and decrypt_capabilities.get("runtime_privileged_dynamic_attachment") is False
     )
     expected = (
-        value.get("contract") == "heimdall.agent/v8"
+        value.get("contract") == "heimdall.agent/v10"
         and value.get("ready") is True
         and execution.get("backend") == "linux-ebpf-foreground"
         and execution.get("owner") == "heimdall-run"

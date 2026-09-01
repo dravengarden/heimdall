@@ -196,11 +196,37 @@ impl ConfigError {
 #[serde(deny_unknown_fields)]
 pub struct HeimdallConfig {
     pub version: u32,
+    pub execution: ExecutionConfig,
     pub proxy: ProxyConfig,
     #[serde(default)]
     pub capture: CaptureConfig,
     #[serde(default)]
     pub decrypt: DecryptConfig,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionConfig {
+    pub backend: ExecutionBackend,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ExecutionBackend {
+    Ebpf,
+    Interpose,
+    Explicit,
+}
+
+impl ExecutionBackend {
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Ebpf => "ebpf",
+            Self::Interpose => "interpose",
+            Self::Explicit => "explicit",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1444,6 +1470,9 @@ mod tests {
         r#"
             version = 1
 
+            [execution]
+            backend = "ebpf"
+
             [proxy]
             default_policy = "default"
 
@@ -1485,6 +1514,8 @@ mod tests {
             (
                 "yaml",
                 r#"version: 1
+execution:
+  backend: ebpf
 proxy:
   default_policy: default
   outbounds:
@@ -1506,7 +1537,7 @@ decrypt: { mode: "off" }
             ),
             (
                 "json",
-                r#"{"version":1,"proxy":{"default_policy":"default","outbounds":{"default":{"type":"socks5","server":"127.0.0.1","server_port":1080,"network":["tcp"]}},"policies":{"default":{"dns":{"mode":"fake"},"rules":[],"final":{"tcp":{"type":"route","outbound":"default"},"udp":{"type":"reject","method":"refused"}}}}},"capture":{"mode":"on","max_bytes_per_flow":4096},"decrypt":{"mode":"off"}}"#,
+                r#"{"version":1,"execution":{"backend":"ebpf"},"proxy":{"default_policy":"default","outbounds":{"default":{"type":"socks5","server":"127.0.0.1","server_port":1080,"network":["tcp"]}},"policies":{"default":{"dns":{"mode":"fake"},"rules":[],"final":{"tcp":{"type":"route","outbound":"default"},"udp":{"type":"reject","method":"refused"}}}}},"capture":{"mode":"on","max_bytes_per_flow":4096},"decrypt":{"mode":"off"}}"#,
             ),
         ];
         for (extension, content) in cases {
@@ -1519,6 +1550,33 @@ decrypt: { mode: "off" }
             }
             fs::remove_file(path).unwrap();
         }
+    }
+
+    #[test]
+    fn execution_backend_is_required_and_accepts_only_canonical_names() {
+        for (name, expected) in [
+            ("ebpf", ExecutionBackend::Ebpf),
+            ("interpose", ExecutionBackend::Interpose),
+            ("explicit", ExecutionBackend::Explicit),
+        ] {
+            let source =
+                valid_toml().replace("backend = \"ebpf\"", &format!("backend = \"{name}\""));
+            let config: HeimdallConfig = toml::from_str(&source).unwrap();
+            assert_eq!(config.execution.backend, expected);
+            assert_eq!(config.execution.backend.name(), name);
+        }
+
+        let invalid = valid_toml().replace("backend = \"ebpf\"", "backend = \"auto\"");
+        assert!(toml::from_str::<HeimdallConfig>(&invalid).is_err());
+
+        let missing_execution = valid_toml().replace(
+            "\n            [execution]\n            backend = \"ebpf\"\n",
+            "",
+        );
+        assert!(toml::from_str::<HeimdallConfig>(&missing_execution).is_err());
+
+        let missing_backend = valid_toml().replace("            backend = \"ebpf\"\n", "");
+        assert!(toml::from_str::<HeimdallConfig>(&missing_backend).is_err());
     }
 
     #[test]

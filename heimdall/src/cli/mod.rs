@@ -3,6 +3,7 @@
 //! The handlers share the same strict configuration loader. `heimdall run`
 //! owns its complete data plane and persistent services are out of scope.
 
+pub mod backend;
 pub mod logs;
 #[cfg(target_os = "linux")]
 pub mod tls;
@@ -15,12 +16,12 @@ pub mod agent {
 
     use crate::heimdall_config::{
         Action, CaptureMode, ConfigDiagnostic, ConfigError, ConfigFormat, DecryptConfig, DnsMode,
-        HeimdallConfig,
+        ExecutionBackend, HeimdallConfig,
     };
     use anyhow::Result;
     use serde::Serialize;
 
-    const CONTRACT_VERSION: &str = "heimdall.agent/v8";
+    const CONTRACT_VERSION: &str = "heimdall.agent/v10";
 
     #[derive(clap::Args, Debug)]
     pub struct AgentArgs {
@@ -47,6 +48,9 @@ pub mod agent {
     #[derive(Debug, Serialize)]
     struct ExecutionReport {
         backend: &'static str,
+        configured_backend: &'static str,
+        scope: &'static str,
+        failure_boundary: &'static str,
         owner: &'static str,
         privilege_setup: &'static str,
         daemon_required: bool,
@@ -88,6 +92,7 @@ pub mod agent {
 
     #[derive(Debug, Serialize)]
     struct Capabilities {
+        scope: ScopeCapabilities,
         capture: CaptureCapabilities,
         logs: LogsCapabilities,
         decrypt: DecryptCapabilities,
@@ -95,6 +100,15 @@ pub mod agent {
         runtime_acceptance: RuntimeAcceptance,
         cli_acceptance: CliAcceptance,
         lifecycle: LifecycleCapabilities,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct ScopeCapabilities {
+        model: &'static str,
+        strict_command_scope: bool,
+        transparent: bool,
+        client_can_bypass: bool,
+        known_bypasses: &'static [&'static str],
     }
 
     #[derive(Debug, Serialize)]
@@ -215,7 +229,7 @@ pub mod agent {
 
     #[derive(Debug, Serialize)]
     struct MachineError {
-        code: &'static str,
+        code: String,
         message: String,
         diagnostics: Vec<ConfigDiagnostic>,
     }
@@ -288,7 +302,7 @@ pub mod agent {
                     error: Some(config_error(error)),
                 },
                 execution: None,
-                capabilities: capabilities(),
+                capabilities: ebpf_capabilities(),
                 decision: None,
                 policies: Vec::new(),
                 outbounds: Vec::new(),
@@ -376,6 +390,7 @@ pub mod agent {
             .policy
             .unwrap_or_else(|| config.proxy.default_policy.clone());
         let selected = config.policy(&policy);
+        let backend = config.execution.backend;
         let known_policies = config
             .proxy
             .policies
@@ -383,8 +398,8 @@ pub mod agent {
             .cloned()
             .collect::<Vec<_>>()
             .join(", ");
-        let decision_error = selected.is_none().then(|| MachineError {
-            code: "unknown_policy",
+        let unknown_policy = selected.is_none().then(|| MachineError {
+            code: "unknown_policy".into(),
             message: format!("policy `{policy}` is not declared"),
             diagnostics: vec![ConfigDiagnostic {
                 code: "unknown_policy".into(),
@@ -393,22 +408,65 @@ pub mod agent {
                 hint: format!("Use --policy with one of: {known_policies}."),
             }],
         });
-        let daemon_required = false;
         let redaction_error = capture_redaction_error(&config.capture.redact_env);
-        let resolver =
-            selected.map(|selected| crate::resolver::ResolverReport::inspect(selected.dns.mode));
+        let resolver = (backend == ExecutionBackend::Ebpf)
+            .then(|| selected.map(|value| crate::resolver::ResolverReport::inspect(value.dns.mode)))
+            .flatten();
         let resolver_ready = resolver.as_ref().is_none_or(|report| report.ready);
         let resolver_inspect = resolver.as_ref().map_or_else(
             Vec::new,
             crate::resolver::ResolverReport::inspection_actions,
         );
         let decrypt = decrypt_report(&config.decrypt);
+        let backend_error = match backend {
+            ExecutionBackend::Interpose if selected.is_some() => {
+                let diagnostics = crate::interpose::diagnostics(&config, &policy)
+                    .into_iter()
+                    .map(|item| ConfigDiagnostic {
+                        code: item.code,
+                        path: item.path,
+                        message: item.message,
+                        hint: item.hint,
+                    })
+                    .collect::<Vec<_>>();
+                (!diagnostics.is_empty()).then(|| MachineError {
+                    code: "interpose_not_ready".into(),
+                    message: "the selected policy is outside the interpose backend boundary".into(),
+                    diagnostics,
+                })
+            }
+            ExecutionBackend::Explicit if selected.is_some() => {
+                let mut diagnostics = crate::explicit_proxy::diagnostics(&config, &policy);
+                if let Some(diagnostic) = crate::explicit_proxy::outbound_diagnostic(&config) {
+                    diagnostics.push(diagnostic);
+                }
+                let diagnostics = diagnostics
+                    .into_iter()
+                    .map(|item| ConfigDiagnostic {
+                        code: item.code,
+                        path: item.path,
+                        message: item.message,
+                        hint: item.hint,
+                    })
+                    .collect::<Vec<_>>();
+                (!diagnostics.is_empty()).then(|| MachineError {
+                    code: "explicit_not_ready".into(),
+                    message: "the selected policy is outside the explicit backend boundary".into(),
+                    diagnostics,
+                })
+            }
+            _ => None,
+        };
+        let decision_error = unknown_policy.or(backend_error);
         let ready = decision_error.is_none()
             && redaction_error.is_none()
             && resolver_ready
             && decrypt.ca_material_ready;
         let execute_prefix = ready.then(|| {
-            let mut argv = argv_for(&path, &["run", "--policy", &policy]);
+            let mut argv = argv_for(
+                &path,
+                &["run", "--backend", backend.name(), "--policy", &policy],
+            );
             argv.push("--".into());
             argv
         });
@@ -460,14 +518,12 @@ pub mod agent {
                 decrypt: Some(decrypt),
                 error: None,
             },
-            execution: Some(ExecutionReport {
-                backend: "linux-ebpf-foreground",
-                owner: "heimdall-run",
-                privilege_setup: "sudo-then-unprivileged-session-helper",
-                daemon_required,
-                web_ui_required: false,
-            }),
-            capabilities: capabilities(),
+            execution: Some(execution_report(config.execution.backend, backend)),
+            capabilities: match backend {
+                ExecutionBackend::Ebpf => ebpf_capabilities(),
+                ExecutionBackend::Interpose => interpose_capabilities(),
+                ExecutionBackend::Explicit => explicit_capabilities(),
+            },
             decision: Some(DecisionReport {
                 policy,
                 dns,
@@ -484,7 +540,9 @@ pub mod agent {
                 config_example_toml: config_argv(&["example", "--format", "toml"]),
                 execute_prefix,
                 resolver_inspect,
-                tls_ca_init: relay_ca_init_argv(&config.decrypt),
+                tls_ca_init: (backend == ExecutionBackend::Ebpf)
+                    .then(|| relay_ca_init_argv(&config.decrypt))
+                    .flatten(),
                 logs_schema_event: vec![
                     "heimdall".into(),
                     "logs".into(),
@@ -586,7 +644,7 @@ pub mod agent {
     fn config_error(error: ConfigError) -> MachineError {
         let diagnostics = error.diagnostics();
         MachineError {
-            code: error.code(),
+            code: error.code().into(),
             message: error.to_string(),
             diagnostics,
         }
@@ -637,7 +695,7 @@ pub mod agent {
             });
         }
         (!diagnostics.is_empty()).then(|| MachineError {
-            code: "capture_redaction_not_ready",
+            code: "capture_redaction_not_ready".into(),
             message: "capture redaction values are not ready".into(),
             diagnostics,
         })
@@ -694,7 +752,7 @@ pub mod agent {
             )),
         };
         result.err().map(|error| MachineError {
-            code: "relay_ca_material_invalid",
+            code: "relay_ca_material_invalid".into(),
             message: error.to_string(),
             diagnostics: vec![ConfigDiagnostic {
                 code: "relay_ca_material_invalid".into(),
@@ -736,8 +794,175 @@ pub mod agent {
         }
     }
 
-    const fn capabilities() -> Capabilities {
+    fn execution_report(
+        configured: ExecutionBackend,
+        backend: ExecutionBackend,
+    ) -> ExecutionReport {
+        match backend {
+            ExecutionBackend::Ebpf => ExecutionReport {
+                backend: "linux-ebpf-foreground",
+                configured_backend: configured.name(),
+                scope: "command_cgroup",
+                failure_boundary: "command_cgroup",
+                owner: "heimdall-run",
+                privilege_setup: "sudo-then-unprivileged-session-helper",
+                daemon_required: false,
+                web_ui_required: false,
+            },
+            ExecutionBackend::Interpose => ExecutionReport {
+                backend: "interpose",
+                configured_backend: configured.name(),
+                scope: "interposed_dynamic_calls",
+                failure_boundary: "interposed_calls_only",
+                owner: "heimdall-run",
+                privilege_setup: "none",
+                daemon_required: false,
+                web_ui_required: false,
+            },
+            ExecutionBackend::Explicit => ExecutionReport {
+                backend: "explicit",
+                configured_backend: configured.name(),
+                scope: "cooperative_proxy_environment",
+                failure_boundary: "cooperative_clients_only",
+                owner: "heimdall-run",
+                privilege_setup: "none",
+                daemon_required: false,
+                web_ui_required: false,
+            },
+        }
+    }
+
+    const fn interpose_capabilities() -> Capabilities {
         Capabilities {
+            scope: ScopeCapabilities {
+                model: "interposed_dynamic_calls",
+                strict_command_scope: false,
+                transparent: false,
+                client_can_bypass: true,
+                known_bypasses: &[
+                    "static_code",
+                    "direct_syscalls",
+                    "alternate_network_apis",
+                    "loader_state_removal",
+                    "unsupported_descendants",
+                    "uninterposed_udp_calls",
+                    "quic",
+                ],
+            },
+            capture: CaptureCapabilities {
+                contract: crate::event_log::EVENT_CONTRACT,
+                format: "unavailable",
+                tcp: false,
+                udp: false,
+                payload: "unavailable",
+                tls_plaintext: false,
+                boundary_allowlist: false,
+                direction_allowlist: false,
+                environment_redaction: false,
+            },
+            logs: LogsCapabilities {
+                event_contract: crate::event_log::EVENT_CONTRACT,
+                run_contract: crate::event_log::RUN_CONTRACT,
+                summary_contract: crate::event_log::SUMMARY_CONTRACT,
+                flow_summary_contract: crate::event_log::FLOW_SUMMARY_CONTRACT,
+                format: "jsonl",
+                lifecycle_events: true,
+                flow_events: "interposed_tcp_metadata",
+                dns_events: "unavailable",
+                policy_decision_events: true,
+                tls_events: "unavailable",
+                client_hello_events: false,
+                derived_http_records: "unavailable",
+                offline_schema_validation: true,
+                writer_owned_rotation: true,
+                content_addressed_blobs: false,
+                bounded_block_coalescing: false,
+                incomplete_run_recovery: true,
+            },
+            decrypt: DecryptCapabilities {
+                modes: &["off"],
+                runtime_libraries: &[],
+                runtime_apis: &[],
+                runtime_evidence: "unavailable",
+                runtime_discovery: "unavailable",
+                runtime_loader_discovery: "unavailable",
+                runtime_loader_images_can_map_after_exec: false,
+                runtime_privileged_dynamic_attachment: false,
+                runtime_max_bytes_per_event: 0,
+                runtime_requires_attached_image: false,
+                runtime_requires_ca_trust: false,
+                runtime_supports_pinning_and_mtls: false,
+                relay_library_independent: false,
+                relay_requires_ca_trust: false,
+                relay_supports_pinning_and_mtls: false,
+                upstream_certificate_verification: false,
+                non_tls_passthrough: true,
+            },
+            udp: UdpCapabilities {
+                connected: false,
+                connectionless: false,
+                connectionless_ipv4: false,
+                connectionless_ipv6: false,
+                connectionless_ipv6_single_peer: false,
+                ipv4_mapped_ipv6_socket: false,
+                concurrent_shared_source_port: false,
+                concurrent_shared_source_port_ipv4: false,
+                concurrent_shared_source_port_ipv6: false,
+                association_reuse: false,
+                multi_response: false,
+                max_socks5_payload_bytes: 0,
+                quic: "unavailable",
+                quic_ipv4: false,
+                quic_ipv6: false,
+                quic_address_family_migration: false,
+                exchange: "unavailable",
+            },
+            runtime_acceptance: RuntimeAcceptance {
+                tcp_fake_dns: &["curl"],
+                udp_ipv4: &[],
+                udp_ipv6: &[],
+                tls_runtime: &[],
+                tls_relay: &[],
+            },
+            cli_acceptance: CliAcceptance {
+                tcp_fake_dns: &["curl"],
+            },
+            lifecycle: LifecycleCapabilities {
+                descendant_cgroup_lifetime: false,
+                exit_code_passthrough: true,
+                signal_exit_code: "128+signal",
+                foreground_signal_forwarding: &[],
+                upstream_unreachable_fail_closed: true,
+                foreground_modes: &["off"],
+                foreground_owned_resources: true,
+                resources_close_when_run_exits: true,
+                setup_helper_session_scoped: false,
+                setup_helper_drops_privileges: false,
+                web_ui_optional: true,
+                concurrent_runs_isolated: true,
+            },
+        }
+    }
+
+    fn explicit_capabilities() -> Capabilities {
+        let mut capabilities = interpose_capabilities();
+        capabilities.scope.model = "cooperative_proxy_environment";
+        capabilities.scope.known_bypasses =
+            &["proxy_environment_ignored", "proxy_environment_replaced"];
+        capabilities.logs.flow_events = "cooperative_tcp_metadata";
+        capabilities.lifecycle.upstream_unreachable_fail_closed = false;
+        capabilities
+    }
+
+    const fn ebpf_capabilities() -> Capabilities {
+        Capabilities {
+            scope: ScopeCapabilities {
+                model: "cgroup_v2_ebpf",
+                strict_command_scope: true,
+                transparent: true,
+                client_can_bypass: false,
+                known_bypasses: &[],
+            },
             capture: CaptureCapabilities {
                 contract: crate::event_log::EVENT_CONTRACT,
                 format: "content-addressed-blobs",
@@ -857,7 +1082,7 @@ pub mod agent {
 
         #[test]
         fn udp_capabilities_distinguish_family_specific_support() {
-            let udp = capabilities().udp;
+            let udp = ebpf_capabilities().udp;
             assert!(udp.connected);
             assert!(!udp.connectionless);
             assert!(udp.connectionless_ipv4);
@@ -874,7 +1099,7 @@ pub mod agent {
 
         #[test]
         fn runtime_acceptance_is_machine_readable() {
-            let capabilities = capabilities();
+            let capabilities = ebpf_capabilities();
             let runtimes = capabilities.runtime_acceptance;
             assert!(runtimes.tcp_fake_dns.contains(&"go-netgo"));
             assert!(runtimes.udp_ipv4.contains(&"nodejs"));
@@ -886,7 +1111,7 @@ pub mod agent {
 
         #[test]
         fn capture_capabilities_expose_plaintext_boundary() {
-            let capture = capabilities().capture;
+            let capture = ebpf_capabilities().capture;
             assert_eq!(capture.contract, "heimdall.event/v1");
             assert_eq!(capture.format, "content-addressed-blobs");
             assert!(capture.tcp);
@@ -896,34 +1121,41 @@ pub mod agent {
             assert!(capture.boundary_allowlist);
             assert!(capture.direction_allowlist);
             assert!(capture.environment_redaction);
-            assert_eq!(capabilities().decrypt.modes, ["off", "runtime", "relay"]);
             assert_eq!(
-                capabilities().decrypt.runtime_discovery,
+                ebpf_capabilities().decrypt.modes,
+                ["off", "runtime", "relay"]
+            );
+            assert_eq!(
+                ebpf_capabilities().decrypt.runtime_discovery,
                 "loaded_images_at_run_start"
             );
             assert_eq!(
-                capabilities().decrypt.runtime_loader_discovery,
+                ebpf_capabilities().decrypt.runtime_loader_discovery,
                 "standard_directories_and_ld_so_conf"
             );
             assert!(
-                capabilities()
+                ebpf_capabilities()
                     .decrypt
                     .runtime_loader_images_can_map_after_exec
             );
-            assert!(!capabilities().decrypt.runtime_privileged_dynamic_attachment);
+            assert!(
+                !ebpf_capabilities()
+                    .decrypt
+                    .runtime_privileged_dynamic_attachment
+            );
             assert_eq!(
-                capabilities().decrypt.runtime_apis,
+                ebpf_capabilities().decrypt.runtime_apis,
                 ["SSL_read", "SSL_read_ex", "SSL_write", "SSL_write_ex"]
             );
             assert_eq!(
-                capabilities().decrypt.runtime_evidence,
+                ebpf_capabilities().decrypt.runtime_evidence,
                 "tls.runtime+flow.data"
             );
             assert_eq!(
-                capabilities().decrypt.runtime_max_bytes_per_event,
+                ebpf_capabilities().decrypt.runtime_max_bytes_per_event,
                 crate::heimdall_common::TAP_DATA_LEN
             );
-            assert!(capabilities().decrypt.runtime_requires_attached_image);
+            assert!(ebpf_capabilities().decrypt.runtime_requires_attached_image);
         }
 
         #[test]
@@ -951,7 +1183,7 @@ pub mod agent {
 
         #[test]
         fn logs_capabilities_expose_agent_contracts() {
-            let logs = capabilities().logs;
+            let logs = ebpf_capabilities().logs;
             assert_eq!(logs.event_contract, "heimdall.event/v1");
             assert_eq!(logs.run_contract, "heimdall.run/v1");
             assert_eq!(logs.summary_contract, "heimdall.logs.summary/v1");
@@ -976,7 +1208,7 @@ pub mod agent {
 
         #[test]
         fn lifecycle_capabilities_expose_restart_boundary() {
-            let lifecycle = capabilities().lifecycle;
+            let lifecycle = ebpf_capabilities().lifecycle;
             assert!(lifecycle.descendant_cgroup_lifetime);
             assert_eq!(
                 lifecycle.foreground_signal_forwarding,

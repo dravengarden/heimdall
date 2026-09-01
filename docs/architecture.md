@@ -26,10 +26,10 @@ the session.
 
 The platform-neutral `relay_transport` module resolves outbound credentials
 once, validates and encodes destinations, and implements bounded SOCKS5 TCP
-CONNECT and UDP ASSOCIATE setup. The Linux root owns cgroup interception,
-kernel-map correlation, its TCP/UDP listeners, per-socket UDP identity,
-capture, and TLS. The Apple-silicon `macos-explicit` root uses only the shared
-TCP CONNECT path behind its own per-run cooperative listener.
+CONNECT and UDP ASSOCIATE setup. The Linux `ebpf` root owns cgroup
+interception, kernel-map correlation, its TCP/UDP listeners, per-socket UDP
+identity, capture, and TLS. `interpose` and `explicit` reuse the TCP CONNECT
+path behind narrower per-run frontends.
 
 The hidden `heimdall __setup-worker` process is the only privileged component
 in the default path. It accepts one `heimdall.setup/v2` request over an
@@ -54,45 +54,60 @@ runs do not share policy maps or listeners.
 An optional viewer is only a reader of run manifests and JSONL files. It is not
 an interception owner or a prerequisite for any run.
 
-## macOS explicit path
+## Reduced daemonless backends
 
 ```text
-heimdall run --backend macos-explicit -- command
+heimdall run --backend interpose -- command
+        |
+        +-- private run store + JSONL writer
+        +-- authenticated 127.0.0.1:<kernel-assigned> SOCKS5 listener
+        |       `-- shared TCP policy -> SOCKS5, direct, or reject
+        +-- private embedded .so/.dylib materialized for this run
+        `-- child loader injection -> compatible connect/getaddrinfo calls
+```
+
+The `interpose` backend is selectable on Linux and Apple silicon. It starts no
+daemon, setup helper, Network Extension, or Web UI and changes no system proxy
+setting. The library is embedded in the single CLI, materialized beside the
+private per-run control socket, authenticated to the listener with a fresh
+secret, injected only into the child environment, and removed at teardown.
+Compatible dynamic TCP `connect` calls route through the shared policy;
+interposed libc `getaddrinfo` can return a per-run synthetic address so the
+listener recovers the hostname. Common interposed IP-datagram calls are
+rejected because this backend has no UDP relay.
+
+Its boundary is `scope=interposed_dynamic_calls` and
+`failure_boundary=interposed_calls_only`. Static code, direct syscalls,
+alternate socket/resolver APIs, inherited sockets, loader-state removal, and
+unsupported descendants can bypass it. On macOS, SIP-protected and Hardened
+Runtime targets are rejected by preflight, while `connectx` and
+Network.framework remain outside the hook set. Capture and TLS inspection are
+unavailable. A run records
+`source={backend:"interpose",scope:"interposed_dynamic_calls"}` and remains
+incomplete as a whole-process evidence claim even when the child exits zero.
+
+```text
+heimdall run --backend explicit -- command
         |
         +-- private run store + JSONL writer
         +-- 127.0.0.1:<kernel-assigned> SOCKS5 CONNECT listener
-        |       `-- shared TCP policy -> SOCKS5, direct, or reject
         `-- child ALL_PROXY/all_proxy=socks5h://127.0.0.1:<port>
 ```
 
-This source-built Apple-silicon backend is foreground-only and starts no
-daemon, setup helper, Network Extension, or Web UI. It removes inherited proxy
-variables and supplies only `ALL_PROXY` and `all_proxy` to the child. It does
-not modify system proxy settings. A cooperative client such as `curl` can use
-the listener; a client that ignores or removes those variables can bypass it.
-That is why its machine contract says `strict_command_scope=false`,
-`transparent=false`, and `client_can_bypass=true`.
+The Linux and macOS x86_64/aarch64 `explicit` backend is still narrower: only a cooperative
+client that honors the supplied proxy environment reaches its unauthenticated
+per-run listener. It requires system DNS and records
+`source={backend:"explicit",scope:"cooperative_environment"}`. It does not
+claim UDP, payload, TLS, process attribution, or complete descendant cleanup.
 
-Preflight requires system DNS, rejected UDP, capture off, decrypt off, and
-Apple silicon. The user must name `--backend macos-explicit`; omission or an
-incompatible policy fails before exec. The listener records TCP policy and
-flow metadata under
-`source={backend:"macos-explicit",scope:"cooperative_environment"}` but no
-payload, DNS, TLS, or process-attribution evidence. Closing the foreground run
-aborts remaining listener tasks and closes the port. Because the environment
-cannot prove or clean an entire descendant network scope, its run manifest
-intentionally reports `result.complete=false` and
-`descendants_cleaned=false` even after a normal child exit.
-
-Official packages remain Linux-only. The planned `macos-interpose` fallback is
-a separate, narrower backend for compatible dynamic socket/resolver calls and
-may not inherit either the explicit backend's acceptance or Linux cgroup
-claims. The checked-in `macos-transparent` Network Extension prototype is
+The checked-in `macos-transparent` Network Extension prototype remains
 deferred source research, excluded from release artifacts, and reports
 `release_included=false`. See
 [the fallback research](design/macos-fallbacks.md).
 
 ## Connection lifecycle
+
+The complete Linux `ebpf` backend follows this lifecycle:
 
 1. `heimdall run` loads config and resolves the selected policy. If necessary,
    it re-enters through `systemd-run --user --scope`, preserving the resolved
@@ -104,8 +119,9 @@ deferred source research, excluded from release artifacts, and reports
    listeners.
 4. The setup worker writes those endpoints and the selected policy bits into
    fresh per-run maps, attaches only the transient cgroup, and transfers owned
-   FDs. Every mode keeps the now-unprivileged helper as a parent-death guard
-   for the session. Failure here occurs before the child executes.
+   FDs. Every eBPF decrypt mode keeps the now-unprivileged helper as a
+   parent-death guard for the session. Failure here occurs before the child
+   executes.
 5. The child joins the cgroup and executes the requested argv. Processes
    outside this cgroup cannot be redirected by the per-run links.
 6. eBPF redirects TCP, UDP, and fake-DNS traffic to the foreground listeners.

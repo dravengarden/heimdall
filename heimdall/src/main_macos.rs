@@ -1,23 +1,17 @@
-// macOS CLI surface with one cooperative explicit backend. The transparent
-// Network Extension path remains unavailable.
+// macOS CLI surface with reduced interpose and explicit backends. The
+// transparent Network Extension path remains unavailable.
 
-use std::{
-    os::unix::process::ExitStatusExt,
-    path::{Path, PathBuf},
-    process::{ExitCode, ExitStatus},
-};
+use std::{path::PathBuf, process::ExitCode};
 
-use anyhow::{Context, Result};
-use clap::{CommandFactory, Parser, ValueEnum};
-use serde_json::json;
-use tokio::process::Command;
+use anyhow::Result;
+use clap::{CommandFactory, Parser};
 
 /// Run cooperative clients through an explicit loopback proxy on macOS.
 #[derive(Parser, Debug)]
 #[command(
     name = "heimdall",
     version,
-    about = "Command-scoped egress proxy (cooperative macOS explicit mode)",
+    about = "Daemonless command egress proxy for compatible macOS clients",
     arg_required_else_help = true,
     disable_help_subcommand = true,
     after_help = "Tip: `heimdall agent` prints the exact reduced macOS capability set and argv."
@@ -47,7 +41,7 @@ enum Cmd {
     #[command(subcommand)]
     Logs(crate::cli::logs::LogsCmd),
 
-    /// Run a cooperative client through an explicitly selected backend.
+    /// Run a command through the backend selected by config or this invocation.
     Run(MacRunArgs),
 
     /// Print concise help for the root or one subcommand.
@@ -64,9 +58,9 @@ enum Cmd {
 
 #[derive(clap::Args, Debug)]
 struct MacRunArgs {
-    /// Backend selection. macOS never selects a reduced fallback silently.
+    /// Execution backend. Overrides execution.backend for this command.
     #[arg(long, value_enum)]
-    backend: Option<MacBackend>,
+    backend: Option<crate::cli::backend::BackendArg>,
 
     /// Named policy; defaults to proxy.default_policy.
     #[arg(short = 'p', long)]
@@ -80,12 +74,6 @@ struct MacRunArgs {
         value_name = "CMD"
     )]
     command: Vec<String>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-enum MacBackend {
-    #[value(name = "macos-explicit")]
-    Explicit,
 }
 
 #[tokio::main]
@@ -127,17 +115,24 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Run(args) => {
-            if args.backend != Some(MacBackend::Explicit) {
-                eprintln!(
-                    "error[macos_backend_required]: macOS never selects a reduced proxy backend implicitly"
-                );
-                eprintln!(
-                    "fix: inspect `heimdall agent`, then pass `--backend macos-explicit` only for a cooperative SOCKS-aware client"
-                );
-                return Ok(ExitCode::FAILURE);
-            }
             let config_path = resolve_config_path(cli.config.as_deref())?;
-            let exit_code = run_explicit(&config_path, args).await?;
+            let config = crate::heimdall_config::HeimdallConfig::load(&config_path)?;
+            let backend = crate::cli::backend::selected(config.execution.backend, args.backend);
+            let exit_code = match backend {
+                crate::heimdall_config::ExecutionBackend::Explicit => {
+                    run_explicit(&config, args).await?
+                }
+                crate::heimdall_config::ExecutionBackend::Interpose => {
+                    run_interpose(&config, args).await?
+                }
+                crate::heimdall_config::ExecutionBackend::Ebpf => {
+                    eprintln!("error[macos_ebpf_unavailable]: the eBPF backend is Linux-only");
+                    eprintln!(
+                        "fix: set execution.backend to `interpose` or `explicit`, then inspect `heimdall agent`"
+                    );
+                    return Ok(ExitCode::FAILURE);
+                }
+            };
             Ok(process_exit_code(exit_code))
         }
         Cmd::Help { path, verbose } => {
@@ -147,138 +142,45 @@ async fn dispatch(cli: Cli) -> Result<ExitCode> {
     }
 }
 
-async fn run_explicit(config_path: &Path, args: MacRunArgs) -> Result<i32> {
-    let config = crate::heimdall_config::HeimdallConfig::load(config_path)?;
+async fn run_explicit(
+    config: &crate::heimdall_config::HeimdallConfig,
+    args: MacRunArgs,
+) -> Result<i32> {
     let policy_name = args
         .policy
         .clone()
         .unwrap_or_else(|| config.proxy.default_policy.clone());
-    let diagnostics = crate::explicit_proxy::diagnostics(&config, &policy_name);
-    if let Some(diagnostic) = diagnostics.first() {
-        anyhow::bail!(
-            "{} at {}: {}; fix: {}",
-            diagnostic.code,
-            diagnostic.path,
-            diagnostic.message,
-            diagnostic.hint
-        );
-    }
-    if let Some(diagnostic) = crate::explicit_proxy::outbound_diagnostic(&config) {
-        anyhow::bail!(
-            "{} at {}: {}; fix: {}",
-            diagnostic.code,
-            diagnostic.path,
-            diagnostic.message,
-            diagnostic.hint
-        );
-    }
+    crate::explicit_proxy::run(config, &policy_name, &args.command).await
+}
 
+async fn run_interpose(
+    config: &crate::heimdall_config::HeimdallConfig,
+    args: MacRunArgs,
+) -> Result<i32> {
+    let policy_name = args
+        .policy
+        .clone()
+        .unwrap_or_else(|| config.proxy.default_policy.clone());
     let evidence = crate::run_evidence::RunEvidence::start(
         &args.command,
         &policy_name,
-        "macos-explicit",
+        "interpose",
         &config.capture,
     )?;
-    let outcome = run_explicit_registered(&config, &policy_name, &args.command, &evidence).await;
+    let outcome = crate::interpose::run(config, &policy_name, &args.command, &evidence).await;
     match outcome {
         Ok(exit_code) => {
-            // macos-explicit owns the listener but cannot prove or clean a
-            // complete descendant tree after the immediate child exits.
             evidence.finish(exit_code, false)?;
             Ok(exit_code)
         }
         Err(error) => {
             let _ = evidence.fail(
-                "macos_explicit_run_failed",
-                "the macos-explicit foreground run failed before completion",
+                "interpose_run_failed",
+                "the interpose foreground run failed before completion",
             );
             Err(error)
         }
     }
-}
-
-async fn run_explicit_registered(
-    config: &crate::heimdall_config::HeimdallConfig,
-    policy_name: &str,
-    command: &[String],
-    evidence: &crate::run_evidence::RunEvidence,
-) -> Result<i32> {
-    let events =
-        crate::event_log::EventClient::connect(evidence.event_socket_path().to_path_buf())?;
-    let proxy = crate::explicit_proxy::ExplicitProxy::start(config, policy_name, events).await?;
-    let proxy_url = proxy.proxy_url();
-    evidence.log().emit(
-        "run.warning",
-        None,
-        json!({
-            "code": "macos_explicit_cooperative_scope",
-            "message": "the wrapped client can ignore or replace the injected explicit proxy environment",
-            "phase": "preflight",
-            "context": {
-                "backend": "macos-explicit",
-                "scope": "cooperative_environment",
-                "environment": ["ALL_PROXY", "all_proxy"],
-                "proxy": proxy_url
-            }
-        }),
-    )?;
-    if let Err(error) = evidence.ready("heimdall-run", None, &["transport"]) {
-        proxy.shutdown().await?;
-        return Err(error);
-    }
-
-    eprintln!(
-        "heimdall run: backend=macos-explicit scope=cooperative_environment ALL_PROXY={proxy_url} all_proxy={proxy_url}"
-    );
-    let mut child_command = Command::new(&command[0]);
-    child_command.args(&command[1..]).kill_on_drop(true);
-    for variable in [
-        "http_proxy",
-        "HTTP_PROXY",
-        "https_proxy",
-        "HTTPS_PROXY",
-        "all_proxy",
-        "ALL_PROXY",
-        "no_proxy",
-        "NO_PROXY",
-        "ftp_proxy",
-        "FTP_PROXY",
-    ] {
-        child_command.env_remove(variable);
-    }
-    child_command
-        .env("ALL_PROXY", &proxy_url)
-        .env("all_proxy", &proxy_url);
-    let mut child = match child_command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            proxy.shutdown().await?;
-            return Err(error).with_context(|| format!("execute {}", command[0]));
-        }
-    };
-    let child_pid = child.id().context("wrapped command has no process ID")?;
-    evidence.log().emit(
-        "run.exec",
-        Some(child_pid),
-        json!({
-            "child_pid": child_pid,
-            "executable": command[0],
-            "argv_count": command.len()
-        }),
-    )?;
-
-    let status = child.wait().await;
-    let shutdown = proxy.shutdown().await;
-    let status = status.context("wait for macos-explicit command")?;
-    shutdown?;
-    Ok(status_exit_code(status))
-}
-
-fn status_exit_code(status: ExitStatus) -> i32 {
-    status
-        .code()
-        .or_else(|| status.signal().map(|signal| 128 + signal))
-        .unwrap_or(1)
 }
 
 fn process_exit_code(code: i32) -> ExitCode {
@@ -323,7 +225,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn logs_are_inspectable_while_run_requires_an_explicit_backend() {
+    async fn logs_are_inspectable_while_run_rejects_the_linux_backend() {
         let parsed = Cli::try_parse_from(["heimdall", "logs", "schema", "--event", "v1"]).unwrap();
         assert!(matches!(parsed.cmd, Cmd::Logs(_)));
         assert!(
@@ -348,8 +250,14 @@ mod tests {
             "-c".into(),
             format!("touch {}", marker.display()),
         ];
+        let config = std::env::temp_dir().join(format!(
+            "heimdall-macos-ebpf-{}-{}.toml",
+            std::process::id(),
+            uuid::Uuid::now_v7().simple()
+        ));
+        std::fs::write(&config, crate::cli::init::InitFormat::Toml.template()).unwrap();
         let code = dispatch(Cli {
-            config: None,
+            config: Some(config.clone()),
             cmd: Cmd::Run(MacRunArgs {
                 backend: None,
                 policy: None,
@@ -358,6 +266,7 @@ mod tests {
         })
         .await
         .unwrap();
+        std::fs::remove_file(config).unwrap();
 
         assert_eq!(code, ExitCode::FAILURE);
         assert!(!marker.exists());

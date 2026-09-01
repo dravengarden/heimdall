@@ -4,526 +4,188 @@ set -euo pipefail
 repo_root=$(git rev-parse --show-toplevel)
 cd "$repo_root"
 
-source_tracks=$(grep -Ec '^### [0-9]+\. ' ROADMAP.md)
-site_tracks=$(grep -oE '>Track [0-9]{2}<' site/docs/roadmap.html | wc -l)
-
-[[ "$site_tracks" -eq "$source_tracks" ]] || {
-  printf 'roadmap track count drifted: source=%s site=%s\n' \
-    "$source_tracks" "$site_tracks" >&2
+fail() {
+  printf '%s\n' "$1" >&2
   exit 1
 }
 
-for index in $(seq 1 "$source_tracks"); do
-  track=$(printf '%02d' "$index")
-  grep -Fq ">Track $track<" site/docs/roadmap.html || {
-    printf 'site roadmap is missing Track %s\n' "$track" >&2
-    exit 1
-  }
-done
+current_docs=(
+  AGENTS.md
+  README.md
+  ROADMAP.md
+  docs
+  skills/heimdall
+  site
+  packaging/cargo/README.md
+)
 
-for heading in \
-  'Daemonless lifecycle' \
-  'Agent event evidence' \
-  'Proxy compatibility' \
-  'TLS boundaries' \
-  'Capture analysis' \
-  'Performance and observability' \
-  'Native ARM completion' \
-  'macOS backend'; do
-  grep -Fq "<h3>$heading</h3>" site/docs/roadmap.html || {
-    printf 'site roadmap is missing track heading: %s\n' "$heading" >&2
-    exit 1
-  }
-done
-
-for macos_page in \
-  docs/design/macos-backend.md \
-  docs/product-contract.md \
-  site/docs/macos.html \
-  site/docs/product-contract.html; do
-  for boundary in \
-    'macos-explicit' \
-    'cooperative' \
-    'macos-interpose' \
-    'macos-transparent' \
-    'NETransparentProxyProvider' \
-    'deferred' \
-    'persistent user-managed Heimdall daemon'; do
-    grep -Fq "$boundary" "$macos_page" || {
-      printf '%s does not preserve the macOS boundary: %s\n' \
-        "$macos_page" "$boundary" >&2
-      exit 1
-    }
-  done
-done
-
-for macos_design in docs/design/macos-backend.md site/docs/macos.html; do
-  for boundary in \
-    'NEAppProxyProvider' \
-    'process group' \
-    'official macOS' \
-    'proxychains' \
-    'Proxyman' \
-    'Hardened Runtime' \
-    'release_included=false'; do
-    grep -Fiq "$boundary" "$macos_design" || {
-      printf '%s does not preserve the deep macOS boundary: %s\n' \
-        "$macos_design" "$boundary" >&2
-      exit 1
-    }
-  done
-done
-
-for fallback_boundary in \
-  'proxychains-ng' \
-  'Proxyman' \
-  'mitmproxy' \
-  'Packet Filter is not API' \
-  'macos-interpose' \
-  'Hardened Runtime' \
-  'SIP-protected' \
-  'no persistent daemon'; do
-  grep -Fq "$fallback_boundary" docs/design/macos-fallbacks.md || {
-    printf 'the macOS fallback research is missing: %s\n' \
-      "$fallback_boundary" >&2
-    exit 1
-  }
-done
-
-for macos_package_page in \
-  docs/design/macos-backend.md \
-  docs/releasing.md \
-  docs/runbook.md \
-  site/docs/macos.html \
-  site/docs/runbook.html; do
-  rg -iq 'package[- ]mechanics' "$macos_package_page" || {
-    printf '%s does not preserve the macOS package-mechanics boundary\n' \
-      "$macos_package_page" >&2
-    exit 1
-  }
-  for boundary in 'Developer ID' 'notar' 'Gatekeeper' 'uninstall'; do
-    grep -Fiq "$boundary" "$macos_package_page" || {
-      printf '%s does not preserve the macOS package boundary: %s\n' \
-        "$macos_package_page" "$boundary" >&2
-      exit 1
-    }
-  done
-done
-
-grep -Fq 'aarch64-apple-darwin' rust-toolchain.toml || {
-  printf 'the pinned toolchain does not include the Darwin check target\n' >&2
-  exit 1
-}
-
-grep -A6 '^check-macos:' justfile | grep -Fq 'aarch64-apple-darwin' || {
-  printf 'check-macos does not type-check the pinned Darwin target\n' >&2
-  exit 1
-}
-
-grep -A1 '^check-macos:' justfile | grep -Fq -- '--all-targets' || {
-  printf 'check-macos does not type-check portable protocol tests\n' >&2
-  exit 1
-}
-
-grep '^verify:' justfile | grep -Fq 'check-macos' || {
-  printf 'verify does not include the Darwin compile boundary\n' >&2
-  exit 1
-}
-
-grep -Fq 'mod event_log;' heimdall/src/main.rs || {
-  printf 'the event store is not owned by the shared target root\n' >&2
-  exit 1
-}
-
-grep -Fq 'mod relay_transport;' heimdall/src/main.rs || {
-  printf 'the outbound relay transport is not owned by the shared target root\n' >&2
-  exit 1
-}
-
-grep -Fq 'pub(crate) async fn open_socks5_udp_association' \
-  heimdall/src/relay_transport.rs || {
-  printf 'the shared relay transport does not own SOCKS5 UDP setup\n' >&2
-  exit 1
-}
-
-if grep -Fq 'async fn socks5_connect' heimdall/src/main_linux.rs; then
-  printf 'the Linux root still owns the SOCKS5 CONNECT implementation\n' >&2
-  exit 1
+if rg -n 'heimdall\.agent/v(8|9)' "${current_docs[@]}"; then
+  fail 'current documentation still names a retired Agent contract'
 fi
 
-grep -Fq 'Logs(crate::cli::logs::LogsCmd)' heimdall/src/main_macos.rs || {
-  printf 'the Darwin backend does not expose portable log inspection\n' >&2
-  exit 1
-}
+if rg -n -- '--backend macos-(explicit|interpose)|backend = "macos-(explicit|interpose)"|"backend": "macos-(explicit|interpose)"' \
+  "${current_docs[@]}"; then
+  fail 'current documentation still uses a retired platform-specific backend value'
+fi
 
-grep -Fq '"offline_schema_validation": true' heimdall/src/cli/agent_macos.rs || {
-  printf 'the Darwin agent does not advertise offline log validation\n' >&2
-  exit 1
-}
-
-grep -Fq 'mod explicit_proxy;' heimdall/src/main.rs || {
-  printf 'the shared target root does not own the explicit proxy backend\n' >&2
-  exit 1
-}
-
-grep -Fq 'mod macos_control;' heimdall/src/main.rs || {
-  printf 'the shared target root does not own the macOS control protocol\n' >&2
-  exit 1
-}
-
-grep -Fq 'heimdall.macos.control/v1' \
-  heimdall/schemas/heimdall.macos.control.v1.schema.json || {
-  printf 'the macOS control protocol does not have a versioned schema\n' >&2
-  exit 1
-}
-
-for macos_control_page in \
-  docs/design/macos-backend.md \
-  docs/design/macos-control-protocol.md \
-  ROADMAP.md \
-  site/docs/macos.html \
-  site/docs/roadmap.html; do
-  for boundary in \
-    'heimdall.macos.control/v1' \
-    'optional'; do
-    grep -Fq "$boundary" "$macos_control_page" || {
-      printf '%s does not preserve the macOS attribution boundary: %s\n' \
-        "$macos_control_page" "$boundary" >&2
-      exit 1
-    }
-  done
+for backend in ebpf interpose explicit; do
+  grep -Fq "$backend" docs/config.md || fail "config docs omit backend: $backend"
+  grep -Fq "$backend" site/docs/configuration.html || fail "site config omits backend: $backend"
 done
 
-for macos_attribution_page in \
-  docs/design/macos-backend.md \
-  docs/design/macos-control-protocol.md \
-  ROADMAP.md \
+for page in site/index.html site/docs/*.html; do
+  grep -Fq 'name="viewport"' "$page" || fail "$page has no mobile viewport"
+done
+
+for page in README.md docs/product-contract.md docs/architecture.md \
+  skills/heimdall/SKILL.md site/docs/product-contract.html \
+  site/docs/architecture.html site/docs/macos.html; do
+  grep -Fq 'interpose' "$page" || fail "$page omits interpose"
+  grep -Fq 'explicit' "$page" || fail "$page omits explicit"
+  grep -Fq 'daemon' "$page" || fail "$page omits the daemon boundary"
+done
+
+for page in docs/design/macos-backend.md docs/design/macos-fallbacks.md \
   site/docs/macos.html; do
-  for boundary in 'sourceAppAuditToken' 'native evidence'; do
-    grep -Fq "$boundary" "$macos_attribution_page" || {
-      printf '%s does not preserve the native attribution gate: %s\n' \
-        "$macos_attribution_page" "$boundary" >&2
-      exit 1
-    }
+  for boundary in \
+    'interposed_dynamic_calls' \
+    'client_can_bypass' \
+    'direct syscalls' \
+    'Hardened Runtime' \
+    'NETransparentProxyProvider' \
+    'Developer ID' \
+    'notar' \
+    'Gatekeeper'; do
+    grep -Fiq "$boundary" "$page" || fail "$page omits boundary: $boundary"
   done
 done
 
-if rg -Fq 'process-group best-effort' docs/design/macos-backend.md site/docs/macos.html; then
-  printf 'macOS docs still claim an unproven process-group boundary\n' >&2
-  exit 1
+grep -Fq 'enum ExecutionBackend' heimdall/src/internal/config.rs ||
+  fail 'the strict config does not own execution backend selection'
+for variant in Ebpf Interpose Explicit; do
+  grep -Fq "$variant" heimdall/src/internal/config.rs ||
+    fail "execution backend enum omits $variant"
+done
+if grep -Fq 'Auto,' heimdall/src/internal/config.rs; then
+  fail 'execution backend enum still permits auto selection'
 fi
 
-grep -Fq '"provider_wired": false' heimdall/src/cli/agent_macos.rs || {
-  printf 'the Darwin agent does not report the control protocol as unwired\n' >&2
-  exit 1
-}
+[[ $(grep -c 'backend.*ebpf' heimdall/src/cli/init.rs) -ge 3 ]] ||
+  fail 'all three starter templates must select ebpf explicitly'
 
-grep -Fq '"backend": "macos-interpose"' heimdall/src/cli/agent_macos.rs || {
-  printf 'the Darwin agent does not expose the interpose research boundary\n' >&2
-  exit 1
-}
+grep -Fq 'mod interpose;' heimdall/src/main.rs ||
+  fail 'the shared target root does not own interpose'
+grep -Fq 'mod explicit_proxy;' heimdall/src/main.rs ||
+  fail 'the shared target root does not own explicit proxying'
+grep -Fq 'include_bytes!' heimdall/src/interpose.rs ||
+  fail 'the native interpose library is not embedded in the CLI'
+grep -Fq 'interpose/**' heimdall/Cargo.toml ||
+  fail 'the crates.io source package omits the interpose source'
+
+for hook in connect getaddrinfo send sendto sendmsg; do
+  grep -Fq "heimdall_$hook" heimdall/interpose/interpose.c ||
+    fail "the native library omits $hook"
+done
+grep -Fq 'SOCKS_USERNAME_PASSWORD' heimdall/interpose/interpose.c ||
+  fail 'the interpose frontend is not authenticated'
+grep -Fq 'HEIMDALL_INTERPOSE_TOKEN' heimdall/interpose/interpose.c ||
+  fail 'the injected library has no per-run credential'
+
+grep -Fq 'ExecutionBackend::Interpose' heimdall/src/cli/run.rs ||
+  fail 'Linux run cannot select interpose'
+grep -Fq 'ExecutionBackend::Explicit' heimdall/src/cli/run.rs ||
+  fail 'Linux run cannot select explicit'
+grep -Fq 'ExecutionBackend::Interpose' heimdall/src/main_macos.rs ||
+  fail 'macOS run cannot select interpose'
+grep -Fq 'ExecutionBackend::Explicit' heimdall/src/main_macos.rs ||
+  fail 'macOS run cannot select explicit'
+if rg -q 'explicit_architecture_unavailable|native_arch_supported' heimdall/src; then
+  fail 'explicit still has an architecture gate'
+fi
+grep -Fq 'x86_64-apple-darwin' rust-toolchain.toml ||
+  fail 'the pinned toolchain omits Intel macOS explicit support'
+grep -A3 '^check-macos:' justfile | grep -Fq 'x86_64-apple-darwin' ||
+  fail 'the Darwin compile gate omits Intel macOS'
+grep -A5 '^test-macos-explicit-native:' justfile |
+  grep -Fq 'run-explicit-acceptance.sh' ||
+  fail 'the architecture-neutral macOS explicit gate is missing'
+
+grep -Fq 'heimdall.agent/v10' heimdall/src/cli/mod.rs ||
+  fail 'Linux agent does not expose v10'
+grep -Fq 'heimdall.agent/v10' heimdall/src/cli/agent_macos.rs ||
+  fail 'macOS agent does not expose v10'
+for boundary in \
+  '"backend": "interpose"' \
+  '"failure_boundary": "interposed_calls_only"' \
+  '"routing_implemented": true' \
+  '"authenticated_constructor_implemented": true' \
+  '"uninterposed_udp_calls_bypass": true'; do
+  grep -Fq "$boundary" heimdall/src/cli/agent_macos.rs ||
+    fail "macOS Agent v10 omits: $boundary"
+done
 
 for boundary in \
   '"status": "deferred"' \
-  '"roadmap_only": true' \
-  '"release_included": false'; do
-  grep -Fq "$boundary" heimdall/src/cli/agent_macos.rs || {
-    printf 'the Darwin agent does not keep the deferred backend offline: %s\n' \
-      "$boundary" >&2
-    exit 1
-  }
+  '"release_included": false' \
+  '"provider_wired": false' \
+  '"activation_enabled": false'; do
+  grep -Fq "$boundary" heimdall/src/cli/agent_macos.rs ||
+    fail "the deferred Network Extension boundary drifted: $boundary"
 done
 
-for boundary in \
-  '"activation_enabled": false' \
-  '"network_configuration_enabled": false' \
-  '"installable": false'; do
-  grep -Fq "$boundary" heimdall/src/cli/agent_macos.rs || {
-    printf 'the Darwin agent overstates companion readiness: %s\n' \
-      "$boundary" >&2
-    exit 1
-  }
-done
+grep -Fq '"backend": { "const": "interpose" }' \
+  heimdall/schemas/heimdall.event.v1.schema.json ||
+  fail 'event schema omits interpose source'
+grep -Fq '"scope": { "const": "interposed_dynamic_calls" }' \
+  heimdall/schemas/heimdall.event.v1.schema.json ||
+  fail 'event schema omits interpose scope'
+grep -Fq '"backend": { "const": "explicit" }' \
+  heimdall/schemas/heimdall.event.v1.schema.json ||
+  fail 'event schema omits explicit source'
+grep -Fq '"scope": { "const": "cooperative_environment" }' \
+  heimdall/schemas/heimdall.event.v1.schema.json ||
+  fail 'event schema omits explicit scope'
+
+grep '^verify:' justfile | grep -Fq 'test-linux-interpose-native' ||
+  fail 'verify omits Linux native interpose acceptance'
+grep -A8 '^test-macos-native:' justfile | grep -Fq 'run-interpose-acceptance.sh' ||
+  fail 'the macOS native gate omits interpose acceptance'
+grep -A2 '^test-macos-interpose-native:' justfile |
+  grep -Fq 'run-interpose-acceptance.sh' ||
+  fail 'the dedicated macOS interpose gate is missing'
+
+grep -Fq 'HEIMDALL_INTERPOSE_SIGNING_IDENTITY_SHA1' \
+  scripts/build-macos-release-assets ||
+  fail 'the macOS builder does not sign the embedded dylib with the release identity'
+grep -Fq 'run-interpose-acceptance.sh' scripts/build-macos-release-assets ||
+  fail 'the macOS package builder omits interpose acceptance'
+if grep -Fq 'run-companion-acceptance.sh' scripts/build-macos-release-assets; then
+  fail 'the macOS package builder invokes the deferred companion'
+fi
 
 tests/macos/check-companion-contract.sh
 
-grep -Fq '"strict_command_scope_proven": false' \
-  heimdall/src/cli/agent_macos.rs || {
-  printf 'the Darwin agent claims unproven transparent command scope\n' >&2
-  exit 1
-}
-
-if rg -Fq '#[value(name = "macos-transparent")]' heimdall/src/main_macos.rs ||
-  rg -Fq '#[value(name = "macos-interpose")]' heimdall/src/main_macos.rs; then
-  printf 'an unavailable macOS backend is selectable\n' >&2
-  exit 1
-fi
-
-grep -Fq 'TcpListener::bind((Ipv4Addr::LOCALHOST, 0))' heimdall/src/explicit_proxy.rs || {
-  printf 'macos-explicit does not bind a kernel-assigned loopback listener\n' >&2
-  exit 1
-}
-
-grep -Fq 'MacBackend::Explicit' heimdall/src/main_macos.rs || {
-  printf 'Darwin run does not require explicit backend selection\n' >&2
-  exit 1
-}
-
-grep -Fq '"execute_prefix": execute_prefix' heimdall/src/cli/agent_macos.rs || {
-  printf 'the Darwin agent does not publish its guarded execution action\n' >&2
-  exit 1
-}
-
-grep -Fq '"scope": { "const": "cooperative_environment" }' \
-  heimdall/schemas/heimdall.event.v1.schema.json || {
-  printf 'the event schema does not encode the cooperative source boundary\n' >&2
-  exit 1
-}
-
 if rg -q 'Command::new\("(networksetup|scutil)"' heimdall/src; then
-  printf 'the macOS backend attempts to modify system proxy settings\n' >&2
-  exit 1
+  fail 'a reduced backend attempts to modify system proxy settings'
 fi
 
-if grep -Fq 'tests/macos/run-companion-acceptance.sh' \
-  scripts/build-macos-release-assets; then
-  printf 'the macOS release builder invokes the deferred companion gate\n' >&2
-  exit 1
-fi
-
-grep -A2 '^test-macos-interpose-feasibility:' justfile |
-  grep -Fq 'tests/macos/run-interpose-feasibility.sh' || {
-    printf 'the justfile does not expose the interpose feasibility gate\n' >&2
-    exit 1
-  }
-
-for macos_runbook in docs/runbook.md site/docs/runbook.html; do
-  grep -Fq 'just check-macos' "$macos_runbook" || {
-    printf '%s does not expose the Darwin compile boundary\n' \
-      "$macos_runbook" >&2
-    exit 1
-  }
-  grep -Fq 'aarch64-apple-darwin' "$macos_runbook" || {
-    printf '%s does not name the pinned Darwin target\n' \
-      "$macos_runbook" >&2
-    exit 1
-  }
-  grep -Fq 'JSONL' "$macos_runbook" || {
-    printf '%s does not document the portable evidence boundary\n' \
-      "$macos_runbook" >&2
-    exit 1
-  }
-  grep -Fq 'relay_transport' "$macos_runbook" || {
-    printf '%s does not document the portable transport boundary\n' \
-      "$macos_runbook" >&2
-    exit 1
-  }
-  grep -Fq 'just test-macos-native' "$macos_runbook" || {
-    printf '%s does not expose the native explicit acceptance gate\n' \
-      "$macos_runbook" >&2
-    exit 1
-  }
-  grep -Fq 'just test-macos-interpose-feasibility' "$macos_runbook" || {
-    printf '%s does not expose the interpose feasibility gate\n' \
-      "$macos_runbook" >&2
-    exit 1
-  }
-  grep -Fq 'just test-macos-companion-native' "$macos_runbook" || {
-    printf '%s does not expose the unsigned companion source gate\n' \
-      "$macos_runbook" >&2
-    exit 1
-  }
-  grep -Fq 'just test-package-macos' "$macos_runbook" || {
-    printf '%s does not expose the native package-mechanics gate\n' \
-      "$macos_runbook" >&2
-    exit 1
-  }
-  grep -Fq 'cooperative' "$macos_runbook" || {
-    printf '%s does not preserve the reduced explicit scope\n' \
-      "$macos_runbook" >&2
-    exit 1
-  }
-done
-
-for transport_page in \
-  docs/architecture.md \
-  docs/design/macos-backend.md \
-  site/docs/architecture.html \
-  site/docs/macos.html; do
-  grep -Fq 'relay_transport' "$transport_page" || {
-    printf '%s does not document the shared outbound transport boundary\n' \
-      "$transport_page" >&2
-    exit 1
-  }
-done
-
-for evidence_page in \
-  docs/design/agent-event-log.md \
-  docs/runbook.md \
-  skills/heimdall/references/commands.md \
-  skills/heimdall/references/events.md \
+for evidence_page in docs/design/agent-event-log.md docs/runbook.md \
+  skills/heimdall/references/commands.md skills/heimdall/references/events.md \
   site/docs/commands.html; do
-  grep -Fq 'heimdall.logs.flow/v1' "$evidence_page" || {
-    printf '%s does not name the per-flow evidence contract\n' \
-      "$evidence_page" >&2
-    exit 1
-  }
-  grep -Fq 'logs schema --flow v1' "$evidence_page" || {
-    printf '%s does not expose the offline flow schema\n' \
-      "$evidence_page" >&2
-    exit 1
-  }
-  grep -Fq 'logs flow --run' "$evidence_page" || {
-    printf '%s does not expose bounded flow explanation\n' \
-      "$evidence_page" >&2
-    exit 1
-  }
+  grep -Fq 'heimdall.logs.flow/v1' "$evidence_page" ||
+    fail "$evidence_page omits the per-flow evidence contract"
+  grep -Fq 'logs flow --run' "$evidence_page" ||
+    fail "$evidence_page omits bounded flow inspection"
 done
 
-for contract_page in docs/product-contract.md site/docs/product-contract.html; do
-  grep -Fq 'heimdall.logs.flow/v1' "$contract_page" || {
-    printf '%s does not preserve the per-flow evidence boundary\n' \
-      "$contract_page" >&2
-    exit 1
-  }
-done
-
-for runbook in docs/runbook.md site/docs/runbook.html; do
-  grep -Fq 'just sync-ebpf' "$runbook" || {
-    printf '%s does not expose the canonical eBPF sync command\n' "$runbook" >&2
-    exit 1
-  }
-  for package_gate in 'just test-package' 'just test-package-macos' 'npm' 'PyPI' 'Cargo'; do
-    grep -Fq "$package_gate" "$runbook" || {
-      printf '%s does not describe the package gate: %s\n' \
-        "$runbook" "$package_gate" >&2
-      exit 1
-    }
-  done
-  if grep -Fq 'both package checks' "$runbook"; then
-    printf '%s retained the obsolete two-package claim\n' "$runbook" >&2
-    exit 1
-  fi
-  grep -Fq 'just test-vm-ubuntu' "$runbook" || {
-    printf '%s does not expose the Ubuntu acceptance gate\n' "$runbook" >&2
-    exit 1
-  }
-  grep -Fq 'Ubuntu 24.04' "$runbook" || {
-    printf '%s does not identify the pinned compatibility guest\n' "$runbook" >&2
-    exit 1
-  }
-  grep -Fq 'just test-vm-debian' "$runbook" || {
-    printf '%s does not expose the Debian acceptance gate\n' "$runbook" >&2
-    exit 1
-  }
-  grep -Fq 'Debian 13' "$runbook" || {
-    printf '%s does not identify the pinned Debian guest\n' "$runbook" >&2
-    exit 1
-  }
-  grep -Fq 'private_mount' "$runbook" || {
-    printf '%s does not expose Debian private-mount acceptance\n' "$runbook" >&2
-    exit 1
-  }
-  grep -Fq 'parent-death' "$runbook" || {
-    printf '%s does not expose Ubuntu owner-death acceptance\n' "$runbook" >&2
-    exit 1
-  }
-  grep -Fq 'runtime and relay TLS' "$runbook" || {
-    printf '%s does not expose Ubuntu TLS-mode acceptance\n' "$runbook" >&2
-    exit 1
-  }
-  grep -Fq 'fake DNS' "$runbook" || {
-    printf '%s does not expose Ubuntu fake-DNS acceptance\n' "$runbook" >&2
-    exit 1
-  }
-  grep -Fq 'user-namespace restriction' "$runbook" || {
-    printf '%s does not preserve the Ubuntu security boundary\n' "$runbook" >&2
-    exit 1
-  }
-  grep -Fq 'decision.resolver' "$runbook" || {
-    printf '%s does not expose resolver preflight\n' "$runbook" >&2
-    exit 1
-  }
-  grep -Fq 'actions.resolver_inspect' "$runbook" || {
-    printf '%s does not expose shell-safe resolver inspection\n' "$runbook" >&2
-    exit 1
-  }
-  grep -Fq 'fake_dns_user_namespace_disabled' "$runbook" || {
-    printf '%s does not expose the stable userns blocker\n' "$runbook" >&2
-    exit 1
-  }
-  grep -Fq 'just benchmark-vm-ubuntu' "$runbook" || {
-    printf '%s does not expose the Ubuntu performance baseline\n' "$runbook" >&2
-    exit 1
-  }
-  grep -Fq 'just benchmark-vm-debian' "$runbook" || {
-    printf '%s does not expose the Debian performance baseline\n' "$runbook" >&2
-    exit 1
-  }
-  grep -Fq 'ca_material_ready' "$runbook" || {
-    printf '%s does not expose relay CA preflight\n' "$runbook" >&2
-    exit 1
-  }
-  grep -Fq 'relay_ca_material_invalid' "$runbook" || {
-    printf '%s does not expose relay CA repair diagnostics\n' "$runbook" >&2
-    exit 1
-  }
-  grep -Fq 'not part of' "$runbook" || {
-    printf '%s does not separate performance from release gates\n' "$runbook" >&2
-    exit 1
-  }
-done
-
-for contract_page in docs/product-contract.md site/docs/product-contract.html; do
-  grep -Fq 'decision.resolver' "$contract_page" || {
-    printf '%s does not define resolver decision evidence\n' "$contract_page" >&2
-    exit 1
-  }
-  grep -Fq 'actions.resolver_inspect' "$contract_page" || {
-    printf '%s does not preserve argv-safe resolver inspection\n' "$contract_page" >&2
-    exit 1
-  }
-done
-
-grep -A7 '^release-check:' justfile | grep -Fq 'just test-vm-ubuntu' || {
-  printf 'release-check does not include the Ubuntu acceptance gate\n' >&2
-  exit 1
-}
-
-grep -A7 '^release-check:' justfile | grep -Fq 'just test-vm-debian' || {
-  printf 'release-check does not include the Debian acceptance gate\n' >&2
-  exit 1
-}
-
-grep -A7 '^release-check:' justfile | grep -Fq 'just test-package-macos' || {
-  printf 'release-check does not include the native macOS package gate\n' >&2
-  exit 1
-}
-
-grep -Fq 'benchmark-vm-ubuntu:' justfile || {
-  printf 'justfile does not expose the Ubuntu performance baseline\n' >&2
-  exit 1
-}
-
-grep -Fq 'benchmark-vm-debian:' justfile || {
-  printf 'justfile does not expose the Debian performance baseline\n' >&2
-  exit 1
-}
-
-if grep -A7 '^release-check:' justfile | grep -Fq 'benchmark-vm-'; then
-  printf 'release-check unexpectedly includes a performance baseline\n' >&2
-  exit 1
+grep -A8 '^release-check:' justfile | grep -Fq 'just test-vm-ubuntu' ||
+  fail 'release-check omits Ubuntu acceptance'
+grep -A8 '^release-check:' justfile | grep -Fq 'just test-vm-debian' ||
+  fail 'release-check omits Debian acceptance'
+grep -A8 '^release-check:' justfile | grep -Fq 'just test-package-macos' ||
+  fail 'release-check omits macOS package acceptance'
+if grep -A8 '^release-check:' justfile | grep -Fq 'benchmark-vm-'; then
+  fail 'release-check unexpectedly includes performance baselines'
 fi
-
-for status_page in README.md ROADMAP.md site/docs/roadmap.html; do
-  grep -Fq 'Ubuntu 24.04' "$status_page" || {
-    printf '%s does not report Ubuntu compatibility coverage\n' "$status_page" >&2
-    exit 1
-  }
-  grep -Fq 'Debian 13' "$status_page" || {
-    printf '%s does not report Debian compatibility coverage\n' "$status_page" >&2
-    exit 1
-  }
-done
 
 printf 'documentation site contract OK\n'

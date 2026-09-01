@@ -248,8 +248,9 @@ public package is `heimdall-egress`, its only installed executable is
 workspace crates for repository builds, while their canonical source is bundled
 directly into the CLI package. They are not separate crates.io products. The
 CLI crate also includes the release's locally built eBPF ELF, so installation
-needs stable Rust but no nightly compiler, `bpf-linker`, lifecycle script, or
-remote binary download.
+needs stable Rust and a native C compiler for the embedded interpose library,
+but no nightly Rust, `bpf-linker`, package-manager lifecycle script, or remote
+binary download.
 
 Before the GitHub Release is created, `just release-github` packages the CLI
 crate locally with pinned Cargo, proves that the embedded ELF equals the Nix

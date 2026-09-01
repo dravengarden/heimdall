@@ -1,4 +1,4 @@
-//! Cooperative explicit-proxy frontend used by the macOS CLI backend.
+//! Cooperative explicit-proxy frontend shared by Linux and macOS.
 //!
 //! The listener is deliberately loopback-only and SOCKS5 CONNECT-only. It
 //! cannot prove that the wrapped command honored the injected environment, so
@@ -8,6 +8,7 @@
 use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr, SocketAddr},
+    os::unix::process::ExitStatusExt,
     sync::Arc,
     time::Instant,
 };
@@ -18,6 +19,7 @@ use serde_json::{Value, json};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional},
     net::{TcpListener, TcpStream},
+    process::Command,
     sync::watch,
     task::{JoinHandle, JoinSet},
 };
@@ -25,7 +27,7 @@ use tokio::{
 use crate::{
     event_log::{EventClient, FlowEventClient},
     heimdall_config::{
-        Action, CaptureMode, DecryptMode, DnsMode, HeimdallConfig, ProxyPolicy, RejectMethod,
+        Action, CaptureMode, DecryptMode, HeimdallConfig, ProxyPolicy, RejectMethod,
     },
     relay_transport::{
         Dst, SOCKS5_HANDSHAKE_TIMEOUT, Upstream, open_socks5_tunnel_with_timeouts, resolve_all,
@@ -35,7 +37,9 @@ use crate::{
 
 const SOCKS5_VERSION: u8 = 0x05;
 const SOCKS5_NO_AUTH: u8 = 0x00;
+const SOCKS5_USERNAME_PASSWORD: u8 = 0x02;
 const SOCKS5_NO_ACCEPTABLE_AUTH: u8 = 0xff;
+const SOCKS5_AUTH_VERSION: u8 = 0x01;
 const SOCKS5_CONNECT: u8 = 0x01;
 const SOCKS5_REPLY_SUCCEEDED: u8 = 0x00;
 const SOCKS5_REPLY_GENERAL_FAILURE: u8 = 0x01;
@@ -53,7 +57,7 @@ pub(crate) struct ExplicitDiagnostic {
 }
 
 impl ExplicitDiagnostic {
-    fn new(code: &str, path: impl Into<String>, message: &str, hint: &str) -> Self {
+    pub(crate) fn new(code: &str, path: impl Into<String>, message: &str, hint: &str) -> Self {
         Self {
             code: code.into(),
             path: path.into(),
@@ -63,17 +67,51 @@ impl ExplicitDiagnostic {
     }
 }
 
+/// Return every reason an interposed TCP client cannot use the shared relay.
+pub(crate) fn interpose_diagnostics(
+    config: &HeimdallConfig,
+    policy_name: &str,
+) -> Vec<ExplicitDiagnostic> {
+    let mut values = Vec::new();
+    let Some(policy) = config.policy(policy_name) else {
+        values.push(ExplicitDiagnostic::new(
+            "unknown_policy",
+            "$.cli.policy",
+            "the requested policy is not declared",
+            "Select one of the policy names reported by `heimdall agent`.",
+        ));
+        return values;
+    };
+    if !policy.rejects_all_udp() {
+        values.push(ExplicitDiagnostic::new(
+            "interpose_udp_unavailable",
+            format!("$.proxy.policies.{policy_name}.final.udp"),
+            "interpose routes ordinary dynamic TCP calls only",
+            "Reject every UDP path or select the Linux eBPF backend.",
+        ));
+    }
+    if config.capture.mode != CaptureMode::Off {
+        values.push(ExplicitDiagnostic::new(
+            "interpose_payload_capture_unavailable",
+            "$.capture.mode",
+            "interpose records TCP metadata but does not capture payload bytes",
+            "Set capture.mode = \"off\" or select the Linux eBPF backend.",
+        ));
+    }
+    if config.decrypt.mode != DecryptMode::Off {
+        values.push(ExplicitDiagnostic::new(
+            "interpose_tls_inspection_unavailable",
+            "$.decrypt.mode",
+            "interpose does not inspect TLS",
+            "Set decrypt.mode = \"off\" or select the Linux eBPF backend.",
+        ));
+    }
+    values
+}
+
 /// Return every reason the selected policy cannot run in cooperative mode.
 pub(crate) fn diagnostics(config: &HeimdallConfig, policy_name: &str) -> Vec<ExplicitDiagnostic> {
     let mut values = Vec::new();
-    if !native_arch_supported() {
-        values.push(ExplicitDiagnostic::new(
-            "macos_explicit_architecture_unavailable",
-            "$.platform.architecture",
-            "macos-explicit has native acceptance only on Apple silicon",
-            "Use an aarch64 macOS host or a supported Linux package.",
-        ));
-    }
     let Some(policy) = config.policy(policy_name) else {
         values.push(ExplicitDiagnostic::new(
             "unknown_policy",
@@ -84,57 +122,45 @@ pub(crate) fn diagnostics(config: &HeimdallConfig, policy_name: &str) -> Vec<Exp
         return values;
     };
 
-    if policy.dns.mode != DnsMode::System {
+    if policy.dns.mode != crate::heimdall_config::DnsMode::System {
         values.push(ExplicitDiagnostic::new(
-            "macos_explicit_fake_dns_unavailable",
+            "explicit_fake_dns_unavailable",
             format!("$.proxy.policies.{policy_name}.dns.mode"),
-            "macos-explicit does not provide fake DNS",
+            "explicit does not provide fake DNS",
             "Use dns.mode = \"system\"; SOCKS-aware clients can still send hostnames to the loopback listener.",
         ));
     }
     if !policy.rejects_all_udp() {
         values.push(ExplicitDiagnostic::new(
-            "macos_explicit_udp_unavailable",
+            "explicit_udp_unavailable",
             format!("$.proxy.policies.{policy_name}.final.udp"),
-            "macos-explicit accepts SOCKS5 CONNECT only and cannot route UDP",
-            "Reject every UDP path in the selected policy or use the future transparent backend.",
+            "explicit accepts SOCKS5 CONNECT only and cannot route UDP",
+            "Reject every UDP path in the selected policy or select the Linux eBPF backend.",
         ));
     }
     if config.capture.mode != CaptureMode::Off {
         values.push(ExplicitDiagnostic::new(
-            "macos_explicit_payload_capture_unavailable",
+            "explicit_payload_capture_unavailable",
             "$.capture.mode",
-            "macos-explicit records TCP metadata but does not capture payload bytes",
+            "explicit records TCP metadata but does not capture payload bytes",
             "Set capture.mode = \"off\" for this backend.",
         ));
     }
     if config.decrypt.mode != DecryptMode::Off {
         values.push(ExplicitDiagnostic::new(
-            "macos_explicit_tls_inspection_unavailable",
+            "explicit_tls_inspection_unavailable",
             "$.decrypt.mode",
-            "macos-explicit cannot inspect TLS",
-            "Set decrypt.mode = \"off\"; runtime TLS is unavailable on macOS and relay TLS belongs to a later transparent milestone.",
+            "explicit cannot inspect TLS",
+            "Set decrypt.mode = \"off\" or select the Linux eBPF backend.",
         ));
     }
     values
 }
 
-pub(crate) const fn native_arch_supported() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        cfg!(target_arch = "aarch64")
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        // Linux unit tests exercise the portable Apple-silicon contract.
-        true
-    }
-}
-
 pub(crate) fn outbound_diagnostic(config: &HeimdallConfig) -> Option<ExplicitDiagnostic> {
     resolve_all(config).err().map(|error| {
         ExplicitDiagnostic::new(
-            "macos_explicit_outbound_unavailable",
+            "explicit_outbound_unavailable",
             "$.proxy.outbounds",
             &format!("cannot prepare the configured SOCKS5 outbounds: {error:#}"),
             "Make every selected password_file readable and verify the upstream address.",
@@ -142,10 +168,159 @@ pub(crate) fn outbound_diagnostic(config: &HeimdallConfig) -> Option<ExplicitDia
     })
 }
 
+/// Run one command with a foreground-owned cooperative SOCKS environment.
+pub(crate) async fn run(
+    config: &HeimdallConfig,
+    policy_name: &str,
+    command: &[String],
+) -> Result<i32> {
+    if let Some(diagnostic) = diagnostics(config, policy_name).first() {
+        anyhow::bail!(
+            "{} at {}: {}; fix: {}",
+            diagnostic.code,
+            diagnostic.path,
+            diagnostic.message,
+            diagnostic.hint
+        );
+    }
+    if let Some(diagnostic) = outbound_diagnostic(config) {
+        anyhow::bail!(
+            "{} at {}: {}; fix: {}",
+            diagnostic.code,
+            diagnostic.path,
+            diagnostic.message,
+            diagnostic.hint
+        );
+    }
+
+    let evidence =
+        crate::run_evidence::RunEvidence::start(command, policy_name, "explicit", &config.capture)?;
+    let outcome = run_registered(config, policy_name, command, &evidence).await;
+    match outcome {
+        Ok(exit_code) => {
+            // Explicit mode cannot prove or clean a complete descendant tree
+            // after the immediate child exits.
+            evidence.finish(exit_code, false)?;
+            Ok(exit_code)
+        }
+        Err(error) => {
+            let _ = evidence.fail(
+                "explicit_run_failed",
+                "the explicit foreground run failed before completion",
+            );
+            Err(error)
+        }
+    }
+}
+
+async fn run_registered(
+    config: &HeimdallConfig,
+    policy_name: &str,
+    command: &[String],
+    evidence: &crate::run_evidence::RunEvidence,
+) -> Result<i32> {
+    let events = EventClient::connect(evidence.event_socket_path().to_path_buf())?;
+    let proxy = ExplicitProxy::start(config, policy_name, events).await?;
+    let proxy_url = proxy.proxy_url();
+    evidence.log().emit(
+        "run.warning",
+        None,
+        json!({
+            "code": "explicit_cooperative_scope",
+            "message": "the wrapped client can ignore or replace the injected explicit proxy environment",
+            "phase": "preflight",
+            "context": {
+                "backend": "explicit",
+                "scope": "cooperative_environment",
+                "environment": ["ALL_PROXY", "all_proxy"],
+                "proxy": proxy_url
+            }
+        }),
+    )?;
+    if let Err(error) = evidence.ready("heimdall-run", None, &["transport"]) {
+        proxy.shutdown().await?;
+        return Err(error);
+    }
+
+    eprintln!(
+        "heimdall run: backend=explicit scope=cooperative_environment ALL_PROXY={proxy_url} all_proxy={proxy_url}"
+    );
+    let mut child_command = Command::new(&command[0]);
+    child_command.args(&command[1..]).kill_on_drop(true);
+    for variable in [
+        "http_proxy",
+        "HTTP_PROXY",
+        "https_proxy",
+        "HTTPS_PROXY",
+        "all_proxy",
+        "ALL_PROXY",
+        "no_proxy",
+        "NO_PROXY",
+        "ftp_proxy",
+        "FTP_PROXY",
+    ] {
+        child_command.env_remove(variable);
+    }
+    child_command
+        .env("ALL_PROXY", &proxy_url)
+        .env("all_proxy", &proxy_url);
+    let mut child = match child_command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            proxy.shutdown().await?;
+            return Err(error).with_context(|| format!("execute {}", command[0]));
+        }
+    };
+    let child_pid = child.id().context("wrapped command has no process ID")?;
+    evidence.log().emit(
+        "run.exec",
+        Some(child_pid),
+        json!({
+            "child_pid": child_pid,
+            "executable": command[0],
+            "argv_count": command.len()
+        }),
+    )?;
+
+    let status = child.wait().await;
+    let shutdown = proxy.shutdown().await;
+    let status = status.context("wait for explicit command")?;
+    shutdown?;
+    Ok(status
+        .code()
+        .or_else(|| status.signal().map(|signal| 128 + signal))
+        .unwrap_or(1))
+}
+
 pub(crate) struct ExplicitProxy {
     address: SocketAddr,
     shutdown: watch::Sender<bool>,
     task: Option<JoinHandle<Result<()>>>,
+}
+
+#[derive(Clone)]
+struct Frontend {
+    backend: &'static str,
+    scope: &'static str,
+    auth_token: Option<Arc<[u8]>>,
+}
+
+impl Frontend {
+    fn explicit() -> Self {
+        Self {
+            backend: "explicit",
+            scope: "cooperative_environment",
+            auth_token: None,
+        }
+    }
+
+    fn interpose(token: &[u8]) -> Self {
+        Self {
+            backend: "interpose",
+            scope: "interposed_dynamic_calls",
+            auth_token: Some(Arc::from(token)),
+        }
+    }
 }
 
 impl ExplicitProxy {
@@ -161,6 +336,35 @@ impl ExplicitProxy {
             diagnostics[0].code,
             diagnostics[0].message
         );
+        Self::start_inner(config, policy_name, events, Frontend::explicit()).await
+    }
+
+    pub(crate) async fn start_interpose(
+        config: &HeimdallConfig,
+        policy_name: &str,
+        events: EventClient,
+        token: &[u8],
+    ) -> Result<Self> {
+        let diagnostics = interpose_diagnostics(config, policy_name);
+        anyhow::ensure!(
+            diagnostics.is_empty(),
+            "{}: {}",
+            diagnostics[0].code,
+            diagnostics[0].message
+        );
+        anyhow::ensure!(
+            !token.is_empty() && token.len() <= u8::MAX as usize,
+            "interpose frontend token must contain 1..=255 bytes"
+        );
+        Self::start_inner(config, policy_name, events, Frontend::interpose(token)).await
+    }
+
+    async fn start_inner(
+        config: &HeimdallConfig,
+        policy_name: &str,
+        events: EventClient,
+        frontend: Frontend,
+    ) -> Result<Self> {
         let policy = Arc::new(
             config
                 .policy(policy_name)
@@ -170,7 +374,7 @@ impl ExplicitProxy {
         let upstreams = Arc::new(resolve_all(config)?);
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .await
-            .context("bind macos-explicit loopback SOCKS5 listener")?;
+            .with_context(|| format!("bind {} loopback SOCKS5 listener", frontend.backend))?;
         let address = listener.local_addr()?;
         let (shutdown, receiver) = watch::channel(false);
         let policy_name = policy_name.to_owned();
@@ -181,6 +385,7 @@ impl ExplicitProxy {
             policy,
             upstreams,
             events,
+            frontend,
         ));
         Ok(Self {
             address,
@@ -193,13 +398,17 @@ impl ExplicitProxy {
         format!("socks5h://{}", self.address)
     }
 
+    pub(crate) fn port(&self) -> u16 {
+        self.address.port()
+    }
+
     pub(crate) async fn shutdown(mut self) -> Result<()> {
         let _ = self.shutdown.send(true);
         self.task
             .take()
-            .expect("macos-explicit listener joins once")
+            .expect("foreground SOCKS5 listener joins once")
             .await
-            .context("join macos-explicit listener")??;
+            .context("join foreground SOCKS5 listener")??;
         Ok(())
     }
 }
@@ -217,6 +426,7 @@ async fn serve(
     policy: Arc<ProxyPolicy>,
     upstreams: Arc<HashMap<String, Arc<Upstream>>>,
     events: EventClient,
+    frontend: Frontend,
 ) -> Result<()> {
     let mut connections = JoinSet::new();
     loop {
@@ -226,20 +436,22 @@ async fn serve(
                 break;
             }
             accepted = listener.accept() => {
-                let (client, _) = accepted.context("accept macos-explicit SOCKS5 client")?;
+                let (client, _) = accepted
+                    .with_context(|| format!("accept {} SOCKS5 client", frontend.backend))?;
                 let policy_name = policy_name.clone();
                 let policy = Arc::clone(&policy);
                 let upstreams = Arc::clone(&upstreams);
                 let events = events.clone();
+                let frontend = frontend.clone();
                 connections.spawn(async move {
-                    if let Err(error) = handle_client(client, &policy_name, &policy, &upstreams, &events).await {
-                        eprintln!("heimdall run: macos-explicit client failed: {error:#}");
+                    if let Err(error) = handle_client(client, &policy_name, &policy, &upstreams, &events, &frontend).await {
+                        eprintln!("heimdall run: {} client failed: {error:#}", frontend.backend);
                     }
                 });
             }
             joined = connections.join_next(), if !connections.is_empty() => {
                 if let Some(Err(error)) = joined {
-                    eprintln!("heimdall run: macos-explicit client task failed: {error}");
+                    eprintln!("heimdall run: {} client task failed: {error}", frontend.backend);
                 }
             }
         }
@@ -259,13 +471,21 @@ async fn handle_client(
     policy: &ProxyPolicy,
     upstreams: &HashMap<String, Arc<Upstream>>,
     events: &EventClient,
+    frontend: &Frontend,
 ) -> Result<()> {
     tokio::time::timeout(
         SOCKS5_HANDSHAKE_TIMEOUT,
-        handle_client_inner(&mut client, policy_name, policy, upstreams, events),
+        handle_client_inner(
+            &mut client,
+            policy_name,
+            policy,
+            upstreams,
+            events,
+            frontend,
+        ),
     )
     .await
-    .context("macos-explicit client handshake timed out")?
+    .with_context(|| format!("{} client handshake timed out", frontend.backend))?
 }
 
 async fn handle_client_inner(
@@ -274,8 +494,9 @@ async fn handle_client_inner(
     policy: &ProxyPolicy,
     upstreams: &HashMap<String, Arc<Upstream>>,
     events: &EventClient,
+    frontend: &Frontend,
 ) -> Result<()> {
-    negotiate_client(client).await?;
+    negotiate_client(client, frontend.auth_token.as_deref()).await?;
     let (command, destination, port) = read_request(client).await?;
     if command != SOCKS5_CONNECT {
         write_reply(client, SOCKS5_REPLY_COMMAND_UNSUPPORTED, None).await?;
@@ -297,7 +518,7 @@ async fn handle_client_inner(
     events.emit_run(
         "policy.decision",
         json!({
-            "source": explicit_source(),
+            "source": frontend_source(frontend),
             "policy": policy_name,
             "network": "tcp",
             "destination": destination_value,
@@ -357,7 +578,7 @@ async fn handle_client_inner(
         flow_id,
         json!({
             "network": "tcp",
-            "source": explicit_source(),
+            "source": frontend_source(frontend),
             "destination": destination_json(&destination, port),
             "action": action_json(&action),
             "policy": policy_name,
@@ -375,15 +596,16 @@ async fn handle_client_inner(
             let close = flow.close("error", Some("relay_failed"), 0, 0);
             if let Err(close_error) = close {
                 eprintln!(
-                    "heimdall run: cannot close macos-explicit flow evidence: {close_error:#}"
+                    "heimdall run: cannot close {} flow evidence: {close_error:#}",
+                    frontend.backend
                 );
             }
-            Err(error).context("copy macos-explicit TCP stream")
+            Err(error).with_context(|| format!("copy {} TCP stream", frontend.backend))
         }
     }
 }
 
-async fn negotiate_client(client: &mut TcpStream) -> Result<()> {
+async fn negotiate_client(client: &mut TcpStream, auth_token: Option<&[u8]>) -> Result<()> {
     let mut header = [0u8; 2];
     client.read_exact(&mut header).await?;
     anyhow::ensure!(
@@ -396,14 +618,59 @@ async fn negotiate_client(client: &mut TcpStream) -> Result<()> {
     );
     let mut methods = vec![0u8; header[1] as usize];
     client.read_exact(&mut methods).await?;
-    if !methods.contains(&SOCKS5_NO_AUTH) {
+    let selected = if auth_token.is_some() {
+        SOCKS5_USERNAME_PASSWORD
+    } else {
+        SOCKS5_NO_AUTH
+    };
+    if !methods.contains(&selected) {
         client
             .write_all(&[SOCKS5_VERSION, SOCKS5_NO_ACCEPTABLE_AUTH])
             .await?;
-        anyhow::bail!("SOCKS5 client did not offer no-authentication mode");
+        anyhow::bail!("SOCKS5 client did not offer the required authentication mode");
     }
-    client.write_all(&[SOCKS5_VERSION, SOCKS5_NO_AUTH]).await?;
+    client.write_all(&[SOCKS5_VERSION, selected]).await?;
+    if let Some(expected) = auth_token {
+        authenticate_client(client, expected).await?;
+    }
     Ok(())
+}
+
+async fn authenticate_client(client: &mut TcpStream, expected: &[u8]) -> Result<()> {
+    let mut header = [0u8; 2];
+    client.read_exact(&mut header).await?;
+    anyhow::ensure!(
+        header[0] == SOCKS5_AUTH_VERSION && header[1] != 0,
+        "SOCKS5 username/password request is invalid"
+    );
+    let mut username = vec![0u8; header[1] as usize];
+    client.read_exact(&mut username).await?;
+    let mut password_length = [0u8; 1];
+    client.read_exact(&mut password_length).await?;
+    anyhow::ensure!(
+        password_length[0] != 0,
+        "SOCKS5 username/password request has an empty password"
+    );
+    let mut password = vec![0u8; password_length[0] as usize];
+    client.read_exact(&mut password).await?;
+    let accepted = username == b"heimdall" && constant_time_equal(&password, expected);
+    client
+        .write_all(&[SOCKS5_AUTH_VERSION, u8::from(!accepted)])
+        .await?;
+    anyhow::ensure!(accepted, "SOCKS5 frontend authentication failed");
+    Ok(())
+}
+
+fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
+    let mut difference = left.len() ^ right.len();
+    let length = left.len().max(right.len());
+    for index in 0..length {
+        difference |= usize::from(
+            left.get(index).copied().unwrap_or_default()
+                ^ right.get(index).copied().unwrap_or_default(),
+        );
+    }
+    difference == 0
 }
 
 async fn read_request(client: &mut TcpStream) -> Result<(u8, Dst, u16)> {
@@ -482,10 +749,10 @@ async fn write_reply(client: &mut TcpStream, reply: u8, bound: Option<SocketAddr
         .context("write SOCKS5 reply")
 }
 
-fn explicit_source() -> Value {
+fn frontend_source(frontend: &Frontend) -> Value {
     json!({
-        "backend": "macos-explicit",
-        "scope": "cooperative_environment"
+        "backend": frontend.backend,
+        "scope": frontend.scope
     })
 }
 
@@ -614,9 +881,9 @@ mod tests {
             .iter()
             .map(|value| value.code.as_str())
             .collect::<Vec<_>>();
-        assert!(codes.contains(&"macos_explicit_fake_dns_unavailable"));
-        assert!(codes.contains(&"macos_explicit_payload_capture_unavailable"));
-        assert!(codes.contains(&"macos_explicit_tls_inspection_unavailable"));
+        assert!(codes.contains(&"explicit_fake_dns_unavailable"));
+        assert!(codes.contains(&"explicit_payload_capture_unavailable"));
+        assert!(codes.contains(&"explicit_tls_inspection_unavailable"));
     }
 
     #[tokio::test]
@@ -644,8 +911,7 @@ mod tests {
         let uuid = uuid::Uuid::now_v7().simple().to_string();
         let root = Path::new("/tmp").join(format!("hx-{}-{}", std::process::id(), &uuid[..8]));
         let runtime = root.join("runtime");
-        let log =
-            RunLog::create_at(&root, &["client".into()], "default", "macos-explicit").unwrap();
+        let log = RunLog::create_at(&root, &["client".into()], "default", "explicit").unwrap();
         let server = RotationServer::start_at(log.clone(), &runtime).unwrap();
         let events = EventClient::connect(server.event_socket_path().to_path_buf()).unwrap();
         let config = config_with_upstream(upstream_port);
@@ -678,15 +944,114 @@ mod tests {
 
         let run_dir = log.run_dir().unwrap();
         let manifest = read_manifest(&run_dir.join("run.json")).unwrap();
-        assert_eq!(manifest.backend, "macos-explicit");
+        assert_eq!(manifest.backend, "explicit");
         assert!(!manifest.result.unwrap().complete);
         let events = std::fs::read_to_string(run_dir.join("events-000001.jsonl")).unwrap();
         assert!(events.lines().any(|line| {
             let value: serde_json::Value = serde_json::from_str(line).unwrap();
-            value["data"]["source"]["backend"] == "macos-explicit"
+            value["data"]["source"]["backend"] == "explicit"
                 && value["data"]["source"]["scope"] == "cooperative_environment"
         }));
         assert!(events.contains(r#""kind":"flow.close""#));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn interpose_frontend_requires_the_per_run_token() {
+        let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let upstream_port = upstream.local_addr().unwrap().port();
+        let upstream_task = tokio::spawn(async move {
+            let (mut stream, _) = upstream.accept().await.unwrap();
+            let mut greeting = [0u8; 3];
+            stream.read_exact(&mut greeting).await.unwrap();
+            assert_eq!(greeting, [5, 1, 0]);
+            stream.write_all(&[5, 0]).await.unwrap();
+            let mut request = [0u8; 18];
+            stream.read_exact(&mut request).await.unwrap();
+            assert_eq!(&request[5..16], b"example.com");
+            stream
+                .write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 0])
+                .await
+                .unwrap();
+            let mut payload = [0u8; 4];
+            stream.read_exact(&mut payload).await.unwrap();
+            stream.write_all(&payload).await.unwrap();
+        });
+
+        let uuid = uuid::Uuid::now_v7().simple().to_string();
+        let root = Path::new("/tmp").join(format!("hi-{}-{}", std::process::id(), &uuid[..8]));
+        let runtime = root.join("runtime");
+        let log = RunLog::create_at(&root, &["client".into()], "default", "interpose").unwrap();
+        let server = RotationServer::start_at(log.clone(), &runtime).unwrap();
+        let events = EventClient::connect(server.event_socket_path().to_path_buf()).unwrap();
+        let config = config_with_upstream(upstream_port);
+        let token = b"one-run-secret";
+        let proxy = ExplicitProxy::start_interpose(&config, "default", events, token)
+            .await
+            .unwrap();
+
+        let mut unauthenticated = TcpStream::connect(proxy.address).await.unwrap();
+        unauthenticated.write_all(&[5, 1, 0]).await.unwrap();
+        let mut greeting = [0u8; 2];
+        unauthenticated.read_exact(&mut greeting).await.unwrap();
+        assert_eq!(greeting, [5, SOCKS5_NO_ACCEPTABLE_AUTH]);
+
+        let mut wrong = TcpStream::connect(proxy.address).await.unwrap();
+        wrong
+            .write_all(&[5, 1, SOCKS5_USERNAME_PASSWORD])
+            .await
+            .unwrap();
+        wrong.read_exact(&mut greeting).await.unwrap();
+        assert_eq!(greeting, [5, SOCKS5_USERNAME_PASSWORD]);
+        wrong
+            .write_all(&[
+                1, 8, b'h', b'e', b'i', b'm', b'd', b'a', b'l', b'l', 5, b'w', b'r', b'o', b'n',
+                b'g',
+            ])
+            .await
+            .unwrap();
+        wrong.read_exact(&mut greeting).await.unwrap();
+        assert_eq!(greeting, [1, 1]);
+
+        let mut client = TcpStream::connect(proxy.address).await.unwrap();
+        client
+            .write_all(&[5, 1, SOCKS5_USERNAME_PASSWORD])
+            .await
+            .unwrap();
+        client.read_exact(&mut greeting).await.unwrap();
+        assert_eq!(greeting, [5, SOCKS5_USERNAME_PASSWORD]);
+        let mut auth = vec![1, 8];
+        auth.extend_from_slice(b"heimdall");
+        auth.push(token.len() as u8);
+        auth.extend_from_slice(token);
+        client.write_all(&auth).await.unwrap();
+        client.read_exact(&mut greeting).await.unwrap();
+        assert_eq!(greeting, [1, 0]);
+        let host = b"example.com";
+        let mut request = vec![5, 1, 0, 3, host.len() as u8];
+        request.extend_from_slice(host);
+        request.extend_from_slice(&443u16.to_be_bytes());
+        client.write_all(&request).await.unwrap();
+        let mut reply = [0u8; 10];
+        client.read_exact(&mut reply).await.unwrap();
+        assert_eq!(reply[1], SOCKS5_REPLY_SUCCEEDED);
+        client.write_all(b"ping").await.unwrap();
+        let mut response = [0u8; 4];
+        client.read_exact(&mut response).await.unwrap();
+        assert_eq!(&response, b"ping");
+        drop(client);
+        upstream_task.await.unwrap();
+        proxy.shutdown().await.unwrap();
+        drop(server);
+        log.finish(0, false).unwrap();
+
+        let run_dir = log.run_dir().unwrap();
+        let events = std::fs::read_to_string(run_dir.join("events-000001.jsonl")).unwrap();
+        assert!(events.lines().any(|line| {
+            let value: serde_json::Value = serde_json::from_str(line).unwrap();
+            value["data"]["source"]["backend"] == "interpose"
+                && value["data"]["source"]["scope"] == "interposed_dynamic_calls"
+        }));
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -697,8 +1062,7 @@ mod tests {
         let uuid = uuid::Uuid::now_v7().simple().to_string();
         let root = Path::new("/tmp").join(format!("hu-{}-{}", std::process::id(), &uuid[..8]));
         let runtime = root.join("runtime");
-        let log =
-            RunLog::create_at(&root, &["client".into()], "default", "macos-explicit").unwrap();
+        let log = RunLog::create_at(&root, &["client".into()], "default", "explicit").unwrap();
         let server = RotationServer::start_at(log.clone(), &runtime).unwrap();
         let events = EventClient::connect(server.event_socket_path().to_path_buf()).unwrap();
         let config = config_with_upstream(upstream_port);
