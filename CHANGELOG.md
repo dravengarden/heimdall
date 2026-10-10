@@ -299,7 +299,7 @@ guide.
 
 ### Changed
 
-- Expand the npm package page with npm, pnpm, Yarn, Bun, and Deno install and
+- Expand the npm package page with npm, pnpm, Yarn, and Bun install and
   one-shot commands plus concise setup, architecture, operating-mode, platform,
   daemonless lifecycle, and security guidance.
 - Build the exact npm tarball locally with pinned npm 12 and attach it and its

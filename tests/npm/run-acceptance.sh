@@ -39,12 +39,10 @@ for expected in \
   'pnpm add --global heimdall-egress' \
   'yarn global add heimdall-egress' \
   'bun add --global heimdall-egress' \
-  'deno install --global -A --name heimdall npm:heimdall-egress' \
   'npx --yes --package=heimdall-egress -- heimdall --version' \
   'pnpm dlx --package heimdall-egress heimdall --version' \
   'yarn dlx --package heimdall-egress heimdall --version' \
   'bunx --package heimdall-egress heimdall --version' \
-  'deno x -A --package heimdall-egress heimdall --version' \
   '## Architecture' \
   '## Modes' \
   'No persistent Heimdall daemon'; do

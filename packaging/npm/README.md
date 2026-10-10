@@ -22,16 +22,10 @@ bun add --global heimdall-egress
 
 # Yarn Classic 1.x
 yarn global add heimdall-egress
-
-# Deno 2.8+; -A lets the Node-compatible launcher start the bundled binary
-deno install --global -A --name heimdall npm:heimdall-egress
 ```
 
 Modern Yarn intentionally has no global install command; use `yarn dlx` below.
-Deno installs a persistent command backed by its npm cache, but that cache is
-not a durable privileged-authorization boundary. Use npm, pnpm, Bun, Yarn
-Classic, or a native GitHub Release for real proxy sessions. macOS is not
-supported yet.
+macOS is not supported yet.
 
 Verify the installed command:
 
@@ -48,7 +42,6 @@ npx --yes --package=heimdall-egress -- heimdall --version
 pnpm dlx --package heimdall-egress heimdall --version
 yarn dlx --package heimdall-egress heimdall --version
 bunx --package heimdall-egress heimdall --version
-deno x -A --package heimdall-egress heimdall --version
 ```
 
 These runners use package-manager caches. Their paths are not stable enough for

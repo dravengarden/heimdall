@@ -186,8 +186,8 @@ all packing, publication, and acceptance behavior.
 The npm tarball must expose both `heimdall` and `heimdall-egress`, contain no
 lifecycle scripts, and carry only the launcher, LICENSE, README, package
 metadata, and supported native binaries. `packaging/npm/README.md` is the
-project-owned npm landing page. Keep its supported npm, pnpm, Yarn, Bun, and
-Deno commands, stable-path caveats, shortest setup, architecture, modes, and
+project-owned npm landing page. Keep its supported npm, pnpm, Yarn, and Bun
+commands, stable-path caveats, shortest setup, architecture, modes, and
 security boundaries aligned with the actual archive; package acceptance checks
 that content. Lasso templates may help draft a page but never own, generate,
 check, or publish Heimdall's copy.
